@@ -50,6 +50,14 @@ import { getOpsConductorFactory } from "../claustrum-bootstrap.js";
 import { acquireAgentLock, releaseAgentLock } from "../whatsapp/session.js";
 import { sendText } from "../whatsapp/client.js";
 import { appendOpsMessages, buildOpsHistoryBlock } from "./ops-history.js";
+import {
+  OPS_NEGATIVE_DECLINE_ACK_PTBR,
+  opsNegativeDeclineTarget,
+  opsSoftAffirmativeRestateNotice,
+  opsStaleResumeNotice,
+  pruneExpiredOpsParks,
+} from "./ops-system-channel.js";
+import { excludedKindsForScope } from "./ops-verb-scope.js";
 import type { OpsConductorContext } from "./ops-conductor.js";
 
 type LogFn = {
@@ -244,6 +252,142 @@ async function runOpsTurn(
       inbound,
     });
     try {
+      // FE-D13 — honest stale-resume (with BKL-086 parity). Drop the out-of-scope
+      // money verbs FIRST (excludedKindsForScope — the SAME set scopeResumeChannel
+      // hides from matchToParked), so WhatsApp never restates a dashboard-only park
+      // it could not resume; then, if the reply signals a resume of an EXPIRED
+      // in-scope park, send the honest expiry restatement instead of running the
+      // fresh loop. The turn is SKIPPED on a notice (no turn_trace row) — emit a
+      // structured warn for forensics and append the reply to history.
+      const pending = capsule.loadedSession?.pendingConfirmations ?? [];
+      const waExcluded = excludedKindsForScope("whatsapp");
+      const staleNotice = opsStaleResumeNotice({
+        text: command,
+        pendingConfirmations: pending,
+        nowIso: inbound.receivedAt,
+        excludedKinds: waExcluded,
+      });
+      if (staleNotice !== undefined) {
+        // FE-D33 — prune the now-inert expired IN-SCOPE parks (hygiene; the FE-D13
+        // partition is the enforcement point, so a prune failure is non-fatal). The
+        // SAME whatsapp exclusion is applied, so an out-of-scope dashboard-only money
+        // park is never pruned from here (BKL-086 parity). capsule.session.unpark is
+        // the sanctioned durable mutation; the Conductor re-reads on close.
+        let pruned = 0;
+        if (capsule.loadedSession) {
+          try {
+            pruned = (
+              await pruneExpiredOpsParks({
+                session: capsule.session,
+                sessionId: capsule.loadedSession.id,
+                pendingConfirmations: pending,
+                nowIso: inbound.receivedAt,
+                excludedKinds: waExcluded,
+              })
+            ).length;
+          } catch (err) {
+            log.warn(err, "[ops-wa] expired-park prune failed (non-fatal)");
+          }
+        }
+        log.warn(
+          {
+            event: "ops_wa.stale_park_notice",
+            staff_id: staffId,
+            phone_hash: hash,
+            pending: pending.length,
+            pruned,
+          },
+          "[ops-wa] stale confirm-park resume — restating expiry, pruning zombies, skipping the turn",
+        );
+        try {
+          await deps.appendHistory(staffId, [
+            { role: "assistant", content: staleNotice },
+          ]);
+        } catch (err) {
+          log.warn(err, "[ops-wa] stale-notice history append failed (non-fatal)");
+        }
+        await deps.sendReply(staleNotice);
+        return;
+      }
+
+      // FE-D32 — a bare SOFT affirmative ("pode"/"ok"/…) aimed at a still-FRESH
+      // in-scope park is too weak to EXECUTE: restate the parked action and ask for
+      // an explicit "sim"/"confirmo". Do NOT prune/unpark — the fresh park survives
+      // so a follow-up "sim" executes it. The turn is SKIPPED (no turn_trace row).
+      const softRestate = opsSoftAffirmativeRestateNotice({
+        text: command,
+        pendingConfirmations: pending,
+        nowIso: inbound.receivedAt,
+        excludedKinds: waExcluded,
+      });
+      if (softRestate !== undefined) {
+        log.warn(
+          {
+            event: "ops_wa.soft_affirm_restate",
+            staff_id: staffId,
+            phone_hash: hash,
+            pending: pending.length,
+          },
+          "[ops-wa] soft affirmative on a fresh park — restating, awaiting explicit confirm, skipping the turn",
+        );
+        try {
+          await deps.appendHistory(staffId, [
+            { role: "assistant", content: softRestate },
+          ]);
+        } catch (err) {
+          log.warn(err, "[ops-wa] soft-restate history append failed (non-fatal)");
+        }
+        await deps.sendReply(softRestate);
+        return;
+      }
+
+      // BKL-191 — a PURE-negative reply on a fresh in-scope park DECLINES it at
+      // the ingress: unpark + acknowledge, SKIP the turn (the planner never sees
+      // the negative text — claustrum's own deny path re-plans it into the live
+      // re-prompt). Scope-filtered like every park read here (BKL-086 parity).
+      // Fail-honest: unpark failure falls through to the normal loop.
+      const declineTarget = opsNegativeDeclineTarget({
+        text: command,
+        pendingConfirmations: pending,
+        nowIso: inbound.receivedAt,
+        excludedKinds: waExcluded,
+      });
+      if (declineTarget !== undefined && capsule.loadedSession) {
+        let unparked = false;
+        try {
+          await capsule.session.unpark(
+            capsule.loadedSession.id,
+            declineTarget.envelope.intentHash,
+          );
+          unparked = true;
+        } catch (err) {
+          log.warn(
+            err,
+            "[ops-wa] negative-decline unpark failed — falling through to the normal loop (BKL-191)",
+          );
+        }
+        if (unparked) {
+          log.warn(
+            {
+              event: "ops_wa.negative_declined_park",
+              staff_id: staffId,
+              phone_hash: hash,
+              kind: String(declineTarget.envelope.kind),
+            },
+            "[ops-wa] negative reply on a fresh park — declined + unparked, skipping the turn (BKL-191)",
+          );
+          try {
+            await deps.appendHistory(staffId, [
+              { role: "assistant", content: OPS_NEGATIVE_DECLINE_ACK_PTBR },
+            ]);
+          } catch (err) {
+            log.warn(err, "[ops-wa] decline-ack history append failed (non-fatal)");
+          }
+          await deps.sendReply(OPS_NEGATIVE_DECLINE_ACK_PTBR);
+          return;
+        }
+      }
+
       const turn = await handleTurn(capsule, inbound);
       // Persist the assistant reply AFTER a successful turn (best-effort).
       try {

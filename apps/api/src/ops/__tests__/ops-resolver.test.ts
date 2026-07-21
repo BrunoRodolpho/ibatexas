@@ -9,6 +9,7 @@ import {
   buildOpsSpecialResumeState,
   type OpsResolverDeps,
 } from "../ops-resolver.js";
+import { OPS_REFUND_DEFAULT_REASON } from "../../claustrum/language-engine/payment-refund-issue.schema.js";
 import type { ProductCandidate } from "../ops-product-resolution.js";
 import type {
   OrderCandidate,
@@ -33,6 +34,17 @@ function input(env: IntentEnvelope): ResolverInput {
   return {
     plan: { envelopes: [env] },
     cognition: {},
+    customerId: "staff:staff_1",
+    channel: "system",
+  } as unknown as ResolverInput;
+}
+
+/** BKL-150a — a ResolverInput carrying the CURRENT staff message text
+ *  (`cognition.perception.text`) the stale-order-bleed scrub reads. */
+function inputWithText(env: IntentEnvelope, text: string): ResolverInput {
+  return {
+    plan: { envelopes: [env] },
+    cognition: { perception: { text } },
     customerId: "staff:staff_1",
     channel: "system",
   } as unknown as ResolverInput;
@@ -160,10 +172,12 @@ describe("ops resolver — product name→id resolution (BKL-089)", () => {
       status: "published",
     });
     // productId REWRITTEN to the resolved id; every other field preserved.
+    // BKL-156 — the resolved display name is stamped for the EXECUTE render.
     expect(resolved!.envelope.payload).toEqual({
       productId: "prod_42",
       available: false,
       reason: "acabou",
+      productName: "Picanha",
     });
     expect(listProductsByName).toHaveBeenCalledTimes(1);
   });
@@ -181,11 +195,13 @@ describe("ops resolver — product name→id resolution (BKL-089)", () => {
     const [resolved] = await createOpsResolver(deps).resolve(input(env));
 
     // Equals a direct buildEnvelope over the FINAL (resolved) payload …
+    // BKL-156 — the FINAL payload now carries the stamped display name.
     expect(resolved!.envelope.intentHash).toBe(
       hashOver("product.availability.set", {
         productId: "prod_42",
         available: false,
         reason: "acabou",
+        productName: "Picanha",
       }),
     );
     // … and DIFFERS from the original name-payload hash (the payload changed).
@@ -348,10 +364,12 @@ describe("ops resolver — product.price.set state (NEW-004)", () => {
 
     expect((resolved!.state as { priceProduct: { id: string } }).priceProduct.id).toBe("prod_42");
     // productId REWRITTEN to the resolved id; every other field preserved.
+    // BKL-156 — the resolved display name is stamped for the EXECUTE render.
     expect(resolved!.envelope.payload).toEqual({
       productId: "prod_42",
       priceCentavos: 9500,
       reason: "reajuste",
+      productName: "Picanha",
     });
     // The rebuilt intentHash covers the RESOLVED payload.
     expect(resolved!.envelope.intentHash).toBe(
@@ -359,6 +377,7 @@ describe("ops resolver — product.price.set state (NEW-004)", () => {
         productId: "prod_42",
         priceCentavos: 9500,
         reason: "reajuste",
+        productName: "Picanha",
       }),
     );
   });
@@ -442,8 +461,63 @@ describe("ops resolver — order.status.transition state (BKL-090)", () => {
         cartId: null,
         orderId: "order_1",
         fulfillmentStatus: "preparing",
+        // FE-T05 — a direct id hit (an explicit reference) is authoritative,
+        // never grounded: `requireConfirmationOnGroundedStatusTransition`
+        // does not fire.
+        orderResolutionTrust: "authoritative",
       },
     });
+  });
+
+  it("BKL-150(b) — canonicalizes the en-GB status token 'cancelled' → 'canceled' before adjudication", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => ({
+        customerId: "cust_1",
+        paymentMethod: "pix",
+        paymentStatus: "confirmed",
+        totalInCentavos: 5000,
+        fulfillmentStatus: "preparing",
+      })),
+    });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      input(
+        opsEnvelope("order.status.transition", {
+          orderId: "order_1",
+          newStatus: "cancelled",
+        }),
+      ),
+    );
+    // The strict BKL-090 guard now sees the canonical en-US token.
+    expect((resolved!.envelope.payload as { newStatus: string }).newStatus).toBe("canceled");
+  });
+
+  it("BKL-150(b) — case-variant canonicalizes; canonical/locale-invariant/unknown tokens pass through verbatim (guard stays strict)", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => ({
+        customerId: "cust_1",
+        paymentMethod: "pix",
+        paymentStatus: "confirmed",
+        totalInCentavos: 5000,
+        fulfillmentStatus: "preparing",
+      })),
+    });
+    const resolveStatus = async (newStatus: string) => {
+      const [r] = await createOpsResolver(deps).resolve(
+        input(opsEnvelope("order.status.transition", { orderId: "order_1", newStatus })),
+      );
+      return (r!.envelope.payload as { newStatus: string }).newStatus;
+    };
+    expect(await resolveStatus("Cancelled")).toBe("canceled");
+    // pt-BR aliases the persona teaches → the canonical en-US enum (BKL-150b).
+    expect(await resolveStatus("cancelado")).toBe("canceled");
+    expect(await resolveStatus("entregue")).toBe("delivered");
+    expect(await resolveStatus("pronto")).toBe("ready");
+    // Already canonical / locale-invariant enum token → verbatim.
+    expect(await resolveStatus("canceled")).toBe("canceled");
+    expect(await resolveStatus("ready")).toBe("ready");
+    // A genuinely unknown token is NEVER invented into a valid one — it stays
+    // verbatim so the strict BKL-090 guard still fails closed on it.
+    expect(await resolveStatus("frobnicate")).toBe("frobnicate");
   });
 
   it("order missing ⇒ ctx.orderId null AND fulfillmentStatus null (fail-closed)", async () => {
@@ -591,6 +665,8 @@ describe("ops resolver — order reference→id resolution (BKL-089, orders scop
         cartId: null,
         orderId: "order_m",
         fulfillmentStatus: "preparing",
+        // FE-T05 — an explicit customer-name reference is authoritative.
+        orderResolutionTrust: "authoritative",
       },
     });
     expect(resolved!.envelope.payload).toEqual({ orderId: "order_m", newStatus: "ready" });
@@ -655,6 +731,132 @@ describe("ops resolver — order reference→id resolution (BKL-089, orders scop
     expect((resolved!.state as { ctx: { orderId: unknown } }).ctx.orderId).toBeNull();
     expect(resolved!.envelope.payload).toEqual({ orderId: "4242", body: "nota" });
     expect(resolved!.envelope.intentHash).toBe(env.intentHash);
+  });
+});
+
+// ── BKL-150(a) — stale cross-turn order-number bleed scrub ────────────────────
+//
+// The model can copy a PRIOR turn's display number out of the fenced history
+// block into a NEW turn's payload whose CURRENT message names no such order.
+// When the current message text is available and the numeric reference is NOT
+// in it, the resolver scrubs it so the turn never silently acts on a prior-turn
+// order: status.transition falls to the confirm-forcing most-recent path;
+// note.add REFUSEs no_order honestly. A number the message DOES contain, a name
+// reference, and a text-less caller are all left exactly as before.
+describe("ops resolver — BKL-150(a) stale order-number bleed scrub", () => {
+  it("status.transition: a bled '4242' ABSENT from the current message → NOT resolved authoritatively; falls to the confirm-forcing most-recent path", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        // If the bled 4242 were (wrongly) honored it would resolve HERE (authoritative).
+        byDisplayId: [orderCandidate({ id: "order_4242", displayId: 4242 })],
+        // The scrub makes the resolver auto-resolve the most-recent active order instead.
+        recentActive: [
+          orderCandidate({ id: "order_recent", displayId: 7, fulfillmentStatus: "preparing" }),
+        ],
+      }),
+    });
+    const env = opsEnvelope("order.status.transition", { orderId: "4242", newStatus: "ready" });
+    const [resolved] = await createOpsResolver(
+      deps,
+    ).resolve(inputWithText(env, "esse pedido pode ser cancelado?"));
+
+    const ctx = (resolved!.state as {
+      ctx: { orderId: string; orderResolutionTrust: string };
+    }).ctx;
+    // Resolved the MOST-RECENT order (grounded ⇒ forces confirm), NOT the bled 4242.
+    expect(ctx.orderId).toBe("order_recent");
+    expect(ctx.orderResolutionTrust).toBe("grounded");
+    // The stale number never reaches the wire payload.
+    expect((resolved!.envelope.payload as { orderId: string }).orderId).toBe("order_recent");
+  });
+
+  it("note.add: a bled '4242' ABSENT from the current message → scrubbed → ctx.orderId null (honest REFUSE no_order)", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        byDisplayId: [orderCandidate({ id: "order_4242", displayId: 4242 })],
+      }),
+    });
+    const env = opsEnvelope("order.note.add", { orderId: "4242", body: "nota" });
+    const [resolved] = await createOpsResolver(
+      deps,
+    ).resolve(inputWithText(env, "adiciona uma observação sobre o atraso"));
+    expect((resolved!.state as { ctx: { orderId: unknown } }).ctx.orderId).toBeNull();
+    // orderId dropped from the payload (never the bled number).
+    expect(resolved!.envelope.payload).toEqual({ body: "nota" });
+  });
+
+  it("status.transition: a '4242' PRESENT in the current message resolves normally (authoritative — NOT a bleed)", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        byDisplayId: [orderCandidate({ id: "order_4242", displayId: 4242, fulfillmentStatus: "preparing" })],
+      }),
+    });
+    const env = opsEnvelope("order.status.transition", { orderId: "4242", newStatus: "ready" });
+    const [resolved] = await createOpsResolver(
+      deps,
+    ).resolve(inputWithText(env, "avança o pedido #4242 para pronto"));
+    const ctx = (resolved!.state as {
+      ctx: { orderId: string; orderResolutionTrust: string };
+    }).ctx;
+    expect(ctx.orderId).toBe("order_4242");
+    expect(ctx.orderResolutionTrust).toBe("authoritative");
+  });
+
+  it("a NAME reference ABSENT from the current message is gated too → dropped → grounded auto-resolve (forced confirm), NOT authoritative", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        // If the bled "Maria" were honored it would resolve authoritatively by name.
+        recentActive: [
+          orderCandidate({ id: "order_m", customerName: "Maria", fulfillmentStatus: "preparing" }),
+        ],
+      }),
+    });
+    const env = opsEnvelope("order.status.transition", { orderId: "Maria", newStatus: "ready" });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      inputWithText(env, "avança esse pedido"),
+    );
+    const ctx = (resolved!.state as {
+      ctx: { orderId: string; orderResolutionTrust: string };
+    }).ctx;
+    expect(ctx.orderId).toBe("order_m");
+    expect(ctx.orderResolutionTrust).toBe("grounded");
+  });
+
+  it("a NAME reference PRESENT in the current message resolves normally (authoritative)", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        recentActive: [
+          orderCandidate({ id: "order_m", customerName: "Maria", fulfillmentStatus: "preparing" }),
+        ],
+      }),
+    });
+    const env = opsEnvelope("order.status.transition", { orderId: "Maria", newStatus: "ready" });
+    const [resolved] = await createOpsResolver(deps).resolve(
+      inputWithText(env, "avança o pedido da Maria pra pronto"),
+    );
+    const ctx = (resolved!.state as {
+      ctx: { orderId: string; orderResolutionTrust: string };
+    }).ctx;
+    expect(ctx.orderId).toBe("order_m");
+    expect(ctx.orderResolutionTrust).toBe("authoritative");
+  });
+
+  it("a text-less caller (no perception) leaves a numeric reference untouched (byte-identical legacy path)", async () => {
+    const deps = makeDeps({
+      lookupOrder: vi.fn(async () => null),
+      orderReferenceReads: orderReads({
+        byDisplayId: [orderCandidate({ id: "order_4242", displayId: 4242 })],
+      }),
+    });
+    const env = opsEnvelope("order.note.add", { orderId: "4242", body: "nota" });
+    // input() supplies cognition:{} (no perception.text) ⇒ scrub inert.
+    const [resolved] = await createOpsResolver(deps).resolve(input(env));
+    expect((resolved!.state as { ctx: { orderId: unknown } }).ctx.orderId).toBe("order_4242");
   });
 });
 
@@ -756,6 +958,10 @@ describe("ops resolver — payment.refund.issue (BKL-085)", () => {
     expect(p.refundAmountCentavos).toBe(6_000);
     expect(p.refundableBalanceCentavos).toBe(6_000);
     expect(p.currentRefundedCentavos).toBe(4_000);
+    // FE-T10: the reason falls back to the SAME exported constant
+    // audit-metadata.ts reads to recognize (and correctly attribute) a
+    // resolver-defaulted reason — pins the two never silently drift apart.
+    expect(p.reason).toBe(OPS_REFUND_DEFAULT_REASON);
   });
 
   it("no active payment ⇒ exists:false (REFUSE payment_not_found, never an executor throw)", async () => {
@@ -827,6 +1033,76 @@ describe("ops resolver — payment.refund.issue (BKL-085)", () => {
     const p = resolved.envelope.payload as Record<string, unknown>;
     expect(p.paymentId).toBe("pay_db_1");
     expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(true);
+  });
+});
+
+// ── FE-T10 — orderReference alias (the money-tier extraction schema's field) ──
+// `payment-refund-issue.schema.ts` narrows the model-facing payload to
+// {orderReference, amount, reason} — `orderId` is a forbidden extraction-
+// schema field name, so the model can ONLY emit `orderReference` under the
+// new typed schema. `withOrderReferenceAlias` (ops-resolver.ts) rewrites it
+// to `orderId` before `resolveOrderTarget` runs, so resolution still works
+// — and the pre-existing bare-`orderId` path (no typed schema wired, or an
+// older client) still wins outright when BOTH are present.
+
+describe("ops resolver — FE-T10 orderReference alias (money-tier extraction schema)", () => {
+  it("orderReference alone resolves the order — direct-id shape", async () => {
+    const resolved = await resolveRefund(refundDeps(), {
+      orderReference: "order_direct",
+      amount: 20,
+    });
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    expect(p.paymentId).toBe("pay_db_1");
+    // BKL-094: amount (reais) -> exact centavos, unaffected by the alias.
+    expect(p.refundAmountCentavos).toBe(2_000);
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(true);
+  });
+
+  it("orderReference alone resolves via the BKL-089 displayId reference path too", async () => {
+    const candidate: OrderCandidate = {
+      id: "order_resolved",
+      displayId: 4242,
+      customerName: "Maria",
+      fulfillmentStatus: "confirmed",
+      customerId: "cust_1",
+      paymentMethod: "pix",
+      paymentStatus: "paid",
+      totalInCentavos: 10_000,
+    };
+    const lookupActivePayment = vi.fn(async (orderId: string) =>
+      orderId === "order_resolved" ? ACTIVE_PAID : null,
+    );
+    const refs: OrderReferenceReads = {
+      findByDisplayId: async (d) => (d === 4242 ? [candidate] : []),
+      listRecentActive: async () => [],
+    };
+    const resolved = await resolveRefund(
+      refundDeps({
+        lookupOrder: vi.fn(async () => null), // direct id miss ⇒ reference resolution
+        orderReferenceReads: refs,
+        lookupActivePayment,
+      }),
+      { orderReference: "4242", amount: 50 },
+    );
+    expect(lookupActivePayment).toHaveBeenCalledWith("order_resolved");
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    expect(p.paymentId).toBe("pay_db_1");
+  });
+
+  it("a present orderId WINS over orderReference (the pre-existing unguided path is untouched)", async () => {
+    const resolved = await resolveRefund(refundDeps(), {
+      orderId: "order_direct",
+      orderReference: "should_be_ignored",
+      refundAmountCentavos: 1_000,
+    });
+    const p = resolved.envelope.payload as Record<string, unknown>;
+    expect(p.paymentId).toBe("pay_db_1");
+    expect(p.refundAmountCentavos).toBe(1_000);
+  });
+
+  it("neither orderId nor orderReference present ⇒ REFUSE payment_not_found, unchanged", async () => {
+    const resolved = await resolveRefund(refundDeps(), { amount: 20 });
+    expect((resolved.state as { ctx: { exists: boolean } }).ctx.exists).toBe(false);
   });
 });
 
@@ -1099,11 +1375,13 @@ describe("ops resolver — menu.special.set state (SCN-114)", () => {
         },
         special: { product: specialProduct, todayYmd: "2026-07-04" },
       });
-      // Canonical payload: concrete date + integer centavos, nothing else.
+      // Canonical payload: concrete date + integer centavos + the BKL-156
+      // resolver-stamped display name for the EXECUTE render.
       expect(resolved!.envelope.payload).toEqual({
         productId: "prod_1",
         date: "2026-07-04",
         promoPriceCentavos: 4500,
+        productName: "Feijoada",
       });
     });
   });

@@ -31,6 +31,9 @@ import {
   type CandidateClaim,
 } from "@adjudicate/core";
 import type { CognitiveState, Completion, ModelProvider } from "@claustrum/core";
+import { createIbatexasClaimPlanner } from "../ibatexas-claim-planner.js";
+import { normalizeClaimPlannerResult } from "@claustrum/core";
+import type { ClaimPlannerInput, Plan } from "@claustrum/core";
 import {
   createIbatexasPlanner,
   PROPOSE_CLAIM_TOOL,
@@ -88,18 +91,28 @@ const SUNDAY = "2026-07-12";
  *  planner derives (byte-equal, keyed by the resolved date). */
 const HOURS_READ = { hoursText: "11h–15h / 18h–23h" } as const;
 
-/** A STORE_HOURS_FOR_DATE planner wired to resolve the queried day's hours + freeze
- *  the request clock (so "domingo" → 2026-07-12 deterministically). */
-function datePlanner(
-  resolveHoursForDate: (isoDate: string) => { hoursText: string } | undefined,
-) {
-  return createIbatexasPlanner({
+/** BKL-126 — propose STORE_HOURS_FOR_DATE through the REAL adapter with THIS
+ *  turn's ledger (frozen request clock so "domingo" → 2026-07-12): the planner
+ *  no longer re-reads the schedule; the candidate's DATE-KEYED value binds only
+ *  from the recorded ledger entry (`bindValueFromLedger`), the production path. */
+async function proposeBoundForDate(
+  text: string,
+  ledger: EvidenceLedger,
+): Promise<readonly CandidateClaim[]> {
+  const planner = createIbatexasPlanner({
     model: mockModel([claimCall({ type: "STORE_HOURS_FOR_DATE", subject: "ignored" })]),
     modelId: "mock",
     capabilityPlanners: [],
-    resolveHoursForDate,
     now: () => FRI_NOON_MS,
   });
+  const adapter = createIbatexasClaimPlanner(planner);
+  const input: ClaimPlannerInput = {
+    cognition: state(text),
+    plan: { envelopes: [] } as Plan,
+    ledger,
+  };
+  const { candidates } = normalizeClaimPlannerResult(await adapter.propose(input));
+  return candidates;
 }
 
 /** Record the date-keyed hours entry the investigator would mint (`:{date}` suffix). */
@@ -132,15 +145,16 @@ function recordEntry(ledger: EvidenceLedger, key: string, value: unknown): void 
 
 describe("BKL-138 — tag→resolve-date→derive→VALIDATED for STORE_HOURS_FOR_DATE (real kernel)", () => {
   it("resolves the queried date, derives its hoursText, VALIDATEs + renders that day's hours", async () => {
-    const planner = datePlanner(() => HOURS_READ);
-    const plan = await planner.proposeClaims(state("qual o horário de domingo?"));
+    const ledger = new EvidenceLedger("turn-1");
+    recordHoursForDate(ledger, SUNDAY, HOURS_READ);
+    const candidates = await proposeBoundForDate("qual o horário de domingo?", ledger);
 
-    expect(plan.candidates).toHaveLength(1);
-    const candidate = plan.candidates[0] as CandidateClaim;
+    expect(candidates).toHaveLength(1);
+    const candidate = candidates[0] as CandidateClaim;
     expect(candidate.type).toBe("STORE_HOURS_FOR_DATE");
     // The model's `subject` was IGNORED — the planner resolved the ISO date itself.
     expect(candidate.subject).toBe(SUNDAY);
-    // The value was DERIVED (model authored none).
+    // The value was BOUND from the date-keyed recorded entry (model authored none).
     expect(candidate.value).toEqual({ hoursText: "11h–15h / 18h–23h" });
     // The evidence + falsifier keys are DATE-SUFFIXED (perResourceKey parameterization).
     expect(candidate.soundness.requiredEvidence[0]?.key).toBe(
@@ -152,14 +166,11 @@ describe("BKL-138 — tag→resolve-date→derive→VALIDATED for STORE_HOURS_FO
       `schedule:holiday:${SUNDAY}`,
     ]);
 
-    // Real kernel against a ledger whose DATE-KEYED entry is byte-equal to the derived
-    // value → C6 PASSes; no override/holiday on that date → both falsifiers inert →
-    // VALIDATED.
-    const ledger = new EvidenceLedger("turn-1");
-    recordHoursForDate(ledger, SUNDAY, HOURS_READ);
+    // Real kernel against the SAME ledger — C6 PASSes BY CONSTRUCTION; no
+    // override/holiday on that date → both falsifiers inert → VALIDATED.
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW }),
     );
 
@@ -170,15 +181,14 @@ describe("BKL-138 — tag→resolve-date→derive→VALIDATED for STORE_HOURS_FO
   });
 
   it("VALIDATEs a 'fechado' day the same way (evidence-bound, not an absence)", async () => {
-    const planner = datePlanner(() => ({ hoursText: "fechado" }));
-    const plan = await planner.proposeClaims(state("abrem no domingo?"));
-    expect((plan.candidates[0] as CandidateClaim).value).toEqual({ hoursText: "fechado" });
-
     const ledger = new EvidenceLedger("turn-fechado");
     recordHoursForDate(ledger, SUNDAY, { hoursText: "fechado" });
+    const candidates = await proposeBoundForDate("abrem no domingo?", ledger);
+    expect((candidates[0] as CandidateClaim).value).toEqual({ hoursText: "fechado" });
+
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW }),
     );
     expect(result.perClaim[0]?.verdict).toBe("VALIDATED");
@@ -187,26 +197,24 @@ describe("BKL-138 — tag→resolve-date→derive→VALIDATED for STORE_HOURS_FO
   });
 
   it("VALIDATEs with realistic model latency between the read and validation (ttl in ms)", async () => {
-    const planner = datePlanner(() => HOURS_READ);
-    const plan = await planner.proposeClaims(state("horário de domingo?"));
     const ledger = new EvidenceLedger("turn-latency");
     recordHoursForDate(ledger, SUNDAY, HOURS_READ);
+    const candidates = await proposeBoundForDate("horário de domingo?", ledger);
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW + 15_000 }), // 15s later
     );
     expect(result.perClaim[0]?.verdict).toBe("VALIDATED");
   });
 
   it("demotes to UNKNOWN when the evidence is GENUINELY stale (older than the 1h bound)", async () => {
-    const planner = datePlanner(() => HOURS_READ);
-    const plan = await planner.proposeClaims(state("horário de domingo?"));
     const ledger = new EvidenceLedger("turn-stale");
     recordHoursForDate(ledger, SUNDAY, HOURS_READ);
+    const candidates = await proposeBoundForDate("horário de domingo?", ledger);
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW + 2 * 3_600_000 }), // 2h later
     );
     expect(result.perClaim[0]?.verdict).toBe("UNKNOWN");
@@ -214,15 +222,14 @@ describe("BKL-138 — tag→resolve-date→derive→VALIDATED for STORE_HOURS_FO
   });
 
   it("stays UNKNOWN when no per-date read is available (value undefined → C6 ABSTAIN)", async () => {
-    // No resolveHoursForDate wired → the candidate keeps value undefined.
-    const planner = datePlanner(() => undefined);
-    const plan = await planner.proposeClaims(state("horário de domingo?"));
-    expect((plan.candidates[0] as CandidateClaim).value).toBeUndefined();
+    // BKL-126 — NO recorded per-date entry (the read never happened / failed):
+    // nothing to bind → the candidate keeps value undefined → C6 ABSTAIN.
     const ledger = new EvidenceLedger("turn-absent");
-    recordHoursForDate(ledger, SUNDAY, HOURS_READ);
+    const candidates = await proposeBoundForDate("horário de domingo?", ledger);
+    expect((candidates[0] as CandidateClaim).value).toBeUndefined();
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW }),
     );
     expect(result.perClaim[0]?.verdict).toBe("UNKNOWN");
@@ -232,17 +239,18 @@ describe("BKL-138 — tag→resolve-date→derive→VALIDATED for STORE_HOURS_FO
 // ── (2) A FALSIFIER ON THE QUERIED DATE STILL DEMOTES (SCN-003, direction A) ─────
 
 describe("BKL-138 — a holiday/override ON THE QUERIED DATE demotes the derived claim", () => {
-  async function derivedCandidates(): Promise<readonly CandidateClaim[]> {
-    const planner = datePlanner(() => HOURS_READ);
-    const plan = await planner.proposeClaims(state("qual o horário de domingo?"));
-    expect((plan.candidates[0] as CandidateClaim).value).toEqual(HOURS_READ);
-    return plan.candidates;
+  async function derivedCandidates(
+    ledger: EvidenceLedger,
+  ): Promise<readonly CandidateClaim[]> {
+    const candidates = await proposeBoundForDate("qual o horário de domingo?", ledger);
+    expect((candidates[0] as CandidateClaim).value).toEqual(HOURS_READ);
+    return candidates;
   }
 
   it("UNKNOWN when a holiday is present ON the queried date (SCN-003 abstain)", async () => {
-    const candidates = await derivedCandidates();
     const ledger = new EvidenceLedger("turn-holiday-on-date");
     recordHoursForDate(ledger, SUNDAY, HOURS_READ);
+    const candidates = await derivedCandidates(ledger);
     recordEntry(ledger, `schedule:holiday:${SUNDAY}`, { date: SUNDAY, label: "Feriado" });
     const result = runClaimsKernel(
       ledger,
@@ -255,9 +263,9 @@ describe("BKL-138 — a holiday/override ON THE QUERIED DATE demotes the derived
   });
 
   it("UNKNOWN when a ScheduleOverride is present ON the queried date", async () => {
-    const candidates = await derivedCandidates();
     const ledger = new EvidenceLedger("turn-override-on-date");
     recordHoursForDate(ledger, SUNDAY, HOURS_READ);
+    const candidates = await derivedCandidates(ledger);
     recordEntry(ledger, `schedule:schedule_override:${SUNDAY}`, {
       date: SUNDAY,
       isOpen: false,
@@ -275,11 +283,9 @@ describe("BKL-138 — a holiday/override ON THE QUERIED DATE demotes the derived
 
 describe("BKL-138 — TODAY's holiday/override does NOT demote a clean future-date claim", () => {
   it("VALIDATEs the Sunday claim even though TODAY (a different date) is a holiday", async () => {
-    const planner = datePlanner(() => HOURS_READ);
-    const plan = await planner.proposeClaims(state("qual o horário de domingo?"));
-
     const ledger = new EvidenceLedger("turn-today-holiday");
     recordHoursForDate(ledger, SUNDAY, HOURS_READ);
+    const candidates = await proposeBoundForDate("qual o horário de domingo?", ledger);
     // TODAY's holiday/override under the BARE keys (what STORE_HOURS/STORE_OPEN_NOW read)
     // — these must NOT fire the DATE-SUFFIXED falsifiers of the Sunday claim.
     recordEntry(ledger, "schedule:holiday", { date: "2026-07-10", label: "Feriado hoje" });
@@ -287,7 +293,7 @@ describe("BKL-138 — TODAY's holiday/override does NOT demote a clean future-da
 
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW }),
     );
     expect(result.perClaim[0]?.verdict).toBe("VALIDATED");

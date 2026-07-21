@@ -352,6 +352,14 @@ function buildHelpText(): string {
 
 const program = new Command()
 
+// FE-D05 — enable positional options at the root so flags typed AFTER a
+// subcommand name (`ibx dev start api --no-tui -y`) are parsed by that
+// subcommand instead of being shadowed/consumed by a parent that declares the
+// same option (the parent `dev` default action also declares --no-tui / -y).
+// Without this, `dev start … --no-tui -y` silently DROPS both flags (Commander
+// v13). The root has no global options, so this only fixes subcommand dispatch.
+program.enablePositionalOptions()
+
 program
   .name("ibx")
   .description("IbateXas developer CLI")

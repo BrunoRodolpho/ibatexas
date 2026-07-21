@@ -3,6 +3,10 @@
 // Task 15 (M3): every command-service method that mutates Postgres goes
 // through this helper. The helper:
 //
+//   0. FE-T04 — validates `envelope` against the canonical
+//      `isStructurallyMalformed` gate (`./envelope-structural-gate.ts`)
+//      BEFORE anything else. A value that is not envelope-shaped at all
+//      never reaches `adjudicate()` or the executor.
 //   1. Calls `adjudicate(envelope, state, policy)` from @adjudicate/core/kernel.
 //   2. Emits an audit record via the configured AuditSink (best-effort —
 //      failure is logged, not fatal; audit emit is not on the hot path).
@@ -32,6 +36,7 @@
 
 import {
   buildAuditRecord,
+  buildEnvelope,
   type AuditSink,
   type Decision,
   type IntentEnvelope,
@@ -41,6 +46,11 @@ import {
   type Guard,
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
+import { randomUUID } from "node:crypto"
+import {
+  STRUCTURAL_REJECTION_CODE,
+  isStructurallyMalformed,
+} from "./envelope-structural-gate.js"
 
 /**
  * Result of running a service method through the kernel chokepoint.
@@ -94,6 +104,79 @@ export interface WithAdjudicateOptions {
   readonly authGuards?: readonly Guard<string, unknown, unknown>[]
 }
 
+// ── FE-T04: structural boundary gate audit trail ────────────────────────────
+
+const STRUCTURAL_REJECTION_KIND_MAX_LENGTH = 256
+
+function safeTruncateKind(input: string, maxLength: number): string {
+  if (input.length <= maxLength) return input
+  return `${input.slice(0, maxLength)}…[truncated:${input.length - maxLength}]`
+}
+
+/**
+ * Records a structural-boundary rejection the same way the best-effort audit
+ * block below records a real decision: fire-and-forget, failure logged not
+ * thrown. The malformed value can't be passed to `buildAuditRecord` as
+ * `envelope` (it may not even be object-shaped), so a synthetic SYSTEM-actor
+ * rejection envelope carries the rejection instead — mirrors the sibling
+ * HTTP-plane gate's `emitStructuralRejectionAudit` in
+ * `apps/api/src/routes/__shared__/customer-intent-gateway.ts`, adapted to
+ * this seam's options shape (no HTTP route/ctx here — this is a
+ * service-method chokepoint, not an HTTP boundary).
+ */
+async function emitStructuralRejectionAudit(
+  envelope: unknown,
+  options: WithAdjudicateOptions | undefined,
+  durationMs: number,
+): Promise<void> {
+  if (!options?.auditSink) return
+  try {
+    const rawKind = (envelope as { kind?: unknown } | null)?.kind
+    const safeOriginalKind = safeTruncateKind(
+      rawKind === undefined ? "<missing>" : String(rawKind),
+      STRUCTURAL_REJECTION_KIND_MAX_LENGTH,
+    )
+    const rejection = buildEnvelope({
+      kind: safeTruncateKind(
+        `${safeOriginalKind}.structural_rejected`,
+        STRUCTURAL_REJECTION_KIND_MAX_LENGTH,
+      ),
+      payload: { seam: "with-adjudicate", originalKind: safeOriginalKind },
+      actor: {
+        principal: "system",
+        sessionId: "with-adjudicate:structural-rejection",
+      },
+      taint: "SYSTEM",
+      nonce: randomUUID(),
+    })
+    const record = buildAuditRecord({
+      envelope: rejection,
+      decision: {
+        kind: "REFUSE",
+        refusal: {
+          kind: "SECURITY",
+          code: STRUCTURAL_REJECTION_CODE,
+          userFacing: "Requisição inválida.",
+          detail: "envelope failed the isIntentEnvelope structural check",
+        },
+        basis: [],
+      },
+      durationMs,
+    })
+    await options.auditSink.emit(record).catch((err: unknown) => {
+      options.log?.error?.(
+        "[with-adjudicate] structural-rejection audit emit failed:",
+        (err as Error).message ?? String(err),
+      )
+    })
+  } catch (err) {
+    options.log?.error?.(
+      "[with-adjudicate] structural-rejection audit record build failed:",
+      (err as Error).message ?? String(err),
+    )
+  }
+}
+
 /**
  * Run a service method through the adjudicate kernel.
  *
@@ -143,6 +226,32 @@ export async function withAdjudicate<K extends string, P, S, R>(
   options?: WithAdjudicateOptions,
 ): Promise<AdjudicatedResult<R>> {
   const startedAt = Date.now()
+
+  // ── Structural boundary gate — FE-T04 ───────────────────────────────────
+  // Reuses the SAME `isStructurallyMalformed` predicate as the customer-plane
+  // gateway (this is the OTHER convergence point: every ops/admin/subscriber/
+  // job/LLM-tool command-service method flows through here). Runs BEFORE
+  // `adjudicate()` so a value that is not envelope-shaped at all never
+  // reaches the kernel or the executor. A structurally well-formed envelope
+  // is completely unaffected — falls through to the existing branches below
+  // byte-identically.
+  if (isStructurallyMalformed(envelope)) {
+    const decision: Decision = {
+      kind: "REFUSE",
+      refusal: {
+        kind: "SECURITY",
+        code: STRUCTURAL_REJECTION_CODE,
+        userFacing: "Requisição inválida.",
+        detail: "envelope failed the isIntentEnvelope structural check",
+      },
+      basis: [],
+    }
+    void emitStructuralRejectionAudit(envelope, options, Date.now() - startedAt)
+    options?.log?.warn?.(
+      "[with-adjudicate] envelope_malformed — structural gate rejected before adjudicate()",
+    )
+    return { decision }
+  }
 
   // WS7 / BKL-074 — inject the adopter AUTH guards (e.g. `staffRoleGuard`)
   // AHEAD of the pack's own auth guards, so a kernel-level role backstop runs

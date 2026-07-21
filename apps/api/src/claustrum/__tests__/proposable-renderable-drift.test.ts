@@ -39,10 +39,21 @@
 //   · gap SHRANK → a pinned type got a template (as BKL-121 did for STORE_HOURS).
 //     Good — update the pin to remove it (and, if non-Triad, the triadScoped block).
 // Adjust the pin as a conscious act; do not just re-sort it green.
+//
+// FE-T16 (FE-3.3) — this unit-test-only pin is now ALSO enforced as a REAL
+// fail-closed BOOT gate: `claimsRenderDriftProblems` (claims-render-drift.ts),
+// called from `claims-pipeline.ts` `buildClaimsSeams` whenever the claims
+// pipeline is on, so a future proposable-but-unrenderable type fails BOOT, not
+// merely CI. Both this test and the gate import the SAME
+// `KNOWN_CUSTOMER_UNRENDERABLE_TYPES` constant (single-sourced) so the pin here
+// and the gate's deliberate-exception list can never silently diverge — this
+// test stays (belt and braces): a real boot gate is a fresh-process assertion, a
+// fast unit test is the everyday drift signal.
 
 import { describe, expect, it } from "vitest";
 import { CLAIM_REGISTRY } from "../claim-registry.js";
 import { CLAIM_DEFINITIONS } from "../claim-definition-registry.js";
+import { KNOWN_CUSTOMER_UNRENDERABLE_TYPES } from "../claims-render-drift.js";
 import { VALIDATED_TEMPLATES } from "../slot-grammar.js";
 
 // ── The two sets, computed from the ACTUAL exported source of truth (never a
@@ -70,7 +81,8 @@ const sortedDiff = (a: readonly string[], b: ReadonlySet<string>): string[] =>
 // read_claim pending BKL-123 — decision-gated on a renderer list-slot capability + an
 // owner liability policy) and PURCHASE_COMPLETED (an action_claim rendered via the
 // responder's SUCCESS_CLAIM_CLASSES path, DELIBERATELY + PERMANENTLY untemplated).
-const KNOWN_UNRENDERABLE = ["MENU_ITEM_ALLERGENS", "PURCHASE_COMPLETED"];
+// Single-sourced from claims-render-drift.ts (FE-T16) — see the header note above.
+const KNOWN_UNRENDERABLE = KNOWN_CUSTOMER_UNRENDERABLE_TYPES;
 
 describe("BKL-112 — proposable ⊇ renderable: the known-unrenderable gap is pinned", () => {
   it("pins PROPOSABLE \\ RENDERABLE to exactly {MENU_ITEM_ALLERGENS, PURCHASE_COMPLETED}", () => {
@@ -119,24 +131,46 @@ describe("BKL-112 — RENDERABLE ⊆ PROPOSABLE: no dangling template", () => {
 // ∪ {STORE_HOURS, STORE_HOURS_FOR_DATE}: the guard is EXTENDED (not deleted) to allow
 // exactly these two deliberate additions; any OTHER divergence (a Triad type losing its
 // template, or a THIRD non-Triad type gaining one) still trips CI as a decision point.
-const NON_TRIAD_RENDERABLE = ["STORE_HOURS", "STORE_HOURS_FOR_DATE"] as const;
+// BKL-142 EXTENDS the deliberate non-Triad renderable set with the PUBLIC menu reads
+// MENU_ITEM_PRICE / MENU_ITEM_CONTENTS: each carries a validated pre-composed-scalar
+// template but is `not_applicable`-ownership (public catalog, owned by nobody) and so
+// intentionally OUT of TRIAD_SCOPED_TYPES — exactly like STORE_HOURS / STORE_HOURS_FOR_
+// DATE. Any OTHER divergence still trips CI as a decision point.
+// BKL-136 EXTENDS the deliberate non-Triad renderable set with STORE_INFO — the
+// PUBLIC owner-attested address/parking read: a validated pre-composed-scalar
+// template, `not_applicable` ownership (store config, owned by nobody), so
+// intentionally OUT of TRIAD_SCOPED_TYPES — exactly like MENU_OVERVIEW.
+const NON_TRIAD_RENDERABLE = [
+  "MENU_OVERVIEW",
+  "STORE_INFO",
+  "STORE_HOURS",
+  "STORE_HOURS_FOR_DATE",
+  "MENU_ITEM_PRICE",
+  "MENU_ITEM_CONTENTS",
+  // BKL-214 — the dietary-preference read, non-Triad public like MENU_OVERVIEW.
+  "MENU_DIETARY",
+] as const;
 
-describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ {STORE_HOURS, STORE_HOURS_FOR_DATE}", () => {
+describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ the deliberate non-Triad public reads", () => {
   it("the renderable set equals exactly triadScoped ∪ the deliberate non-Triad types", () => {
     // Derived from the real exported CLAIM_DEFINITIONS.triadScoped flags, not
-    // hardcoded — plus the BKL-121/-138 non-Triad allowances. If any OTHER type
+    // hardcoded — plus the BKL-121/-138/-142 non-Triad allowances. If any OTHER type
     // diverges, this documents it as the same deliberate decision point.
     const triadScoped = [...CLAIM_REGISTRY].filter(
       (type) => CLAIM_DEFINITIONS[type].triadScoped,
     );
     const expected = [...triadScoped, ...NON_TRIAD_RENDERABLE].sort();
     expect([...RENDERABLE].sort()).toEqual(expected);
-    // POSITIVE controls: both are genuinely renderable AND genuinely NON-Triad (so the
+    // POSITIVE controls: each is genuinely renderable AND genuinely NON-Triad (so the
     // extension is not vacuously masking a Triad-flag flip).
     expect(RENDERABLE.has("STORE_HOURS")).toBe(true);
     expect(CLAIM_DEFINITIONS.STORE_HOURS.triadScoped).toBe(false);
     expect(RENDERABLE.has("STORE_HOURS_FOR_DATE")).toBe(true);
     expect(CLAIM_DEFINITIONS.STORE_HOURS_FOR_DATE.triadScoped).toBe(false);
+    expect(RENDERABLE.has("MENU_ITEM_PRICE")).toBe(true);
+    expect(CLAIM_DEFINITIONS.MENU_ITEM_PRICE.triadScoped).toBe(false);
+    expect(RENDERABLE.has("MENU_ITEM_CONTENTS")).toBe(true);
+    expect(CLAIM_DEFINITIONS.MENU_ITEM_CONTENTS.triadScoped).toBe(false);
   });
 });
 

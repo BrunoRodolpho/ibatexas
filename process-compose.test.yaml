@@ -9,8 +9,12 @@ version: "0.5"
 # process, mirroring the dev profile (process-compose.yaml).
 #
 # ENV CONTRACT (T1a-11a, .env.test): the full env block must be present BEFORE
-# process boot — rk() in @ibatexas/tools captures APP_ENV at module load, and
-# apps load no dotenv. Two layers guarantee that:
+# process boot — the apps load no dotenv of their own, so every process must
+# inherit the test values from the moment it starts. (FE-D26 made @ibatexas/
+# tools read stack-targeting env — MEDUSA_URL, APP_ENV via rk() — at CALL time
+# rather than module load, closing the import-order trap for out-of-process
+# tooling; the sourcing contract below is still how the apps get their env.)
+# Two layers guarantee that:
 #   1. Each app command sources ./.env.test with `set -a` and only then execs
 #      the dev server. Sourcing OVERRIDES inherited values, so even if a dev
 #      .env leaked into the environment, the test contract wins.
@@ -59,22 +63,24 @@ processes:
     availability:
       restart: "no"
 
-  # ── Commerce (Medusa, :9000) ───────────────────────────────────────────────
+  # ── Commerce (Medusa, TEST_COMMERCE_PORT — default :9000) ──────────────────
   # Same command + probe as the dev profile. Gated on build-packages (unlike
-  # dev) so a mid-rebuild dist/ can never race the boot in CI. PORT=9000 is
-  # pinned AFTER sourcing .env.test: Medusa's start command DOES honor the
-  # PORT env (verified — with .env.test's PORT=3001 it binds the api's port
-  # and the stack deadlocks); the dev stack never hits this because the dev
-  # .env sets no PORT.
+  # dev) so a mid-rebuild dist/ can never race the boot in CI. PORT is pinned to
+  # TEST_COMMERCE_PORT AFTER sourcing .env.test: Medusa's start command DOES
+  # honor the PORT env (verified — inheriting the api's port binds the wrong
+  # socket and the stack deadlocks); the dev stack never hits this because the
+  # dev .env sets no PORT. FE-D25: the probe port below expands from
+  # TEST_COMMERCE_PORT in process-compose's own environment (test-stack-up.sh
+  # exports it before `process-compose up`), so it always tracks the bind port.
   commerce:
-    command: "test -f .env.test || { echo 'missing .env.test — run ./scripts/gen-env-test.sh' >&2; exit 1; }; set -a && . ./.env.test && set +a && export PORT=9000 && exec pnpm --filter @ibatexas/commerce dev"
+    command: "test -f .env.test || { echo 'missing .env.test — run ./scripts/gen-env-test.sh' >&2; exit 1; }; set -a && . ./.env.test && set +a && export PORT=\"${TEST_COMMERCE_PORT:-9000}\" && exec pnpm --filter @ibatexas/commerce dev"
     depends_on:
       build-packages:
         condition: process_completed_successfully
     readiness_probe:
       http_get:
         host: "localhost"
-        port: 9000
+        port: ${TEST_COMMERCE_PORT:-9000}
         path: "/health"
       initial_delay_seconds: 10
       period_seconds: 5
@@ -87,12 +93,15 @@ processes:
       signal: 15
       timeout_seconds: 10
 
-  # ── API (Fastify, :3001) ───────────────────────────────────────────────────
+  # ── API (Fastify, TEST_API_PORT — default :3001) ───────────────────────────
   # /health is the deep check (Redis/Postgres critical → 503 until both are
   # reachable), so readiness here implies the test infra is actually wired.
-  # The testFingerprint field on /health arrives with T1a-10.
+  # The testFingerprint field on /health arrives with T1a-10. FE-D25: PORT is
+  # derived from TEST_API_PORT (there is no separate PORT var in .env.test), and
+  # the probe port below expands from the same var in process-compose's own
+  # environment, so the bind port and the probe always agree.
   api:
-    command: "test -f .env.test || { echo 'missing .env.test — run ./scripts/gen-env-test.sh' >&2; exit 1; }; set -a && . ./.env.test && set +a && exec pnpm --filter @ibatexas/api dev"
+    command: "test -f .env.test || { echo 'missing .env.test — run ./scripts/gen-env-test.sh' >&2; exit 1; }; set -a && . ./.env.test && set +a && export PORT=\"${TEST_API_PORT:-3001}\" && exec pnpm --filter @ibatexas/api dev"
     depends_on:
       commerce:
         condition: process_healthy
@@ -101,7 +110,7 @@ processes:
     readiness_probe:
       http_get:
         host: "localhost"
-        port: 3001
+        port: ${TEST_API_PORT:-3001}
         path: "/health"
       initial_delay_seconds: 5
       period_seconds: 3

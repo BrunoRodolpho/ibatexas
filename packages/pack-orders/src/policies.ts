@@ -68,6 +68,8 @@ import {
   refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseFiscalNotEligible,
+  refuseFiscalRetryExceeded,
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
@@ -189,9 +191,9 @@ const POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
 // CUSTOMER-facing PONR additionally includes "preparing": once the kitchen is
 // preparing, a customer self-serve cancel is DENIED + escalated — mirrors the
 // route-layer canPerformAction("cancel_order") rule (order-action-validator.ts,
-// "Cozinha já está preparando"). A SYSTEM actor (order.cancel.system: payment-
-// expiry / stale-order compensation) is NOT bound by the preparing PONR and may
-// still cancel a preparing order.
+// "Cozinha já está preparando"). System/compensation cancels (payment-expiry /
+// stale-order) are NOT bound by the preparing PONR, but they run through
+// `order.status.transition`→CANCELED, not order.cancel (retired BKL-177).
 const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
   ...POST_PONR_FULFILLMENT,
   "preparing",
@@ -277,17 +279,18 @@ const requireTenantBindingGuard: OrderGuard = requireTenantBinding<
 /**
  * Most user-touching intents require a known customer principal. The
  * exceptions are `order.cart.ensure` (anonymous get-or-create) and the
- * system-only kinds (`order.cancel.system`, `order.projection.create`,
- * `order.status.reconcile`); the taint gate enforces TRUSTED for those
- * separately. `order.status.transition` is admin/system; auth is at
- * the route layer.
+ * system-only kinds (`order.projection.create`, `order.status.reconcile`);
+ * the taint gate enforces TRUSTED for those separately.
+ * `order.status.transition` is admin/system; auth is at the route layer.
  */
 const SYSTEM_OR_ANON_KINDS: ReadonlySet<string> = new Set([
   "order.cart.ensure",
-  "order.cancel.system",
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",
+  // NEW-014 — fiscal emission is system-driven; auth is via the TRUSTED taint
+  // gate (orderTaintPolicy.systemOnlyKinds), not a customer principal.
+  "order.fiscal.emit",
 ])
 
 /**
@@ -328,6 +331,16 @@ const requireAuthenticated: OrderGuard = (envelope, state) => {
   if (isCardCheckout(envelope)) {
     return null
   }
+  // BKL-145 — an admin-session actor IS an authenticated principal: the `admin:`
+  // sessionId namespace is minted only behind the route's staff JWT and the actor
+  // is composition-stamped (never model-controlled — the NEW-032 slice-A pins), so
+  // a staff-plane envelope must not fall into the CUSTOMER identity refusal (whose
+  // copy onboards a customer). An ops note on an UNRESOLVED order now falls
+  // through to `requireOrderIdForMutation`'s honest `order.not_found` instead of
+  // `auth.required`. Customer/guest planes are byte-identical (their sessionIds
+  // are never `admin:`-prefixed); a forged system-actor is refused tamper-evident
+  // upstream (J008), never adjudicated here.
+  if (envelope.actor.sessionId.startsWith("admin:")) return null
   if (isAuthenticated(state)) return null
   return decisionRefuse(refuseNotAuthenticated(), [
     basis("auth", BASIS_CODES.auth.IDENTITY_MISSING),
@@ -402,7 +415,6 @@ const requireSlotsFilledForCheckout: OrderGuard = (envelope, state) => {
 
 const ORDER_OPS_REQUIRING_ORDER_ID: ReadonlySet<string> = new Set([
   "order.cancel",
-  "order.cancel.system",
   "order.amend.request",
   "order.amend.add_item",
   "order.amend.update_qty",
@@ -413,6 +425,8 @@ const ORDER_OPS_REQUIRING_ORDER_ID: ReadonlySet<string> = new Set([
   "order.review.submit",
   "order.status.transition",
   "order.status.reconcile",
+  // NEW-014 — fiscal emission targets a specific order.
+  "order.fiscal.emit",
 ])
 
 const requireOrderIdForMutation: OrderGuard = (envelope, state) => {
@@ -536,18 +550,84 @@ const requireLegalStatusTransition: OrderGuard = (envelope, state) => {
   return null
 }
 
+/**
+ * FE-T05 (Language Engine) — a GROUNDED (auto-resolved "most recent order")
+ * `order.status.transition` target ALWAYS parks for confirmation, never
+ * silently EXECUTEs. Placed in `business` (after `requireLegalStatusTransition`
+ * in `stateGuards` already REFUSEd an illegal/terminal/unknown transition) so
+ * a guessed target is asked about ONLY when the transition would otherwise be
+ * legal — an illegal guess REFUSEs outright with the precise reason, never a
+ * confusing "confirm an action that would fail anyway" prompt.
+ *
+ * Engagement is `state.ctx.orderResolutionTrust === "grounded"` — set ONLY by
+ * the ops resolver's `resolveStatusTransitionOrderTarget` fallback
+ * (`ops-resolver.ts`) when the model gave NO order reference at all (this
+ * tracer's only live path today: the FE-1.1 extraction schema never shows the
+ * model an orderId/reference field for this capability). Absent/`"authoritative"`
+ * ⇒ null (pass-through) — an explicit staff reference (a future rollout slice
+ * may re-add that field) is NOT re-confirmed here.
+ *
+ * Resolved EXACTLY like the large-ticket checkout / paid-cancel confirms: the
+ * IDENTICAL envelope re-adjudicated with a matching `confirmationReceipt`
+ * flips this guard's verdict to EXECUTE via the kernel's 2a override, while
+ * every other guard (incl. `requireLegalStatusTransition`) re-runs in full —
+ * so a state change between park and confirm (e.g. the order already reached
+ * a terminal status) still REFUSEs on resume, never silently EXECUTEs.
+ */
+const requireConfirmationOnGroundedStatusTransition: OrderGuard = (
+  envelope,
+  state,
+) => {
+  if (envelope.kind !== "order.status.transition") return null
+  if (state.ctx.orderResolutionTrust !== "grounded") return null
+  const target = (envelope.payload as { newStatus?: unknown }).newStatus
+  const targetLabel = typeof target === "string" ? target : "esse status"
+  // FE-T05 review (MAJOR-2) — NAME the guessed order (its display number) so
+  // an operator confirming can actually recognize (and reject) a wrong
+  // guess; a prompt that names nothing defeats the point of forcing a
+  // confirmation. `displayId` is set by the resolver alongside
+  // `orderResolutionTrust: "grounded"` (ops-resolver.ts); the fallback below
+  // is defensive only — it should not be reachable in practice.
+  const orderLabel =
+    typeof state.ctx.displayId === "number"
+      ? `o pedido #${state.ctx.displayId}`
+      : "o pedido mais recente em aberto"
+  // BKL-190 — split the frame on whether the CURRENT staff message named the
+  // resolved order (ctx.orderNamedInMessage, resolver-computed). The model
+  // cannot pass a reference through for this capability, so a staff message
+  // that explicitly said "o pedido #42 tá pronto" still lands on this grounded
+  // path — telling that operator "não me disseram qual pedido" is factually
+  // wrong and reads as the system ignoring them. Named → a plain confirmation
+  // naming the order; unnamed → the honest "you didn't say which" frame.
+  const prompt =
+    state.ctx.orderNamedInMessage === true
+      ? `Confirma avançar ${orderLabel} para "${targetLabel}"?`
+      : `Não me disseram qual pedido — vou usar ${orderLabel}. ` +
+        `Confirma avançar ${orderLabel} para "${targetLabel}"?`
+  return decisionRequestConfirmation(
+    prompt,
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        reason: "grounded_order_resolution_requires_confirmation",
+        resolvedVia: "most_recent_active_order",
+        ...(typeof state.ctx.displayId === "number"
+          ? { displayId: state.ctx.displayId }
+          : {}),
+      }),
+    ],
+  )
+}
+
 const requireCancellable: OrderGuard = (envelope, state) => {
-  if (
-    envelope.kind !== "order.cancel" &&
-    envelope.kind !== "order.cancel.system"
-  ) {
+  if (envelope.kind !== "order.cancel") {
     return null
   }
-  // System/compensation cancels (order.cancel.system, actor.principal="system")
-  // may still cancel a "preparing" order; a customer self-serve cancel may not
-  // (route denies + escalates). actor.principal is forgery-checked upstream.
-  const isSystem = envelope.actor.principal === "system"
-  if (canCancelOrder(state, isSystem)) return null
+  // A customer self-serve cancel is PONR-gated: a "preparing" (or later) order
+  // may NOT be cancelled here (the route denies + escalates). The
+  // system/compensation cancel of a still-preparing order is delivered by
+  // `order.status.transition`→CANCELED (stale-order-checker), adjudicated on
+  // its own path — order.cancel.system was retired as a dead duplicate (BKL-177).
+  if (canCancelOrder(state, false)) return null
   // Distinguish an already-cancelled order from one past the point-of-no-return
   // so the audit basis is accurate.
   if (orderAlreadyCancelled(state)) {
@@ -691,6 +771,52 @@ const KINDS_REQUIRING_EXPLICIT_ALLERGENS: ReadonlySet<string> = new Set([
 ])
 
 const requireExplicitAllergens: OrderGuard = (envelope) => {
+  // BULK (order.cart.sync) — EVERY line item must carry an explicit `allergens`
+  // string[] (Hard Rule #1: never infer allergens from a product name/text). This
+  // is the precondition BKL-180 wires the kind over: fail-closed REFUSE listing the
+  // offending items. Handled BEFORE the single-payload early-return below because a
+  // cart-sync payload carries `items`, not a top-level `allergens`. A MISSING/non-array
+  // `items` REFUSEs (fail-closed); an EMPTY items array is a no-op pass (nothing to
+  // sync — the checkout edge-handling around syncLocalCartForCheckout owns that case).
+  if (envelope.kind === "order.cart.sync") {
+    const items = (envelope.payload as { items?: unknown }).items
+    if (!Array.isArray(items)) {
+      return decisionRefuse(
+        refuseAllergensNotExplicit(`cart_sync_items_not_array got=${typeof items}`),
+        [
+          basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+            rule: "cart_sync_items_must_be_array",
+            got: typeof items,
+          }),
+        ],
+      )
+    }
+    const offending: string[] = []
+    items.forEach((item, i) => {
+      const raw = item as { variantId?: unknown; allergens?: unknown } | null
+      const allergens = raw?.allergens
+      const explicit =
+        Array.isArray(allergens) && allergens.every((e) => typeof e === "string")
+      if (!explicit) {
+        const vid = raw?.variantId
+        offending.push(typeof vid === "string" && vid !== "" ? vid : `index_${i}`)
+      }
+    })
+    if (offending.length > 0) {
+      return decisionRefuse(
+        refuseAllergensNotExplicit(
+          `cart_sync_items_missing_allergens: ${offending.join(",")}`,
+        ),
+        [
+          basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+            rule: "cart_sync_items_must_carry_explicit_allergens",
+            offendingItems: offending,
+          }),
+        ],
+      )
+    }
+    return null
+  }
   if (!KINDS_REQUIRING_EXPLICIT_ALLERGENS.has(envelope.kind)) return null
   const payload = envelope.payload as { allergens?: unknown }
   const value = payload.allergens
@@ -718,7 +844,6 @@ const requireExplicitAllergens: OrderGuard = (envelope) => {
       )
     }
   }
-  // For cart.sync, also validate each item carries explicit allergens.
   return null
 }
 
@@ -856,9 +981,10 @@ const confirmLargeTicket = nameGuard(
  * REQUEST_CONFIRMATION is resolved exactly like the large-ticket checkout
  * confirm — the identical envelope re-adjudicated with a matching
  * `confirmationReceipt`, which the kernel's 2a override flips to EXECUTE while
- * still re-running every state/taint/auth guard. `order.cancel.system` (cron /
- * subscriber compensation) is not matched — a system auto-cancel never asks the
- * customer to confirm a refund. The `CONFIRM_REFUND_THRESHOLD_CENTAVOS` band
+ * still re-running every state/taint/auth guard. This guard matches only the
+ * customer `order.cancel` — system/compensation cancels run through
+ * `order.status.transition` and never ask the customer to confirm a refund.
+ * The `CONFIRM_REFUND_THRESHOLD_CENTAVOS` band
  * boundary is carried on the audit basis for provenance; because even a
  * sub-confirm-threshold paid cancel parks, it does not change the two-band
  * verdict (a paid cancel below the escalate threshold always confirms).
@@ -917,8 +1043,8 @@ const gatePaidCancel: OrderGuard = (envelope, state) => {
 /**
  * Refund-equivalent ESCALATION: customer-initiated `order.cancel` on a
  * large-ticket order (>= R$ 1.000) escalates to a human agent rather
- * than auto-cancelling. `order.cancel.system` (cron / subscriber) is
- * exempt — system auto-cancels don't escalate.
+ * than auto-cancelling. Only the customer `order.cancel` is matched;
+ * system/compensation cancels run through `order.status.transition`.
  */
 const escalateLargeCancel = nameGuard(
   "escalateLargeCancel",
@@ -1048,10 +1174,7 @@ const executeCheckout: OrderGuard = (envelope) => {
 }
 
 const executeCancel: OrderGuard = (envelope) => {
-  if (
-    envelope.kind === "order.cancel" ||
-    envelope.kind === "order.cancel.system"
-  ) {
+  if (envelope.kind === "order.cancel") {
     return decisionExecute([
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         kind: envelope.kind,
@@ -1149,6 +1272,67 @@ const executeW5Kinds: OrderGuard = (envelope) => {
   ])
 }
 
+// ── NEW-014 — fiscal emission (order.fiscal.emit) ────────────────────────
+
+/**
+ * Fulfillment states from which a fiscal document may be emitted — an order is
+ * fiscally emittable only once the sale is CONSUMMATED (delivered). PR2's
+ * subscriber triggers on order.status_changed→delivered, but the POLICY is the
+ * authority: a fiscal.emit against any other state REFUSEs (no auto-emit for an
+ * incomplete sale). A named set so the subscriber can share it; adjust here if
+ * the fiscal-eligible point moves (e.g. to a payment-settled trigger).
+ */
+const FISCAL_ELIGIBLE_FULFILLMENT_STATUSES: ReadonlySet<string> = new Set([
+  "delivered",
+])
+
+/** Bounded fiscal-emit retries — fail closed at/above the cap rather than
+ *  hammer SEFAZ / the provider on a persistent rejection. */
+export const FISCAL_EMIT_MAX_ATTEMPTS = 5
+
+/** STATE guard — REFUSE `order.fiscal.emit` unless the order reached a
+ *  fiscal-eligible state. */
+const requireFiscalEligibleState: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.fiscal.emit") return null
+  const fs = state.ctx.fulfillmentStatus
+  if (typeof fs === "string" && FISCAL_ELIGIBLE_FULFILLMENT_STATUSES.has(fs)) {
+    return null
+  }
+  return decisionRefuse(refuseFiscalNotEligible(fs ?? "unknown"), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      kind: envelope.kind,
+      fulfillmentStatus: fs ?? null,
+    }),
+  ])
+}
+
+/** BUSINESS guard — REFUSE `order.fiscal.emit` at/above the retry cap (the
+ *  adopter supplies `fiscalEmitAttempts` from the persisted fiscal record). */
+const fiscalEmitRetryCapGuard: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.fiscal.emit") return null
+  const attempts = state.ctx.fiscalEmitAttempts ?? 0
+  if (attempts < FISCAL_EMIT_MAX_ATTEMPTS) return null
+  return decisionRefuse(refuseFiscalRetryExceeded(`attempts=${attempts}`), [
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+      kind: envelope.kind,
+      attempts,
+      cap: FISCAL_EMIT_MAX_ATTEMPTS,
+    }),
+  ])
+}
+
+/** EXECUTE producer — `order.fiscal.emit` that passed state (eligible) + taint
+ *  (TRUSTED system) + retry-cap. The subscriber performs the actual emission
+ *  through the FiscalProviderPort AFTER the kernel EXECUTEs. */
+const executeFiscalEmit: OrderGuard = (envelope) => {
+  if (envelope.kind !== "order.fiscal.emit") return null
+  return decisionExecute([
+    basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+      kind: envelope.kind,
+    }),
+  ])
+}
+
 // ── PolicyBundle ────────────────────────────────────────────────────────
 
 /**
@@ -1176,6 +1360,8 @@ export const ordersPolicyBundle: PolicyBundle<
     requireLegalStatusTransition,
     requireCancellable,
     requireAmendable,
+    // NEW-014 — fiscal.emit only from a fiscal-eligible (delivered) order.
+    requireFiscalEligibleState,
     requireCartItemsForCheckout,
     requireSlotsFilledForCheckout,
     deferOnPendingPix,
@@ -1195,15 +1381,22 @@ export const ordersPolicyBundle: PolicyBundle<
     gatePaidCancel,
     escalateLargeCancel,
     confirmLargeTicket,
+    // FE-T05 — after requireLegalStatusTransition (stateGuards) already REFUSEd
+    // an illegal/terminal transition; a legal-but-GUESSED target still needs
+    // explicit confirmation before it can execute.
+    requireConfirmationOnGroundedStatusTransition,
     validateReviewRating,
     refuseCardPanInPix,
     redactPiiInPix,
     requireAmendItemDisambiguation,
+    // NEW-014 — bounded fiscal-emit retries BEFORE the fiscal EXECUTE producer.
+    fiscalEmitRetryCapGuard,
     executeCartOps,
     executeCheckout,
     executeCancel,
     executeAmend,
     executeNoteAdd,
+    executeFiscalEmit,
     executeW5Kinds,
   ],
   /**

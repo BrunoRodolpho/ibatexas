@@ -491,6 +491,54 @@ describe("CheckoutContent — handleConfirmCheckout (large-ticket resume)", () =
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+describe("CheckoutContent — guest checkout (CUS-023)", () => {
+  it("does not redirect a guest away from checkout (card-only guest flow)", () => {
+    h.session = { customerId: null, isAuthenticated: vi.fn(() => false) }
+    const form = renderForm()
+    // No hard redirect to /entrar — the guest stays on the page.
+    expect(h.routerPush).not.toHaveBeenCalled()
+    expect(collect(form).find((n) => n.type === "Button")).toBeTruthy()
+  })
+
+  it("offers only the card payment method to a guest (PIX / cash filtered out)", () => {
+    h.session = { customerId: null, isAuthenticated: vi.fn(() => false) }
+    const form = renderForm()
+    expect(radioLabels(form).filter((l) => ["pix", "card", "cash"].includes(l))).toEqual(["card"])
+  })
+
+  it("renders the inline sign-in prompt (to /entrar?next=/checkout) for a guest", () => {
+    h.session = { customerId: null, isAuthenticated: vi.fn(() => false) }
+    const form = renderForm()
+    const prompt = collect(form).find((n) => n.type === "Link" && n.props.href === "/entrar?next=/checkout")!
+    expect(prompt).toBeTruthy()
+    expect(textOf(prompt)).toContain("guest_login_prompt")
+    expect(textOf(form)).toContain("guest_card_only")
+  })
+
+  it("still shows all three payment methods to an authenticated customer", () => {
+    // Default fixture is authenticated — no guest prompt, all methods offered.
+    const form = renderForm()
+    expect(radioLabels(form).filter((l) => ["pix", "card", "cash"].includes(l))).toEqual(["pix", "card", "cash"])
+    expect(collect(form).find((n) => n.type === "Link" && n.props.href === "/entrar?next=/checkout")).toBeUndefined()
+  })
+
+  it("completes a guest card checkout, persisting the per-order access token", async () => {
+    h.session = { customerId: null, isAuthenticated: vi.fn(() => false) }
+    const confirmCardPayment = vi.fn().mockResolvedValue({ paymentIntent: { id: "pi_guest", status: "succeeded" } })
+    h.useStripe.mockReturnValue({ confirmCardPayment })
+    h.useElements.mockReturnValue({ getElement: vi.fn(() => ({})) })
+    h.fetch.mockResolvedValue(okJson({ paymentMethod: "card", stripeClientSecret: "cs_g", accessToken: "tok_g", message: "" }))
+    // paymentMethod defaults to card for a guest — no override needed.
+    const form = renderForm()
+    await findSubmit(form).props.onClick!()
+
+    expect(confirmCardPayment).toHaveBeenCalledWith("cs_g", expect.any(Object))
+    expect(h.routerPush).toHaveBeenCalledWith("/pedido/pi_guest")
+    expect(h.sessionSetItem).toHaveBeenCalledWith("order-access-token:pi_guest", "tok_g")
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 describe("CheckoutContent — kitchen closed", () => {
   it("renders the closed banner, blocks submit and disables pickup when the kitchen is closed with food in cart", () => {
     h.kitchen = { data: { mealPeriod: "closed", nextOpenDay: "2026-06-29" } }

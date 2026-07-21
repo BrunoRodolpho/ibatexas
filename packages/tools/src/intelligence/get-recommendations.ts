@@ -20,6 +20,25 @@ export interface GetRecommendationsOutput {
   message: string;
 }
 
+// BKL-137 — the POSITIVE dietary-tag filter vocabulary. These are catalog TAGS the
+// owner attached to products (Typesense `tags` facet — seeded data carries
+// vegetariano/vegano/sem_gluten today), NOT allergen inferences: filtering by an
+// owner-attested tag is a search narrowing, never a "não contém X" assurance
+// (allergen assurances stay behind the BKL-143/123 owner gate).
+export const DIETARY_TAGS = ["vegetariano", "vegano", "sem_gluten", "sem_lactose"] as const;
+export type DietaryTag = (typeof DIETARY_TAGS)[number];
+
+const DIETARY_TAG_LABELS: Record<DietaryTag, string> = {
+  vegetariano: "vegetarianas",
+  vegano: "veganas",
+  sem_gluten: "sem glúten",
+  sem_lactose: "sem lactose",
+};
+
+function isDietaryTag(v: unknown): v is DietaryTag {
+  return typeof v === "string" && (DIETARY_TAGS as readonly string[]).includes(v);
+}
+
 export async function buildPersonalizedQuery(
   customerId: string,
   _limit = 10,
@@ -52,12 +71,20 @@ export async function buildPersonalizedQuery(
 }
 
 export async function getRecommendations(
-  input: { context?: string; limit?: number },
+  input: { context?: string; limit?: number; dietaryTag?: string },
   ctx: AgentContext,
 ): Promise<GetRecommendationsOutput> {
   const limit = input.limit ?? 10;
 
   const typesense = getTypesenseClient();
+
+  // BKL-137 — positive dietary filter. An out-of-vocabulary value is DROPPED (the
+  // model never invents a tag the facet doesn't index); a valid tag narrows every
+  // Typesense path below AND bypasses the Redis bestseller path (its zset carries
+  // no tag facets to filter on).
+  const dietaryTag = isDietaryTag(input.dietaryTag) ? input.dietaryTag : undefined;
+  const dietaryFilter = dietaryTag === undefined ? undefined : `tags:=[${dietaryTag}]`;
+  const dietaryLabel = dietaryTag === undefined ? undefined : DIETARY_TAG_LABELS[dietaryTag];
 
   // Authenticated: use profile-based query
   if (ctx.customerId) {
@@ -69,7 +96,7 @@ export async function getRecommendations(
       .search({
         q: "*",
         query_by: "title",
-        filter_by: filterBy,
+        filter_by: dietaryFilter === undefined ? filterBy : `${filterBy} && ${dietaryFilter}`,
         sort_by: sortBy,
         per_page: limit,
       });
@@ -79,15 +106,49 @@ export async function getRecommendations(
       title: hit.document.title,
       price: hit.document.price ?? 0,
       imageUrl: hit.document.imageUrl ?? undefined,
-      reason: "Baseado nas suas preferências",
+      reason:
+        dietaryLabel === undefined ? "Baseado nas suas preferências" : `Opções ${dietaryLabel}`,
     }));
 
     return {
       products,
       message:
         products.length > 0
-          ? `Encontrei ${products.length} produto(s) que combinam com o seu perfil!`
-          : "Nenhum produto personalizado encontrado. Veja nosso cardápio completo.",
+          ? dietaryLabel === undefined
+            ? `Encontrei ${products.length} produto(s) que combinam com o seu perfil!`
+            : `Encontrei ${products.length} opção(ões) ${dietaryLabel} para você!`
+          : dietaryLabel === undefined
+            ? "Nenhum produto personalizado encontrado. Veja nosso cardápio completo."
+            : `Não encontrei opções ${dietaryLabel} no momento. Veja nosso cardápio completo.`,
+    };
+  }
+
+  // BKL-137 — a dietary-filtered GUEST ask skips the Redis bestseller zset (no tag
+  // facets there) and goes straight to the filtered Typesense query below.
+  if (dietaryFilter !== undefined) {
+    const filtered = await typesense
+      .collections<TypesenseProductDoc>(COLLECTION)
+      .documents()
+      .search({
+        q: "*",
+        query_by: "title",
+        filter_by: `inStock:=true && status:=published && ${dietaryFilter}`,
+        sort_by: "rating:desc",
+        per_page: limit,
+      });
+    const products = (filtered.hits ?? []).map((hit) => ({
+      id: hit.document.id,
+      title: hit.document.title,
+      price: hit.document.price ?? 0,
+      imageUrl: hit.document.imageUrl ?? undefined,
+      reason: `Opções ${dietaryLabel}`,
+    }));
+    return {
+      products,
+      message:
+        products.length > 0
+          ? `Confira nossas opções ${dietaryLabel}!`
+          : `Não encontrei opções ${dietaryLabel} no momento. Veja nosso cardápio completo.`,
     };
   }
 
@@ -141,7 +202,7 @@ export async function getRecommendations(
 export const GetRecommendationsTool = {
   name: "get_recommendations",
   description:
-    "Retorna produtos recomendados personalizados para o cliente ou os mais pedidos para visitantes. Chame ao iniciar uma conversa com cliente que já comprou antes.",
+    "Retorna produtos recomendados personalizados para o cliente ou os mais pedidos para visitantes. Chame ao iniciar uma conversa com cliente que já comprou antes. Também responde perguntas dietéticas (ex.: 'tem opção vegetariana?') via dietaryTag.",
   inputSchema: {
     type: "object",
     properties: {
@@ -151,6 +212,12 @@ export const GetRecommendationsTool = {
         description: "Contexto da recomendação",
       },
       limit: { type: "number", description: "Número de produtos (padrão: 10)" },
+      dietaryTag: {
+        type: "string",
+        enum: ["vegetariano", "vegano", "sem_gluten", "sem_lactose"],
+        description:
+          "Filtro dietético POSITIVO por tag do catálogo (use quando o cliente pedir opções vegetarianas/veganas/sem glúten/sem lactose). NÃO é garantia de ausência de alérgenos.",
+      },
     },
     required: [],
   },

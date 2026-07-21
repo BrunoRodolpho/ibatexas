@@ -5,6 +5,13 @@ import {
   IBATEXAS_COMPOSED_PACKS,
   composedIntentKinds,
 } from "../index.js"
+import { CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS } from "@ibatexas/pack-orders"
+import { getRefundEscalateThresholdCentavos } from "@ibatexas/pack-payments"
+import {
+  isAboveMoneyBand,
+  isAtOrAboveMoneyBand,
+  MONEY_BAND_1000_CENTAVOS,
+} from "@ibatexas/types"
 
 describe("@ibatexas/packs-composed", () => {
   it("composes exactly the six first-party packs, with distinct ids", () => {
@@ -41,12 +48,36 @@ describe("@ibatexas/packs-composed", () => {
     expect(kinds).toEqual(
       expect.arrayContaining([
         "order.cart.ensure",
-        "payment.charge.create",
+        "payment.create",
         "reservation.create",
         "customer.create",
-        "whatsapp.message.send",
+        "whatsapp.session.handover",
         "product.availability.set",
       ]),
     )
+  })
+
+  // FE-T02 — pack-orders' checkout-confirm ladder and pack-payments'
+  // refund-escalate ladder must resolve the SAME R$1000 money-band
+  // boundary from the shared `@ibatexas/types` constant, not independent
+  // literals. Env unset here, so payments resolves its (env-overridable)
+  // default — which must equal the shared constant too.
+  it("pack-orders and pack-payments resolve the same R$1000 money-band constant", () => {
+    expect(MONEY_BAND_1000_CENTAVOS).toBe(100_000)
+    expect(CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS).toBe(
+      MONEY_BAND_1000_CENTAVOS,
+    )
+    expect(getRefundEscalateThresholdCentavos()).toBe(MONEY_BAND_1000_CENTAVOS)
+  })
+
+  // Pins the exact-R$1000 boundary behavior of each comparator: pack-payments'
+  // CURRENT strict `>` (isAboveMoneyBand) excludes the boundary amount itself
+  // — an exact-R$1000 refund does NOT escalate today. pack-orders' `>=`
+  // (isAtOrAboveMoneyBand) includes it. FE-T03 deliberately flips payments to
+  // isAtOrAboveMoneyBand, which would flip this exact-boundary case from
+  // false to true — this test locks the pre-flip behavior it changes.
+  it("comparator helpers diverge at the exact R$1000 boundary", () => {
+    expect(isAboveMoneyBand(100_000, 100_000)).toBe(false)
+    expect(isAtOrAboveMoneyBand(100_000, 100_000)).toBe(true)
   })
 })

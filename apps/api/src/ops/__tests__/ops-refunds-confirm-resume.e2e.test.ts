@@ -40,6 +40,7 @@ import {
   makeStatefulSession,
   runOpsTurn,
   scriptedModel,
+  staleReceivedAt,
   type ScriptedToolCall,
   type StaffRole,
 } from "./ops-e2e-harness.js";
@@ -171,6 +172,10 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
     // The park landed in the session store, keyed to THIS staff session.
     const parks = session.parksFor(sessionId);
     expect(parks).toHaveLength(1);
+    // FE-D33 — the park carries the forward-compat expiresAt (parkedAt 12:00 + the
+    // 900s ops confirm TTL = 12:15); nothing reads it yet — the freshness partition
+    // stays the enforcement point — but the write site now stamps it.
+    expect(parks[0]!.expiresAt).toBe("2026-07-04T12:15:00.000Z");
     // The reply carries the parsed amount + payment ref (the staff confirms the numbers).
     expect(t1.response).toContain("R$ 50,00");
     expect(t1.response).toContain("pay_db_1");
@@ -358,6 +363,39 @@ describe("BKL-085 refunds-by-message — end-to-end park → confirm-resume → 
     expect(t.decision.kind).toBe("REFUSE");
     expect(session.parksFor("system:staff:owner9")).toHaveLength(0);
     expect(spies.writeAdjudicatedRefund).not.toHaveBeenCalled();
+  });
+
+  it("FE-D13: a 'sim' arriving after the confirm-TTL does NOT resume — refund never runs, park intact", async () => {
+    const { deps, session, spies } = buildHarness({
+      toolCalls: [REFUND_CALL("4242", 5_000)],
+    });
+    const sessionId = "system:staff:ownerStale";
+
+    // Turn 1 — the refund parks (parkedAt = HARNESS_PARKED_AT, 12:00:00Z).
+    const t1 = await runTurn(deps, "OWNER", "ownerStale", "reembolsa 50 do pedido 4242");
+    expect(t1.decision.kind).toBe("REQUEST_CONFIRMATION");
+    expect(session.parksFor(sessionId)).toHaveLength(1);
+
+    // Turn 2 — "sim, confirma", but the inbound receivedAt is TTL+ε (16 min) after
+    // the park: it is EXPIRED, so matchToParked ignores it → NOTHING resumes and the
+    // refund write NEVER runs. The park is NOT consumed (money-safety: the TTL gate
+    // suppresses the STALE reply, never the park itself).
+    const t2 = await runOpsTurn(deps, {
+      role: "OWNER",
+      staffId: "ownerStale",
+      text: "sim, confirma",
+      receivedAt: staleReceivedAt(960),
+    });
+    expect(t2.decision.kind).not.toBe("EXECUTE");
+    expect(spies.writeAdjudicatedRefund).not.toHaveBeenCalled();
+    expect(session.parksFor(sessionId)).toHaveLength(1);
+
+    // Turn 3 — a FRESH "sim" (default receivedAt = parkedAt, age 0) still resumes the
+    // SAME untouched park → EXECUTE. Proves the gate suppressed staleness, not the park.
+    const t3 = await runTurn(deps, "OWNER", "ownerStale", "sim, confirma");
+    expect(t3.decision.kind).toBe("EXECUTE");
+    expect(spies.writeAdjudicatedRefund).toHaveBeenCalledTimes(1);
+    expect(session.parksFor(sessionId)).toHaveLength(0);
   });
 
   it("a park is staff-session-scoped: a DIFFERENT staff's 'sim' does not resume it", async () => {

@@ -111,6 +111,31 @@ const corpus: ReadonlyArray<Fixture> = [
     state: authenticatedState({ customerId: null, channel: "web" }),
     expect: { kind: "EXECUTE" },
   },
+  // ── NEW-014 fiscal.emit (4 bands) ────────────────────────────────────
+  {
+    name: "EXECUTE: TRUSTED order.fiscal.emit on a delivered (fiscal-eligible) order",
+    envelope: env("order.fiscal.emit", { orderId: "o-1" }, "TRUSTED"),
+    state: authenticatedState({ fulfillmentStatus: "delivered" }),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "REFUSE: UNTRUSTED order.fiscal.emit (system-only taint gate)",
+    envelope: env("order.fiscal.emit", { orderId: "o-1" }, "UNTRUSTED"),
+    state: authenticatedState({ fulfillmentStatus: "delivered" }),
+    expect: { kind: "REFUSE" },
+  },
+  {
+    name: "REFUSE: order.fiscal.emit on a NON-eligible (preparing) order",
+    envelope: env("order.fiscal.emit", { orderId: "o-1" }, "TRUSTED"),
+    state: authenticatedState({ fulfillmentStatus: "preparing" }),
+    expect: { kind: "REFUSE", refusalCode: "order.fiscal.not_eligible" },
+  },
+  {
+    name: "REFUSE: order.fiscal.emit over the bounded retry cap",
+    envelope: env("order.fiscal.emit", { orderId: "o-1" }, "TRUSTED"),
+    state: authenticatedState({ fulfillmentStatus: "delivered", fiscalEmitAttempts: 5 }),
+    expect: { kind: "REFUSE", refusalCode: "order.fiscal.retry_exceeded" },
+  },
   {
     name: "EXECUTE: order.item.add with explicit empty allergens",
     envelope: env("order.item.add", {
@@ -189,16 +214,6 @@ const corpus: ReadonlyArray<Fixture> = [
       orderId: "o-1",
       body: "Sem cebola, por favor.",
     }),
-    state: authenticatedState(),
-    expect: { kind: "EXECUTE" },
-  },
-  {
-    name: "EXECUTE: TRUSTED order.cancel.system on existing order",
-    envelope: env(
-      "order.cancel.system",
-      { orderId: "o-1", reason: "stale" },
-      "TRUSTED",
-    ),
     state: authenticatedState(),
     expect: { kind: "EXECUTE" },
   },
@@ -288,6 +303,52 @@ const corpus: ReadonlyArray<Fixture> = [
       refusalCode: "order.item.allergens_not_explicit",
     },
   },
+  // ── BKL-180 — order.cart.sync BULK allergen completeness (Hard Rule #1) ──
+  {
+    name: "EXECUTE: order.cart.sync with every item carrying explicit allergens",
+    envelope: env("order.cart.sync", {
+      cartId: "cart-1",
+      items: [
+        { variantId: "v-1", quantity: 2, allergens: [] },
+        { variantId: "v-2", quantity: 1, allergens: ["gluten"] },
+      ],
+    }),
+    state: authenticatedState({ customerId: null, channel: "web" }), // guest-allowed
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "EXECUTE: order.cart.sync with empty items (no-op pass)",
+    envelope: env("order.cart.sync", { cartId: "cart-1", items: [] }),
+    state: authenticatedState(),
+    expect: { kind: "EXECUTE" },
+  },
+  {
+    name: "REFUSE: order.cart.sync with one item missing allergens (names v-2)",
+    envelope: env("order.cart.sync", {
+      cartId: "cart-1",
+      items: [
+        { variantId: "v-1", quantity: 1, allergens: [] },
+        { variantId: "v-2", quantity: 1 }, // missing allergens
+      ],
+    }),
+    state: authenticatedState(),
+    expect: { kind: "REFUSE", refusalCode: "order.item.allergens_not_explicit" },
+  },
+  {
+    name: "REFUSE: order.cart.sync with an item's allergens inferred as a string",
+    envelope: env("order.cart.sync", {
+      cartId: "cart-1",
+      items: [{ variantId: "v-1", quantity: 1, allergens: "contains nuts" }],
+    }),
+    state: authenticatedState(),
+    expect: { kind: "REFUSE", refusalCode: "order.item.allergens_not_explicit" },
+  },
+  {
+    name: "REFUSE: order.cart.sync with items field missing entirely",
+    envelope: env("order.cart.sync", { cartId: "cart-1" }),
+    state: authenticatedState(),
+    expect: { kind: "REFUSE", refusalCode: "order.item.allergens_not_explicit" },
+  },
   {
     name: "REFUSE: order.item.add with quantity=0",
     envelope: env("order.item.add", {
@@ -364,17 +425,6 @@ const corpus: ReadonlyArray<Fixture> = [
     }),
     state: authenticatedState({ orderId: "o-1", fulfillmentStatus: "delivered" }),
     expect: { kind: "REFUSE", refusalCode: "order.already_shipped" },
-  },
-  {
-    name: "REFUSE: UNTRUSTED order.cancel.system (taint gate)",
-    envelope: env(
-      "order.cancel.system",
-      { orderId: "o-1", reason: "stale" },
-      "UNTRUSTED",
-    ),
-    state: authenticatedState(),
-    // Kernel emits `taint_level_insufficient` on this path.
-    expect: { kind: "REFUSE" },
   },
   {
     name: "REFUSE: order.item.add with missing cartId",
@@ -820,7 +870,7 @@ describe("ordersPack — kernel invariants via runConformance()", () => {
 // System-only kinds (taint minimum above UNTRUSTED) are intentionally not
 // planner-proposable; the analyzer auto-excludes them from `unreachable_intent`
 // via `pack.policy.taint.minimumFor`. We pin that carve-out so a future drop of
-// `order.cancel.system` from the taint policy fails loudly here.
+// `order.projection.create` from the taint policy fails loudly here.
 //
 // NOTE: we deliberately do NOT assert `summary.warning === 0` — the planner
 // omits several declared, non-system intents (cart.sync, pix.details.set,
@@ -864,10 +914,10 @@ describe("ordersPack — policy coherence via analyzePolicy() (AJD-301)", () => 
     expect(report.summary.error).toBe(0)
   })
 
-  it("system-only kinds (order.cancel.system, …) are carved out", () => {
+  it("system-only kinds (order.projection.create, …) are carved out", () => {
     const report = analyzePolicy({ pack: ordersPack, plannerProbes: probes })
     // Guard against a vacuous pass: the carve-out subject must really be system-only.
-    expect(systemOnlyKinds).toContain("order.cancel.system")
+    expect(systemOnlyKinds).toContain("order.projection.create")
     for (const kind of systemOnlyKinds) {
       const unreachable = report.diagnostics.find(
         (d) =>

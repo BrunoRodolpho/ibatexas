@@ -51,6 +51,28 @@ export function refuseReservationNotFound(): Refusal {
   )
 }
 
+/**
+ * BKL-223 — a specific "which reservation?" refusal for a customer with ≥2 active
+ * reservations whose NL mutation ("cancela minha reserva") gave no explicit id.
+ * `resolveReservationId` declines to guess and stamps `reservationAmbiguousCount` +
+ * the first-party candidate `reservationAmbiguousLabels` ("20/07 às 18h30", composed
+ * from the DB timeSlot — never model-authored). This voices them INSTEAD of the bare
+ * `refuseReservationNotFound` (the reservations WERE found; the resolver just would
+ * not pick one). Mirrors `refuseSlotAmbiguous`.
+ */
+export function refuseReservationAmbiguous(labels: readonly string[]): Refusal {
+  const shown = labels.slice(0, MAX_AMBIGUOUS_RESERVATIONS_SHOWN).join(", ")
+  const more = labels.length > MAX_AMBIGUOUS_RESERVATIONS_SHOWN ? ", entre outras" : ""
+  const userFacing =
+    shown === ""
+      ? "Você tem mais de uma reserva. Qual delas?"
+      : `Você tem mais de uma reserva: ${shown}${more}. Qual delas?`
+  return refuse("STATE", "reservation.ambiguous", userFacing, `count=${labels.length}`)
+}
+
+/** Max candidate reservations voiced inline before summarising the remainder. */
+const MAX_AMBIGUOUS_RESERVATIONS_SHOWN = 6
+
 export function refuseReservationNotModifiable(status: string): Refusal {
   return refuse(
     "STATE",
@@ -71,6 +93,39 @@ export function refuseReservationNotCancellable(status: string): Refusal {
 
 export function refuseSlotNotFound(): Refusal {
   return refuse("STATE", "reservation.slot.not_found", "Horário não encontrado.")
+}
+
+/**
+ * BKL-174 — pt-BR time display for a slot `startTime` ("HH:MM", 24h). "20:00" →
+ * "20h"; "18:30" → "18h30". Deterministic; a non-"HH:MM" value passes through
+ * unchanged (defensive — the times are first-party DB `startTime`s).
+ */
+function formatSlotTime(startTime: string): string {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(startTime)
+  if (m === null) return startTime
+  const [, hour, minute] = m
+  return minute === "00" ? `${hour}h` : `${hour}h${minute}`
+}
+
+/** Max candidate times voiced inline before summarising the remainder. */
+const MAX_AMBIGUOUS_TIMES_SHOWN = 6
+
+/**
+ * BKL-174 — a specific "which time?" refusal for an NL date/time that grounded to
+ * ≥2 available slots (`resolveReservationSlot`). The candidate `times` are the
+ * availability read's own first-party `startTime`s — NEVER model-authored — so
+ * naming them asserts no unbacked fact; it converts the bare
+ * `refuseSlotNotFound` into a useful disambiguation ask (mirrors the amend
+ * `ambiguousItemReply` marker). pt-BR (Hard Rule #4).
+ */
+export function refuseSlotAmbiguous(times: readonly string[]): Refusal {
+  const shown = times.slice(0, MAX_AMBIGUOUS_TIMES_SHOWN).map(formatSlotTime).join(", ")
+  const more = times.length > MAX_AMBIGUOUS_TIMES_SHOWN ? ", entre outros" : ""
+  const userFacing =
+    shown === ""
+      ? "Há mais de um horário disponível para essa data. Qual você prefere?"
+      : `Há mais de um horário disponível para essa data: ${shown}${more}. Qual você prefere?`
+  return refuse("STATE", "reservation.slot.ambiguous", userFacing, `count=${times.length}`)
 }
 
 export function refuseSlotInPast(): Refusal {

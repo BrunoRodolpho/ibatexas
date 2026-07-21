@@ -38,6 +38,7 @@ import {
   type PaymentRegenerationCountIncrementPayload,
   type PaymentStatusTransitionPayload,
   type PaymentStatusReconcilePayload,
+  type PaymentDisputeOpenPayload,
   type PaymentProjectionState,
 } from "./__shared__/payment-projection-policy.js"
 
@@ -182,6 +183,20 @@ export interface PaymentCommandService {
   reconcileFromWebhookFromEnvelope(
     envelope: IntentEnvelope<"payment.status.reconcile", PaymentStatusReconcilePayload>,
   ): Promise<AdjudicatedResult<{ version: number } | null>>
+
+  /**
+   * BKL-178 — envelope-typed entry point for `payment.dispute.open`.
+   * SYSTEM-only. ADJUDICATE-ONLY: a chargeback carries no state mutation of
+   * its own — `escalateAlwaysOnDispute` ALWAYS ESCALATEs it for human
+   * review, and the payment's DISPUTED status is written separately via
+   * `payment.status.reconcile` (status truth). The executor is unreachable
+   * by construction and fail-closed. Returns the kernel Decision so the
+   * webhook can surface the ESCALATE as a support handoff — never a silent
+   * audit-only record.
+   */
+  disputeOpenFromEnvelope(
+    envelope: IntentEnvelope<"payment.dispute.open", PaymentDisputeOpenPayload>,
+  ): Promise<AdjudicatedResult<never>>
 
   /**
    * W3 P0-1 — envelope-typed entry point for `payment.refund.issue`.
@@ -780,6 +795,30 @@ export function createPaymentCommandService(
               : { expectedOrderId: payload.expectedOrderId }),
           }
           return executeReconcile(payload.paymentId, input)
+        },
+        adjudicateOptions,
+      )
+    },
+
+    async disputeOpenFromEnvelope(envelope) {
+      // ADJUDICATE-ONLY. The snapshot is REAL (the webhook resolves the
+      // Payment row before minting the envelope) so `requirePaymentExists`
+      // passes and `escalateAlwaysOnDispute` yields a true ESCALATE — not a
+      // REFUSE for a missing row. The DISPUTED status is written by the
+      // sibling `payment.status.reconcile`, never here.
+      const state = await snapshotPayment(envelope.payload.paymentId)
+      return withAdjudicate(
+        envelope,
+        state,
+        paymentProjectionPolicyBundle,
+        async () => {
+          // Unreachable by construction: `escalateAlwaysOnDispute` ESCALATEs
+          // every `payment.dispute.open`, so the kernel never reaches
+          // EXECUTE/REWRITE. Fail-closed — surface a policy contract change
+          // loudly rather than silently mutate (dispute.open has no executor).
+          throw new Error(
+            "payment.dispute.open has no executor — dispute review is escalation-only; payment status is reconciled via payment.status.reconcile",
+          )
         },
         adjudicateOptions,
       )

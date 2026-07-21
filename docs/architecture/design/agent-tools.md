@@ -11,7 +11,11 @@ The agent interacts with the Restaurant and Intelligence contexts through typed 
 
 **Tool access model:** the LLM has zero state-mutation authority. It reads facts via read-only tools and proposes mutations only through the single `express_intent` tool (`apps/api/src/claustrum/ibatexas-planner.ts`), which the kernel `adjudicate()`s. Per-tool classification (READ_ONLY vs MUTATING) and per-state visibility are owned by each Pack's `ToolClassification` + `*CapabilityPlanner` (`@adjudicate/core/llm`, e.g. `packages/pack-orders/src/capabilities.ts`); kernel `PolicyBundle` guards (`canCancelOrder`, `canAmendOrder`, `hasOrderId` in `packages/pack-orders/src/policies.ts`) gate invalid operations. The full rationale and contract is **ADR #9 — Intent-Gated Execution** in [docs/architecture/decisions.md](../decisions.md).
 
-The roster below is the **18 LLM-callable mutating tools** plus the read-only tools, assembled by `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`).
+The roster below is the **20 LLM-callable mutating tools** plus the read-only tools, assembled by `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`). FE-T09 (D-a) replaced the grouped `amend_order` tool with three granular post-checkout amend tools (add item / update quantity / remove item on a placed order) — the model targets these directly now; the legacy grouped kind (`order.amend.request`) still exists at the kernel level but is reachable only via the deterministic legacy HTTP amend route, never through this tool roster.
+
+**Model-facing payloads are narrowed.** For each mutating tool below the **Input** cell is what the LLM may actually produce through `express_intent`: a per-capability extraction schema (`apps/api/src/claustrum/language-engine/*.schema.ts`) strips every Identity-class identifier (`cartId`, `orderId`, `itemId`, …) and every safety-critical / PII field (`allergens`, `cpf`, `email`, …) from the model's reach — the runtime resolver fills those. A row whose Input reads *"(none model-facing)"* carries an empty schema: the utterance selects the capability and the runtime supplies the entire wire payload.
+
+**Not every documented tool is LLM-callable.** A few customer-facing tools — `reorder`, `change_delivery_address`, and `switch_order_type` — are reachable only through the deterministic order-actions HTTP route (`apps/api/src/routes/order-actions.ts`), **not** through `express_intent`. They have no chat-tier capability and appear in no planner's `allowedIntents`, so the model never proposes them directly; they map to the identity-tier kernel kinds `order.reorder`, `order.address.change`, and `order.type.switch` (and therefore carry no `legacyNames` entry in the capability registry). Their rows below are marked accordingly — this is the same "real tool, not agent-proposable" status the retired grouped `amend_order` kind (`order.amend.request`) has.
 
 ---
 
@@ -69,6 +73,16 @@ Retrieve the current cart contents.
 | **Auth** | guest |
 | **Input** | `sessionId: string` |
 | **Output** | `{ cartId, items: { productId, variantId, name, quantity, unitPrice, specialInstructions }[], subtotal, couponDiscount, estimatedDeliveryFee, total }` |
+
+### `get_or_create_cart`
+Ensure an active cart exists for the session, creating one if none is open. Mutating tool — proposed as the `order.cart.ensure` intent.
+
+| | |
+|---|---|
+| **Auth** | guest |
+| **Input** | (none model-facing — the active cart is resolved from the session; the wire `cartId` is resolver-filled) |
+| **Output** | `{ cartId, items[], subtotal, total }` |
+| **Notes** | Registry: `order.cart.ensure`, tool id `ibatexas.cart.ensure.v1`, `riskLevel: low`. The LLM extracts no fields; the runtime resolves the session's active cart (BKL-028) |
 
 ### `add_to_cart`
 Add a product variant to the cart. Validates stock before adding.
@@ -146,6 +160,36 @@ Cancel an order. Only possible while status is `received` or `confirmed`.
 | **Input** | `orderId: string`, `reason?: string` |
 | **Output** | `{ success: boolean, refundStatus?: string, message: string }` |
 
+### `amend_order_add_item`
+Add an item to an already-placed order (post-checkout). Mutating tool — proposed as the `order.amend.add_item` intent. One of the three granular successors to the retired grouped `amend_order` tool.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `item: string` (natural-language item reference), `quantity?: number` |
+| **Output** | `{ success: boolean, message: string }` |
+| **Notes** | Registry: `order.amend.add_item`, tool id `ibatexas.order.amend.addItem.v1`, `riskLevel: high`. The runtime resolves `item` to a variant and the product's **explicit stored** `allergens` array (never inferred; the kernel `requireExplicitAllergens` guard REFUSEs otherwise). `orderId` is resolver-filled (auto-resolves to the most recent order) |
+
+### `amend_order_update_qty`
+Change the quantity of an item on an already-placed order (post-checkout). Mutating tool — proposed as the `order.amend.update_qty` intent.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `item: string` (natural-language item reference), `quantity: number` |
+| **Output** | `{ success: boolean, message: string }` |
+| **Notes** | Registry: `order.amend.update_qty`, tool id `ibatexas.order.amend.updateQty.v1`, `riskLevel: high`. `orderId`/`itemId` are resolver-filled from the live order; an ambiguous item reference surfaces an honest disambiguation reply |
+
+### `amend_order_remove_item`
+Remove an item from an already-placed order (post-checkout). Mutating tool — proposed as the `order.amend.remove_item` intent.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | `item: string` (natural-language item reference) |
+| **Output** | `{ success: boolean, message: string }` |
+| **Notes** | Registry: `order.amend.remove_item`, tool id `ibatexas.order.amend.removeItem.v1`, `riskLevel: high`. `orderId`/`itemId` are resolver-filled from the live order |
+
 ### `reorder`
 Recreate a previous order as a new cart.
 
@@ -166,24 +210,24 @@ List past orders for the authenticated customer.
 | **Output** | `{ orders: { orderId, date, items[], total, status, deliveryType }[] }` |
 
 ### `change_delivery_address`
-Update shipping address on a delivery order.
+Update shipping address on a delivery order. **Not LLM-callable** — reachable only via the deterministic order-actions HTTP route (`apps/api/src/routes/order-actions.ts`), not through `express_intent`.
 
 | | |
 |---|---|
 | **Auth** | customer |
 | **Input** | `orderId: string`, `addressId: string` |
 | **Output** | `{ success: boolean, message: string }` |
-| **Notes** | Validates PONR (point of no return) and order type — only valid for `delivery` orders before `in_delivery` status |
+| **Notes** | Handler `changeDeliveryAddress` (`packages/tools/src/cart/change-delivery-address.ts`); maps to the identity-tier kernel kind `order.address.change` (no chat-tier capability, so no `legacyNames` entry in the registry). Validates PONR (point of no return) and order type — only valid for `delivery` orders before `in_delivery` status |
 
 ### `switch_order_type`
-Switch between delivery, pickup, and dine-in for an existing order.
+Switch between delivery, pickup, and dine-in for an existing order. **Not LLM-callable** — reachable only via the deterministic order-actions HTTP route, not through `express_intent`.
 
 | | |
 |---|---|
 | **Auth** | customer |
 | **Input** | `orderId: string`, `newType: 'delivery' \| 'pickup' \| 'dine_in'`, `addressId?: string` |
 | **Output** | `{ success: boolean, message: string }` |
-| **Notes** | Handles cash method restrictions — cash is not available for delivery in some zones. Validates PONR. |
+| **Notes** | Handler `switchOrderType` (`packages/tools/src/cart/switch-order-type.ts`); maps to the identity-tier kernel kind `order.type.switch` (no chat-tier capability, so no `legacyNames` entry in the registry). Handles cash method restrictions — cash is not available for delivery in some zones. Validates PONR |
 
 ### `add_order_note`
 Add an observation or special instruction to an order.
@@ -204,6 +248,16 @@ Query the current payment status for an order. READ_ONLY tool — no mutations.
 | **Input** | `orderId: string` |
 | **Output** | `{ hasPayment, paymentId, method, status, statusLabel, amountInCentavos, pixExpiresAt?, isTerminal, canRetry, canRegenPix, canSwitchMethod, attemptCount }` |
 | **Notes** | Returns full eligibility flags for retry/regen/switch. Uses PaymentQueryService. |
+
+### `regenerate_pix`
+Generate a fresh PIX code for a pending payment whose code expired. Mutating tool — proposed as the `payment.pix.regenerate` intent.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | (none model-facing — the target order is resolver-filled and auto-resolves to the customer's most recent PIX-eligible order) |
+| **Output** | `{ success: boolean, pixQrCode?: string, pixExpiry?: string, message: string }` |
+| **Notes** | Registry: `payment.pix.regenerate`, tool id `ibatexas.payment.regeneratePix.v1`, `riskLevel: high`, `requiresConfirmation: true`. The only customer-driven `pack-payments` kind with a chat tool |
 
 ---
 
@@ -299,6 +353,16 @@ Update the customer's dietary restrictions, allergens, or other preferences.
 | **Output** | `{ success: boolean, updatedProfile }` |
 | **Notes** | Allergens are **always set explicitly** — never inferred. Writes to Redis CustomerProfile |
 
+### `save_pix_details`
+Save the customer's PIX billing details (name, email, CPF) for future refunds. Mutating tool — proposed as the `customer.pix.details.save` intent.
+
+| | |
+|---|---|
+| **Auth** | customer |
+| **Input** | (none model-facing — `name` / `email` / `cpf` are PII and are **never** LLM-extractable; they are collected through a dedicated explicit flow, e.g. a web-form deep link) |
+| **Output** | `{ success: boolean, updatedProfile }` |
+| **Notes** | Registry: `customer.pix.details.save`, tool id `ibatexas.customer.setPixDetails.v1`, `riskLevel: medium`. The empty extraction schema structurally blocks the model from smuggling PII into the payload; card PAN is refused and PII redacted at the kernel (`refuseCardPanInPix` / `redactPiiInPix`) |
+
 ### `submit_review`
 Submit a review for a delivered order.
 
@@ -333,13 +397,13 @@ Return products historically ordered together with the current cart contents.
 
 ## Support Tools
 
-### `handoff_to_human`
+### `request_human_handoff`
 
-Escalate the conversation to a human staff member.
+Escalate the conversation to a human staff member. Mutating tool — proposed as the `whatsapp.handoff.request` intent.
 
 | | |
 |---|---|
 | **Auth** | guest |
-| **Input** | `sessionId: string`, `reason?: string` |
+| **Input** | `reason?: string` (free text; `sessionId` is runtime-injected from the turn context, never model-supplied) |
 | **Output** | `{ success: boolean, estimatedWaitMinutes?: number, message: string }` |
-| **Notes** | Governed: proposed as the `whatsapp.handoff.request` intent (pack-whatsapp, roster #18) and kernel-adjudicated; the free-text reason is audit-redacted; the executor publishes `support.handoff_requested` into the handoff spine. Notifies staff via internal WhatsApp. Preserves full conversation context for the staff member |
+| **Notes** | Registry: `whatsapp.handoff.request` (pack-whatsapp), tool id `ibatexas.support.handoffToHuman.v1`, `riskLevel: low` — the one guest-accessible verb in the 20-tool roster. Kernel-adjudicated; the free-text reason is audit-redacted; the executor publishes `support.handoff_requested` into the handoff spine, notifies staff via internal WhatsApp, and preserves full conversation context. **Name disambiguation:** the registry legacy (snake_case) tool name is `request_human_handoff` (this heading); the underlying executor function is `handoffToHuman` (`packages/tools/src/support/handoff-to-human.ts`) — two names, one path |

@@ -14,7 +14,7 @@
  *   - `express_intent` — the single mutation-proposing tool. Its `capability`
  *     argument is constrained (enum) to the union of the installed packs'
  *     `allowedIntents` for THIS turn's state. Those allowed intents are domain
- *     intent KINDS (`order.item.add`, `payment.charge.create`, …) — the
+ *     intent KINDS (`order.item.add`, `payment.pix.regenerate`, …) — the
  *     capability-level contract. Internal tool ids (`ibatexas.cart.addItem.v1`,
  *     `medusa.cart.add`) are NEVER exposed.
  *   - the turn's visible READ tools — read-only enrichment the LLM may call.
@@ -84,6 +84,7 @@ import {
   type SafetyRoutingInput,
   type SpanCompleteness,
 } from "./claim-registry.js";
+import { detectMedicalEmergencyMarkers } from "./required-claim-decomposer.js";
 import {
   CLAIM_PLANNER_PERSONA,
   EXPRESS_INTENT_TOOL,
@@ -99,13 +100,104 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
-import type { StoreHoursRead, StoreHoursForDateRead } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
+import { resolveStoreInfoText } from "./store-info-resolver.js";
+import {
+  resolveMenuItem,
+  resolveMenuOverviewText,
+  resolveDietaryOptionsText,
+  detectDietaryPreferenceTags,
+  composeMenuPriceText,
+  composeMenuContentsText,
+  type ResolvedMenuItem,
+} from "./menu-item-resolver.js";
+import {
+  EXTRACTION_FAILURE_KIND,
+  PINNED_COMPLETION_TEMPERATURE,
+} from "./model-call-defaults.js";
+import { completeWithResilience, isEmptyCompletion } from "./complete-with-retry.js";
+import {
+  EXTRACTION_SCHEMAS_BY_CAPABILITY,
+  ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY,
+} from "./language-engine/wire-schemas.js";
+import {
+  READ_TOOL_SCHEMAS_BY_NAME,
+  sanitizeReadToolInput,
+} from "./language-engine/read-tool-schemas.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
 
 const DEFAULT_MAX_TOKENS = 1024;
+
+// FE-T01 (D4) — total extraction-completion attempts (incl. the first) before
+// giving up to the explicit REFUSE below. Mirrors the responder's F6/BKL-031
+// idiom (ibatexas-responder.ts's EMPTY_COMPLETION_MAX_ATTEMPTS) — same env
+// var name pattern, config from process.env (Hard Rule #3), own env var so
+// the planner's retry budget can be tuned independently of the responder's.
+const EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS ?? "2", 10) || 2,
+);
+
+/**
+ * FE-T01 (D4) — "genuinely empty" for the planner's extraction seam: text
+ * empty/whitespace-only AND no tool calls at all. NOT the same predicate as
+ * the responder's `isEmptyCompletion(text)` alone — a planner completion with
+ * empty `text` but a populated `toolCalls` is the NORMAL structured-tool-call
+ * shape (nothing to repair), and `propose()` only ever calls the model when
+ * ≥1 tool is offered, so a legitimate no-intent turn still has the model say
+ * SOMETHING in `text` (live-verified against nemotron-3-nano:4b — see the
+ * FE-T01 PR). Only text-AND-toolCalls-both-empty is the genuine BKL-031-style
+ * extraction dropout this repairs.
+ */
+function isGenuinelyEmptyCompletion(completion: Completion): boolean {
+  return (
+    isEmptyCompletion(completion.text) &&
+    (completion.toolCalls === undefined || completion.toolCalls.length === 0)
+  );
+}
+
+// FE-T01 (D3/D4) — sentinel intent kind for an extraction-wire FAILURE (a
+// malformed tool-call JSON that survived the frozen provider's `{raw}`
+// passthrough, or a genuinely empty completion that survived the bounded
+// repair attempt above). No installed pack owns this kind, so
+// `composePolicyRouter`'s documented unowned-kind fail-closed path (SYSTEM
+// taint floor + `default: "REFUSE"` — capability-policy.ts) REFUSEs it
+// through the SAME audited kernel `adjudicate()` call every real envelope
+// goes through: an explicit, AUDITED REFUSE turn (pt-BR "Não posso realizar
+// essa ação com a informação disponível." via
+// `@adjudicate/locales-pt-br`'s `taint_level_insufficient` mapping) — never a
+// silent drop to a respond-only reply. Because `plan.envelopes.length > 0`,
+// the responder's REFUSE branch renders it VERBATIM via the explainer
+// (ibatexas-responder.ts's "a real action refusal" branch), not the
+// REFUSE-on-empty-plan small-talk branch.
+//
+// Defined in `model-call-defaults.ts` (dependency-light) so
+// `kernel-metrics-sink.ts` can allowlist it out of the taxonomy-drift
+// counter without importing this whole module; re-exported here so
+// existing import sites (tests, registry) are unaffected.
+export { EXTRACTION_FAILURE_KIND };
+
+type ExtractionFailureReason = "malformed_tool_call" | "empty_completion" | "completion_error";
+
+/** Marker `translateToolCalls` pushes to `dropped` for a malformed
+ *  `express_intent` call — checked below to decide whether to REFUSE. */
+const MALFORMED_EXPRESS_INTENT_MARKER = `${EXPRESS_INTENT_TOOL}(malformed)`;
+
+function buildExtractionFailureEnvelope(
+  reason: ExtractionFailureReason,
+  actor: IntentActor,
+  nonce: string,
+): IntentEnvelope {
+  return buildEnvelope({
+    kind: EXTRACTION_FAILURE_KIND,
+    payload: { reason },
+    actor,
+    taint: "UNTRUSTED",
+    nonce,
+  });
+}
 
 // FIX B2 — enrichment-hop context bounds. A single read result (e.g. an
 // unprojected Medusa cart from get_cart) can be multiple KB; fed back raw it
@@ -114,6 +206,19 @@ const DEFAULT_MAX_TOKENS = 1024;
 // each with a "…(truncado)" marker.
 const MAX_READ_RESULT_CHARS = 1500;
 const MAX_ENRICHMENT_RESULTS_CHARS = 6000;
+
+// FE-T13 — bound for the `read_loop.executed` log line's new `args` field
+// (a read tool's sanitized call args, authored-schema tools only). Every
+// authored read field is 0-2 short scalars (see read-tool-schemas.ts), so
+// this is generous headroom, not a working limit — just a defensive cap
+// against a pathological string value.
+const MAX_LOGGED_ARGS_CHARS = 300;
+
+function truncateLoggedArgs(json: string): string {
+  return json.length > MAX_LOGGED_ARGS_CHARS
+    ? `${json.slice(0, MAX_LOGGED_ARGS_CHARS)}…(truncado)`
+    : json;
+}
 
 /**
  * The single CLAIM-proposing tool (Q6b — SDD §H/§P3; claim-registry v0.1 §1).
@@ -243,32 +348,11 @@ export interface IbatexasPlannerDeps {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
-  /**
-   * BKL-121 — resolve TODAY's operating-hours read for THIS turn (tag-then-derive
-   * STEP 2 for STORE_HOURS). The SAME first-party `readStoreHours()` the investigator
-   * records under `schedule:store_hours`, so the derived `hoursText` value is
-   * byte-equal to the recorded ledger entry and the kernel's C6 value-binding passes
-   * BY CONSTRUCTION (a present override/holiday falsifier STILL demotes to UNKNOWN).
-   * Time-dependent, so it is invoked per `proposeClaims()`. Omitted in unit tests →
-   * a STORE_HOURS candidate keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN).
-   */
-  readonly resolveStoreHours?: () =>
-    | Promise<StoreHoursRead | undefined>
-    | StoreHoursRead
-    | undefined;
-  /**
-   * BKL-138 — resolve the QUERIED date's operating-hours read for THIS turn
-   * (tag-then-derive STEP 2 for STORE_HOURS_FOR_DATE). The SAME per-date
-   * `readHoursForDate(isoDate)` the investigator records under
-   * `schedule:store_hours:{isoDate}`, so the derived `hoursText` is byte-equal to the
-   * recorded ledger entry and C6 passes BY CONSTRUCTION (a present holiday/override
-   * falsifier on that date STILL demotes to UNKNOWN). Invoked per `proposeClaims()`
-   * with the resolved ISO date (the candidate subject). Omitted in unit tests →
-   * a STORE_HOURS_FOR_DATE candidate keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN).
-   */
-  readonly resolveHoursForDate?: (
-    isoDate: string,
-  ) => Promise<StoreHoursForDateRead | undefined> | StoreHoursForDateRead | undefined;
+  // BKL-126 — resolveStoreHours / resolveHoursForDate were REMOVED: the
+  // schedule-family candidate values now bind at @claustrum/core claims-validate
+  // stage 4b from the investigator's recorded ledger entries (no fresh re-read,
+  // no divergence window). resolveScheduleSignal above remains ONLY for the
+  // closed-hours prompt note.
   /**
    * BKL-138 — the clock the day-specific date resolver reads "today" from (default
    * `Date.now`). Injectable so a deterministic suite can FREEZE the resolved date (a
@@ -336,6 +420,85 @@ function isExpressIntentInput(input: unknown): input is ExpressIntentInput {
     typeof input === "object" &&
     typeof (input as { capability?: unknown }).capability === "string"
   );
+}
+
+/**
+ * FE-T11 (plan-time payload filter — the PARSE-seam enforcement half).
+ *
+ * `EXTRACTION_SCHEMAS_BY_CAPABILITY` (wire-schemas.ts) only narrows what is
+ * ADVERTISED to the model — `buildToolSurface`, above, embeds each authored
+ * capability's narrowed `payload` JSON-Schema into the `express_intent` tool
+ * definition. Nothing previously validated the model's ACTUAL tool-call
+ * `payload` against that schema before it became `IntentEnvelope.payload`:
+ * this stack has no grammar-constrained decoding (a completion's tool-call
+ * arguments are not enforced against `inputSchema` at the model layer), so a
+ * completion can freely emit a key its capability's authored schema never
+ * declared — e.g. a hallucinated `orderId` for `payment.pix.regenerate`,
+ * whose schema declares ZERO fields. Unfiltered, that key reached
+ * `resolveOrderId` (`resolve-and-assemble.ts`) and was read as an EXPLICIT
+ * customer reference, silently bypassing the auto-resolve confirm gate — the
+ * advertised schema alone did NOT close this; this filter is the missing
+ * enforcement half.
+ *
+ * Name-level strip ONLY — no type coercion, no repair; that stays the
+ * resolver's job (P3, one transformation per seam). A capability absent from
+ * `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY` (no authored schema yet) passes
+ * its payload through completely UNCHANGED — zero behavior change until
+ * FE-1's rollout authors that capability's schema; the smuggling class stays
+ * open for those capabilities BY THE ROLLOUT'S OWN DESIGN, not by oversight
+ * (see the FE-T11 PR's rollout-tail note). A non-object payload (null,
+ * array, or any other shape a malformed completion might emit) is likewise
+ * passed through unchanged — there are no NAMED keys to filter, and
+ * downstream handles a malformed payload exactly as it always has.
+ *
+ * The allowlist is schema-field-names UNION any declared
+ * `legacyPayloadChannels` (`wire-schemas.ts`'s `ALLOWED_PAYLOAD_FIELD_NAMES_
+ * BY_CAPABILITY`, built from each schema's OWN declaration — see
+ * `payment-refund-issue.schema.ts` / `order-status-transition.schema.ts` for
+ * the two known ops-plane exceptions): a small number of capabilities have a
+ * SECOND, pre-existing resolver path that reads a raw identifier field (e.g.
+ * `orderId`) directly off the payload as an authoritative explicit
+ * reference, older than and independent of the authored-schema mechanism —
+ * a naive "strip anything not in the wire schema" filter breaks those
+ * capabilities outright (caught by the full apps/api suite before this
+ * shipped: 21 tests across payment.refund.issue's and order.status.
+ * transition's e2e coverage). Declaring the exception IN the schema file
+ * (not a floating map here) keeps one source of truth a reviewer sees
+ * alongside the schema it exempts.
+ *
+ * PLACEMENT IS LOAD-BEARING — this runs ONLY here, at PLAN time, before the
+ * payload is threaded anywhere downstream. Do NOT duplicate or move this
+ * into `resolveAndAssemble.ts` or the RESUME path (`enrichResumeState`,
+ * claustrum-bootstrap.ts): both legitimately ADD resolver-owned fields
+ * (cartId, variantId, itemId, orderId, allergens, …) onto this SAME payload
+ * shape AFTER this filter has already run once — filtering again there would
+ * strip the resolver's own grounded fields, not just the model's.
+ *
+ * Existing ad-hoc per-field strips (e.g. `threadResolvedIdsIntoPayload`'s
+ * unconditional `allergens` strip) are KEPT, not superseded — defense in
+ * depth is permanent policy here, not a stopgap this generic filter retires.
+ */
+function stripUnauthoredPayloadFields(
+  capability: string,
+  payload: unknown,
+): { filtered: unknown; stripped: readonly string[] } {
+  const allowedFields = ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY.get(capability);
+  if (allowedFields === undefined) {
+    return { filtered: payload, stripped: [] };
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    return { filtered: payload, stripped: [] };
+  }
+  const filtered: Record<string, unknown> = {};
+  const stripped: string[] = [];
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (allowedFields.has(key)) {
+      filtered[key] = value;
+    } else {
+      stripped.push(key);
+    }
+  }
+  return { filtered, stripped };
 }
 
 /**
@@ -444,6 +607,21 @@ function buildToolSurface(
   }> = [];
 
   if (plan.allowedIntents.length > 0) {
+    // FE-1.1/FE-1.4 — per-capability extraction schema on the wire. For each
+    // allowed intent that has an AUTHORED extraction schema
+    // (EXTRACTION_SCHEMAS_BY_CAPABILITY), narrow the `payload` shape the
+    // model sees via a `capability`-discriminated `if/then` clause — additive
+    // over the existing generic `payload:{type:"object"}` shape (kept as the
+    // base/fallback for every capability without an authored schema yet, so
+    // this is byte-identical for every turn that doesn't propose a capability
+    // in the registry).
+    const perCapabilitySchemas = plan.allowedIntents
+      .map((kind) => {
+        const payloadSchema = EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind);
+        return payloadSchema === undefined ? null : { kind, payloadSchema };
+      })
+      .filter((x): x is { kind: string; payloadSchema: Record<string, unknown> } => x !== null);
+
     tools.push({
       name: EXPRESS_INTENT_TOOL,
       description:
@@ -464,16 +642,34 @@ function buildToolSurface(
         },
         required: ["capability", "payload"],
         additionalProperties: false,
+        ...(perCapabilitySchemas.length > 0
+          ? {
+              allOf: perCapabilitySchemas.map(({ kind, payloadSchema }) => ({
+                if: { properties: { capability: { const: kind } } },
+                then: { properties: { payload: payloadSchema } },
+              })),
+            }
+          : {}),
       },
     });
   }
 
   if (includeReads) {
+    // FE-T13 — per-read-tool extraction schema on the wire. Mirrors the
+    // express_intent narrowing above, one step down: when a visible read
+    // tool has an AUTHORED schema (READ_TOOL_SCHEMAS_BY_NAME,
+    // read-tool-schemas.ts), the model sees that tool's real, typed shape
+    // instead of the generic `{type:"object", additionalProperties:true}`
+    // blob — additive over that same generic shape, kept as the fallback for
+    // any read tool without an authored schema yet (today: the 2 staff/ops-
+    // only reads, never chat-plane-visible anyway), so this is byte-identical
+    // for every turn that doesn't offer an unauthored read tool.
     for (const read of plan.visibleReadTools) {
+      const authoredSchema = READ_TOOL_SCHEMAS_BY_NAME.get(read);
       tools.push({
         name: read,
         description: `Ferramenta de leitura: ${read}. Apenas consulta, não altera dados.`,
-        inputSchema: { type: "object", additionalProperties: true },
+        inputSchema: authoredSchema ?? { type: "object", additionalProperties: true },
       });
     }
   }
@@ -580,7 +776,9 @@ function translateToolCalls(args: {
   for (const call of args.toolCalls ?? []) {
     if (call.name === EXPRESS_INTENT_TOOL) {
       if (!isExpressIntentInput(call.input)) {
-        dropped.push(`${EXPRESS_INTENT_TOOL}(malformed)`);
+        // FE-T01 (NIT-1) — the SAME constant the extraction-failure REFUSE
+        // check below reads, so producer and consumer cannot drift apart.
+        dropped.push(MALFORMED_EXPRESS_INTENT_MARKER);
         continue;
       }
       const { capability, payload } = call.input;
@@ -591,10 +789,36 @@ function translateToolCalls(args: {
         dropped.push(capability);
         continue;
       }
+      // FE-T11 — the plan-time payload filter (see stripUnauthoredPayload
+      // Fields's doc): the ENFORCEMENT half of the authored extraction
+      // schemas, closing the class of bug where a smuggled key (e.g. a
+      // hallucinated orderId) rode the wire unfiltered straight into
+      // buildEnvelope. Runs BEFORE buildEnvelope, unconditionally, for every
+      // capability — a no-op for any capability with no authored schema.
+      const { filtered: filteredPayload, stripped } = stripUnauthoredPayloadFields(
+        capability,
+        payload ?? {},
+      );
+      if (stripped.length > 0) {
+        // SIGNAL — names only, NEVER values (the stripped value could be
+        // arbitrary model-generated text/PII): observability for how often a
+        // completion attempts to smuggle an unauthored field past a capability's
+        // narrowed wire schema.
+        logger.warn(
+          {
+            component: "planner",
+            event: "express_intent.payload_fields_stripped",
+            turnId: args.state.turnId,
+            capability,
+            strippedFields: stripped,
+          },
+          `planner stripped ${stripped.length} unauthored payload field(s) for "${capability}"`,
+        );
+      }
       envelopes.push(
         buildEnvelope({
           kind: capability,
-          payload: payload ?? {},
+          payload: filteredPayload ?? {},
           // Per-turn constant (customer plane: llm/conversation; ops plane:
           // user/admin:<staffId>/role). `payload` above is the ONLY thing the
           // model influences — never `actor`.
@@ -750,14 +974,88 @@ export function createIbatexasPlanner(
       // touch.
       const envelopeActor = plannerEnvelopeActor(deps.staffEnvelopeActor, state);
       const startedAt = Date.now();
-      const completion = await deps.model.complete({
-        model: deps.modelId,
-        system,
-        messages: [{ role: "user", content: state.perception.text }],
-        tools,
-        maxTokens,
-      });
+      // FE-T01 (D3/D4) — pin temperature (deterministic wire) and wrap the
+      // call in the bounded empty-completion repair idiom, scoped to a
+      // GENUINELY empty result (text AND toolCalls both empty — see
+      // `isGenuinelyEmptyCompletion`); a legitimate no-intent/small-talk
+      // completion (non-empty text, no tool call) is never retried.
+      // BKL-162 — resilient completion boundary: capture a thrown CompletionError
+      // (e.g. Ollama HTTP 500 from malformed tool-call XML on the read-tool
+      // surface), retry once (bounded), and degrade to an honest REFUSE below —
+      // NEVER let the throw propagate and abort the turn silently pre-turn_trace.
+      // Also keeps FE-T01's genuine-empty repair via isGenuinelyEmptyCompletion.
+      const extraction = await completeWithResilience(
+        () =>
+          deps.model.complete({
+            model: deps.modelId,
+            system,
+            messages: [{ role: "user", content: state.perception.text }],
+            tools,
+            maxTokens,
+            temperature: PINNED_COMPLETION_TEMPERATURE,
+          }),
+        {
+          maxAttempts: EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS,
+          isEmpty: isGenuinelyEmptyCompletion,
+        },
+      );
       const durationMs = Date.now() - startedAt;
+
+      // BKL-162 — the completion boundary failed (threw) on every attempt: the
+      // local-model endpoint is down / 500-ing on this turn's tool surface.
+      // Degrade to the SAME honest extraction-failure REFUSE the empty/malformed
+      // seams use (renders pt-BR "Não posso realizar essa ação..." + writes
+      // turn_trace + reaches the no-delivery classify), plus a structured,
+      // VictoriaLogs-queryable event — the guarantee is: a completion failure is
+      // an honest reply, never customer silence.
+      if (!extraction.ok) {
+        logger.warn(
+          {
+            component: "planner",
+            event: "extraction_failure",
+            turnId: state.turnId,
+            reason: "completion_error",
+            attempts: extraction.attempts,
+            error:
+              extraction.error instanceof Error
+                ? extraction.error.message
+                : String(extraction.error),
+          },
+          "planner: completion boundary failed after retry — extraction-failure REFUSE",
+        );
+        return {
+          envelopes: [
+            buildExtractionFailureEnvelope(
+              "completion_error",
+              envelopeActor,
+              deriveNonce(state, 0),
+            ),
+          ],
+          rationale:
+            "ibatexas-planner: model completion error after retry — extraction-failure REFUSE",
+          capabilities: [],
+          readToolCalls: [],
+          usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      }
+
+      const completion = extraction.completion;
+      const extractionAttempts = extraction.attempts;
+      const extractionRecovered = extraction.recovered;
+      if (extractionAttempts > 1) {
+        logger.warn(
+          {
+            component: "planner",
+            event: "empty_completion_retry",
+            turnId: state.turnId,
+            attempts: extractionAttempts,
+            recovered: extractionRecovered,
+          },
+          extractionRecovered
+            ? "planner recovered from a genuinely empty completion after retry"
+            : "planner exhausted empty-completion retries — extraction-failure REFUSE applies",
+        );
+      }
 
       // C1 — emit the planner-call LLMTrace (turnId is the correlation key; no
       // intentHash, as the intent is not yet formed at plan time). Best-effort.
@@ -776,7 +1074,43 @@ export function createIbatexasPlanner(
           outputTokens: completion.outputTokens,
           durationMs,
           at: new Date().toISOString(),
+          temperature: PINNED_COMPLETION_TEMPERATURE,
         });
+      }
+
+      // FE-T01 (D4) — a genuinely empty completion that survived the repair
+      // attempt(s) above is an extraction-wire FAILURE, not a legitimate
+      // no-intent turn (which always has SOME text — see
+      // `isGenuinelyEmptyCompletion`). Explicit REFUSE, never a silent
+      // pass-through to the small-talk respond-only branch.
+      if (isGenuinelyEmptyCompletion(completion)) {
+        logger.warn(
+          {
+            component: "planner",
+            event: "extraction_failure",
+            turnId: state.turnId,
+            reason: "empty_completion",
+            attempts: extractionAttempts,
+          },
+          "planner: genuinely empty completion survived repair — extraction-failure REFUSE",
+        );
+        return {
+          envelopes: [
+            buildExtractionFailureEnvelope(
+              "empty_completion",
+              envelopeActor,
+              deriveNonce(state, 0),
+            ),
+          ],
+          rationale:
+            "ibatexas-planner: genuinely empty completion after repair — extraction-failure REFUSE",
+          capabilities: [],
+          readToolCalls: [],
+          usage: {
+            inputTokens: completion.inputTokens,
+            outputTokens: completion.outputTokens,
+          },
+        };
       }
 
       let { envelopes, capabilities, readToolCalls, dropped } =
@@ -820,11 +1154,25 @@ export function createIbatexasPlanner(
         // executor closure takes the OWNER from `state`, never from input. Run the
         // executable reads concurrently (FIX B6 — order-preserving, best-effort per
         // read); a throw is captured as an error, never propagated.
+        //
+        // FE-T13 (team-lead P5 ruling) — sanitize each call's input against its
+        // AUTHORED schema (read-tool-schemas.ts's `sanitizeReadToolInput`) BEFORE
+        // it reaches the executor: nothing upstream (translateToolCalls) validates
+        // `call.input` against the advertised `inputSchema` — it is advertisement-
+        // only otherwise. A field not declared on the schema, or one whose runtime
+        // type/enum doesn't match, is dropped rather than forwarded; a tool with no
+        // authored schema yet is untouched. Never throws, never hard-fails a read —
+        // the worst case is an over-stripped call that behaves like today's
+        // argless call (P4 — availability wins).
+        const sanitizedCalls = executableReadCalls.map((call) => ({
+          name: call.name,
+          input: sanitizeReadToolInput(call.name, call.input),
+        }));
         const settled = await Promise.allSettled(
-          executableReadCalls.map((call) => executors[call.name](call.input, state)),
+          sanitizedCalls.map((call) => executors[call.name](call.input, state)),
         );
         const readResults: Array<{ name: string; result: unknown; error?: string }> =
-          executableReadCalls.map((call, idx) => {
+          sanitizedCalls.map((call, idx) => {
             const outcome = settled[idx]!;
             return outcome.status === "fulfilled"
               ? { name: call.name, result: outcome.value as unknown }
@@ -840,6 +1188,19 @@ export function createIbatexasPlanner(
             event: "read_loop.executed",
             turnId: state.turnId,
             reads: readResults.map((r) => (r.error ? `${r.name}:${r.error}` : r.name)),
+            // FE-T13 (team-lead calibration ruling) — the SANITIZED args for
+            // every AUTHORED-schema read only (bounded: read-tool-schemas.ts's
+            // registry can never carry a PII/identifier field by construction —
+            // the read-tool schema-lint gate enforces it — so nothing here needs
+            // redaction, only a length cap against a runaway string value). A
+            // read with no authored schema yet is omitted — its shape is
+            // unbounded, logging it verbatim would reintroduce the "log
+            // whatever the model sent" risk this rollout slice exists to close.
+            // Gives a live calibration sample something concrete to score
+            // against (previously this line logged only tool NAMES).
+            args: sanitizedCalls
+              .filter((c) => READ_TOOL_SCHEMAS_BY_NAME.has(c.name))
+              .map((c) => `${c.name}:${truncateLoggedArgs(JSON.stringify(c.input))}`),
           },
           `planner read-loop executed ${readResults.length} read(s); re-prompting once`,
         );
@@ -868,17 +1229,62 @@ export function createIbatexasPlanner(
         // exactly one hop, so a hop-2 read would be traced-but-never-executed.
         const pass2Tools = buildToolSurface(plan, false);
         const startedAt2 = Date.now();
-        const completion2 = await deps.model.complete({
-          model: deps.modelId,
-          system,
-          messages: [
-            { role: "user", content: state.perception.text },
-            { role: "assistant", content: assistantTurn },
-            { role: "user", content: enrichmentPrompt },
-          ],
-          tools: pass2Tools,
-          maxTokens,
-        });
+        // BKL-162 — the read-loop re-prompt is the OTHER completion boundary that
+        // can throw on the read-tool surface (the malformed-XML 500 was live-
+        // reproduced here on order-status drives). Same resilient boundary:
+        // error-retry only (an empty pass-2 is legitimate — it just proposes no
+        // intent — so no isEmpty predicate), then degrade to an honest REFUSE.
+        const pass2 = await completeWithResilience(
+          () =>
+            deps.model.complete({
+              model: deps.modelId,
+              system,
+              messages: [
+                { role: "user", content: state.perception.text },
+                { role: "assistant", content: assistantTurn },
+                { role: "user", content: enrichmentPrompt },
+              ],
+              tools: pass2Tools,
+              maxTokens,
+              // FE-T01 (D3) — same wire pin as the first-pass call above.
+              temperature: PINNED_COMPLETION_TEMPERATURE,
+            }),
+          { maxAttempts: EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS },
+        );
+        if (!pass2.ok) {
+          logger.warn(
+            {
+              component: "planner",
+              event: "extraction_failure",
+              turnId: state.turnId,
+              reason: "completion_error",
+              readLoop: true,
+              attempts: pass2.attempts,
+              error:
+                pass2.error instanceof Error ? pass2.error.message : String(pass2.error),
+            },
+            "planner: read-loop completion boundary failed after retry — extraction-failure REFUSE",
+          );
+          return {
+            envelopes: [
+              buildExtractionFailureEnvelope(
+                "completion_error",
+                envelopeActor,
+                deriveNonce(state, 0),
+              ),
+            ],
+            rationale:
+              "ibatexas-planner: read-loop completion error after retry — extraction-failure REFUSE",
+            capabilities: [],
+            // The pass-1 reads DID execute (owner-scoped, best-effort); surface them.
+            readToolCalls,
+            usage: {
+              inputTokens: completion.inputTokens,
+              outputTokens: completion.outputTokens,
+            },
+          };
+        }
+        const completion2 = pass2.completion;
         const durationMs2 = Date.now() - startedAt2;
         readLoopUsage = {
           inputTokens: completion2.inputTokens,
@@ -906,6 +1312,7 @@ export function createIbatexasPlanner(
             outputTokens: completion2.outputTokens,
             durationMs: durationMs2,
             at: new Date().toISOString(),
+            temperature: PINNED_COMPLETION_TEMPERATURE,
           });
         }
         // The second pass SUPERSEDES the first for envelopes/capabilities (the
@@ -923,6 +1330,41 @@ export function createIbatexasPlanner(
         capabilities = second.capabilities;
         dropped = [...dropped, ...second.dropped];
         readToolCalls = [...readToolCalls, ...second.readToolCalls];
+      }
+
+      // FE-T01 (D3) — a malformed `express_intent` call (the frozen provider's
+      // `{raw}` JSON.parse-failure passthrough — see ollama-fetch-client.ts /
+      // @claustrum/openai's `fromResponse`) is an extraction-wire FAILURE, not
+      // an ordinary out-of-plan drop. Scoped to "nothing else salvaged this
+      // turn" (`envelopes.length === 0`): a malformed call ALONGSIDE a
+      // successfully-extracted envelope does not override the legitimate one.
+      if (envelopes.length === 0 && dropped.includes(MALFORMED_EXPRESS_INTENT_MARKER)) {
+        logger.warn(
+          {
+            component: "planner",
+            event: "extraction_failure",
+            turnId: state.turnId,
+            reason: "malformed_tool_call",
+            droppedOutOfPlan: dropped,
+          },
+          "planner: malformed tool-call JSON — extraction-failure REFUSE",
+        );
+        return {
+          envelopes: [
+            buildExtractionFailureEnvelope(
+              "malformed_tool_call",
+              envelopeActor,
+              deriveNonce(state, 0),
+            ),
+          ],
+          rationale: `ibatexas-planner: malformed tool-call JSON — extraction-failure REFUSE (dropped [${dropped.join(", ")}])`,
+          capabilities: [],
+          readToolCalls,
+          usage: {
+            inputTokens: completion.inputTokens + readLoopUsage.inputTokens,
+            outputTokens: completion.outputTokens + readLoopUsage.outputTokens,
+          },
+        };
       }
 
       const rationale =
@@ -1034,6 +1476,8 @@ export function createIbatexasPlanner(
         messages: [{ role: "user", content: state.perception.text }],
         tools: [claimTool],
         maxTokens,
+        // FE-T01 (D3) — same wire pin as the intent-path `propose()` calls.
+        temperature: PINNED_COMPLETION_TEMPERATURE,
       });
 
       // FIX 1 (actor) — the AUTHENTICATED principal for this turn. The candidate
@@ -1060,7 +1504,18 @@ export function createIbatexasPlanner(
       // to a SINGLE owned resource because the authenticated customer owns ≥2
       // relevant ones → CLARIFY (ask which), never a guess.
       let ownerScopedAmbiguous = false;
-      const safety: SafetyRoutingInput = { markers: collectSafetyMarkers(completion.toolCalls) };
+      // BKL-209 — the safety markers are the UNION of (a) what the 4B flagged via
+      // `propose_claim.safetyMarkers` (a bounded probabilistic §O#8 input) and (b) a
+      // DETERMINISTIC medical-emergency net over the request text. Relying on (a)
+      // alone made an allergy emergency escalate only by model luck; the
+      // deterministic net forces the §O#9 ESCALATE regardless of the model. Distinct
+      // from allergen-INFO ("tem amendoim?"), which stays the BKL-184 abstain path.
+      const safety: SafetyRoutingInput = {
+        markers: [
+          ...collectSafetyMarkers(completion.toolCalls),
+          ...detectMedicalEmergencyMarkers(state.perception.text),
+        ],
+      };
       for (const call of completion.toolCalls ?? []) {
         if (call.name !== PROPOSE_CLAIM_TOOL || !isProposeClaimInput(call.input)) {
           continue;
@@ -1113,6 +1568,27 @@ export function createIbatexasPlanner(
           const resolved = resolveQueriedScheduleDate(state.perception.text, dateTz, dateNow);
           if (resolved === null) continue;
           subject = resolved.isoDate;
+        } else if (
+          canonicalType === "MENU_ITEM_PRICE" ||
+          canonicalType === "MENU_ITEM_CONTENTS"
+        ) {
+          // BKL-142 (subject) — the menu claim's SUBJECT is the RESOLVED product id,
+          // resolved DETERMINISTICALLY from the request text via the SHARED
+          // resolveMenuItem (the SAME turnId+text the investigator uses, memoized, so the
+          // candidate subject == the `menu:item_*:{id}` ledger key by construction). No
+          // lexically-related product → DROP the proposal (no candidate) → honest UNKNOWN,
+          // never a guessed/arbitrary item.
+          const resolvedItem = await resolveMenuItem(
+            state.turnId,
+            state.perception.text,
+            {
+              channel: state.perception.channel,
+              sessionId: state.conversationId,
+              customerId: authPrincipal,
+            },
+          );
+          if (resolvedItem === undefined) continue;
+          subject = resolvedItem.id;
         }
 
         proposals.push({
@@ -1160,36 +1636,92 @@ export function createIbatexasPlanner(
       // (C6 + falsifier/CE#3 + provenance + freshness) over these candidates, so
       // C6 passes BY CONSTRUCTION (derived value == the ledger value C6 compares)
       // while a present falsifier STILL demotes the claim to UNKNOWN.
-      const scheduleSignal = deps.resolveScheduleSignal
-        ? ((await deps.resolveScheduleSignal()) ?? undefined)
-        : undefined;
-      // BKL-121 — the SAME first-party today's-hours read the investigator records,
-      // so STORE_HOURS's derived `hoursText` is byte-equal to the ledger entry (C6
-      // passes by construction; a present override/holiday falsifier still demotes).
-      const storeHours = deps.resolveStoreHours
-        ? ((await deps.resolveStoreHours()) ?? undefined)
-        : undefined;
-      // BKL-138 — the SAME per-date hours read the investigator records under
-      // `schedule:store_hours:{date}`, keyed by each STORE_HOURS_FOR_DATE candidate's
-      // resolved subject (the ISO date). Read ONCE per distinct queried date this turn;
-      // a read that fails/returns undefined leaves that date's value undefined → C6
-      // ABSTAIN → honest UNKNOWN (never a fabricated hours string).
-      const storeHoursForDate: Record<string, StoreHoursForDateRead> = {};
-      if (deps.resolveHoursForDate !== undefined) {
-        const dates = new Set(
-          candidates
-            .filter((c) => c.type === "STORE_HOURS_FOR_DATE")
-            .map((c) => c.subject),
+      // BKL-126 — the schedule-family derives (STORE_OPEN_NOW / STORE_HOURS /
+      // STORE_HOURS_FOR_DATE) were REMOVED here: they re-loaded the schedule +
+      // clock FRESH at this stage, 5-20s after the investigator's recorded read
+      // (a mid-turn schedule edit / midnight rollover in the window → C6
+      // REFUSED mis-audited as a model over-claim). Those candidates now leave
+      // this stage with `value: undefined`; @claustrum/core claims-validate
+      // stage 4b binds the value from the investigator's OWN recorded ledger
+      // entry — C6 byte-equal BY CONSTRUCTION, divergence window deleted,
+      // falsifier arms untouched. (resolveScheduleSignal remains a dep ONLY for
+      // the closed-hours prompt note — a prompt-side concern, not C6.)
+      // BKL-142 — the SAME per-item reads the investigator records under
+      // `menu:item_*:{id}`, keyed by the resolved product id (each menu candidate's
+      // subject). resolveMenuItem is memoized on turnId+text, so this REUSES the read the
+      // subject-resolution branch already made (ONE searchProducts per turn) and yields
+      // the IDENTICAL product → the derived `priceText`/`contentsText` are byte-equal to
+      // the investigator's ledger entry (C6 passes by construction). Composed here from
+      // integer centavos (Hard Rule 2) / the first-party description — never model-authored.
+      const menuItemPrice: Record<string, { priceText: string }> = {};
+      const menuItemContents: Record<string, { contentsText: string }> = {};
+      const menuCandidateTypes = new Set(candidates.map((c) => c.type));
+      if (
+        menuCandidateTypes.has("MENU_ITEM_PRICE") ||
+        menuCandidateTypes.has("MENU_ITEM_CONTENTS")
+      ) {
+        const resolvedItem: ResolvedMenuItem | undefined = await resolveMenuItem(
+          state.turnId,
+          state.perception.text,
+          {
+            channel: state.perception.channel,
+            sessionId: state.conversationId,
+            customerId: authPrincipal,
+          },
         );
-        for (const isoDate of dates) {
-          const read = await deps.resolveHoursForDate(isoDate);
-          if (read !== undefined) storeHoursForDate[isoDate] = read;
+        if (resolvedItem !== undefined) {
+          menuItemPrice[resolvedItem.id] = {
+            priceText: composeMenuPriceText(resolvedItem),
+          };
+          const contentsText = composeMenuContentsText(resolvedItem);
+          if (contentsText !== undefined) {
+            menuItemContents[resolvedItem.id] = { contentsText };
+          }
         }
       }
+      // BKL-142 — MENU_OVERVIEW derivation read (FIXED subject): the SAME menu-wide
+      // `overviewText` the investigator records under `menu:overview`, memoized on
+      // turnId so this REUSES the investigator's ONE wildcard read → byte-equal value
+      // (C6 passes by construction). Empty/unreadable catalog → undefined → C6 ABSTAIN.
+      let menuOverview: { overviewText: string } | undefined;
+      if (menuCandidateTypes.has("MENU_OVERVIEW")) {
+        const overviewText = await resolveMenuOverviewText(state.turnId, {
+          channel: state.perception.channel,
+          sessionId: state.conversationId,
+          customerId: authPrincipal,
+        });
+        if (overviewText !== undefined) menuOverview = { overviewText };
+      }
+      // BKL-214 — MENU_DIETARY derivation read (per-TAG): the SAME per-tag `dietaryText`
+      // the investigator records under `menu:dietary:{tag}`, memoized on turnId+tag so
+      // this REUSES the investigator's faceted read → byte-equal value (C6 by
+      // construction). No tagged product → undefined → C6 ABSTAIN → honest UNKNOWN.
+      const menuDietary: Record<string, { dietaryText: string }> = {};
+      if (menuCandidateTypes.has("MENU_DIETARY")) {
+        for (const tag of detectDietaryPreferenceTags(state.perception.text)) {
+          const dietaryText = await resolveDietaryOptionsText(state.turnId, tag, {
+            channel: state.perception.channel,
+            sessionId: state.conversationId,
+            customerId: authPrincipal,
+          });
+          if (dietaryText !== undefined) menuDietary[tag] = { dietaryText };
+        }
+      }
+      // BKL-136 — STORE_INFO derivation read (FIXED subject): the SAME `infoText`
+      // the investigator records under `store:info`, memoized on turnId so this
+      // REUSES the investigator's ONE Medusa admin read → byte-equal value (C6
+      // passes by construction). Blank/unreadable metadata → undefined → C6 ABSTAIN.
+      let storeInfo: { infoText: string } | undefined;
+      if (menuCandidateTypes.has("STORE_INFO")) {
+        const infoText = await resolveStoreInfoText(state.turnId);
+        if (infoText !== undefined) storeInfo = { infoText };
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
-        scheduleSignal,
-        storeHours,
-        storeHoursForDate,
+        menuItemPrice,
+        menuItemContents,
+        ...(Object.keys(menuDietary).length > 0 ? { menuDietary } : {}),
+        ...(menuOverview !== undefined ? { menuOverview } : {}),
+        ...(storeInfo !== undefined ? { storeInfo } : {}),
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
@@ -1240,6 +1772,7 @@ export function createIbatexasPlanner(
           outputTokens: completion.outputTokens,
           durationMs: Date.now() - claimStartedAt,
           at: new Date().toISOString(),
+          temperature: PINNED_COMPLETION_TEMPERATURE,
         });
       }
 

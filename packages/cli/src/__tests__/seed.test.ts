@@ -3,16 +3,15 @@ import {
   SEED_PRODUCTS,
   CATEGORIES,
 } from "../../../../apps/commerce/src/seed-data"
+// BKL-158: single-source the tag allowlist from the CLI's own tag authority
+// (`ALLOWED_TAGS`) instead of hand-copying it here. The charset invariant
+// (/^[a-z_]+$/) stays pinned by medusa.test.ts — its single enforcement point.
+import { ALLOWED_TAGS } from "../lib/medusa.js"
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const VALID_PRODUCT_TYPES = ["food", "frozen", "merchandise"] as const
 const VALID_AVAILABILITY_WINDOWS = ["almoco", "jantar", "congelados", "always"] as const
-const VALID_TAGS = [
-  "popular", "chef_choice", "sem_gluten", "sem_lactose",
-  "vegano", "vegetariano", "novo", "congelado", "defumado",
-  "exclusivo", "edicao_limitada", "kit",
-] as const
 const NUTRITIONAL_FIELDS = ["calories", "protein", "fat", "carbs", "sodium"] as const
 const KEBAB_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/
 
@@ -275,7 +274,7 @@ describe("Seed data — structural validation", () => {
     for (const product of SEED_PRODUCTS) {
       for (const tag of product.tags) {
         expect(
-          (VALID_TAGS as readonly string[]).includes(tag),
+          (ALLOWED_TAGS as readonly string[]).includes(tag),
           `${product.title}: tag "${tag}" is not in the allowed tag list`
         ).toBe(true)
       }

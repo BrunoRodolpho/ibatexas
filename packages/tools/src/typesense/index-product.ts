@@ -2,7 +2,7 @@
 // Called from Medusa subscribers on product create/update/delete
 
 import { medusaToTypesenseDoc, type MedusaProductInput, type TypesenseProductDoc } from "../mappers/product-mapper.js"
-import { generateEmbedding } from "../embeddings/client.js"
+import { generateEmbedding, embeddingCacheVersion } from "../embeddings/client.js"
 import { rk } from "../redis/key.js"
 import { getTypesenseClient, COLLECTION } from "./client.js"
 import { isTypesenseError, type TypesenseImportResult } from "./types.js"
@@ -25,11 +25,19 @@ export async function indexProduct(
 
   // Generate embedding for vector search
   // Fallback: index without embedding if API is unavailable (keyword search still works)
+  //
+  // FE-D17: the `product_embedding:` namespace-version evicts pseudo-vector
+  // garbage cached under the old key. BKL-034: the version is PROVIDER-derived
+  // (openai→v2, ollama→v3) so the local 768-dim model's vectors never collide
+  // with cached OpenAI 1536-dim vectors from a different space (poison class).
+  // NOTE: Typesense's collection `num_dim` is baked from EMBED_DIM — switching
+  // provider/dimension REQUIRES a full reindex (`ibx db reindex --fresh`) to
+  // recreate the collection at the new dimension before hybrid search is sound.
   try {
     const embeddingText = [product.title, product.description || ""].join(". ")
     doc.embedding = await embedFn(
       embeddingText,
-      rk(`product_embedding:${product.id}`),
+      rk(`product_embedding:${embeddingCacheVersion()}:${product.id}`),
       Number.parseInt(process.env.EMBEDDINGS_CACHE_TTL_SECONDS || "2592000", 10)
     )
   } catch (error) {
@@ -76,7 +84,9 @@ export async function indexProductsBatch(
       const doc: TypesenseProductDoc & { embedding?: number[] } = medusaToTypesenseDoc(product)
       try {
         const embeddingText = [product.title, product.description || ""].join(". ")
-        doc.embedding = await embedFn(embeddingText, rk(`product_embedding:${product.id}`), ttl)
+        // FE-D17/BKL-034: provider-derived namespace version — see indexProduct's
+        // note on evicting cached pseudo-vectors + the reindex on dimension change.
+        doc.embedding = await embedFn(embeddingText, rk(`product_embedding:${embeddingCacheVersion()}:${product.id}`), ttl)
       } catch (error) {
         console.warn(`[Typesense] Embedding skipped for ${product.id}:`, (error as Error).message)
       }

@@ -115,6 +115,19 @@ vi.mock("@ibatexas/domain", () => ({
   createCustomerService: () => ({
     getById: mockGetById,
   }),
+  // FE-T04 — routes/me.js (dynamically imported below) pulls in
+  // customer-intent-gateway.js + claustrum/resolve-and-assemble.js, both of
+  // which now statically import from @ibatexas/domain. isStructurallyMalformed
+  // mirrors real behavior for this file's well-formed envelopes (always
+  // `false`) — the gate's own rejection logic is covered by
+  // test-envelope-ingress.test.ts and with-adjudicate.test.ts, not here.
+  // createReservationService is unexercised by any assertion in this file.
+  isStructurallyMalformed: () => false,
+  STRUCTURAL_REJECTION_CODE: "envelope_malformed",
+  createReservationService: () => ({
+    getById: vi.fn().mockResolvedValue(null),
+    listByCustomer: vi.fn().mockResolvedValue({ reservations: [] }),
+  }),
 }));
 
 vi.mock("@ibatexas/tools", () => ({

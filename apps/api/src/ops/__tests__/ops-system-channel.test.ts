@@ -4,13 +4,22 @@
 // defer-phrases, affirmatives, negatives, single-slot most-recent-by-parkedAt,
 // mixed-signal precedence, and the load-bearing "sim with ZERO parks → null".
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ChannelMessage, ParkedEnvelope, Session } from "@claustrum/core";
 import {
+  expiredOpsParkNotice,
+  getOpsConfirmParkTtlSeconds,
   isAmbiguousOpsReply,
   matchOpsReplyToParked,
+  opsConfirmParkExpiresAt,
+  opsExpiredInScopeParks,
+  opsNegativeDeclineTarget,
+  opsSoftAffirmativeRestateNotice,
+  opsStaleResumeNotice,
   OPS_AMBIGUOUS_REPLY_CLARIFY_PTBR,
   OpsSystemChannel,
+  partitionOpsParksByFreshness,
+  pruneExpiredOpsParks,
 } from "../ops-system-channel.js";
 
 function parked(intentHash: string, parkedAt: string): ParkedEnvelope {
@@ -36,10 +45,17 @@ describe("matchOpsReplyToParked — pt-BR ops confirm-resume matcher", () => {
     expect(m?.parked).toBe(P2); // most recent by parkedAt
   });
 
-  it.each(["sim", "confirma", "confirmo", "pode", "ok", "isso", "beleza", "manda"])(
-    "affirmative lexicon: %s → confirm",
+  it.each(["sim", "confirma", "confirmo", "aprovo"])(
+    "EXPLICIT affirmative lexicon: %s → confirm (FE-D32)",
     (word) => {
       expect(matchOpsReplyToParked(word, [P1])?.userResolution).toBe("confirm");
+    },
+  );
+
+  it.each(["pode", "ok", "isso", "beleza", "manda"])(
+    "SOFT affirmative lexicon: %s → null (FE-D32 — too weak to execute; the ingress restates)",
+    (word) => {
+      expect(matchOpsReplyToParked(word, [P1])).toBeNull();
     },
   );
 
@@ -210,10 +226,17 @@ describe("matchOpsReplyToParked — money-execution safety", () => {
     },
   );
 
-  it.each(["sim", "sim, confirma", "confirmo", "pode confirmar", "ok", "beleza"])(
-    "a clean unambiguous confirm still resolves to confirm: %s",
+  it.each(["sim", "sim, confirma", "confirmo", "pode confirmar"])(
+    "a clean EXPLICIT confirm still resolves to confirm: %s",
     (text) => {
       expect(matchOpsReplyToParked(text, [P1])?.userResolution).toBe("confirm");
+    },
+  );
+
+  it.each(["ok", "beleza"])(
+    "a bare SOFT affirmative no longer resolves to confirm (FE-D32): %s",
+    (text) => {
+      expect(matchOpsReplyToParked(text, [P1])).toBeNull();
     },
   );
 
@@ -305,5 +328,534 @@ describe("OpsSystemChannel — driver integration", () => {
 
   it("kind is 'system' (SystemChannel behaviour preserved)", () => {
     expect(channel.kind).toBe("system");
+  });
+});
+
+// ── FE-D13: confirm-park TTL + honest stale-resume ───────────────────────────
+// A parked ops CONFIRM must resume only within a freshness window; an older park
+// is invisible to BOTH bare-affirmative AND #hash resume (a forgotten park must
+// never execute on a later unrelated "sim" — the two live FE-D13 incidents), and
+// the ingress restates the expiry honestly instead of silently running the fresh
+// loop. Fail-CLOSED: an age that cannot be established ⇒ expired.
+
+/** A parked envelope carrying an intent `kind` (for the scope-exclusion cases). */
+function parkedKind(
+  intentHash: string,
+  parkedAt: string,
+  kind: string,
+  userPrompt = "Confirmar?",
+): ParkedEnvelope {
+  return {
+    envelope: { intentHash, kind } as ParkedEnvelope["envelope"],
+    confirmationToken: `tok-${intentHash}`,
+    userPrompt,
+    parkedAt,
+  };
+}
+
+describe("partitionOpsParksByFreshness — FE-D13 confirm-park TTL", () => {
+  // P1 parkedAt 12:00:00 → 900s old at NOW; P2 parkedAt 12:05:00 → 600s old.
+  const NOW = "2026-07-04T12:15:00.000Z";
+
+  it("a park EXACTLY at the TTL boundary is EXPIRED (age >= ttl)", () => {
+    // P1 is 900s old; ttl 900s → age(900_000ms) >= ttl(900_000ms) → expired.
+    const { fresh, expired } = partitionOpsParksByFreshness([P1], NOW, 900);
+    expect(fresh).toHaveLength(0);
+    expect(expired).toEqual([P1]);
+  });
+
+  it("a park just UNDER the TTL boundary is FRESH", () => {
+    // P1 is 900s old; ttl 901s → age < ttl → fresh (both sides of the boundary).
+    const { fresh, expired } = partitionOpsParksByFreshness([P1], NOW, 901);
+    expect(fresh).toEqual([P1]);
+    expect(expired).toHaveLength(0);
+  });
+
+  it("splits a mixed list at the boundary (P1 expired 900s, P2 fresh 600s)", () => {
+    const { fresh, expired } = partitionOpsParksByFreshness([P1, P2], NOW, 900);
+    expect(expired).toEqual([P1]);
+    expect(fresh).toEqual([P2]);
+  });
+
+  it("fail-CLOSED: a malformed parkedAt ⇒ expired (inverts the NaN keep-alive)", () => {
+    // Contrast the most-recent SELECTION guard, which keeps a NaN-timestamp park
+    // resumable; for the EXPIRY decision an unparseable age fails closed.
+    const bad = parked("cccccccccccc", "not-a-date");
+    const { fresh, expired } = partitionOpsParksByFreshness([bad], NOW, 900);
+    expect(fresh).toHaveLength(0);
+    expect(expired).toEqual([bad]);
+  });
+
+  it("fail-CLOSED: a malformed nowIso ⇒ ALL parks expired", () => {
+    const { fresh, expired } = partitionOpsParksByFreshness([P1, P2], "not-a-date", 900);
+    expect(fresh).toHaveLength(0);
+    expect(expired).toEqual([P1, P2]);
+  });
+
+  it("PURE — never mutates the input list", () => {
+    const input = [P1, P2];
+    partitionOpsParksByFreshness(input, NOW, 900);
+    expect(input).toEqual([P1, P2]);
+  });
+});
+
+describe("OpsSystemChannel.matchToParked — FE-D13 TTL freshness gate", () => {
+  const channel = new OpsSystemChannel({
+    gatewaySigningKey: "test-ops-signing-key-abcdefghijklmnop",
+    gateway: "ibatexas-ops-test",
+  });
+  function session(pending: ParkedEnvelope[]): Session {
+    return {
+      id: "system:staff:s1",
+      customerId: "staff:s1",
+      channel: "system",
+      startedAt: "2026-07-04T00:00:00.000Z",
+      lastActivityAt: "2026-07-04T00:00:00.000Z",
+      pendingConfirmations: pending,
+      deferredEnvelopes: [],
+      activeGoals: [],
+      workingMemory: { summary: "", facts: [], updatedAt: "2026-07-04T00:00:00.000Z" },
+    };
+  }
+  function msg(text: string, receivedAt: string): ChannelMessage {
+    return {
+      channel: "system",
+      customerId: "staff:s1",
+      conversationId: "admin:s1",
+      externalId: "x",
+      text,
+      receivedAt,
+      locale: "pt-BR",
+    };
+  }
+
+  it("a FRESH park (age 0) resolves 'sim' — byte-identical to pre-FE-D13", () => {
+    const m = channel.matchToParked(
+      msg("sim, confirma", "2026-07-04T12:00:00.000Z"),
+      session([P1]),
+    );
+    expect(m?.userResolution).toBe("confirm");
+    expect(m?.parked).toBe(P1);
+  });
+
+  it("a park older than the default 900s TTL is INVISIBLE to a bare 'sim' → null", () => {
+    // P1 parkedAt 12:00; received 12:16 (>15 min) → expired → no resume.
+    expect(
+      channel.matchToParked(msg("sim", "2026-07-04T12:16:00.000Z"), session([P1])),
+    ).toBeNull();
+  });
+
+  it("an expired park is INVISIBLE to a #hash resume too (consistent with hash-miss)", () => {
+    expect(
+      channel.matchToParked(
+        msg("#a4b8c1 confirma", "2026-07-04T12:16:00.000Z"),
+        session([P1]),
+      ),
+    ).toBeNull();
+  });
+
+  it("only-expired parks ⇒ 'sim' returns null (nothing to resume)", () => {
+    // At 12:30 both P1 (12:00) and P2 (12:05) exceed the 900s TTL.
+    expect(
+      channel.matchToParked(msg("sim", "2026-07-04T12:30:00.000Z"), session([P1, P2])),
+    ).toBeNull();
+  });
+
+  it("a still-FRESH park among expired ones still resolves (partition keeps the fresh)", () => {
+    const P3 = parked("dddddddddddd", "2026-07-04T12:15:30.000Z"); // 30s old at 12:16
+    const m = channel.matchToParked(
+      msg("sim", "2026-07-04T12:16:00.000Z"),
+      session([P1, P3]),
+    );
+    expect(m?.parked).toBe(P3);
+    expect(m?.userResolution).toBe("confirm");
+  });
+});
+
+describe("opsSoftAffirmativeRestateNotice — FE-D32 soft-affirmative restatement", () => {
+  const FRESH_NOW = "2026-07-04T12:00:30.000Z"; // 30s after P1's park → fresh
+
+  it.each(["pode", "ok", "manda", "beleza", "isso", "claro"])(
+    "a bare SOFT affirmative on a fresh park RESTATES (names the prompt, asks for explicit): %s",
+    (text) => {
+      const notice = opsSoftAffirmativeRestateNotice({
+        text,
+        pendingConfirmations: [P1],
+        nowIso: FRESH_NOW,
+      });
+      expect(notice).toBeDefined();
+      expect(notice).toContain(P1.userPrompt); // "Confirmar?"
+      expect(notice).toContain('"sim"'); // asks for an explicit confirm
+    },
+  );
+
+  it.each(["sim", "confirmo", "sim, confirma", "#a4b8c1"])(
+    "an EXPLICIT confirm / #hash is deferred to the normal loop (undefined — it executes): %s",
+    (text) => {
+      expect(
+        opsSoftAffirmativeRestateNotice({ text, pendingConfirmations: [P1], nowIso: FRESH_NOW }),
+      ).toBeUndefined();
+    },
+  );
+
+  it.each(["não", "cancela", "amanhã", "muda o preço da costela para 89"])(
+    "a negative / defer / ordinary command → undefined (normal loop): %s",
+    (text) => {
+      expect(
+        opsSoftAffirmativeRestateNotice({ text, pendingConfirmations: [P1], nowIso: FRESH_NOW }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("no fresh in-scope park → undefined (soft reply is a fresh utterance; the stale path owns expired parks)", () => {
+    expect(
+      opsSoftAffirmativeRestateNotice({ text: "pode", pendingConfirmations: [], nowIso: FRESH_NOW }),
+    ).toBeUndefined();
+    const EXPIRED_NOW = "2026-07-04T13:00:00.000Z";
+    expect(
+      opsSoftAffirmativeRestateNotice({ text: "pode", pendingConfirmations: [P1], nowIso: EXPIRED_NOW }),
+    ).toBeUndefined();
+  });
+});
+
+describe("expiredOpsParkNotice — FE-D13 honest stale-resume restatement", () => {
+  const NOW = "2026-07-04T12:16:00.000Z";
+  // P1's userPrompt is "Confirmar?" (the parked() helper), parkedAt 12:00 → expired.
+
+  it.each(["sim", "pode", "#a4b8c1 confirma", "não", "cancela"])(
+    "restates (naming the parked kernel prompt) on a resume signal: %s",
+    (text) => {
+      const notice = expiredOpsParkNotice(text, [P1], NOW);
+      expect(notice).toBeDefined();
+      expect(notice).toContain(P1.userPrompt); // "Confirmar?"
+      expect(notice).toContain("expirou");
+      expect(notice).toContain("NÃO foi executada");
+    },
+  );
+
+  it("undefined on a no-signal fresh utterance (ordinary command runs the normal loop)", () => {
+    expect(expiredOpsParkNotice("como está a cozinha?", [P1], NOW)).toBeUndefined();
+  });
+
+  it("undefined on an empty expired set", () => {
+    expect(expiredOpsParkNotice("sim", [], NOW)).toBeUndefined();
+  });
+
+  it("fail-safe: undefined when nowIso is unparseable (cannot honestly assert expiry)", () => {
+    expect(expiredOpsParkNotice("sim", [P1], "not-a-date")).toBeUndefined();
+  });
+});
+
+describe("opsStaleResumeNotice — FE-D13 ingress orchestrator", () => {
+  const TTL = 900;
+  const parkedAt = "2026-07-04T12:00:00.000Z";
+  const staleNow = "2026-07-04T12:16:00.000Z"; // 16 min → expired
+  const freshNow = "2026-07-04T12:05:00.000Z"; // 5 min → fresh
+
+  it("returns the notice for a 'sim' against an EXPIRED park", () => {
+    const p = parkedKind("aaaa11112222", parkedAt, "payment.refund.issue", "Confirmar reembolso de R$ 50,00?");
+    const notice = opsStaleResumeNotice({
+      text: "sim",
+      pendingConfirmations: [p],
+      nowIso: staleNow,
+      ttlSeconds: TTL,
+    });
+    expect(notice).toBeDefined();
+    expect(notice).toContain("Confirmar reembolso de R$ 50,00?");
+  });
+
+  it("returns undefined (normal loop) when the reply resumes a still-FRESH park", () => {
+    const p = parkedKind("aaaa11112222", parkedAt, "payment.refund.issue");
+    expect(
+      opsStaleResumeNotice({
+        text: "sim",
+        pendingConfirmations: [p],
+        nowIso: freshNow,
+        ttlSeconds: TTL,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("fresh precedence: a fresh park the reply resumes WINS over an older expired one (no notice)", () => {
+    const expired = parkedKind("aaaa00000000", parkedAt, "payment.refund.issue");
+    const fresh = parkedKind("bbbb11112222", "2026-07-04T12:15:30.000Z", "payment.refund.issue");
+    expect(
+      opsStaleResumeNotice({
+        text: "sim",
+        pendingConfirmations: [expired, fresh],
+        nowIso: staleNow,
+        ttlSeconds: TTL,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("BKL-086 parity: an excluded (out-of-scope) EXPIRED money park is NOT restated", () => {
+    const p = parkedKind("aaaa11112222", parkedAt, "payment.refund.issue", "Confirmar reembolso?");
+    const excluded = new Set(["payment.refund.issue"]);
+    expect(
+      opsStaleResumeNotice({
+        text: "sim",
+        pendingConfirmations: [p],
+        nowIso: staleNow,
+        excludedKinds: excluded,
+        ttlSeconds: TTL,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("an in-scope expired park IS restated even when an excluded one coexists", () => {
+    const refund = parkedKind("aaaa00000000", parkedAt, "payment.refund.issue", "Confirmar reembolso?");
+    const price = parkedKind("bbbb11112222", parkedAt, "product.price.set", "Confirmar novo preço?");
+    const excluded = new Set(["payment.refund.issue"]);
+    const notice = opsStaleResumeNotice({
+      text: "sim",
+      pendingConfirmations: [refund, price],
+      nowIso: staleNow,
+      excludedKinds: excluded,
+      ttlSeconds: TTL,
+    });
+    expect(notice).toBeDefined();
+    expect(notice).toContain("Confirmar novo preço?");
+    expect(notice).not.toContain("reembolso");
+  });
+
+  it("undefined on an ordinary command while an expired park exists (normal loop)", () => {
+    const p = parkedKind("aaaa11112222", parkedAt, "payment.refund.issue");
+    expect(
+      opsStaleResumeNotice({
+        text: "muda o preço da costela para R$ 89",
+        pendingConfirmations: [p],
+        nowIso: staleNow,
+        ttlSeconds: TTL,
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("getOpsConfirmParkTtlSeconds — env parse fallback", () => {
+  const KEY = "OPS_CONFIRM_PARK_TTL_SECONDS";
+  const original = process.env[KEY];
+  afterEach(() => {
+    if (original === undefined) delete process.env[KEY];
+    else process.env[KEY] = original;
+  });
+
+  it("defaults to 900 when unset", () => {
+    delete process.env[KEY];
+    expect(getOpsConfirmParkTtlSeconds()).toBe(900);
+  });
+
+  it("parses a valid override", () => {
+    process.env[KEY] = "60";
+    expect(getOpsConfirmParkTtlSeconds()).toBe(60);
+  });
+
+  it.each(["", "abc", "0", "-5"])(
+    "falls back to 900 for an invalid value: %s",
+    (val) => {
+      process.env[KEY] = val;
+      expect(getOpsConfirmParkTtlSeconds()).toBe(900);
+    },
+  );
+});
+
+// ── FE-D33: expiresAt stamping + zombie-park pruning ─────────────────────────
+
+describe("opsConfirmParkExpiresAt — FE-D33 forward-compat stamping", () => {
+  const KEY = "OPS_CONFIRM_PARK_TTL_SECONDS";
+  const original = process.env[KEY];
+  afterEach(() => {
+    if (original === undefined) delete process.env[KEY];
+    else process.env[KEY] = original;
+  });
+
+  it("stamps an ops/system-plane park at parkedAt + the confirm TTL (default 900s)", () => {
+    delete process.env[KEY];
+    expect(opsConfirmParkExpiresAt("system:staff:s1", "2026-07-04T12:00:00.000Z")).toBe(
+      "2026-07-04T12:15:00.000Z",
+    );
+  });
+
+  it("honors the env TTL override", () => {
+    process.env[KEY] = "60";
+    expect(opsConfirmParkExpiresAt("system:staff:s1", "2026-07-04T12:00:00.000Z")).toBe(
+      "2026-07-04T12:01:00.000Z",
+    );
+  });
+
+  it.each(["whatsapp:cust_1", "web:sess_1"])(
+    "returns undefined for a customer-plane park (no confirm-freshness TTL): %s",
+    (sessionId) => {
+      expect(opsConfirmParkExpiresAt(sessionId, "2026-07-04T12:00:00.000Z")).toBeUndefined();
+    },
+  );
+
+  it("returns undefined for a malformed parkedAt (nothing truthful to stamp)", () => {
+    expect(opsConfirmParkExpiresAt("system:staff:s1", "not-a-date")).toBeUndefined();
+  });
+});
+
+describe("opsExpiredInScopeParks + pruneExpiredOpsParks — FE-D33 zombie pruning", () => {
+  const NOW = "2026-07-04T12:16:00.000Z"; // 16 min after 12:00 (> the 900s TTL)
+  const TTL = 900;
+  const oldAt = "2026-07-04T12:00:00.000Z"; // 16 min old → expired
+  const freshAt = "2026-07-04T12:15:30.000Z"; // 30s old → fresh
+
+  it("selects ONLY expired in-scope parks (fresh survive)", () => {
+    const expired = parkedKind("aaaa00000000", oldAt, "product.price.set");
+    const fresh = parkedKind("bbbb11112222", freshAt, "product.price.set");
+    expect(
+      opsExpiredInScopeParks({
+        pendingConfirmations: [expired, fresh],
+        nowIso: NOW,
+        ttlSeconds: TTL,
+      }),
+    ).toEqual([expired]);
+  });
+
+  it("never selects an out-of-scope park, even when expired (BKL-086 parity)", () => {
+    const refund = parkedKind("aaaa00000000", oldAt, "payment.refund.issue"); // expired but excluded
+    const price = parkedKind("bbbb11112222", oldAt, "product.price.set"); // expired in-scope
+    expect(
+      opsExpiredInScopeParks({
+        pendingConfirmations: [refund, price],
+        nowIso: NOW,
+        excludedKinds: new Set(["payment.refund.issue"]),
+        ttlSeconds: TTL,
+      }),
+    ).toEqual([price]);
+  });
+
+  it("prune unparks ONLY expired in-scope hashes and returns the pruned set", async () => {
+    const expired1 = parkedKind("aaaa00000000", oldAt, "product.price.set");
+    const fresh = parkedKind("bbbb11112222", freshAt, "product.price.set");
+    const expired2 = parkedKind("cccc00000000", oldAt, "order.status.transition");
+    const refundExpired = parkedKind("dddd00000000", oldAt, "payment.refund.issue");
+    const unparked: Array<{ sessionId: string; hash: string }> = [];
+    const session = {
+      unpark: async (sessionId: string, hash: string) => {
+        unparked.push({ sessionId, hash });
+      },
+    };
+    const pruned = await pruneExpiredOpsParks({
+      session,
+      sessionId: "system:staff:s1",
+      pendingConfirmations: [expired1, fresh, expired2, refundExpired],
+      nowIso: NOW,
+      excludedKinds: new Set(["payment.refund.issue"]),
+      ttlSeconds: TTL,
+    });
+    // Fresh (bbbb) and out-of-scope refund (dddd) survive; only aaaa + cccc pruned.
+    expect(pruned).toEqual([expired1, expired2]);
+    expect(unparked).toEqual([
+      { sessionId: "system:staff:s1", hash: "aaaa00000000" },
+      { sessionId: "system:staff:s1", hash: "cccc00000000" },
+    ]);
+  });
+
+  it("prune is a no-op (no unpark calls) when nothing is expired", async () => {
+    const fresh = parkedKind("bbbb11112222", freshAt, "product.price.set");
+    let calls = 0;
+    const session = {
+      unpark: async () => {
+        calls += 1;
+      },
+    };
+    const pruned = await pruneExpiredOpsParks({
+      session,
+      sessionId: "system:staff:s1",
+      pendingConfirmations: [fresh],
+      nowIso: NOW,
+      ttlSeconds: TTL,
+    });
+    expect(pruned).toEqual([]);
+    expect(calls).toBe(0);
+  });
+
+  it("prune propagates an unpark rejection (the INGRESS wraps it — fail-safe there)", async () => {
+    const expired = parkedKind("aaaa00000000", oldAt, "product.price.set");
+    const session = {
+      unpark: async () => {
+        throw new Error("redis down");
+      },
+    };
+    await expect(
+      pruneExpiredOpsParks({
+        session,
+        sessionId: "system:staff:s1",
+        pendingConfirmations: [expired],
+        nowIso: NOW,
+        ttlSeconds: TTL,
+      }),
+    ).rejects.toThrow("redis down");
+  });
+});
+
+// ── BKL-191 — the ingress-side negative decline target ───────────────────────
+// A PURE-negative reply on a fresh in-scope park is declined AT THE INGRESS
+// (unpark + ack, turn skipped) so the planner never re-reads "não, cancela essa
+// ação" as a fresh command (the live re-prompt). The target selection mirrors
+// matchOpsReplyToParked's deny resolution exactly.
+describe("opsNegativeDeclineTarget — BKL-191 pure-negative park decline", () => {
+  const NOW = "2026-07-04T12:06:00.000Z"; // both P1/P2 fresh at the default TTL
+
+  it("a pure negative targets the most-recent fresh park", () => {
+    const target = opsNegativeDeclineTarget({
+      text: "não, cancela essa ação",
+      pendingConfirmations: [P1, P2],
+      nowIso: NOW,
+    });
+    expect(target).toBe(P2);
+  });
+
+  it("a MIXED reply ('não, pode deixar') is ambiguous → undefined (park survives)", () => {
+    expect(
+      opsNegativeDeclineTarget({
+        text: "não, pode deixar",
+        pendingConfirmations: [P1, P2],
+        nowIso: NOW,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("explicit confirm / soft affirmative / #hash / defer never decline", () => {
+    for (const text of ["sim", "pode", "#a4b8", "não, amanhã"]) {
+      expect(
+        opsNegativeDeclineTarget({
+          text,
+          pendingConfirmations: [P1, P2],
+          nowIso: NOW,
+        }),
+      ).toBeUndefined();
+    }
+  });
+
+  it("a negative with NO fresh park is an ordinary utterance → undefined", () => {
+    expect(
+      opsNegativeDeclineTarget({
+        text: "não",
+        pendingConfirmations: [],
+        nowIso: NOW,
+      }),
+    ).toBeUndefined();
+    // Expired-only parks: invisible to decline, same as to resume.
+    expect(
+      opsNegativeDeclineTarget({
+        text: "não",
+        pendingConfirmations: [P1],
+        nowIso: "2026-07-05T12:00:00.000Z", // >> TTL past P1.parkedAt
+      }),
+    ).toBeUndefined();
+  });
+
+  it("out-of-scope parks are excluded (BKL-086 parity)", () => {
+    expect(
+      opsNegativeDeclineTarget({
+        text: "não, cancela",
+        pendingConfirmations: [P2],
+        nowIso: NOW,
+        excludedKinds: new Set([String(P2.envelope.kind)]),
+      }),
+    ).toBeUndefined();
   });
 });

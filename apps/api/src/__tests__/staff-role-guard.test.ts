@@ -32,6 +32,7 @@ import {
 } from "../claustrum/compose-policy-packs.js";
 import {
   createStaffRoleGuard,
+  orderStatusTransitionBandGuard,
   paymentTransitionBandGuard,
   staffRoleGuard,
   STAFF_ROLE_REFUSAL_CODE,
@@ -523,5 +524,69 @@ describe("paymentTransitionBandGuard — force/waive requires OWNER (payload-awa
   it("is composed into the production adopter AUTH set (runs on the conductor router)", () => {
     const auth = composedBundle(paymentsPack).authGuards;
     expect(auth).toContain(paymentTransitionBandGuard);
+  });
+});
+
+// ── BKL-131 — payload-aware banding for order.status.transition (reject) ──────
+describe("orderStatusTransitionBandGuard — reject (→ canceled) requires MANAGER+ (payload-aware)", () => {
+  const bandEnvelope = (
+    role: StaffActorRole | undefined,
+    newStatus: string,
+    sessionId = "admin:staff_1",
+  ) =>
+    buildEnvelope({
+      kind: "order.status.transition" as const,
+      payload: { orderId: "o_1", newStatus, actor: "admin", expectedVersion: 1 },
+      actor: { principal: "user" as const, sessionId, ...(role ? { role } : {}) },
+      taint: "TRUSTED" as const,
+      nonce: "n-oband",
+    });
+
+  const bandReason = (d: unknown): boolean =>
+    JSON.stringify((d as { basis?: unknown })?.basis ?? []).includes(
+      "order_cancel_manager_only",
+    );
+
+  it("ATTENDANT reject (→ canceled) → REFUSE (staff_role_violation / manager-only band)", () => {
+    const d = orderStatusTransitionBandGuard(bandEnvelope("ATTENDANT", "canceled"), {});
+    expect(d?.kind).toBe("REFUSE");
+    expect(d?.kind === "REFUSE" ? d.refusal.code : "").toBe(STAFF_ROLE_REFUSAL_CODE);
+    expect(bandReason(d)).toBe(true);
+  });
+
+  it("MANAGER reject (→ canceled) → null (MANAGER+ allowed)", () => {
+    expect(orderStatusTransitionBandGuard(bandEnvelope("MANAGER", "canceled"), {})).toBeNull();
+  });
+
+  it("OWNER reject (→ canceled) → null (allowed)", () => {
+    expect(orderStatusTransitionBandGuard(bandEnvelope("OWNER", "canceled"), {})).toBeNull();
+  });
+
+  it("ATTENDANT advance (→ confirmed) → null (any-staff; defers to the base matrix)", () => {
+    expect(orderStatusTransitionBandGuard(bandEnvelope("ATTENDANT", "confirmed"), {})).toBeNull();
+  });
+
+  it("SYSTEM (non-admin session) transition → canceled → null (INERT — system/webhook cancels)", () => {
+    const d = orderStatusTransitionBandGuard(
+      bandEnvelope(undefined, "canceled", "orders.events:evt_1"),
+      {},
+    );
+    expect(d).toBeNull();
+  });
+
+  it("a non-order.status.transition kind is inert (returns null even for a non-MANAGER admin)", () => {
+    const env = buildEnvelope({
+      kind: "order.note.add" as const,
+      payload: { orderId: "o_1", body: "nota" },
+      actor: { principal: "user" as const, sessionId: "admin:staff_1", role: "ATTENDANT" as const },
+      taint: "TRUSTED" as const,
+      nonce: "n-onote",
+    });
+    expect(orderStatusTransitionBandGuard(env, {})).toBeNull();
+  });
+
+  it("is composed into the production adopter AUTH set (runs on the conductor router)", () => {
+    const auth = composedBundle(paymentsPack).authGuards;
+    expect(auth).toContain(orderStatusTransitionBandGuard);
   });
 });

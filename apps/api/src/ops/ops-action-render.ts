@@ -86,6 +86,19 @@ function isNum(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
 }
 
+/**
+ * BKL-156 — the resolver-stamped display-only product name (see the ops
+ * resolver + `ProductAvailabilitySetPayload.productName`), or `undefined` when
+ * absent/blank. When absent the render DEGRADES to the generic, name-less form
+ * — never a fabricated name (the resolver only stamps a first-party resolved
+ * name; a direct-id availability hit carries none).
+ */
+function productNameOf(payload: unknown): string | undefined {
+  if (!isRecord(payload)) return undefined;
+  const name = payload.productName;
+  return typeof name === "string" && name.trim() !== "" ? name.trim() : undefined;
+}
+
 function isScheduleBlock(x: unknown): x is OpsScheduleBlock {
   return (
     isRecord(x) &&
@@ -129,36 +142,48 @@ function renderScheduleOverride(payload: unknown): string {
   return `Pronto — atualizei o horário de ${date}: ${blocks.map(fmtBlock).join("; ")}.`;
 }
 
-/** `product.availability.set` — the payload carries only the Medusa `productId`
- *  (a CLOSED contract; the resolver rewrote the spoken name → id and cannot stamp
- *  a display name back), so the render states the target STATE truthfully without
- *  inventing a product name. */
+/** `product.availability.set` — BKL-156: names the product when the resolver
+ *  stamped a display name ("produto \"Picanha\" marcado como esgotado"),
+ *  degrading to the generic "produto marcado…" when absent. The quoted-name +
+ *  masculine "produto" head keeps pt-BR agreement safe without knowing the
+ *  product noun's gender. */
 function renderAvailability(payload: unknown): string {
   if (!isRecord(payload) || typeof payload.available !== "boolean") {
     return OPS_ACTION_GENERIC_PTBR;
   }
+  const name = productNameOf(payload);
+  const subject = name ? `produto "${name}"` : "produto";
   return payload.available
-    ? "Pronto — produto marcado como disponível novamente."
-    : "Pronto — produto marcado como esgotado (86).";
+    ? `Pronto — ${subject} marcado como disponível novamente.`
+    : `Pronto — ${subject} marcado como esgotado (86).`;
 }
 
-/** `product.price.set` — integer centavos → pt-BR BRL (Hard Rule #2). */
+/** `product.price.set` — integer centavos → pt-BR BRL (Hard Rule #2); names the
+ *  product when the resolver stamped it (BKL-156), else the generic form. */
 function renderPriceSet(payload: unknown): string {
   if (!isRecord(payload) || !isNum(payload.priceCentavos)) {
     return OPS_ACTION_GENERIC_PTBR;
   }
-  return `Pronto — preço do produto atualizado para ${brl(payload.priceCentavos)}.`;
+  const name = productNameOf(payload);
+  const subject = name ? `produto "${name}"` : "produto";
+  return `Pronto — preço do ${subject} atualizado para ${brl(payload.priceCentavos)}.`;
 }
 
-/** `menu.special.set` — the featured business-day (+ optional promo price). */
+/** `menu.special.set` — the featured business-day (+ optional promo price);
+ *  names the product when the resolver stamped it (BKL-156), else the generic
+ *  form. */
 function renderMenuSpecial(payload: unknown): string {
   if (!isRecord(payload) || typeof payload.date !== "string") {
     return OPS_ACTION_GENERIC_PTBR;
   }
   const date = fmtIsoDateLabel(payload.date);
+  const name = productNameOf(payload);
+  const lead = name
+    ? `"${name}" definido como especial de ${date}`
+    : `especial de ${date} definido`;
   return isNum(payload.promoPriceCentavos)
-    ? `Pronto — especial de ${date} definido por ${brl(payload.promoPriceCentavos)}.`
-    : `Pronto — especial de ${date} definido.`;
+    ? `Pronto — ${lead} por ${brl(payload.promoPriceCentavos)}.`
+    : `Pronto — ${lead}.`;
 }
 
 /** `order.note.add` — the AddNoteResult carries only ids (no display number), so

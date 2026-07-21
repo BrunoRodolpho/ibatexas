@@ -101,6 +101,7 @@ awk \
   -v redact="$AUDIT_REDACT" -v admin="$ADMIN_KEY" -v medusa="$MEDUSA_PW" \
   -v oracle="$ORACLE_PW" -v simw="$SIM_PW" -v stripewh="$STRIPE_WH" \
   -v fp="$FINGERPRINT" -v anthropic="$ANTHROPIC_KEY" \
+  -v tapiport="${TEST_API_PORT:-3001}" -v tcommport="${TEST_COMMERCE_PORT:-9000}" \
   -v nkappseed="$NKEY_APP_SEED" -v nkapppub="$NKEY_APP_PUBLIC" \
   -v nkcapseed="$NKEY_CAPTURE_SEED" -v nkcappub="$NKEY_CAPTURE_PUBLIC" \
   -v nktrgseed="$NKEY_TRIGGER_SEED" -v nktrgpub="$NKEY_TRIGGER_PUBLIC" '
@@ -123,6 +124,11 @@ awk \
   /^STRIPE_WEBHOOK_SECRET=/           { subst(stripewh) }
   /^IBX_TEST_FINGERPRINT=/            { gsub(/__GENERATE__/, fp) }
   /^ANTHROPIC_API_KEY=/               { gsub(/__FROM_DEV_ENV__/, anthropic) }
+  # FE-D25: app ports — override the template defaults with the environment
+  # (TEST_API_PORT / TEST_COMMERCE_PORT) when set, else keep 3001 / 9000. This
+  # is what lets the ephemeral stack coexist with dev without hand-patching.
+  /^TEST_API_PORT=/                   { print "TEST_API_PORT=" tapiport; next }
+  /^TEST_COMMERCE_PORT=/              { print "TEST_COMMERCE_PORT=" tcommport; next }
   # T3-10 NATS nkey tokens are globally unique — substitute on any line.
   {
     gsub(/__GENERATE_NKEY_APP_SEED__/, nkappseed)

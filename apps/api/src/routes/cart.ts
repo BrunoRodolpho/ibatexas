@@ -39,10 +39,12 @@ import {
   normalizeCpf,
   createOrderAccessToken,
   verifyOrderAccessToken,
+  getTypesenseClient,
+  COLLECTION,
 } from "@ibatexas/tools";
 import { Channel, COUPON_REJECTED_CODE, type UserType } from "@ibatexas/types";
 import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
-import { ordersPolicyBundle, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
+import { ordersPolicyBundle, type OrderCartSyncPayload, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
 import {
   type CustomerOnboardingState,
@@ -622,6 +624,40 @@ async function checkoutCartNeedsReplacement(args: {
 
 /** Add the client's local cart items to the (possibly freshly created) Medusa
  *  cart during checkout. */
+/**
+ * BKL-180 — read a variant's DECLARED allergens array from the catalog (Typesense),
+ * mirroring `add-to-cart.ts`'s `lookupProductByVariant` (the `resolveProductForItem`
+ * catalog-read precedent). Reading DECLARED catalog data is Hard-Rule-#1-compliant —
+ * the rule forbids INFERENCE (from a name/description), not reads of the product's own
+ * declared `allergens` field. FAIL-CLOSED: a read failure, a missing variant, or a
+ * doc with no declared `allergens` string[] returns `null` (the caller REFUSE-safes) —
+ * NEVER fabricate `[]`. A DECLARED empty `[]` (the product explicitly has no allergens)
+ * is a valid hydration.
+ */
+async function lookupDeclaredAllergensByVariant(variantId: string): Promise<string[] | null> {
+  try {
+    const client = getTypesenseClient();
+    const results = await client.collections(COLLECTION).documents().search({
+      q: variantId,
+      query_by: "variantsJson",
+      filter_by: "status:published",
+      per_page: 1,
+    });
+    const doc = results.hits?.[0]?.document as { allergens?: unknown } | undefined;
+    const a = doc?.allergens;
+    return Array.isArray(a) && a.every((e) => typeof e === "string") ? (a as string[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The per-line replay leg of the checkout sync. BKL-180 wires ONE governed
+ *  `order.cart.sync` envelope IN FRONT of this (see `syncLocalCartForCheckout`); this
+ *  function is the SOLE EXECUTE-side executor for that envelope, preserving the exact
+ *  per-item `medusaAdjudicated` egress + `productType` metadata (no availability
+ *  re-check at checkout — the checkout composition guard already ran). order.cart.sync
+ *  is identity-tier/unadvertised and has no other caller, so there is no registered
+ *  tool executor (a future non-checkout caller would register one THEN). */
 async function addLocalItemsToCart(args: {
   cartId: string;
   localItems: Array<{ variantId: string; quantity: number; productType?: string }>;
@@ -694,8 +730,77 @@ async function syncLocalCartForCheckout(args: {
     await trackCartId(cartId, customerId ? "customer" : "guest");
   }
 
-  // Add local items to the (possibly new) cart
-  await addLocalItemsToCart({ cartId, localItems, customerId, log });
+  // BKL-180 — replace the N per-line `medusa.cart.line_items.add` replay with ONE
+  // governed `order.cart.sync` envelope (the pack's bulk-allergen validator + the W5
+  // EXECUTE guard adjudicate it once, over the full item set). The cart-replacement
+  // edge-handling above (stale/completed/purged → fresh cart) is UNCHANGED — the
+  // envelope replaces only the line-item replay leg.
+  //
+  // RESOLVER-HYDRATION: the web sync body does NOT carry allergens, so the route reads
+  // each item's DECLARED allergens from the catalog and STAMPS them into the payload
+  // BEFORE adjudication (reading declared data is Hard-Rule-#1-compliant). FAIL-CLOSED:
+  // a catalog-read failure or a variant with no declared allergens array → REFUSE-safe
+  // (an honest checkout error), NEVER proceed unstamped, NEVER fabricate `[]`.
+  const hydratedItems: OrderCartSyncPayload["items"][number][] = [];
+  for (const item of localItems) {
+    const allergens = await lookupDeclaredAllergensByVariant(item.variantId);
+    if (allergens === null) {
+      return {
+        rejection: {
+          status: 422,
+          body: {
+            statusCode: 422,
+            error: "Unprocessable Entity",
+            message:
+              "Não foi possível confirmar os alérgenos de um item do carrinho. Atualize a página e tente novamente.",
+            code: "CART_SYNC_ALLERGENS_UNAVAILABLE",
+          },
+        },
+      };
+    }
+    hydratedItems.push({ variantId: item.variantId, quantity: item.quantity, allergens });
+  }
+
+  const syncEnvelope = buildCustomerEnvelope<"order.cart.sync", OrderCartSyncPayload>({
+    kind: "order.cart.sync",
+    payload: { cartId, items: hydratedItems },
+    nonce: deriveCartNonce(`${cartId}:cart-sync`),
+    customerId: customerId ?? `guest:${cartId}`,
+  });
+  const syncState: OrderState = {
+    ctx: {
+      channel: "web",
+      customerId: customerId ?? null,
+      cartId,
+      orderId: null,
+      paymentMethod: null,
+      paymentStatus: null,
+      totalInCentavos: 0,
+    },
+  };
+  // WRAPPED-LEGACY EXECUTOR (ruling): on EXECUTE run the EXISTING per-item replay —
+  // zero egress-behavior change (keeps `productType`, no new availability rejection).
+  const out = await runCustomerIntent({
+    envelope: syncEnvelope,
+    state: syncState,
+    policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+    executor: async () => {
+      await addLocalItemsToCart({ cartId, localItems, customerId, log });
+      return { synced: true, itemCount: localItems.length };
+    },
+    ctx: {
+      customerId: customerId ?? `guest:${cartId}`,
+      route: "cart.sync",
+      log,
+    },
+    auditSink: getAuditSink(),
+    refusalMessages: portugueseRefusalMessages,
+  });
+  if (out.decision.kind !== "EXECUTE" && out.decision.kind !== "REWRITE") {
+    // A non-EXECUTE decision (e.g. the bulk-allergen validator REFUSE) aborts the sync
+    // leg with the gateway's typed pt-BR body surfaced verbatim (mirrors checkout).
+    return { rejection: { status: out.statusCode, body: out.body as Record<string, unknown> } };
+  }
   return { cartId };
 }
 
@@ -1341,75 +1446,6 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         if (mapMedusaErrorToReply(err, reply)) return reply;
         throw err;
       }
-    },
-  );
-
-  // POST /api/cart/:id/sync — bulk-sync Zustand items to Medusa cart
-  app.post(
-    "/api/cart/:id/sync",
-    {
-      schema: {
-        tags: ["cart"],
-        summary: "Sincronizar itens do cliente com o carrinho Medusa",
-        params: CartIdParams,
-        body: z.object({
-          items: z.array(z.object({
-            variantId: z.string(),
-            quantity: z.number().int().min(1).max(99),
-          })),
-        }),
-      },
-      preHandler: optionalAuth,
-    },
-    async (request, reply) => {
-      const { id } = request.params;
-      const { items } = request.body;
-
-      // SEC: Verify cart ownership before mutation
-      const redis = await getRedisClient();
-      if (!(await verifyCartOwnership(id, request.customerId, redis))) {
-        return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
-      }
-
-      await trackCartId(id, request.customerId ? "customer" : "guest");
-
-      // Add each item sequentially (Medusa store API doesn't support batch add)
-      for (const item of items) {
-        try {
-          await medusaAdjudicated<{ variant_id: string; quantity: number }, unknown>({
-            scope: "store",
-            method: "POST",
-            path: `/store/carts/${id}/line-items`,
-            payload: { variant_id: item.variantId, quantity: item.quantity },
-            intentKind: "medusa.cart.line_items.add",
-            idempotencyKey: `sync:${id}:${item.variantId}:${randomUUID()}`,
-            sourceSubject: `route:POST /api/cart/:id/sync:cust:${request.customerId ?? "guest"}`,
-            headers: { "Content-Type": "application/json" },
-            auditSink: getAuditSink(),
-            log: server.log,
-          });
-        } catch (err) {
-          // REFUSE/DEFER/REVIEW for a single item should not abort the
-          // whole sync — log and continue, matching the pre-migration
-          // behaviour of swallowing transport-level errors.
-          if (
-            err instanceof MedusaAdjudicateRefusedError ||
-            err instanceof MedusaAdjudicateDeferredError ||
-            err instanceof MedusaAdjudicateNeedsReviewError
-          ) {
-            server.log.warn(
-              { variantId: item.variantId, kind: err.name },
-              "line item Medusa sync refused/deferred — skipping",
-            );
-          } else {
-            server.log.warn({ variantId: item.variantId, err }, "line item Medusa sync failed — skipping");
-          }
-        }
-      }
-
-      // Return the synced cart
-      const data = await medusaStore(`/store/carts/${id}`);
-      return reply.send(data);
     },
   );
 

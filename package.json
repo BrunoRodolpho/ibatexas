@@ -19,12 +19,12 @@
     "@playwright/test": "^1.58.2",
     "@types/node": "^22.0.0",
     "@types/uuid": "^10.0.0",
-    "@vitest/coverage-v8": "^3.2.0",
+    "@vitest/coverage-v8": "^3.2.6",
     "prettier": "^3.0.0",
     "tsx": "^4.21.0",
     "turbo": "^2.8.0",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "^3.2.6"
   },
   "engines": {
     "node": ">=22.0.0",
@@ -46,7 +46,10 @@
       "@grpc/grpc-js": "apps/api>testcontainers>dockerode>@grpc/grpc-js transitive fix — GHSA-5375-pq7m-f5r2 (CVE-2026-48068) + GHSA-99f4-grh7-6pcq (CVE-2026-48069) malformed-request server crash. Test-only dependency (Testcontainers / dockerode). Patched in 1.14.4+.",
       "fast-jwt": "apps/api>@fastify/jwt transitive fix — GHSA-rp9m-7r4c-75qg cache confusion + GHSA-gmvf-9v4p-v8jc (CVE-2026-44351) CRITICAL JWT auth bypass on empty HMAC secret. Patched in 6.2.4+. Remove when @fastify/jwt pulls fast-jwt >=6.2.4.",
       "fast-uri": "apps/api>@fastify/swagger>json-schema-resolver + fastify transitive fix — GHSA-q3j6-qgpj-74h6 (CVE-2026-6321) path traversal + GHSA-v39h-62p7-jpjc (CVE-2026-6322) host confusion. Patched in 3.1.2+.",
-      "axios": "apps/api>twilio transitive fix — CVE-2026-42033/42035/42043/44486-44496 cluster (prototype pollution, proxy-auth credential leak, MITM, ReDoS, NO_PROXY bypass). Patched in 1.16.0+. Remove when twilio pulls axios >=1.16.0.",
+      "axios": "apps/api>twilio transitive fix — CVE-2026-42033/42035/42043/44486-44496 cluster (prototype pollution, proxy-auth credential leak, MITM, ReDoS, NO_PROXY bypass) + GHSA-gcfj-64vw-6mp9 Node HTTP adapter inherited-proxy leak (vuln >=1.15.2 <1.18.0). Patched in 1.18.0+. Remove when twilio pulls axios >=1.18.0.",
+      "brace-expansion@5": "@vitest/coverage-v8>test-exclude>glob>minimatch + @sentry/nextjs + eslint toolchain transitive fix — GHSA-3jxr-9vmj-r5cp DoS via exponential-time expansion of consecutive non-expanding {} groups. Dev/build-tooling only. Scoped to v5 (installed 5.0.5) so any future 1.x/2.x copy keeps its own API. Patched in 5.0.7. Remove when minimatch/glob pull brace-expansion >=5.0.7.",
+      "js-yaml@3": "apps/commerce>@medusajs/cli>pg-god>cli-ux transitive fix — GHSA-52cp-r559-cp3m YAML merge-key chains force quadratic CPU (3.x range: vuln >=3.0.0 <3.15.0). Dev/CLI-tooling only. Scoped to v3 (installed 3.14.2) via the 3.15.0 security backport so cli-ux's v3 API is preserved. Remove when medusa's CLI chain drops js-yaml 3.x.",
+      "js-yaml@4": "apps/admin>eslint>@eslint/eslintrc transitive fix — GHSA-52cp-r559-cp3m YAML merge-key chains force quadratic CPU (4.x range: vuln >=4.0.0 <4.3.0). Dev/lint-tooling only. Scoped to v4 (installed 4.1.1) so the js-yaml@3 copy is untouched. Patched in 4.3.0. Remove when eslint pulls js-yaml >=4.3.0.",
       "protobufjs": "apps/api>@sentry/node transitive fix — GHSA-xq3m-2v4x-88gg arbitrary code execution + CVE-2026-44289/44290/44291/44293 code injection + DoS. Patched in 8.0.2+. @sentry/node's OTLP encoder serializes only fixed internal schemas (never user-supplied .proto), so the major bump is purely hardening.",
       "fastify": "apps/api direct dep fix — GHSA-247c-9743-5963 body schema validation bypass via leading-space Content-Type. Patched in 5.8.5+.",
       "next": "apps/admin + apps/web direct dep fix — GHSA-q4gf-8mx6-v5v3 DoS via Server Components + the CVE-2026-44573..45109 middleware/proxy-bypass, SSRF and DoS cluster. Patched in 16.2.6+.",
@@ -75,7 +78,10 @@
       "@grpc/grpc-js": ">=1.14.4",
       "fast-jwt": ">=6.2.4",
       "fast-uri": ">=3.1.2",
-      "axios": ">=1.16.0",
+      "axios": ">=1.18.0",
+      "brace-expansion@5": "5.0.7",
+      "js-yaml@3": "3.15.0",
+      "js-yaml@4": "4.3.0",
       "protobufjs": ">=8.0.2",
       "fastify": ">=5.8.5",
       "next": ">=16.2.6",
@@ -91,8 +97,7 @@
       "ignoreCves": [
         "CVE-2026-34950",
         "CVE-2026-35042",
-        "CVE-2026-44680",
-        "CVE-2026-47429"
+        "CVE-2026-44680"
       ],
       "ignoreGhsas": [
         "GHSA-gwhv-j974-6fxm",
@@ -102,8 +107,7 @@
       ],
       "ignoreCveNotes": {
         "CVE-2026-35042": "fast-jwt <=6.1.0 GHSA-hm7r-c7qw-ghp6 — accepts unknown `crit` header extensions (RFC 7515 violation). No upstream patch released yet. Mitigation: we never set or trust `crit` headers in our JWT flow (Twilio Verify OTP only). Re-check when nearform/fast-jwt ships a fix.",
-        "CVE-2026-44680": "@mikro-orm/knex SQL injection (GHSA-cfw5-68c4-ffqp, patched >=6.6.14) — same situation + mitigation as the @mikro-orm/core advisories below: pulled exclusively by @medusajs/deps, which pins the MikroORM 6.4.x line; forcing 6.6.x crashes Medusa's service bootstrap (the 6.4→6.6 EventManager subscribers Array→Set change). Mitigation: nothing in this repo runs user-controlled queries through MikroORM — Medusa is the only consumer and all its query paths are parameterized. Remove when Medusa upgrades MikroORM.",
-        "CVE-2026-47429": "vitest <4.1.0 (GHSA-5xrq-8626-4rwp) — arbitrary file read ONLY while the Vitest UI server (`vitest --ui`) is listening. Not exploitable here: CI and local both run `vitest run` (no UI server) and we never start the UI. The only patch is vitest 4.x (a breaking major); ignored rather than forcing a 3→4 upgrade of the whole test toolchain. Re-check when the suite migrates to vitest 4.",
+        "CVE-2026-44680": "@mikro-orm/knex SQL injection (GHSA-cfw5-68c4-ffqp, patched >=6.6.14) — same situation + mitigation as the @mikro-orm/core advisories below: pulled exclusively by @medusajs/deps, which pins the MikroORM 6.4.x line; forcing 6.6.x crashes Medusa's service bootstrap (the 6.4→6.6 EventManager subscribers Array->Set change). Mitigation: nothing in this repo runs user-controlled queries through MikroORM — Medusa is the only consumer and all its query paths are parameterized. FE-D08 (2026-07-16) re-attempted the 6.6.14 override: `pnpm install`, apps/commerce's vitest suite, and `medusa build` all passed clean, but none of those exercise the live DI-container service-bootstrap path where the documented crash occurs, and reaching that needs a running `medusa start`/`develop` (forbidden by this repo's CLAUDE.md — no starting dev servers to verify changes). Reverted rather than ship an unverified risk. Remove when Medusa upgrades MikroORM, or when someone can verify the live-boot path.",
         "GHSA-4w7w-66w2-5vf9": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). vite <=6.4.1 path traversal in optimized deps .map handling. Pulled by @medusajs/framework which has a hard peer dep on `vite ^5.4.21`, so we cannot override to 6.4.2+ without breaking medusa's admin-vite-plugin. Dev-server-only vuln, not exploitable in production builds. Stays as a moderate in audit output (below the --audit-level=high CI threshold). Remove when medusa upgrades to vite v6+.",
         "GHSA-gwhv-j974-6fxm": "Documentation only — not enforced (pnpm ignoreCves only matches CVE-* IDs). @mikro-orm/core SQL injection. Pulled exclusively by @medusajs/deps@2.13.5 which pins @mikro-orm/core to 6.4.16. Cannot override to a patched 6.6.x line because @medusajs/utils was built against MikroORM 6.4's EventManager (subscribers is an Array with .some()); 6.6+ switched subscribers to a Set, so registerInternalServiceEventSubscriber crashes on the first service bootstrap. Mitigation: nothing in this repo executes user-controlled queries through MikroORM — Medusa is the only consumer and all its query paths are parameterized. Re-check when Medusa upgrades to MikroORM 6.6+ or 7.x.",
         "GHSA-qpfv-44f3-qqx6": "Documentation only — same situation and mitigation as GHSA-gwhv-j974-6fxm. Second SQL injection advisory against the same @mikro-orm/core 6.4.x line pulled via @medusajs/deps@2.13.5. Paired tracking — remove both together when Medusa bumps MikroORM.",

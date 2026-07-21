@@ -1,0 +1,187 @@
+# order.coupon.apply — FE-T14. `code` is the only model-extractable field
+# (Directive, required, verbatim). Hydration stamps `cartId` as
+# authoritative (deterministic session resolution) — confirmationRequired
+# is always false.
+capability: order.coupon.apply
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
+cases:
+  - id: aplica-promo10
+    utterance: aplica o cupom PROMO10
+    note: Canonical shape (the schema's own worked example) — direct register.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: PROMO10
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: PROMO10
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: formal-gostaria-de-usar
+    utterance: Gostaria de usar o cupom DESCONTO20, por favor.
+    note: Formal/polite register.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: DESCONTO20
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: DESCONTO20
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: colloquial-tenho-um-cupom
+    utterance: tenho um cupom, é o BEMVINDO5
+    note: Colloquial register — states possession before the code.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: BEMVINDO5
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: BEMVINDO5
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: question-form
+    utterance: dá pra aplicar o cupom FRETEGRATIS?
+    note: Question-form register ("dá pra...?").
+    expectPayload:
+      extractionIR:
+        payload:
+          code: FRETEGRATIS
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: FRETEGRATIS
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: brusque-usa-esse
+    utterance: usa esse cupom aqui, PROMO50
+    note: Brusque/casual register.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: PROMO50
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: PROMO50
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: polite-gentileza
+    utterance: por gentileza, aplica o código VIP15 no meu carrinho
+    note: Very polite register ("por gentileza"); "meu carrinho" is a cart reference.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: VIP15
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: VIP15
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: context-embedded
+    utterance: vi uma promoção no Instagram, o cupom é INSTA10
+    note: Context-embedded register — states the context before the code.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: INSTA10
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: INSTA10
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: formal-solicito
+    utterance: Solicito a aplicação do cupom ANIVERSARIO25.
+    note: Formal/bureaucratic register.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: ANIVERSARIO25
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: ANIVERSARIO25
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: lowercase-code
+    utterance: aplica o cupom promo10
+    note: Lowercase-as-spoken code (verbatim-fidelity — the case, not just the string, must be preserved).
+    expectPayload:
+      extractionIR:
+        payload:
+          code: promo10
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: promo10
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false
+
+  - id: casual-coloca-ai
+    utterance: coloca aí o código NATAL30
+    note: Casual register ("coloca aí").
+    expectPayload:
+      extractionIR:
+        payload:
+          code: NATAL30
+        provenanceTrust:
+          code: untrusted
+      hydratedIntentIR:
+        payload:
+          code: NATAL30
+        payloadPresent:
+          - cartId
+        provenanceTrust:
+          cartId: authoritative
+        confirmationRequired: false

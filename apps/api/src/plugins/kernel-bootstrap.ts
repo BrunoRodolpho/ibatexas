@@ -3,6 +3,16 @@
 //
 // Boot anchor responsibilities:
 //
+// (Numbering note: the list below is a flat inventory of every exported
+// boot-anchor function — items 1 and 8 run outside `bootstrapKernel`'s own
+// body (1 from `buildServer()`; 8 IS `bootstrapKernel`), so they have no
+// step-comment counterpart inside it. `bootstrapKernel`'s internal step
+// comments (further down) number ONLY what it runs, starting fresh at 1 —
+// item N here is step N-1 there, EXCEPT the final internal step (defer-
+// pending-gauge poll), which has no item-number counterpart here at all —
+// it's infrastructure, not a boot-anchor assertion. The two sequences are
+// intentionally separate counts, not a typo.)
+//
 //   1. `installKernelMetricsSink()` — called from `buildServer()` (server.ts)
 //      BEFORE routes are registered. Installs the real MetricsSink (PostHog
 //      via NATS + Sentry breadcrumbs + Prometheus counters) and returns the
@@ -24,11 +34,40 @@
 //      `ibx bootstrap`) to apply the @adjudicate/audit-postgres SQL
 //      migrations.
 //
-//   5. `bootstrapKernel(server)` — called from `index.ts` after
+//   5. `assertEnvelopeBoundaryGateWired()` (FE-T04) — called from
+//      `bootstrapKernel()`. Drives a synthetic malformed envelope through the
+//      real `runCustomerIntent` and asserts the isIntentEnvelope structural
+//      gate (customer-intent-gateway.ts) actually rejects it. Refuses to
+//      boot if that gate has been silently removed or bypassed.
+//
+//   6. `assertCommandServiceBoundaryGateWired()` (FE-T04) — called from
+//      `bootstrapKernel()`. Same self-check on the OTHER convergence point:
+//      drives a synthetic malformed envelope through the real
+//      `withAdjudicate` (@ibatexas/domain) — the command-service chokepoint
+//      every ops/admin/subscriber/job/LLM-tool mutation flows through.
+//
+//   7. `assertCapabilityGuardRefsWired()` (FE-T19) — called from
+//      `bootstrapKernel()`. Asserts every `CapabilityGuardRef` on the
+//      authored `CapabilityDefinition` registry
+//      (`@ibatexas/packs-composed/capability-definitions`) resolves to a
+//      real, live guard function on the installed Packs' `PolicyBundle`s.
+//      Refuses to boot if a guard-ref was left dangling by a rename,
+//      removal, or phase move (`GuardRefResolutionError`). This is IN
+//      ADDITION to the same assertion already running eagerly at module-
+//      import time inside `capability-definitions/index.ts` — cheap, and
+//      redundant on purpose: the boot-time call is the one that actually
+//      fires in production if a future consumer of the registry forgets to
+//      import it before this point runs.
+//
+//   8. `bootstrapKernel(server)` — called from `index.ts` after
 //      `buildServer()` returns, before `server.listen()`. Composes the
 //      above into the boot sequence.
 
-import { installPack, PackConformanceError } from "@adjudicate/core"
+import {
+  installPack,
+  PackConformanceError,
+  type IntentEnvelope,
+} from "@adjudicate/core"
 
 /** Structural shape we read from an installed Pack. Avoids variance issues
  * when callers pass Packs with narrow literal kind unions. */
@@ -39,6 +78,7 @@ import {
   recordSinkFailure,
   setMetricsSink,
   type MetricsSink,
+  type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { customerOnboardingPack } from "@ibatexas/pack-customer-onboarding"
 import { opsPack } from "@ibatexas/pack-ops"
@@ -48,6 +88,15 @@ import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds"
+// FE-T19 — the FE-4 EXPAND CapabilityDefinition registry's guard-ref boot
+// assertion. See `assertCapabilityGuardRefsWired()` below.
+import {
+  assertGuardRefsResolve,
+  CAPABILITY_DEFINITIONS,
+  generateKnownIntentKinds,
+  GuardRefResolutionError,
+  type CapabilityDefinition,
+} from "@ibatexas/packs-composed/capability-definitions"
 // WS5: the NX-park quota-exceeded hook setter MUST come from the same park-nx
 // module instance the live park calls go through — now the apps/api copy
 // (re-exported by the park-deferred-intent-nx seam). Importing it from
@@ -62,7 +111,7 @@ import {
   setAuditSinkFailureHook,
   setAuditSinkSpillSizeHook,
 } from "@ibatexas/audit-sink"
-import { prisma } from "@ibatexas/domain"
+import { prisma, withAdjudicate } from "@ibatexas/domain"
 import * as Sentry from "@sentry/node"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { Registry } from "prom-client"
@@ -71,6 +120,10 @@ import { setAuditConsumerDedupHook } from "../subscribers/audit-consumer.js"
 import { setDeferQuotaExceededHook } from "../adapters/park-deferred-intent-nx.js"
 import { createIbatexasMetricsSink } from "../observability/metrics-sink.js"
 import { logger } from "../lib/logger.js"
+import {
+  runCustomerIntent,
+  STRUCTURAL_REJECTION_CODE,
+} from "../routes/__shared__/customer-intent-gateway.js"
 import {
   createKernelMetricsRecorder,
   createKernelMetricsSink,
@@ -280,21 +333,36 @@ export class PackCoverageError extends Error {
 
 // Intent kinds that MUST resolve to an installed Pack at boot.
 //
-// `KNOWN_INTENT_KINDS` is the full taxonomy the kernel knows about — it
-// bounds metrics labels and drives the audit-redactor conformance suite.
-// A subset of those kinds is adjudicated NOT through the global Pack
-// registry but via a domain-internal `PolicyBundle` passed straight to
-// `adjudicate()` / `withAdjudicate` (today: `loyalty.stamp.add`, owned by
-// `loyalty-policy.ts` in `@ibatexas/domain`; the SYSTEM-only stamp award is
-// dispatched by the `order.placed` subscriber with the bundle in hand). For
-// those kinds the coverage gate's premise — "no Pack policy ⇒ adjudicate()
-// default-REFUSEs legitimate traffic" — is false: the caller supplies the
-// bundle, so the kernel never consults the registry. We exclude them here,
-// mirroring the `medusa.*` exclusion rationale documented in
-// `@ibatexas/intent-kinds`. Every OTHER known kind must be declared by an
-// installed Pack or the kernel refuses to boot.
+// A subset of `CAPABILITY_DEFINITIONS`'s kinds (+ the pix external input) is
+// adjudicated NOT through the global Pack registry but via a domain-internal
+// `PolicyBundle` passed straight to `adjudicate()` / `withAdjudicate` (today:
+// `loyalty.stamp.add`, owned by `loyalty-policy.ts` in `@ibatexas/domain`;
+// the SYSTEM-only stamp award is dispatched by the `order.placed` subscriber
+// with the bundle in hand). For those kinds the coverage gate's premise —
+// "no Pack policy ⇒ adjudicate() default-REFUSEs legitimate traffic" — is
+// false: the caller supplies the bundle, so the kernel never consults the
+// registry. We exclude them here, mirroring the `medusa.*` exclusion
+// rationale documented in `@ibatexas/intent-kinds`. Every OTHER known kind
+// must be declared by an installed Pack or the kernel refuses to boot.
+//
+// FE-4 CONTRACT (FE-T26): projected DIRECTLY from `CAPABILITY_DEFINITIONS`
+// via `generateKnownIntentKinds` — `paymentsPixPack.intents` supplies the
+// pix external input as a REAL runtime materialization (mirrors
+// `generate-known-intent-kinds.ts`'s own freshness-test precedent), never a
+// hand-retyped copy. The hand-authored `KNOWN_INTENT_KINDS`-derived version
+// this constant used to be (`[...KNOWN_INTENT_KINDS].filter(...)`) is
+// deleted — `KNOWN_INTENT_KINDS` itself still exists (`@ibatexas/
+// intent-kinds`, now machine-generated — see that package's own `src/
+// index.ts` header), but this boot anchor no longer routes through it: one
+// fewer indirection between the single source of truth and the gate that
+// consumes it.
 const PACK_REGISTERED_INTENT_KINDS: ReadonlySet<string> = new Set(
-  [...KNOWN_INTENT_KINDS].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
+  [
+    ...generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
+      pixIntentKinds: paymentsPixPack.intents,
+      loyaltyIntentKinds: [...LOYALTY_INTENT_KINDS],
+    }),
+  ].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
 )
 
 /**
@@ -359,6 +427,131 @@ export async function assertAuditPostgresReady(): Promise<void> {
       `[kernel-bootstrap] audit-postgres preflight failed: ${message}`,
     )
   }
+}
+
+// ── FE-T04: envelope structural boundary gate self-check ────────────────────
+//
+// `runCustomerIntent` (customer-intent-gateway.ts) gates every customer
+// envelope through the canonical `isIntentEnvelope` structural check before
+// `detectForgery` or `adjudicate()` ever see it. That gate is a single `if`
+// inline in the function body — nothing stops a future edit from silently
+// deleting it (an accidental merge conflict resolution, a "simplify this"
+// refactor, …), and unlike a missing Pack policy it would NOT fail loudly:
+// a malformed envelope would just start reaching `detectForgery` / the
+// frozen kernel instead of being REFUSEd at the boundary.
+//
+// This is a live, non-mocked self-check: it drives a synthetic
+// structurally-invalid "envelope" through the REAL exported
+// `runCustomerIntent` and asserts the boundary contract holds. `runner` is
+// dependency-injectable ONLY so a unit test can supply a stand-in that
+// skips the gate and prove this assertion actually catches that
+// regression — the boot call site always uses the default (the real,
+// live-path function).
+
+export class EnvelopeBoundaryGateNotWiredError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "EnvelopeBoundaryGateNotWiredError"
+  }
+}
+
+/** Minimal always-REFUSE policy — the self-check envelope is malformed and
+ * MUST be rejected by the structural gate before any policy is consulted;
+ * this exists only to satisfy `RunCustomerIntentOptions.policy`'s type. */
+const ENVELOPE_GATE_SELF_CHECK_POLICY: PolicyBundle<string, unknown, unknown> = {
+  stateGuards: [],
+  authGuards: [],
+  business: [],
+  taint: { minimumFor: () => "UNTRUSTED" },
+  default: "REFUSE",
+}
+
+export async function assertEnvelopeBoundaryGateWired(
+  runner: typeof runCustomerIntent = runCustomerIntent,
+): Promise<void> {
+  let executed = false
+  const reply = await runner({
+    envelope: { notAnEnvelope: true } as unknown as IntentEnvelope,
+    state: {},
+    policy: ENVELOPE_GATE_SELF_CHECK_POLICY,
+    executor: async () => {
+      executed = true
+      return {}
+    },
+    ctx: {
+      customerId: "kernel-bootstrap-self-check",
+      route: "boot.envelope-boundary-gate",
+    },
+  })
+  const code = (reply.body as { code?: unknown } | undefined)?.code
+  if (executed || reply.statusCode !== 400 || code !== STRUCTURAL_REJECTION_CODE) {
+    throw new EnvelopeBoundaryGateNotWiredError(
+      `[kernel-bootstrap] envelope structural boundary gate self-check failed — ` +
+        `expected statusCode=400 code="${STRUCTURAL_REJECTION_CODE}" with the executor never run, ` +
+        `got statusCode=${reply.statusCode} code=${JSON.stringify(code)} executed=${executed}. ` +
+        `The isIntentEnvelope gate in customer-intent-gateway.ts appears to be unwired (FE-T04).`,
+    )
+  }
+}
+
+// `withAdjudicate` (@ibatexas/domain) is the OTHER convergence point the
+// structural gate covers — the command-service chokepoint every
+// ops/admin/subscriber/job/LLM-tool mutation flows through. Same idiom as
+// `assertEnvelopeBoundaryGateWired` above: drive a synthetic malformed
+// envelope through the REAL exported `withAdjudicate` and fail boot if the
+// executor ran or the decision isn't the expected structural REFUSE.
+// `runner` is dependency-injectable ONLY for the "broken wiring" unit test.
+export async function assertCommandServiceBoundaryGateWired(
+  runner: typeof withAdjudicate = withAdjudicate,
+): Promise<void> {
+  let executed = false
+  const outcome = await runner(
+    { notAnEnvelope: true } as unknown as IntentEnvelope,
+    {},
+    ENVELOPE_GATE_SELF_CHECK_POLICY,
+    async () => {
+      executed = true
+      return {}
+    },
+  )
+  const code =
+    outcome.decision.kind === "REFUSE" ? outcome.decision.refusal.code : undefined
+  if (executed || outcome.decision.kind !== "REFUSE" || code !== STRUCTURAL_REJECTION_CODE) {
+    throw new EnvelopeBoundaryGateNotWiredError(
+      `[kernel-bootstrap] command-service structural boundary gate self-check failed — ` +
+        `expected decision.kind="REFUSE" refusal.code="${STRUCTURAL_REJECTION_CODE}" with the executor never run, ` +
+        `got decision.kind=${outcome.decision.kind} code=${JSON.stringify(code)} executed=${executed}. ` +
+        `The isStructurallyMalformed gate in with-adjudicate.ts (@ibatexas/domain) appears to be unwired (FE-T04).`,
+    )
+  }
+}
+
+// ── Capability guard-ref boot assertion (FE-T19) ─────────────────────────────
+//
+// `@ibatexas/packs-composed/capability-definitions` authors a per-capability
+// `CapabilityDefinition` whose `guardRefs` declaratively NAME the Pack guards
+// that apply to it. That data is checked against the LIVE `PolicyBundle`
+// guard arrays by `assertGuardRefsResolve` — an independent materialization,
+// not a re-derivation of the same source (FE-4.3) — but until something
+// actually IMPORTS the registry, that check never runs in production: the
+// package's own eager module-load self-check only fires for whichever
+// process happens to import it. This assertion makes it fire unconditionally
+// at API boot, matching the ticket's "break a guard-ref → BOOT fails"
+// acceptance criterion rather than "→ some other process's test suite
+// fails". `CAPABILITY_DEFINITIONS` is imported directly here (not merely
+// side-effect-imported) specifically so this file — not some future,
+// easy-to-forget consumer — is the one guaranteeing the check always runs.
+//
+// `defs` is dependency-injectable ONLY so a unit test can supply a
+// deliberately-broken stand-in list and prove this assertion actually
+// catches that regression — same rationale as `assertEnvelopeBoundaryGateWired`'s
+// injectable `runner` (FE-T04). The boot call site always uses the default
+// (the real, committed `CAPABILITY_DEFINITIONS`).
+
+export async function assertCapabilityGuardRefsWired(
+  defs: readonly CapabilityDefinition[] = CAPABILITY_DEFINITIONS,
+): Promise<void> {
+  assertGuardRefsResolve(defs)
 }
 
 // ── bootstrapKernel ─────────────────────────────────────────────────────────
@@ -447,7 +640,65 @@ export async function bootstrapKernel(server: FastifyInstance): Promise<void> {
     throw err
   }
 
-  // 4. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
+  // 4. FE-T04 — assert the isIntentEnvelope structural boundary gate is
+  //    actually wired on the customer-intent-gateway live path. Fail CLOSED:
+  //    a silently-removed gate call must never boot green.
+  try {
+    await assertEnvelopeBoundaryGateWired()
+    server.log.info(
+      { event: "kernel.bootstrap.envelope_boundary_gate_wired" },
+      "[kernel-bootstrap] envelope structural boundary gate verified",
+    )
+  } catch (err) {
+    if (err instanceof EnvelopeBoundaryGateNotWiredError) {
+      server.log.fatal(
+        { err },
+        "[kernel-bootstrap] envelope boundary gate self-check failed — refusing to boot",
+      )
+    }
+    throw err
+  }
+
+  // 5. FE-T04 — same self-check, on the OTHER convergence point: the
+  //    command-service chokepoint (`withAdjudicate`, @ibatexas/domain) every
+  //    ops/admin/subscriber/job/LLM-tool mutation flows through.
+  try {
+    await assertCommandServiceBoundaryGateWired()
+    server.log.info(
+      { event: "kernel.bootstrap.command_service_boundary_gate_wired" },
+      "[kernel-bootstrap] command-service structural boundary gate verified",
+    )
+  } catch (err) {
+    if (err instanceof EnvelopeBoundaryGateNotWiredError) {
+      server.log.fatal(
+        { err },
+        "[kernel-bootstrap] command-service boundary gate self-check failed — refusing to boot",
+      )
+    }
+    throw err
+  }
+
+  // 6. FE-T19 — assert every authored CapabilityDefinition guard-ref
+  //    resolves to a real, live guard on the just-installed Packs'
+  //    PolicyBundles. Fail CLOSED: a guard renamed, removed, or moved to a
+  //    different phase without updating the registry must never boot green.
+  try {
+    await assertCapabilityGuardRefsWired()
+    server.log.info(
+      { event: "kernel.bootstrap.capability_guard_refs_resolved" },
+      "[kernel-bootstrap] capability-definition guard-refs resolved",
+    )
+  } catch (err) {
+    if (err instanceof GuardRefResolutionError) {
+      server.log.fatal(
+        { err },
+        "[kernel-bootstrap] capability-definition guard-ref resolution failed — refusing to boot",
+      )
+    }
+    throw err
+  }
+
+  // 7. Start the defer-pending gauge poll (W3-5). Real kernel behavior;
   //    surfaces the count of `defer:pending:*` Redis keys.
   const recorder = getKernelMetricsRecorder()
   startDeferPendingGaugePoll(recorder, server.log)

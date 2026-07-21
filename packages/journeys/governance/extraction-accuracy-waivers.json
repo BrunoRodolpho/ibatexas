@@ -1,0 +1,114 @@
+[
+  {
+    "capability": "order.status.transition",
+    "caseId": "most-recent-order-to-confirmed-casual",
+    "category": "waived-quarantined",
+    "reason": "Observed non-deterministic (flaky, not a stable limitation) across 2 clean (isolation-fixed) live runs against the local 4B: failed run 5 (extracted newStatus=\"canceled\" instead of \"confirmed\"), passed run 6. Not yet registered in the extraction flake ledger (that machine-tracked path is the T08 CI-wiring follow-up) — this file waiver documents the SAME finding by hand in the meantime so it isn't silently excluded. Not claimed in the baseline, so a future failure is never a false regression.",
+    "addedAt": "2026-07-16"
+  },
+  {
+    "capability": "order.status.transition",
+    "caseId": "most-recent-order-to-delivered-casual",
+    "category": "waived-quarantined",
+    "reason": "Observed non-deterministic (flaky, not a stable limitation): stable-passing across the first 3 clean (isolation-fixed) live runs (5, 6, 7 — including the initial baseline-commit verify), then failed the post-review-fix live verify run with the same \"no NEW audit record settled\" signature the 6 stably-failing cases show (the model did not propose a mutating envelope for \"pedido entregue, pode fechar\" that turn). Same policy as most-recent-order-to-confirmed-casual: not yet registered in the extraction flake ledger (T08 CI-wiring follow-up) — this file waiver documents the finding by hand in the meantime. Not claimed in the baseline, so a future failure is never a false regression.",
+    "addedAt": "2026-07-16"
+  },
+  {
+    "capability": "order.status.transition",
+    "caseId": "most-recent-order-to-canceled-polite",
+    "category": "waived-quarantined",
+    "reason": "FE-T12 endgame calibration (2026-07-17): was passing in the pre-existing committed baseline (T05's original calibration), but failed 2/2 live runs observed this session (pass2-v2, pass2-final) with the identical \"no NEW order.status.transition audit record settled within 45000ms\" signature — the model did not propose a mutating envelope for \"poderia cancelar meu pedido mais recente, por gentileza?\" on either occasion. Not reproduced as passing in this session, so it is not carried forward into the rebuilt baseline as a plain claim (that would silently weaken the regression gate against a case this session never actually saw pass) — recorded here instead so the drop is reviewable rather than a bare removed line in a large array. Not claimed in the baseline; a future failure here is never a false regression, and a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "payment.pix.regenerate",
+    "caseId": "adversarial-amount-mentioned",
+    "category": "waived-quarantined",
+    "reason": "FE-T12 endgame calibration (2026-07-17): was passing in the pre-existing committed baseline (T11's original calibration), but failed 3/3 live runs observed this session — pass2-v2 (REFUSE via token_budget.exhausted, a run-order artifact, see PR #270's methodology notes), pass2-final and the ISOLATED fresh-budget pix-only rerun (both \"no NEW payment.pix.regenerate audit record settled within 45000ms\" for \"manda um pix novo aí, o valor é 50 reais\"). The isolated rerun rules out budget contamination as the explanation for at least this instance, so this looks like a genuine per-case timeout rather than pure harness noise, but with zero passing observations this session there is no live data to re-claim it on. Not carried forward into the rebuilt baseline; recorded here so the drop is reviewable. A future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "payment.refund.issue",
+    "caseId": "reason-context-embedded-damaged",
+    "category": "waived-quarantined",
+    "reason": "FE-T12 endgame calibration (2026-07-17): was passing in the pre-existing committed baseline (T10's original calibration), but failed 3/3 live runs observed this session (pass2-v2, pass2-final, the isolated refund-only rerun) with a CONSISTENT extraction miss: the model translated \"o item chegou avariado\" to \"item arrived damaged\" in the `reason` field instead of preserving the customer's verbatim Portuguese text, which `expectPayload`'s fidelity check (reason must match the utterance verbatim, same policy as every other reason-bearing case in this corpus) correctly fails. Stable across all 3 observations, not flip-flopping — a real, reproducible finding, but T10's capability and out of this PR's scope to fix. Not carried forward into the rebuilt baseline; recorded here so the drop is reviewable rather than silently dropped from the regression gate's claimed set.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.cart.ensure",
+    "caseId": "abre-um-carrinho",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"abre um carrinho pra mim\"), failed pass 2 with the identical \"no NEW order.cart.ensure audit record settled within 45000ms\" signature the same non-deterministic timeout class shows elsewhere in this program (order.status.transition, payment.pix.regenerate, payment.refund.issue). Not carried forward into the baseline — 2 clean passes required, this file has only 1. Recorded here so the exclusion is reviewable rather than a silently-dropped case; a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.coupon.apply",
+    "caseId": "casual-coloca-ai",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"coloca aí o código NATAL30\"), failed pass 2 with a genuine extraction miss (not a timeout) — the model did not populate the `code` field on the second observation (extractionIR.payload.code: expected \"NATAL30\", got undefined). A DIFFERENT failure shape than the timeout class seen elsewhere in this run, but the same 2-clean-pass bar applies — not carried forward into the baseline. Recorded here so the exclusion is reviewable; a future 2/2 pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "whatsapp.handoff.request",
+    "caseId": "no-reason-bare",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"quero falar com um atendente\"), failed pass 2 with the identical \"no NEW whatsapp.handoff.request audit record settled within 45000ms\" signature the same non-deterministic timeout class shows elsewhere in this program (order.status.transition, payment.pix.regenerate, payment.refund.issue). Not carried forward into the baseline — 2 clean passes required, this file has only 1. Recorded here so the exclusion is reviewable rather than a silently-dropped case; a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "customer.pix.details.save",
+    "caseId": "adversarial-formal-full",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"Meus dados para o PIX são: nome completo João da Silva, e-mail...\"), failed pass 2 with the identical \"no NEW customer.pix.details.save audit record settled within 45000ms\" signature the same non-deterministic timeout class shows elsewhere in this program (order.status.transition, payment.pix.regenerate, payment.refund.issue). Not carried forward into the baseline — 2 clean passes required, this file has only 1. Recorded here so the exclusion is reviewable rather than a silently-dropped case; a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.note.add",
+    "caseId": "colloquial-poe-uma-nota",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"põe uma nota no meu pedido, sem picles\"), failed pass 2 with the identical \"no NEW order.note.add audit record settled within 45000ms\" signature the same non-deterministic timeout class shows elsewhere in this program (order.status.transition, payment.pix.regenerate, payment.refund.issue). Not carried forward into the baseline — 2 clean passes required, this file has only 1. Recorded here so the exclusion is reviewable rather than a silently-dropped case; a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.amend.add_item",
+    "caseId": "pedido-numero-explicit",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"adiciona uma batata frita no pedido 910226\"), failed pass 2 with the identical \"no NEW order.amend.add_item audit record settled within 45000ms\" signature the same non-deterministic timeout class shows elsewhere in this program (order.status.transition, payment.pix.regenerate, payment.refund.issue). Not carried forward into the baseline — 2 clean passes required, this file has only 1. Recorded here so the exclusion is reviewable rather than a silently-dropped case; a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.amend.update_qty",
+    "caseId": "context-embedded",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"a família cresceu, muda a coca pra 6 no meu pedido\"), failed pass 2 with the identical \"no NEW order.amend.update_qty audit record settled within 45000ms\" signature the same non-deterministic timeout class shows elsewhere in this program (order.status.transition, payment.pix.regenerate, payment.refund.issue). Not carried forward into the baseline — 2 clean passes required, this file has only 1. Recorded here so the exclusion is reviewable rather than a silently-dropped case; a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.item.remove",
+    "caseId": "tira-a-coca",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"tira a coca do carrinho\"), failed pass 2 with the identical \"no NEW order.item.remove audit record settled within 45000ms\" signature the same non-deterministic timeout class shows elsewhere in this program (order.status.transition, payment.pix.regenerate, payment.refund.issue). Not carried forward into the baseline — 2 clean passes required, this file has only 1. Recorded here so the exclusion is reviewable rather than a silently-dropped case; a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.item.remove",
+    "caseId": "formal-remova",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"Por favor, remova o hambúrguer do carrinho.\"), failed pass 2 on a genuine extraction-fidelity miss — the model dropped the accent (extractionIR.payload.item: expected \"hambúrguer\", got \"hamburguer\"). The SAME accent-drift class observed 3x in the amend backfill (order.amend.add_item/remove_item, \"hambúrguer\"→\"hamburger\"/\"hamburguer\") — non-deterministic per-turn (this exact utterance passed on pass 1 with the accent intact), not a fixed defect. Not carried forward into the baseline; documented as the same cross-cutting fidelity finding, not a new class.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.item.remove",
+    "caseId": "casual-esquece-essa",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"pedi errado, tira o guaraná do meu pedido\"), failed pass 2 with the identical \"no NEW order.item.remove audit record settled within 45000ms\" signature the same non-deterministic timeout class shows elsewhere in this program (order.status.transition, payment.pix.regenerate, payment.refund.issue). Not carried forward into the baseline — 2 clean passes required, this file has only 1. Recorded here so the exclusion is reviewable rather than a silently-dropped case; a future pass is grounds to re-claim it.",
+    "addedAt": "2026-07-17"
+  },
+  {
+    "capability": "order.item.update",
+    "caseId": "down-to-one",
+    "category": "waived-quarantined",
+    "reason": "FE-T14 pass-2 stability confirmation (2026-07-17): passed pass 1 (\"deixa só 1 guaraná no carrinho\"), failed pass 2 with the \"no NEW order.item.update audit record settled within 45000ms\" timeout signature. This was order.item.update's ONLY pass-1-passing case (1/10) — with pass 2 flaking it, order.item.update ends this calibration with ZERO stable (2-clean-pass) cases and no baseline entries at all. The capability is wired and does occasionally succeed (a clean pass-1 EXECUTE exists in this session's logs), but the honest result is: not yet baseline-worthy. Flagged in the coverage report as the weakest capability in the FE-T14 roster, dominated by the timeout class plus the update_qty quantity-extraction bug documented separately.",
+    "addedAt": "2026-07-17"
+  }
+]

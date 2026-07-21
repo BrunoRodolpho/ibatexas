@@ -38,6 +38,16 @@ import {
   type TriadReadBackend,
 } from "./turn-reads.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
+import {
+  resolveMenuItem,
+  resolveMenuOverviewText,
+  resolveDietaryOptionsText,
+  detectDietaryPreferenceTags,
+  composeMenuPriceText,
+  composeMenuContentsText,
+} from "./menu-item-resolver.js";
+import { resolveStoreInfoText } from "./store-info-resolver.js";
+import { classifyRequestSpans } from "./required-claim-decomposer.js";
 
 /**
  * Map the read-layer 2-value {@link LedgerTaint} onto the 3-value
@@ -179,11 +189,57 @@ const STORE_HOURS_FOR_DATE_KEY = (isoDate: string): string =>
 const HOLIDAY_FOR_DATE_KEY = (isoDate: string): string => `schedule:holiday:${isoDate}`;
 const OVERRIDE_FOR_DATE_KEY = (isoDate: string): string =>
   `schedule:schedule_override:${isoDate}`;
+// BKL-142 MENU_ITEM_PRICE / MENU_ITEM_CONTENTS — the PRODUCT-ID-SUFFIXED keys, aligned
+// VERBATIM with the registry's `perResourceKey` parameterization (`${base}:${subject}`
+// where subject = the RESOLVED product id; claim-registry.ts). Recorded ONLY when a
+// menu span fired AND the item resolved this turn (the same resolveMenuItem the claim
+// planner drives, so key == candidate subject by construction).
+const MENU_ITEM_PRICE_KEY = (productId: string): string => `menu:item_price:${productId}`;
+const MENU_ITEM_CONTENTS_KEY = (productId: string): string =>
+  `menu:item_contents:${productId}`;
+// BKL-142 — MENU_OVERVIEW is FIXED-SUBJECT (single-key, like STORE_HOURS): no `:{id}`
+// suffix. The menu-wide overview read is recorded under this bare key.
+const MENU_OVERVIEW_KEY = "menu:overview";
+// BKL-214 — MENU_DIETARY is PUBLIC per-item keyed by the dietary TAG (vegetariano/vegano),
+// mirroring MENU_ITEM_PRICE's per-resource key. The investigator records the read under
+// `menu:dietary:{tag}` only after deterministic tag detection, so the LEDGER names the
+// admissible tag (classify-only's presentPublicItemIds picks it up).
+const MENU_DIETARY_KEY = (tag: string): string => `menu:dietary:${tag}`;
+// BKL-136 — the fixed public store-info key (claim-registry.ts STORE_INFO evidence).
+const STORE_INFO_KEY = "store:info";
 const ORDER_FULFILLMENT_KEY = (orderId: string): string =>
   `order_fulfillment_stage:${orderId}`;
 const PAYMENT_STATUS_KEY = (orderId: string): string => `payment_status:${orderId}`;
 const RESERVATION_KEY = (reservationId: string): string =>
   `reservation_status:${reservationId}`;
+// BKL-006 FALSIFIER keys. Each is the registry BASE falsifier key suffixed with the
+// SAME `:{subject}` the registry's `parameterizeKeysBySubject` (claim-registry.ts)
+// applies to that type — so the recorded ledger key equals the parameterized
+// falsifier key the kernel's `resolveAgainstFalsifiers` looks up. A suffix mismatch
+// would leave the arm SILENTLY INERT (the ledger-key-lockstep pin test resolves
+// these through the REAL `selectCandidateClaim` output to catch exactly that). The
+// PAYMENT_STATUS subject is the ORDER id (its `payment_status` key is keyed by
+// orderId), so its refund/chargeback falsifiers are keyed by orderId too.
+// REVIEW FIX 2026-07-17: order_cancelled / reservation_cancelled keys were
+// REMOVED with their reads — same-row tautology vs the base read (they demoted
+// every truthful cancelled render while catching nothing the base missed); the
+// registry declarations stay deliberately unread (see claim-registry.ts; BKL-160
+// tracks rendering cancellation as a first-class claim).
+const PAYMENT_REFUND_KEY = (orderId: string): string => `payment_refund:${orderId}`;
+const PAYMENT_CHARGEBACK_KEY = (orderId: string): string =>
+  `payment_chargeback:${orderId}`;
+// BKL-139 CART_CONTENTS key. Keyed by the AUTHENTICATED customerId (the cart is
+// 1-per-customer, resolved server-side from the session's conversationId — never a
+// model id), so the subject is the customerId in lockstep with parameterizeKeysBySubject.
+// (The declared `cart_cleared` falsifier is deliberately UNREAD — see the cart block.)
+const CART_CONTENTS_KEY = (customerId: string): string => `cart_contents:${customerId}`;
+// FE-D03 slice C ORDER_HISTORY / PAYMENT_HISTORY keys. Keyed by the AUTHENTICATED
+// customerId (the list is per-customer, owner-scoped via listByCustomer) — the subject
+// is the customerId in lockstep with parameterizeKeysBySubject. The declared
+// order_history_changed / payment_history_changed falsifiers are deliberately UNREAD
+// (see the history block + registry: a must_read_this_turn snapshot is already current).
+const ORDER_HISTORY_KEY = (customerId: string): string => `order_history:${customerId}`;
+const PAYMENT_HISTORY_KEY = (customerId: string): string => `payment_history:${customerId}`;
 
 const GUEST_ID_RE = /^(guest|anon|anonymous):/i;
 
@@ -361,7 +417,257 @@ export function createFirstPartyTurnReads(
       });
     }
 
+    // BKL-142 MENU_ITEM_PRICE / MENU_ITEM_CONTENTS — PUBLIC per-item catalog reads.
+    // GATED on a MENU_ITEM_PRICE_Q / MENU_ITEM_CONTENTS_Q span (the SAME
+    // classifyRequestSpans classifier the claim planner + decomposer use), mirroring the
+    // STORE_HOURS_FOR_DATE date-gate: a non-menu turn adds NO catalog cost. The subject
+    // is the RESOLVED product id (the SHARED resolveMenuItem over perception.text — same
+    // turnId+text ⇒ same product as the claim planner, so the ledger key matches the
+    // candidate subject by construction). No lexically-related product → `undefined` →
+    // NO reads → the claim resolves ABSENT → honest UNKNOWN, never a wrong item/price.
+    // Public first-party catalog; no owner → placed BEFORE the authenticated-customer
+    // gate (answers guests too). The `menu:item_unpublished` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    const menuSpans = classifyRequestSpans(input.cognition.perception.text);
+    const wantsMenuPrice = menuSpans.includes("MENU_ITEM_PRICE_Q");
+    const wantsMenuContents = menuSpans.includes("MENU_ITEM_CONTENTS_Q");
+    if (wantsMenuPrice || wantsMenuContents) {
+      const resolved = await resolveMenuItem(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+        {
+          channel: input.cognition.perception.channel,
+          sessionId: input.cognition.conversationId,
+          customerId,
+        },
+      );
+      if (resolved !== undefined) {
+        if (wantsMenuPrice) {
+          // Compose the C6-bound scalar ONCE, up front (byte-equal to the claim
+          // planner's derived value — same composer, same resolved product).
+          const priceText = composeMenuPriceText(resolved);
+          reads.push({
+            key: MENU_ITEM_PRICE_KEY(resolved.id),
+            source: "catalog.itemPrice",
+            origin: "TRUSTED",
+            originProvenance: "FIRST_PARTY",
+            sourceMode: "live",
+            read: async () => ({ priceText }),
+          });
+        }
+        if (wantsMenuContents) {
+          const contentsText = composeMenuContentsText(resolved);
+          // No first-party description → record NO evidence → honest UNKNOWN (never a
+          // fabricated blurb). Only push when the catalog actually has contents text.
+          if (contentsText !== undefined) {
+            reads.push({
+              key: MENU_ITEM_CONTENTS_KEY(resolved.id),
+              source: "catalog.itemContents",
+              origin: "TRUSTED",
+              originProvenance: "FIRST_PARTY",
+              sourceMode: "live",
+              read: async () => ({ contentsText }),
+            });
+          }
+        }
+      }
+    }
+
+    // BKL-142 — MENU_OVERVIEW: the menu-WIDE overview ("o que tem no cardápio?").
+    // GATED on a MENU_OVERVIEW_Q span. FIXED subject (no resolveMenuItem — the read is a
+    // wildcard catalog LISTING, not a per-item lookup), keyed by the bare `menu:overview`
+    // key. Public first-party catalog → placed BEFORE the authenticated-customer gate
+    // (answers guests too). Empty/unreadable catalog → resolveMenuOverviewText undefined
+    // → NO evidence → honest UNKNOWN (never a fabricated menu). The `menu:item_unpublished`
+    // W6 falsifier is DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    if (menuSpans.includes("MENU_OVERVIEW_Q")) {
+      const overviewText = await resolveMenuOverviewText(input.cognition.turnId, {
+        channel: input.cognition.perception.channel,
+        sessionId: input.cognition.conversationId,
+        customerId,
+      });
+      if (overviewText !== undefined) {
+        reads.push({
+          key: MENU_OVERVIEW_KEY,
+          source: "catalog.overview",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ overviewText }),
+        });
+      }
+    }
+
+    // BKL-214 — MENU_DIETARY: the dietary-PREFERENCE read ("tem opção vegetariana?").
+    // GATED on a MENU_DIETARY_Q span. The tag(s) are detected DETERMINISTICALLY from the
+    // text (vegetariano/vegano — allergen-adjacent diets are excluded upstream by the span
+    // gate). For each detected tag, a faceted read of the tagged products; an empty tag →
+    // resolveDietaryOptionsText undefined → NO evidence → honest UNKNOWN (never a
+    // fabricated "we have vegetarian options"). Public first-party → BEFORE the
+    // authenticated gate (answers guests too). Keyed per-tag like the menu-item reads.
+    if (menuSpans.includes("MENU_DIETARY_Q")) {
+      const tags = detectDietaryPreferenceTags(input.cognition.perception.text);
+      for (const tag of tags) {
+        const dietaryText = await resolveDietaryOptionsText(input.cognition.turnId, tag, {
+          channel: input.cognition.perception.channel,
+          sessionId: input.cognition.conversationId,
+          customerId,
+        });
+        if (dietaryText !== undefined) {
+          reads.push({
+            key: MENU_DIETARY_KEY(tag),
+            source: "catalog.dietary",
+            origin: "TRUSTED",
+            originProvenance: "FIRST_PARTY",
+            sourceMode: "live",
+            read: async () => ({ dietaryText }),
+          });
+        }
+      }
+    }
+
+    // BKL-136 STORE_INFO — the store address/parking read, GATED on a STORE_INFO_Q
+    // span. FIXED subject (single `store:info` key, like MENU_OVERVIEW), public
+    // first-party config → placed BEFORE the authenticated-customer gate (answers
+    // guests too). The shared per-turn-memoized resolver composes the scalar from
+    // OWNER-ATTESTED Medusa store.metadata; absent/blank metadata or an unreadable
+    // store → `undefined` → NO evidence → honest UNKNOWN (never a fabricated
+    // address). The `store:info_changed` W6 falsifier is DELIBERATELY UNREAD
+    // (claim-registry.ts) — never pushed here.
+    if (menuSpans.includes("STORE_INFO_Q")) {
+      const infoText = await resolveStoreInfoText(input.cognition.turnId);
+      if (infoText !== undefined) {
+        reads.push({
+          key: STORE_INFO_KEY,
+          source: "store.info",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ infoText }),
+        });
+      }
+    }
+
     if (!isAuthenticatedCustomer(customerId)) return reads;
+
+    // BKL-139 CART_CONTENTS — the authenticated customer's IN-PROGRESS cart, keyed by
+    // the customerId subject (the cart is 1-per-customer, resolved server-side from the
+    // session's conversationId — IDOR-safe by session-scoping, never a model cart id).
+    // A guest never reaches here (gated above) → cart_contents absent → honest UNKNOWN
+    // (the fail-closed ownership ruling). GATED on a CART_CONTENTS_Q span in THIS turn's
+    // request (the SAME deterministic classifier the decomposer/classify-only path uses,
+    // mirroring the STORE_HOURS_FOR_DATE date-gate): a non-cart turn adds NO Medusa/Redis
+    // cost and records no cart keys. Both reads (cart_contents + the active_cart marker)
+    // share the per-turn cart memo (one Medusa fetch). `readCartContents` returns `null`
+    // ONLY on an UNAVAILABLE read (Redis/Medusa error) → OwnerScopedReadUnavailable →
+    // fail-closed ERROR (Inv 7); an empty/absent cart returns `hasItems: false` →
+    // ABSENT_READ → honest UNKNOWN.
+    const asksAboutCart = classifyRequestSpans(input.cognition.perception.text).includes(
+      "CART_CONTENTS_Q",
+    );
+    const conversationId = input.cognition.conversationId;
+    if (asksAboutCart) {
+      reads.push({
+        key: CART_CONTENTS_KEY(customerId),
+        source: "cart.readCartContents",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readCartContents(conversationId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("cart_contents", customerId);
+          // PRESENT only when the cart actually has items — an empty/absent cart leaves
+          // the key ABSENT (honest UNKNOWN), never a fabricated summary.
+          return v.hasItems ? { itemsSummaryText: v.itemsSummaryText } : ABSENT_READ;
+        },
+      });
+      // CART_CONTENTS falsifier `cart_cleared` — DECLARED in the registry (so
+      // CART_CONTENTS escapes the W6 UNKNOWN-only cap) but DELIBERATELY UNREAD: a
+      // same-cart-row "cleared" signal is tautological AND inert (a cleared/checked-out
+      // cart already resolves `hasItems: false` ⇒ `cart_contents` ABSENT ⇒ there is no
+      // present base to demote). Wiring it would only re-introduce the shared-read
+      // tautology the order_cancelled/reservation_cancelled review-fix removed. So there
+      // is no cart_cleared read here — the key stays absent and the arm never fires.
+      // CART provable-empty marker — observability/audit parity with the
+      // active_orders/active_payments/active_reservations markers (FE-T17b idiom). NOT
+      // (yet) consumed by a completeness-drop rule: CART_CONTENTS is required only by
+      // its own CART_CONTENTS_Q span — no unrelated span force-requires it — so the
+      // wrongly-forced-companion problem the order/payment markers solve does not exist
+      // for the cart today. Its key matches NO OWNER_SCOPED_KEY_PREFIXES → never an
+      // owner resource. A failed read records state error (Inv 7 — "could not check").
+      reads.push({
+        key: `active_cart:${customerId}`,
+        source: "cart.readCartContents.marker",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readCartContents(conversationId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("active_cart", customerId);
+          return { hasItems: v.hasItems };
+        },
+      });
+      // BKL-163 CART_EMPTY — the provable-empty CLAIM key (the FE-T17b marker idiom
+      // inverted into evidence): PRESENT ONLY when the cart read resolved
+      // `hasItems: false`, so presence IS the provable-empty proposition and the
+      // CART_CONTENTS/CART_EMPTY pair is complementary by construction (exactly one
+      // can validate in a turn). The `emptinessText` scalar is CODE-COMPOSED (the
+      // literal "vazio" the template's C6-bound slot renders), never model-authored.
+      // Shares the per-turn cart memo (no extra Medusa/Redis cost). `null` (an
+      // UNAVAILABLE read) → OwnerScopedReadUnavailable → fail-closed ERROR (Inv 7);
+      // a cart WITH items → ABSENT_READ (no present base — CART_EMPTY resolves
+      // honest UNKNOWN and is dropped when CART_CONTENTS validates).
+      reads.push({
+        key: `cart_empty:${customerId}`,
+        source: "cart.readCartContents.empty",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readCartContents(conversationId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("cart_empty", customerId);
+          return v.hasItems ? ABSENT_READ : { emptinessText: "vazio" };
+        },
+      });
+    }
+
+    // FE-D03 slice C ORDER_HISTORY / PAYMENT_HISTORY — the owner-scoped LIST reads,
+    // keyed by the authenticated customerId. GATED on the *_HISTORY_Q span (same
+    // deterministic classifier + span-gate discipline as CART_CONTENTS): a non-history
+    // turn adds no DB cost and records no history keys. Each records PRESENT only when
+    // the customer has rows (hasHistory) — an empty history leaves the key ABSENT →
+    // honest UNKNOWN; a DB read failure REJECTS → fail-closed ERROR (Inv 7). A guest
+    // never reaches here (gated above) → honest UNKNOWN. The declared
+    // order_history_changed / payment_history_changed falsifiers are deliberately UNREAD
+    // (registry note): the summary is a must_read_this_turn snapshot already reflecting
+    // each row's current status, so a same-read "changed" signal is tautological/inert.
+    const spans = classifyRequestSpans(input.cognition.perception.text);
+    if (spans.includes("ORDER_HISTORY_Q")) {
+      reads.push({
+        key: ORDER_HISTORY_KEY(customerId),
+        source: "order.readOrderHistory",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readOrderHistory(customerId);
+          return v.hasHistory ? { historySummaryText: v.historySummaryText } : ABSENT_READ;
+        },
+      });
+    }
+    if (spans.includes("PAYMENT_HISTORY_Q")) {
+      reads.push({
+        key: PAYMENT_HISTORY_KEY(customerId),
+        source: "payment.readPaymentHistory",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readPaymentHistory(customerId);
+          return v.hasHistory ? { historySummaryText: v.historySummaryText } : ABSENT_READ;
+        },
+      });
+    }
 
     const { orderIds, reservationIds } = extractTurnResourceIds({
       envelopes: input.plan.envelopes,
@@ -477,9 +783,107 @@ export function createFirstPartyTurnReads(
           return v;
         },
       });
+
+      // BKL-006 FALSIFIERS (W6 CE#3 runtime arm) — the PAYMENT_STATUS falsifiers
+      // the registry DECLARED but no read populated, so the arm was structurally
+      // INERT (a refunded/disputed payment could VALIDATE `pago` while the claims
+      // flag is ON — the latent risk BKL-006 closes). Each is recorded PRESENT
+      // ONLY when the falsifying fact actually exists (refund / chargeback); a
+      // checked-and-NONE read returns ABSENT_READ → the investigator SKIPS it →
+      // the key stays ABSENT → `resolveAgainstFalsifiers` does NOT fire (never a
+      // fabricated "no refund" present value — the anti-pattern in the ABSENT_READ
+      // doc above). A cross-owner / absent read throws OwnerScopedReadUnavailable
+      // → fail-closed read ERROR (Inv 7): an unreadable falsifier cannot be proven
+      // not to have fired, so it demotes the base to UNKNOWN (symmetric with the
+      // base-key error axis) — never leaks another customer's data. DEMOTE-ONLY.
+      // REVIEW FIX 2026-07-17: the order_cancelled read that shipped here in #277
+      // was REMOVED — it derived from the SAME memoized order row as the base
+      // ORDER_FULFILLMENT_STAGE read (same instant, same freshness), so it could
+      // never catch staleness the base missed, while demoting every TRUTHFUL
+      // "cancelado" render to UNKNOWN. Refund/chargeback stay: value-distinct
+      // signals (a refund on a still-'paid' row) the base does not assert.
+      reads.push({
+        key: PAYMENT_REFUND_KEY(orderId),
+        source: "payment.readPaymentRefund",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readPaymentRefund(orderId, customerId);
+          if (v === null) throw new OwnerScopedReadUnavailable("payment_refund", orderId);
+          return v.refunded ? v : ABSENT_READ;
+        },
+      });
+      reads.push({
+        key: PAYMENT_CHARGEBACK_KEY(orderId),
+        source: "payment.readPaymentChargeback",
+        origin: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+        sourceMode: "live",
+        read: async () => {
+          const v = await b.readPaymentChargeback(orderId, customerId);
+          if (v === null)
+            throw new OwnerScopedReadUnavailable("payment_chargeback", orderId);
+          return v.disputed ? v : ABSENT_READ;
+        },
+      });
     }
 
-    for (const reservationId of reservationIds) {
+    // FE-T17b (live-disproof follow-up; DISPROVEN 2026-07-16, turnIds 30c78409-…
+    // / 91adbe43-…) — the RESERVATION mirror of the FIX 2 order-discovery fallback
+    // above. `get_my_reservations` is a no-param LIST call (its input carries no
+    // `reservationId`), so `extractTurnResourceIds` structurally NEVER populates
+    // `reservationIds` for a status question — unlike an order/payment question,
+    // where the model at least ATTEMPTS to extract an id into a read-tool param.
+    // Without this fallback the reservation per-resource loop below iterates an
+    // ALWAYS-EMPTY list, no `reservation_status:{id}` entry is ever recorded, and
+    // RESERVATION_STATUS can never acquire evidence — proposal, registry row, and
+    // template were all correct, but the claim was structurally unreachable.
+    // Independently enumerate the AUTHENTICATED customer's OWN active reservations
+    // (owner-scoped — keyed ONLY by `customerId`) and union them in, so the ledger
+    // carries the owner's real reservations regardless of the model's (necessarily
+    // absent) extraction. IDOR-safe: every id here is the customer's own; the
+    // per-resource read below stays owner-scoped too. Same defensive shape as the
+    // order fallback: a failed enumeration degrades to the (empty) model-extracted
+    // ids rather than throwing the turn — the honest-abstain path this closes for
+    // (zero reservations → this stays `[]` → no ledger entry → SAFE_UNKNOWN) is
+    // unaffected by an enumeration failure either.
+    let activeReservations: { ok: true; ids: string[] } | { ok: false; reason: string };
+    try {
+      activeReservations = { ok: true, ids: await b.listActiveReservationIds(customerId) };
+    } catch (err) {
+      activeReservations = { ok: false, reason: reasonOf(err) };
+    }
+    const ownedActiveReservationIds = activeReservations.ok ? activeReservations.ids : [];
+    const allReservationIds: string[] = [...reservationIds];
+    for (const id of ownedActiveReservationIds) {
+      if (!allReservationIds.includes(id)) allReservationIds.push(id);
+    }
+
+    // FE-T17b — the EXACT MIRROR of the BKL-073/BKL-079 provable-empty markers, for
+    // the RESERVATION dimension. A pure SIGNAL carrier, NOT an owner resource: its
+    // key `active_reservations:{customerId}` matches NO OWNER_SCOPED_KEY_PREFIXES
+    // (`order_fulfillment_stage:` / `payment_status:` / `reservation_status:`), so
+    // it never attributes ownership. Recorded for observability/audit parity with
+    // the order/payment markers; NOT (yet) consumed by a completeness-drop rule
+    // (RESERVATION_STATUS is required only by its own RESERVATION_STATUS_Q span —
+    // no unrelated span class force-requires it the way PICKUP_Q forces
+    // ORDER_FULFILLMENT_STAGE — so the #8/BKL-073-style "drop a wrongly-forced
+    // companion" problem does not exist for reservations today; wiring this into
+    // `activeResourcesFromLedger` is a separate, not-yet-requested change).
+    reads.push({
+      key: `active_reservations:${customerId}`,
+      source: "reservation.listActiveReservationIds",
+      origin: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+      sourceMode: "live",
+      read: () => {
+        if (!activeReservations.ok) throw new Error(activeReservations.reason);
+        return { count: activeReservations.ids.length };
+      },
+    });
+
+    for (const reservationId of allReservationIds) {
       reads.push({
         key: RESERVATION_KEY(reservationId),
         source: "reservation.getById",
@@ -493,6 +897,11 @@ export function createFirstPartyTurnReads(
           return v;
         },
       });
+      // REVIEW FIX 2026-07-17: the reservation_cancelled falsifier read that
+      // shipped here in #277 was REMOVED — same-row tautology with the base
+      // RESERVATION_STATUS read (shared per-turn getById memo), demoting every
+      // truthful "cancelada" render while catching nothing the base missed. The
+      // registry declaration stays deliberately unread (claim-registry.ts; BKL-160).
     }
 
     return reads;

@@ -31,6 +31,10 @@ vi.mock("../../typesense/client.js", () => ({
 
 vi.mock("../../embeddings/client.js", () => ({
   generateEmbedding: mockGenerateEmbedding,
+  // BKL-034: provider-derived cache-namespace version (openai→v2, ollama→v3).
+  embeddingCacheVersion: () => (process.env.EMBEDDINGS_PROVIDER === "ollama" ? "v3" : "v2"),
+  // Real class shape so search-products' `instanceof` narrowing works in tests.
+  EmbeddingsUnavailableError: class EmbeddingsUnavailableError extends Error {},
 }))
 
 vi.mock("../../cache/query-cache.js", () => ({

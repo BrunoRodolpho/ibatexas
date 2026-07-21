@@ -83,11 +83,6 @@ export {
   getRefundConfirmThresholdCentavos,
   getRefundEscalateThresholdCentavos,
   paymentsTaintPolicy,
-  type PaymentChargeCancelPayload,
-  type PaymentChargeConfirmPayload,
-  type PaymentChargeCreatePayload,
-  type PaymentChargeExpirePayload,
-  type PaymentChargeFailPayload,
   type PaymentContext,
   type PaymentCashConfirmPayload,
   type PaymentCreatePayload,
@@ -155,12 +150,9 @@ export const paymentsPack = {
   version: "1.0.0",
   contract: "v0",
   intents: [
+    // BKL-176 — the 5 dead `payment.charge.*` kinds were retired (governance-
+    // only shadow of payment.create / payment.status.*; zero emitters).
     "payment.create",
-    "payment.charge.create",
-    "payment.charge.confirm",
-    "payment.charge.fail",
-    "payment.charge.expire",
-    "payment.charge.cancel",
     "payment.pix.regenerate",
     "payment.method.switch",
     "payment.retry",

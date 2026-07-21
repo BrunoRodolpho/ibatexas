@@ -386,6 +386,7 @@ export type OrderProjectionWhereInput = {
   statusHistory?: Prisma.OrderStatusHistoryListRelationFilter
   payments?: Prisma.PaymentListRelationFilter
   notes?: Prisma.OrderNoteListRelationFilter
+  fiscalDocument?: Prisma.XOR<Prisma.FiscalDocumentNullableScalarRelationFilter, Prisma.FiscalDocumentWhereInput> | null
 }
 
 export type OrderProjectionOrderByWithRelationInput = {
@@ -416,6 +417,7 @@ export type OrderProjectionOrderByWithRelationInput = {
   statusHistory?: Prisma.OrderStatusHistoryOrderByRelationAggregateInput
   payments?: Prisma.PaymentOrderByRelationAggregateInput
   notes?: Prisma.OrderNoteOrderByRelationAggregateInput
+  fiscalDocument?: Prisma.FiscalDocumentOrderByWithRelationInput
 }
 
 export type OrderProjectionWhereUniqueInput = Prisma.AtLeast<{
@@ -449,6 +451,7 @@ export type OrderProjectionWhereUniqueInput = Prisma.AtLeast<{
   statusHistory?: Prisma.OrderStatusHistoryListRelationFilter
   payments?: Prisma.PaymentListRelationFilter
   notes?: Prisma.OrderNoteListRelationFilter
+  fiscalDocument?: Prisma.XOR<Prisma.FiscalDocumentNullableScalarRelationFilter, Prisma.FiscalDocumentWhereInput> | null
 }, "id">
 
 export type OrderProjectionOrderByWithAggregationInput = {
@@ -538,6 +541,7 @@ export type OrderProjectionCreateInput = {
   statusHistory?: Prisma.OrderStatusHistoryCreateNestedManyWithoutOrderInput
   payments?: Prisma.PaymentCreateNestedManyWithoutOrderInput
   notes?: Prisma.OrderNoteCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionUncheckedCreateInput = {
@@ -567,6 +571,7 @@ export type OrderProjectionUncheckedCreateInput = {
   statusHistory?: Prisma.OrderStatusHistoryUncheckedCreateNestedManyWithoutOrderInput
   payments?: Prisma.PaymentUncheckedCreateNestedManyWithoutOrderInput
   notes?: Prisma.OrderNoteUncheckedCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionUpdateInput = {
@@ -596,6 +601,7 @@ export type OrderProjectionUpdateInput = {
   statusHistory?: Prisma.OrderStatusHistoryUpdateManyWithoutOrderNestedInput
   payments?: Prisma.PaymentUpdateManyWithoutOrderNestedInput
   notes?: Prisma.OrderNoteUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionUncheckedUpdateInput = {
@@ -625,6 +631,7 @@ export type OrderProjectionUncheckedUpdateInput = {
   statusHistory?: Prisma.OrderStatusHistoryUncheckedUpdateManyWithoutOrderNestedInput
   payments?: Prisma.PaymentUncheckedUpdateManyWithoutOrderNestedInput
   notes?: Prisma.OrderNoteUncheckedUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionCreateManyInput = {
@@ -875,6 +882,20 @@ export type OrderProjectionUpdateOneRequiredWithoutStatusHistoryNestedInput = {
   update?: Prisma.XOR<Prisma.XOR<Prisma.OrderProjectionUpdateToOneWithWhereWithoutStatusHistoryInput, Prisma.OrderProjectionUpdateWithoutStatusHistoryInput>, Prisma.OrderProjectionUncheckedUpdateWithoutStatusHistoryInput>
 }
 
+export type OrderProjectionCreateNestedOneWithoutFiscalDocumentInput = {
+  create?: Prisma.XOR<Prisma.OrderProjectionCreateWithoutFiscalDocumentInput, Prisma.OrderProjectionUncheckedCreateWithoutFiscalDocumentInput>
+  connectOrCreate?: Prisma.OrderProjectionCreateOrConnectWithoutFiscalDocumentInput
+  connect?: Prisma.OrderProjectionWhereUniqueInput
+}
+
+export type OrderProjectionUpdateOneRequiredWithoutFiscalDocumentNestedInput = {
+  create?: Prisma.XOR<Prisma.OrderProjectionCreateWithoutFiscalDocumentInput, Prisma.OrderProjectionUncheckedCreateWithoutFiscalDocumentInput>
+  connectOrCreate?: Prisma.OrderProjectionCreateOrConnectWithoutFiscalDocumentInput
+  upsert?: Prisma.OrderProjectionUpsertWithoutFiscalDocumentInput
+  connect?: Prisma.OrderProjectionWhereUniqueInput
+  update?: Prisma.XOR<Prisma.XOR<Prisma.OrderProjectionUpdateToOneWithWhereWithoutFiscalDocumentInput, Prisma.OrderProjectionUpdateWithoutFiscalDocumentInput>, Prisma.OrderProjectionUncheckedUpdateWithoutFiscalDocumentInput>
+}
+
 export type OrderProjectionCreateNestedOneWithoutPaymentsInput = {
   create?: Prisma.XOR<Prisma.OrderProjectionCreateWithoutPaymentsInput, Prisma.OrderProjectionUncheckedCreateWithoutPaymentsInput>
   connectOrCreate?: Prisma.OrderProjectionCreateOrConnectWithoutPaymentsInput
@@ -929,6 +950,7 @@ export type OrderProjectionCreateWithoutCustomerInput = {
   statusHistory?: Prisma.OrderStatusHistoryCreateNestedManyWithoutOrderInput
   payments?: Prisma.PaymentCreateNestedManyWithoutOrderInput
   notes?: Prisma.OrderNoteCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionUncheckedCreateWithoutCustomerInput = {
@@ -957,6 +979,7 @@ export type OrderProjectionUncheckedCreateWithoutCustomerInput = {
   statusHistory?: Prisma.OrderStatusHistoryUncheckedCreateNestedManyWithoutOrderInput
   payments?: Prisma.PaymentUncheckedCreateNestedManyWithoutOrderInput
   notes?: Prisma.OrderNoteUncheckedCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionCreateOrConnectWithoutCustomerInput = {
@@ -1040,6 +1063,7 @@ export type OrderProjectionCreateWithoutStatusHistoryInput = {
   customer?: Prisma.CustomerCreateNestedOneWithoutOrderProjectionsInput
   payments?: Prisma.PaymentCreateNestedManyWithoutOrderInput
   notes?: Prisma.OrderNoteCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionUncheckedCreateWithoutStatusHistoryInput = {
@@ -1068,6 +1092,7 @@ export type OrderProjectionUncheckedCreateWithoutStatusHistoryInput = {
   currentPaymentId?: string | null
   payments?: Prisma.PaymentUncheckedCreateNestedManyWithoutOrderInput
   notes?: Prisma.OrderNoteUncheckedCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionCreateOrConnectWithoutStatusHistoryInput = {
@@ -1112,6 +1137,7 @@ export type OrderProjectionUpdateWithoutStatusHistoryInput = {
   customer?: Prisma.CustomerUpdateOneWithoutOrderProjectionsNestedInput
   payments?: Prisma.PaymentUpdateManyWithoutOrderNestedInput
   notes?: Prisma.OrderNoteUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionUncheckedUpdateWithoutStatusHistoryInput = {
@@ -1138,6 +1164,139 @@ export type OrderProjectionUncheckedUpdateWithoutStatusHistoryInput = {
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   currentPaymentId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  payments?: Prisma.PaymentUncheckedUpdateManyWithoutOrderNestedInput
+  notes?: Prisma.OrderNoteUncheckedUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedUpdateOneWithoutOrderNestedInput
+}
+
+export type OrderProjectionCreateWithoutFiscalDocumentInput = {
+  id: string
+  displayId: number
+  customerEmail?: string | null
+  customerName?: string | null
+  customerPhone?: string | null
+  fulfillmentStatus?: $Enums.OrderFulfillmentStatus
+  paymentStatus?: string | null
+  totalInCentavos?: number
+  subtotalInCentavos?: number
+  shippingInCentavos?: number
+  itemCount?: number
+  itemsJson?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  itemsSchemaVersion?: number
+  shippingAddressJson?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  deliveryType?: string | null
+  paymentMethod?: string | null
+  tipInCentavos?: number
+  version?: number
+  medusaCreatedAt: Date | string
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  currentPaymentId?: string | null
+  customer?: Prisma.CustomerCreateNestedOneWithoutOrderProjectionsInput
+  statusHistory?: Prisma.OrderStatusHistoryCreateNestedManyWithoutOrderInput
+  payments?: Prisma.PaymentCreateNestedManyWithoutOrderInput
+  notes?: Prisma.OrderNoteCreateNestedManyWithoutOrderInput
+}
+
+export type OrderProjectionUncheckedCreateWithoutFiscalDocumentInput = {
+  id: string
+  displayId: number
+  customerId?: string | null
+  customerEmail?: string | null
+  customerName?: string | null
+  customerPhone?: string | null
+  fulfillmentStatus?: $Enums.OrderFulfillmentStatus
+  paymentStatus?: string | null
+  totalInCentavos?: number
+  subtotalInCentavos?: number
+  shippingInCentavos?: number
+  itemCount?: number
+  itemsJson?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  itemsSchemaVersion?: number
+  shippingAddressJson?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  deliveryType?: string | null
+  paymentMethod?: string | null
+  tipInCentavos?: number
+  version?: number
+  medusaCreatedAt: Date | string
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  currentPaymentId?: string | null
+  statusHistory?: Prisma.OrderStatusHistoryUncheckedCreateNestedManyWithoutOrderInput
+  payments?: Prisma.PaymentUncheckedCreateNestedManyWithoutOrderInput
+  notes?: Prisma.OrderNoteUncheckedCreateNestedManyWithoutOrderInput
+}
+
+export type OrderProjectionCreateOrConnectWithoutFiscalDocumentInput = {
+  where: Prisma.OrderProjectionWhereUniqueInput
+  create: Prisma.XOR<Prisma.OrderProjectionCreateWithoutFiscalDocumentInput, Prisma.OrderProjectionUncheckedCreateWithoutFiscalDocumentInput>
+}
+
+export type OrderProjectionUpsertWithoutFiscalDocumentInput = {
+  update: Prisma.XOR<Prisma.OrderProjectionUpdateWithoutFiscalDocumentInput, Prisma.OrderProjectionUncheckedUpdateWithoutFiscalDocumentInput>
+  create: Prisma.XOR<Prisma.OrderProjectionCreateWithoutFiscalDocumentInput, Prisma.OrderProjectionUncheckedCreateWithoutFiscalDocumentInput>
+  where?: Prisma.OrderProjectionWhereInput
+}
+
+export type OrderProjectionUpdateToOneWithWhereWithoutFiscalDocumentInput = {
+  where?: Prisma.OrderProjectionWhereInput
+  data: Prisma.XOR<Prisma.OrderProjectionUpdateWithoutFiscalDocumentInput, Prisma.OrderProjectionUncheckedUpdateWithoutFiscalDocumentInput>
+}
+
+export type OrderProjectionUpdateWithoutFiscalDocumentInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  displayId?: Prisma.IntFieldUpdateOperationsInput | number
+  customerEmail?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  customerName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  customerPhone?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  fulfillmentStatus?: Prisma.EnumOrderFulfillmentStatusFieldUpdateOperationsInput | $Enums.OrderFulfillmentStatus
+  paymentStatus?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  totalInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
+  subtotalInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
+  shippingInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
+  itemCount?: Prisma.IntFieldUpdateOperationsInput | number
+  itemsJson?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  itemsSchemaVersion?: Prisma.IntFieldUpdateOperationsInput | number
+  shippingAddressJson?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  deliveryType?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  paymentMethod?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  tipInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
+  version?: Prisma.IntFieldUpdateOperationsInput | number
+  medusaCreatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  currentPaymentId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  customer?: Prisma.CustomerUpdateOneWithoutOrderProjectionsNestedInput
+  statusHistory?: Prisma.OrderStatusHistoryUpdateManyWithoutOrderNestedInput
+  payments?: Prisma.PaymentUpdateManyWithoutOrderNestedInput
+  notes?: Prisma.OrderNoteUpdateManyWithoutOrderNestedInput
+}
+
+export type OrderProjectionUncheckedUpdateWithoutFiscalDocumentInput = {
+  id?: Prisma.StringFieldUpdateOperationsInput | string
+  displayId?: Prisma.IntFieldUpdateOperationsInput | number
+  customerId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  customerEmail?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  customerName?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  customerPhone?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  fulfillmentStatus?: Prisma.EnumOrderFulfillmentStatusFieldUpdateOperationsInput | $Enums.OrderFulfillmentStatus
+  paymentStatus?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  totalInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
+  subtotalInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
+  shippingInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
+  itemCount?: Prisma.IntFieldUpdateOperationsInput | number
+  itemsJson?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  itemsSchemaVersion?: Prisma.IntFieldUpdateOperationsInput | number
+  shippingAddressJson?: Prisma.NullableJsonNullValueInput | runtime.InputJsonValue
+  deliveryType?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  paymentMethod?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  tipInCentavos?: Prisma.IntFieldUpdateOperationsInput | number
+  version?: Prisma.IntFieldUpdateOperationsInput | number
+  medusaCreatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  updatedAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
+  currentPaymentId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
+  statusHistory?: Prisma.OrderStatusHistoryUncheckedUpdateManyWithoutOrderNestedInput
   payments?: Prisma.PaymentUncheckedUpdateManyWithoutOrderNestedInput
   notes?: Prisma.OrderNoteUncheckedUpdateManyWithoutOrderNestedInput
 }
@@ -1168,6 +1327,7 @@ export type OrderProjectionCreateWithoutPaymentsInput = {
   customer?: Prisma.CustomerCreateNestedOneWithoutOrderProjectionsInput
   statusHistory?: Prisma.OrderStatusHistoryCreateNestedManyWithoutOrderInput
   notes?: Prisma.OrderNoteCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionUncheckedCreateWithoutPaymentsInput = {
@@ -1196,6 +1356,7 @@ export type OrderProjectionUncheckedCreateWithoutPaymentsInput = {
   currentPaymentId?: string | null
   statusHistory?: Prisma.OrderStatusHistoryUncheckedCreateNestedManyWithoutOrderInput
   notes?: Prisma.OrderNoteUncheckedCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionCreateOrConnectWithoutPaymentsInput = {
@@ -1240,6 +1401,7 @@ export type OrderProjectionUpdateWithoutPaymentsInput = {
   customer?: Prisma.CustomerUpdateOneWithoutOrderProjectionsNestedInput
   statusHistory?: Prisma.OrderStatusHistoryUpdateManyWithoutOrderNestedInput
   notes?: Prisma.OrderNoteUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionUncheckedUpdateWithoutPaymentsInput = {
@@ -1268,6 +1430,7 @@ export type OrderProjectionUncheckedUpdateWithoutPaymentsInput = {
   currentPaymentId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   statusHistory?: Prisma.OrderStatusHistoryUncheckedUpdateManyWithoutOrderNestedInput
   notes?: Prisma.OrderNoteUncheckedUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionCreateWithoutNotesInput = {
@@ -1296,6 +1459,7 @@ export type OrderProjectionCreateWithoutNotesInput = {
   customer?: Prisma.CustomerCreateNestedOneWithoutOrderProjectionsInput
   statusHistory?: Prisma.OrderStatusHistoryCreateNestedManyWithoutOrderInput
   payments?: Prisma.PaymentCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionUncheckedCreateWithoutNotesInput = {
@@ -1324,6 +1488,7 @@ export type OrderProjectionUncheckedCreateWithoutNotesInput = {
   currentPaymentId?: string | null
   statusHistory?: Prisma.OrderStatusHistoryUncheckedCreateNestedManyWithoutOrderInput
   payments?: Prisma.PaymentUncheckedCreateNestedManyWithoutOrderInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedCreateNestedOneWithoutOrderInput
 }
 
 export type OrderProjectionCreateOrConnectWithoutNotesInput = {
@@ -1368,6 +1533,7 @@ export type OrderProjectionUpdateWithoutNotesInput = {
   customer?: Prisma.CustomerUpdateOneWithoutOrderProjectionsNestedInput
   statusHistory?: Prisma.OrderStatusHistoryUpdateManyWithoutOrderNestedInput
   payments?: Prisma.PaymentUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionUncheckedUpdateWithoutNotesInput = {
@@ -1396,6 +1562,7 @@ export type OrderProjectionUncheckedUpdateWithoutNotesInput = {
   currentPaymentId?: Prisma.NullableStringFieldUpdateOperationsInput | string | null
   statusHistory?: Prisma.OrderStatusHistoryUncheckedUpdateManyWithoutOrderNestedInput
   payments?: Prisma.PaymentUncheckedUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionCreateManyCustomerInput = {
@@ -1449,6 +1616,7 @@ export type OrderProjectionUpdateWithoutCustomerInput = {
   statusHistory?: Prisma.OrderStatusHistoryUpdateManyWithoutOrderNestedInput
   payments?: Prisma.PaymentUpdateManyWithoutOrderNestedInput
   notes?: Prisma.OrderNoteUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionUncheckedUpdateWithoutCustomerInput = {
@@ -1477,6 +1645,7 @@ export type OrderProjectionUncheckedUpdateWithoutCustomerInput = {
   statusHistory?: Prisma.OrderStatusHistoryUncheckedUpdateManyWithoutOrderNestedInput
   payments?: Prisma.PaymentUncheckedUpdateManyWithoutOrderNestedInput
   notes?: Prisma.OrderNoteUncheckedUpdateManyWithoutOrderNestedInput
+  fiscalDocument?: Prisma.FiscalDocumentUncheckedUpdateOneWithoutOrderNestedInput
 }
 
 export type OrderProjectionUncheckedUpdateManyWithoutCustomerInput = {
@@ -1581,6 +1750,7 @@ export type OrderProjectionSelect<ExtArgs extends runtime.Types.Extensions.Inter
   statusHistory?: boolean | Prisma.OrderProjection$statusHistoryArgs<ExtArgs>
   payments?: boolean | Prisma.OrderProjection$paymentsArgs<ExtArgs>
   notes?: boolean | Prisma.OrderProjection$notesArgs<ExtArgs>
+  fiscalDocument?: boolean | Prisma.OrderProjection$fiscalDocumentArgs<ExtArgs>
   _count?: boolean | Prisma.OrderProjectionCountOutputTypeDefaultArgs<ExtArgs>
 }, ExtArgs["result"]["orderProjection"]>
 
@@ -1670,6 +1840,7 @@ export type OrderProjectionInclude<ExtArgs extends runtime.Types.Extensions.Inte
   statusHistory?: boolean | Prisma.OrderProjection$statusHistoryArgs<ExtArgs>
   payments?: boolean | Prisma.OrderProjection$paymentsArgs<ExtArgs>
   notes?: boolean | Prisma.OrderProjection$notesArgs<ExtArgs>
+  fiscalDocument?: boolean | Prisma.OrderProjection$fiscalDocumentArgs<ExtArgs>
   _count?: boolean | Prisma.OrderProjectionCountOutputTypeDefaultArgs<ExtArgs>
 }
 export type OrderProjectionIncludeCreateManyAndReturn<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
@@ -1686,6 +1857,7 @@ export type $OrderProjectionPayload<ExtArgs extends runtime.Types.Extensions.Int
     statusHistory: Prisma.$OrderStatusHistoryPayload<ExtArgs>[]
     payments: Prisma.$PaymentPayload<ExtArgs>[]
     notes: Prisma.$OrderNotePayload<ExtArgs>[]
+    fiscalDocument: Prisma.$FiscalDocumentPayload<ExtArgs> | null
   }
   scalars: runtime.Types.Extensions.GetPayloadResult<{
     id: string
@@ -2109,6 +2281,7 @@ export interface Prisma__OrderProjectionClient<T, Null = never, ExtArgs extends 
   statusHistory<T extends Prisma.OrderProjection$statusHistoryArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.OrderProjection$statusHistoryArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$OrderStatusHistoryPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   payments<T extends Prisma.OrderProjection$paymentsArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.OrderProjection$paymentsArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$PaymentPayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
   notes<T extends Prisma.OrderProjection$notesArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.OrderProjection$notesArgs<ExtArgs>>): Prisma.PrismaPromise<runtime.Types.Result.GetResult<Prisma.$OrderNotePayload<ExtArgs>, T, "findMany", GlobalOmitOptions> | Null>
+  fiscalDocument<T extends Prisma.OrderProjection$fiscalDocumentArgs<ExtArgs> = {}>(args?: Prisma.Subset<T, Prisma.OrderProjection$fiscalDocumentArgs<ExtArgs>>): Prisma.Prisma__FiscalDocumentClient<runtime.Types.Result.GetResult<Prisma.$FiscalDocumentPayload<ExtArgs>, T, "findUniqueOrThrow", GlobalOmitOptions> | null, null, ExtArgs, GlobalOmitOptions>
   /**
    * Attaches callbacks for the resolution and/or rejection of the Promise.
    * @param onfulfilled The callback to execute when the Promise is resolved.
@@ -2650,6 +2823,25 @@ export type OrderProjection$notesArgs<ExtArgs extends runtime.Types.Extensions.I
   take?: number
   skip?: number
   distinct?: Prisma.OrderNoteScalarFieldEnum | Prisma.OrderNoteScalarFieldEnum[]
+}
+
+/**
+ * OrderProjection.fiscalDocument
+ */
+export type OrderProjection$fiscalDocumentArgs<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
+  /**
+   * Select specific fields to fetch from the FiscalDocument
+   */
+  select?: Prisma.FiscalDocumentSelect<ExtArgs> | null
+  /**
+   * Omit specific fields from the FiscalDocument
+   */
+  omit?: Prisma.FiscalDocumentOmit<ExtArgs> | null
+  /**
+   * Choose, which related nodes to fetch as well
+   */
+  include?: Prisma.FiscalDocumentInclude<ExtArgs> | null
+  where?: Prisma.FiscalDocumentWhereInput
 }
 
 /**

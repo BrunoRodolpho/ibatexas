@@ -34,7 +34,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[5] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
+          "detail": "Guard panic in state phase[6] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
         },
         "basis": [
           {
@@ -46,7 +46,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 5,
+              "index": 6,
               "guardName": "requireCartItemsForCheckout",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'items')"
@@ -80,7 +80,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[7] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
+          "detail": "Guard panic in state phase[8] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
         },
         "basis": [
           {
@@ -92,7 +92,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 7,
+              "index": 8,
               "guardName": "deferOnPendingPix",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'paymentStatus')"
@@ -172,7 +172,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[3] (requireSlotInFuture): TypeError: Cannot read properties of undefined (reading 'slot')"
+          "detail": "Guard panic in state phase[4] (requireSlotInFuture): TypeError: Cannot read properties of undefined (reading 'slot')"
         },
         "basis": [
           {
@@ -184,7 +184,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 3,
+              "index": 4,
               "guardName": "requireSlotInFuture",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'slot')"
@@ -211,61 +211,6 @@
         },
         "taint": "TRUSTED",
         "intentHash": "e840021fc55007aac671bb060b88e2be539ac4b342218947793f7ec2accffdc9"
-      },
-      "decision": {
-        "kind": "REFUSE",
-        "refusal": {
-          "kind": "SECURITY",
-          "code": "guard_panic",
-          "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in auth phase[0]: TypeError: Cannot read properties of undefined (reading 'tenantId')"
-        },
-        "basis": [
-          {
-            "category": "schema",
-            "code": "version_supported"
-          },
-          {
-            "category": "state",
-            "code": "transition_valid"
-          },
-          {
-            "category": "taint",
-            "code": "level_permitted"
-          },
-          {
-            "category": "kernel",
-            "code": "guard_panic",
-            "detail": {
-              "phase": "auth",
-              "index": 0,
-              "errorName": "TypeError",
-              "message": "Cannot read properties of undefined (reading 'tenantId')"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "note": "whatsapp: template send as system actor (deep basis chain)",
-      "envelope": {
-        "version": 2,
-        "kind": "whatsapp.template.send",
-        "payload": {
-          "to": "+5511999990000",
-          "template": "order_update",
-          "params": [
-            "ord_golden_01"
-          ]
-        },
-        "createdAt": "2026-06-12T00:00:00.000Z",
-        "nonce": "golden-whatsapp.template.send-v1",
-        "actor": {
-          "principal": "system",
-          "sessionId": "golden:replay-baseline"
-        },
-        "taint": "SYSTEM",
-        "intentHash": "32b4bc47acbe6bd3e81fa441923e1d923486029c61b661021545f87d0e7af289"
       },
       "decision": {
         "kind": "REFUSE",
@@ -364,59 +309,6 @@
         },
         "taint": "TRUSTED",
         "intentHash": "dc87d729218c8e1bb9c20a7cf10caa3851ad01ac9ed17edbf214b4fc54a78737"
-      },
-      "decision": {
-        "kind": "REFUSE",
-        "refusal": {
-          "kind": "SECURITY",
-          "code": "guard_panic",
-          "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in auth phase[0]: TypeError: Cannot read properties of undefined (reading 'tenantId')"
-        },
-        "basis": [
-          {
-            "category": "schema",
-            "code": "version_supported"
-          },
-          {
-            "category": "state",
-            "code": "transition_valid"
-          },
-          {
-            "category": "taint",
-            "code": "level_permitted"
-          },
-          {
-            "category": "kernel",
-            "code": "guard_panic",
-            "detail": {
-              "phase": "auth",
-              "index": 0,
-              "errorName": "TypeError",
-              "message": "Cannot read properties of undefined (reading 'tenantId')"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "note": "payments: charge create (deep basis chain)",
-      "envelope": {
-        "version": 2,
-        "kind": "payment.charge.create",
-        "payload": {
-          "orderId": "ord_golden_01",
-          "amountCentavos": 8900,
-          "method": "pix"
-        },
-        "createdAt": "2026-06-12T00:00:00.000Z",
-        "nonce": "golden-payment.charge.create-v1",
-        "actor": {
-          "principal": "user",
-          "sessionId": "golden:replay-baseline"
-        },
-        "taint": "TRUSTED",
-        "intentHash": "d7395b10de5c0e6c4d5b5ba50f8a322f92585c29b18ab16f2d9d53cbe85375d6"
       },
       "decision": {
         "kind": "REFUSE",

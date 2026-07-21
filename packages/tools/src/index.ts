@@ -10,8 +10,8 @@ export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-
 export { estimateDelivery, EstimateDeliveryTool, invalidateDeliveryCache } from "./catalog/estimate-delivery.js"
 export { reverseGeocode } from "./catalog/reverse-geocode.js"
 export type { ReverseGeocodeResult } from "./catalog/reverse-geocode.js"
-export { checkInventory, CheckInventoryTool } from "./catalog/check-inventory.js"
-export { getNutritionalInfo, GetNutritionalInfoTool } from "./catalog/get-nutritional-info.js"
+// BKL-179 — checkInventory / getNutritionalInfo were dead ToolDefinitions
+// (no conductor/route/internal caller, only these barrel re-exports); removed.
 
 // ── Ownership guards ──────────────────────────────────────────────────────────
 export { assertOrderOwnership, assertReservationOwnership } from "./guards/ownership.js"
@@ -139,6 +139,13 @@ export {
   type CacheFilterContext,
 } from "./cache/query-cache.js"
 
+// ── Embeddings ─────────────────────────────────────────────────────────────────
+// BKL-034 — the boot-time provider/dimension gate (apps consume it at bootstrap so
+// an EMBEDDINGS_PROVIDER / EMBEDDING_DIMENSION misconfig fails loud instead of
+// silently poisoning the Typesense index). Resolves cleanly when no provider is
+// configured (keyword-only degrade stays legal).
+export { assertEmbeddingProviderDimension } from "./embeddings/client.js"
+
 // ── Typesense ──────────────────────────────────────────────────────────────────
 export { getTypesenseClient, ensureCollectionExists, recreateCollection, PRODUCTS_COLLECTION_SCHEMA, COLLECTION } from "./typesense/client.js"
 export { indexProduct, deleteProductFromIndex, indexProductsBatch } from "./typesense/index-product.js"
@@ -239,6 +246,23 @@ export {
   type TwilioAdjudicatedMeta,
   type TwilioClientLike,
 } from "./twilio/adjudicated.js"
+
+// NEW-014 — the fiscal (NFC-e/NFe) provider port + mock/Focus NFe adapters +
+// env-driven selection. The subscriber (PR2) imports `createFiscalProvider`.
+export {
+  createFiscalProvider,
+  createMockFiscalProvider,
+  createFocusNFeProvider,
+  FiscalProviderNotConfiguredError,
+  type FiscalProviderPort,
+  type FiscalEmitInput,
+  type FiscalEmitResult,
+  type FiscalEmitStatus,
+  type FiscalLineItem,
+  type MockFiscalScenario,
+  type MockFiscalProviderConfig,
+  type FocusNFeConfig,
+} from "./fiscal/index.js"
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 export { EMBED_DIM } from "./config.js"

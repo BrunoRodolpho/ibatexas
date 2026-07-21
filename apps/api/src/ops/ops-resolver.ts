@@ -52,7 +52,12 @@
 
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import type { ResolvedEnvelope, ResolverPort } from "@claustrum/core";
-import { isTerminalPaymentStatus, type PaymentStatus } from "@ibatexas/types";
+import {
+  isTerminalPaymentStatus,
+  normalizeOrderStatusToken,
+  type PaymentStatus,
+} from "@ibatexas/types";
+import { OPS_REFUND_DEFAULT_REASON } from "../claustrum/language-engine/payment-refund-issue.schema.js";
 import { logger } from "../lib/logger.js";
 import { shiftYmd, todayInRestaurantTz } from "../routes/admin/_date-defaults.js";
 import {
@@ -60,6 +65,8 @@ import {
   type ListProductsByName,
 } from "./ops-product-resolution.js";
 import {
+  orderReferenceAppearsInMessage,
+  resolveMostRecentActiveOrder,
   resolveOrderByReference,
   type OrderReferenceReads,
 } from "./ops-order-resolution.js";
@@ -370,6 +377,34 @@ function resolveRequestedRefundCentavos(
 }
 
 /**
+ * FE-T10 — the money-tier extraction schema for `payment.refund.issue`
+ * (`payment-refund-issue.schema.ts`) narrows the model-facing payload to
+ * `{orderReference, amount, reason}`; `orderReference` is DELIBERATELY not
+ * named `orderId` on that schema (FORBIDDEN_EXTRACTION_FIELD_NAMES — an
+ * unresolved NL reference is Directive class, not the resolved identifier the
+ * forbidden-name lint guards against). `resolveOrderTarget` below still only
+ * reads `payload.orderId`, so ADD `orderReference` as an ADDITIVE alias
+ * (BKL-094's exact shape: prefer the schema-correct name, fall back to the
+ * alias) before calling it — this is the ONLY change refund resolution needs:
+ * the pre-existing (unguided, `inputSchema: {}`) refund path, where a model
+ * has always been free to put a reference under `orderId` with no schema
+ * guiding it, keeps working byte-identically (an `orderId` payload key still
+ * wins outright); the NEW typed-schema path, where the model can ONLY emit
+ * `orderReference` (the narrowed schema forbids `orderId`), now also resolves.
+ * Pure projection — never mutates the caller's `payload`.
+ */
+function withOrderReferenceAlias(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (typeof payload.orderId === "string" && payload.orderId !== "") {
+    return payload;
+  }
+  const reference = payload.orderReference;
+  if (typeof reference !== "string" || reference === "") return payload;
+  return { ...payload, orderId: reference };
+}
+
+/**
  * The pack-payments `PaymentState` the refund guards adjudicate against, built
  * from a live payment row. SHARED by the plan-stage resolver (below) and the
  * BKL-085 resume re-projection ({@link buildOpsRefundResumeState}) so a parked
@@ -514,9 +549,19 @@ async function resolveAvailabilityTarget(
       },
       "ops product name resolved to id (payload productId rewritten before adjudication)",
     );
+    // BKL-156 — stamp the resolved display name (a by-product of name→id
+    // resolution) so the deterministic EXECUTE render can name the product
+    // truthfully. Only on the name-resolved path — a direct-id hit's
+    // `lookupProduct` projection carries no name (that wiring lives in the
+    // FENCED bootstrap), so it degrades to the generic render, never fabricated.
+    const productName = resolution.product.title.trim();
     return {
       product: { id: resolution.product.id, status: resolution.product.status },
-      payload: { ...payload, productId: resolution.product.id },
+      payload: {
+        ...payload,
+        productId: resolution.product.id,
+        ...(productName !== "" ? { productName } : {}),
+      },
     };
   }
   logger.info(
@@ -802,6 +847,101 @@ async function resolveOrderTarget(
 }
 
 /**
+ * FE-T05 — resolve the `order.status.transition` target. Under the FE-1.1
+ * extraction schema for this capability the model is NEVER shown an
+ * `orderId`/order-reference field (see
+ * `language-engine/order-status-transition.schema.ts`), so `payload.orderId`
+ * is always empty on this path today; the resolution below is written to
+ * degrade gracefully if a future rollout slice re-adds an explicit reference
+ * field to this schema.
+ *
+ *   1. Try the SAME explicit-reference resolution `order.note.add` uses
+ *      (`resolveOrderTarget` — direct id, then BKL-089 displayId/name). A hit
+ *      here is an EXPLICIT reference the staff gave ⇒ `authoritative`.
+ *   2. On a miss (including the empty-orderId case, which is this tracer's
+ *      only live path), fall back to the DETERMINISTIC "most recent active
+ *      order" resolution (`resolveMostRecentActiveOrder`) — a GUESS ⇒
+ *      `grounded`. The resolved id is REWRITTEN onto the payload (mirrors the
+ *      BKL-089 rewrite idiom) so the envelope's `intentHash` covers it and a
+ *      confirm-resume re-adjudicates the SAME order rather than re-guessing.
+ *   3. No candidate either way ⇒ `orderId: null` (honest `no_order` REFUSE —
+ *      never silently guessed).
+ */
+async function resolveStatusTransitionOrderTarget(
+  deps: OpsResolverDeps,
+  envelope: IntentEnvelope,
+  payload: Record<string, unknown>,
+  requestText: string,
+): Promise<{
+  order: OpsResolverOrder | null;
+  orderId: string | null;
+  /** Absent when no order resolved (nothing to gate the confirm guard on). */
+  orderResolutionTrust?: "authoritative" | "grounded";
+  /**
+   * FE-T05 review (MAJOR-2) — the resolved order's DISPLAY number, present
+   * ONLY on the `"grounded"` (auto-resolved) path. Threaded into the
+   * `OrderState` ctx so `requireConfirmationOnGroundedStatusTransition`
+   * (pack-orders) can NAME the order in its confirmation prompt — a staff
+   * member confirming a GUESSED target must be able to recognize (and
+   * reject) a wrong one; a bare "vou usar o pedido mais recente" names
+   * nothing an operator could catch. Absent on the `"authoritative"` path:
+   * the staff already gave an explicit reference, so no re-identification
+   * is needed there (and that path never confirms).
+   */
+  displayId?: number;
+  /**
+   * BKL-190 — present ONLY on the `"grounded"` path: did the CURRENT staff
+   * message actually contain the resolved order's display number (the
+   * `orderReferenceAppearsInMessage` check the BKL-150a scrub uses)? The model
+   * cannot pass a reference through for this capability (the FE-1.1 schema has
+   * no field), so a staff message that DID name the order still lands here —
+   * the confirm prompt must not then claim "não me disseram qual pedido".
+   */
+  orderNamedInMessage?: boolean;
+  payload?: Record<string, unknown>;
+}> {
+  const direct = await resolveOrderTarget(deps, envelope, payload);
+  if (direct.orderId !== null) {
+    return { ...direct, orderResolutionTrust: "authoritative" };
+  }
+  if (deps.orderReferenceReads === undefined) {
+    return { order: null, orderId: null };
+  }
+  const guess = await resolveMostRecentActiveOrder(deps.orderReferenceReads);
+  if (guess.kind !== "resolved") {
+    return { order: null, orderId: null };
+  }
+  logger.info(
+    {
+      component: "ops-resolver",
+      event: "order.status_transition.most_recent_resolved",
+      kind: envelope.kind,
+      to: guess.order.id,
+      displayId: guess.order.displayId,
+    },
+    "ops order.status.transition: no explicit reference — auto-resolved the most recent active order (grounded; forces confirmation)",
+  );
+  const o = guess.order;
+  return {
+    order: {
+      customerId: o.customerId,
+      paymentMethod: o.paymentMethod,
+      paymentStatus: o.paymentStatus,
+      totalInCentavos: o.totalInCentavos,
+      fulfillmentStatus: o.fulfillmentStatus,
+    },
+    orderId: o.id,
+    orderResolutionTrust: "grounded",
+    displayId: o.displayId,
+    orderNamedInMessage: orderReferenceAppearsInMessage(
+      String(o.displayId),
+      requestText,
+    ),
+    payload: { ...payload, orderId: o.id },
+  };
+}
+
+/**
  * BKL-085 — resolve a refunds-by-message envelope into (a) the pack-payments
  * `PaymentState` the refund guards adjudicate against and (b) a fully-STAMPED
  * `PaymentRefundIssuePayload`. The model controls ONLY the order reference, the
@@ -846,8 +986,14 @@ async function resolveRefundTarget(
   }
 
   // Resolve the order REFERENCE → real order id (reuses the BKL-089 order
-  // resolution: direct id, then displayId / customer-name). We need only the id.
-  const { orderId } = await resolveOrderTarget(deps, envelope, payload);
+  // resolution: direct id, then displayId / customer-name). We need only the
+  // id. FE-T10: `orderReference` (the money-tier extraction schema's field
+  // name) is accepted as an alias for `orderId` first (withOrderReferenceAlias).
+  const { orderId } = await resolveOrderTarget(
+    deps,
+    envelope,
+    withOrderReferenceAlias(payload),
+  );
   if (orderId === null) {
     logger.info(
       { component: "ops-resolver", event: "refund.order_unresolved" },
@@ -886,7 +1032,7 @@ async function resolveRefundTarget(
   const reason =
     typeof rawReason === "string" && rawReason.trim().length > 0
       ? rawReason.slice(0, OPS_REFUND_REASON_MAX)
-      : "Reembolso solicitado pela operação (ops).";
+      : OPS_REFUND_DEFAULT_REASON;
 
   const stampedPayload: Record<string, unknown> = {
     // Model controls: the amount (numbers the staff confirms) + reason.
@@ -970,17 +1116,295 @@ export function buildOpsSpecialResumeState(
 }
 
 /**
+ * FE-T05b (live-disproof follow-up) — map a raw first-party order-projection
+ * read into the {@link OpsResolverOrder} shape. Pulled out as a named,
+ * SHARED function (rather than the inline object-literal each call site
+ * previously hand-rolled) so the plan-stage `lookupOrder` wiring and the
+ * `order.status.transition` RESUME re-projection
+ * ({@link buildOpsOrderStatusTransitionResumeState}) read the SAME shape
+ * off the SAME first-party fields — the two paths must never independently
+ * drift on what "the order's ops-relevant state" means.
+ */
+export function toOpsResolverOrder(order: {
+  readonly customerId: string | null;
+  readonly paymentMethod: unknown;
+  readonly paymentStatus: string | null;
+  readonly totalInCentavos: number;
+  readonly fulfillmentStatus: unknown;
+}): OpsResolverOrder {
+  return {
+    customerId: order.customerId,
+    paymentMethod: (order.paymentMethod as string | null) ?? null,
+    paymentStatus: order.paymentStatus,
+    totalInCentavos: order.totalInCentavos,
+    fulfillmentStatus: (order.fulfillmentStatus as string | null) ?? null,
+  };
+}
+
+/**
+ * FE-T05b (live-disproof follow-up) — build the `order.status.transition` ops
+ * `SystemState` for the RESUME path ("sim"). Live-disproved (intent_audit
+ * 3362/3366): the ops confirm-resume re-adjudicates the VERBATIM parked
+ * envelope, but the SHARED customer-plane resume enrichment
+ * (`resolveAndAssemble` in claustrum-bootstrap.ts) is scoped to a REAL
+ * `customerId` — the ops plane's `staff:<id>` is not one, so that path's type
+ * guard silently no-ops (returns the capsule's bare `{channel:"system",
+ * customerId:"staff:<id>"}` state, carrying NO `ctx.orderId` at all) and
+ * `requireOrderIdForMutation` REFUSEs `order.not_found` on EVERY resume, even
+ * though the order exists and the parked payload carries its (resolver-
+ * pinned, trusted) id. This builder re-projects the SAME `{ ctx }` shape the
+ * plan-stage resolver's `order.status.transition` branch builds
+ * (`opsStateForEnvelope`, mirrors `toOpsResolverOrder`'s field set) from a
+ * FRESH read of the PINNED `orderId` — money/state-safe: an order that
+ * vanished or changed status since parking REFUSEs on resume via
+ * `requireOrderIdForMutation` (null order) / `requireLegalStatusTransition`
+ * (a FRESH `fulfillmentStatus` that no longer permits the parked target).
+ * `orderResolutionTrust` / `displayId` are deliberately OMITTED here (unlike
+ * the plan-stage projection): the id is no longer a guess by resume time — it
+ * was already confirmed once — so `requireConfirmationOnGroundedStatusTransition`
+ * must NOT fire a second time; omitting the field is a no-op for that guard
+ * (its engagement predicate is `=== "grounded"`), and the transition falls
+ * through to the ordinary EXECUTE path once legality passes.
+ */
+export function buildOpsOrderStatusTransitionResumeState(
+  orderId: string,
+  order: OpsResolverOrder | null,
+): unknown {
+  return {
+    ctx: {
+      channel: "web",
+      customerId: order?.customerId ?? null,
+      cartId: null,
+      orderId: order === null ? null : orderId,
+      fulfillmentStatus: order?.fulfillmentStatus ?? null,
+    },
+  };
+}
+
+/**
+ * FE-D14 — build the `order.note.add` ops `SystemState` for the RESUME path.
+ * `order.note.add` shares the SAME latent `enrichResumeState` gap FE-T05b
+ * live-disproved (intent_audit 3362/3366) for `order.status.transition`: the
+ * ops confirm-resume re-adjudicates the VERBATIM parked envelope, but the
+ * SHARED customer-plane resume enrichment (`resolveAndAssemble` in
+ * claustrum-bootstrap.ts) is scoped to a REAL `customerId` — the ops plane's
+ * `staff:<id>` is not one, so that path's type guard silently no-ops (returns
+ * the capsule's bare `{channel:"system", customerId:"staff:<id>"}` state,
+ * carrying NO `ctx.orderId` at all) and `requireOrderIdForMutation` REFUSEs
+ * `order.not_found` on EVERY resume, even though the order exists and the
+ * parked payload carries its (resolver-pinned, trusted) id. UNREACHABLE today
+ * (no confirm-forcing guard parks an `order.note.add`, so no resume cycle is
+ * ever exercised — unlike `order.status.transition`'s
+ * `requireConfirmationOnGroundedStatusTransition`), but pre-wired so ANY
+ * future confirm/park on this ops order kind resumes correctly instead of a
+ * spurious `order.not_found` REFUSE. Re-projects the SAME `{ ctx }` shape the
+ * plan-stage resolver's `order.note.add` branch builds (`opsStateForEnvelope`,
+ * mirrors `adjudicateAdminNote`'s `noteOrderState`) from a FRESH read of the
+ * PINNED `orderId` — state-safe: an order that vanished since parking REFUSEs
+ * on resume via `requireOrderIdForMutation` (null order ⇒ orderId:null).
+ */
+export function buildOpsOrderNoteAddResumeState(
+  orderId: string,
+  order: OpsResolverOrder | null,
+): unknown {
+  return {
+    ctx: {
+      channel: "web",
+      customerId: order?.customerId ?? null,
+      cartId: null,
+      orderId: order === null ? null : orderId,
+      paymentMethod: order?.paymentMethod ?? null,
+      paymentStatus: order?.paymentStatus ?? null,
+      totalInCentavos: order?.totalInCentavos ?? 0,
+    },
+  };
+}
+
+// ── BKL-164 — the four remaining ops kinds, PRE-WIRED for confirm-resume ──────
+//
+// product.availability.set / ops.alert.resolve.staff / incident.ticket.close.
+// staff / schedule.override.set share the SAME latent `enrichResumeState` hole
+// FE-T05b (order.status.transition) + FE-D14 (order.note.add) already fixed: the
+// customer-scoped `resolveAndAssemble` resume fallback no-ops for the ops
+// plane's `staff:<id>` "customerId" (never a real one), so it would project the
+// per-kind state absent and REFUSE a valid "sim". These are LATENT today — NO
+// confirm-forcing guard parks any of them (unlike order.status.transition's
+// `requireConfirmationOnGroundedStatusTransition`), so no resume cycle is ever
+// exercised live — but pre-wired via the shared `enrichResumeState` table so
+// that ANY future confirm/park on one of these kinds resumes correctly (from a
+// FRESH re-read of the parked, resolver-trusted reference) instead of a spurious
+// REFUSE. Each re-projects the SAME per-kind `{ ctx, <slot> }` shape its
+// plan-stage branch in `opsStateForEnvelope` builds; a null read ⇒ the clean
+// not-found REFUSE the plan stage would also give.
+
+/**
+ * BKL-164 — `product.availability.set` RESUME state. Mirrors the plan-stage
+ * `{ ctx, product }` (a FRESH product read of the parked productId; null ⇒
+ * product_not_found REFUSE). LATENT — see the header above.
+ */
+export function buildOpsAvailabilityResumeState(
+  product: OpsResolverProduct | null,
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    product,
+  };
+}
+
+/**
+ * BKL-164 — `ops.alert.resolve.staff` RESUME state. Mirrors the plan-stage
+ * `{ ctx, alert }` (a FRESH alert read of the parked alertId; null ⇒
+ * not_actionable REFUSE). LATENT — see the header above.
+ */
+export function buildOpsAlertResumeState(
+  alert: OpsResolverAlert | null,
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    alert,
+  };
+}
+
+/**
+ * BKL-164 — `incident.ticket.close.staff` RESUME state. Mirrors the plan-stage
+ * `{ ctx, incident }` (a FRESH incident read of the parked incidentId; null ⇒
+ * not_actionable REFUSE). LATENT — see the header above.
+ */
+export function buildOpsIncidentResumeState(
+  incident: OpsResolverIncident | null,
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    incident,
+  };
+}
+
+/**
+ * BKL-164 — `schedule.override.set` RESUME state. Mirrors the plan-stage
+ * `{ ctx, schedule: { today } }`. This kind is a keyless UPSERT — no entity to
+ * re-read — so the resume re-projects the ctx + a FRESH `today` (RESTAURANT_
+ * TIMEZONE) that `requireScheduleDateActionable` re-reads on resume, so a
+ * parked date that is now in the past REFUSEs. LATENT — see the header above.
+ */
+export function buildOpsScheduleResumeState(
+  opts: { staffId: string; tenantId: string },
+): unknown {
+  return {
+    ctx: {
+      channel: "staff",
+      customerId: null,
+      staffId: opts.staffId,
+      tenantId: opts.tenantId,
+    },
+    schedule: { today: todayInRestaurantTz() },
+  };
+}
+
+/** The ops order-mutation kinds whose `payload.orderId` the model can bleed
+ *  across turns from the conversation-history block (BKL-150a). */
+const ORDER_REF_BLEED_KINDS: ReadonlySet<string> = new Set([
+  "order.status.transition",
+  "order.note.add",
+]);
+
+/**
+ * BKL-150(a) — detect a STALE cross-turn order-reference BLEED: on a staff
+ * session the model can copy a PRIOR turn's order reference (a display NUMBER or
+ * a customer NAME) out of the fenced conversation-history block (ops-history.ts,
+ * prompt CONTEXT only) into a NEW turn's `payload.orderId`, even when the CURRENT
+ * message names no such order — the resolver would then resolve that stale
+ * reference authoritatively and the guard would REFUSE (order not found /
+ * illegal), MASKING the staff's actual request.
+ *
+ * A model-supplied reference is HONORED only when it is grounded in the current
+ * message (`orderReferenceAppearsInMessage` — display-id digits, or every
+ * normalized name token, present); a reference the message does not contain is a
+ * bleed. Fail-safe: an absent/empty message ⇒ NOT a bleed (we cannot classify,
+ * so we HONOR the reference exactly as before — production always supplies the
+ * text; every text-less caller/test stays byte-identical).
+ */
+function isStaleOrderRefBleed(
+  rawOrderId: unknown,
+  requestText: string,
+): boolean {
+  if (typeof rawOrderId !== "string" || rawOrderId.trim() === "") return false;
+  if (requestText.trim() === "") return false; // no message → cannot classify → honor (legacy)
+  return !orderReferenceAppearsInMessage(rawOrderId, requestText);
+}
+
+/**
+ * BKL-150(a) — strip a stale cross-turn order-reference bleed from an ops
+ * order-mutation payload BEFORE resolution, so the turn never silently acts on
+ * (or refuses because of) a prior-turn order. With `orderId` gone,
+ * `order.status.transition` falls through to the auto-resolve-most-recent path
+ * (a GROUNDED target that FORCES a confirmation NAMING the order — a wrong one is
+ * catchable, never silently acted on — demote-only, never a bleed-specific hard
+ * refuse), and `order.note.add` (which has no auto-resolve) REFUSEs `no_order`
+ * honestly ("which order?") — the same honest path any unresolvable note-add
+ * takes, never a silent write to the stale order. Only the two
+ * {@link ORDER_REF_BLEED_KINDS} are scrubbed; every other kind (and a reference
+ * the current message DOES contain) is returned verbatim.
+ */
+function scrubStaleOrderBleed(
+  kind: string,
+  payload: Record<string, unknown>,
+  requestText: string,
+): Record<string, unknown> {
+  if (!ORDER_REF_BLEED_KINDS.has(kind)) return payload;
+  if (!isStaleOrderRefBleed(payload.orderId, requestText)) return payload;
+  logger.info(
+    {
+      component: "ops-resolver",
+      event: "order.stale_ref_bleed_scrubbed",
+      kind,
+      from: payload.orderId,
+    },
+    "ops order reference is a stale cross-turn bleed (absent from the current message) — scrubbed so this turn does not act on a prior-turn order (BKL-150a)",
+  );
+  const { orderId: _dropped, ...rest } = payload;
+  return rest;
+}
+
+/**
  * Build the per-kind ops `SystemState` for one planned envelope, plus an
  * OPTIONAL rewritten payload (BKL-089 availability name-resolution). Returns
  * `state: undefined` for an unrecognized kind so the loop falls back to the
  * turn's `resolution.state` (the composed router still REFUSEs an off-surface
  * kind via `staffRoleGuard`'s de-vacuum, so this never widens authority).
+ *
+ * `requestText` is the CURRENT staff message (`cognition.perception.text`) —
+ * used ONLY by the BKL-150a stale-order-number-bleed scrub; empty when a caller
+ * supplies no perception (then the scrub is inert, legacy behavior).
  */
 async function opsStateForEnvelope(
   deps: OpsResolverDeps,
   envelope: IntentEnvelope,
+  requestText: string,
 ): Promise<OpsEnvelopeResolution> {
-  const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+  const rawPayload = (envelope.payload ?? {}) as Record<string, unknown>;
+  const payload = scrubStaleOrderBleed(envelope.kind, rawPayload, requestText);
+  // A stale-bleed scrub must reach the WIRE (not only the resolution), so a
+  // branch that otherwise leaves the payload untouched still emits the scrubbed
+  // one — the audited envelope never carries the dropped stale number.
+  const wasScrubbed = payload !== rawPayload;
 
   if (envelope.kind === "product.availability.set") {
     const { product, payload: rewritten } = await resolveAvailabilityTarget(
@@ -1011,6 +1435,15 @@ async function opsStateForEnvelope(
       deps,
       payload,
     );
+    // BKL-156 — stamp the resolved display name for the EXECUTE render, ONLY on
+    // the name-resolved path (`rewritten` present), mirroring availability: a
+    // direct-id hit stays byte-identical (the render degrades to the generic
+    // form). Absent/blank name ⇒ no stamp (degrade, never fabricate).
+    const priceName = priceProduct?.name?.trim();
+    const pricePayload =
+      rewritten !== undefined && priceName !== undefined && priceName !== ""
+        ? { ...rewritten, productName: priceName }
+        : rewritten;
     return {
       state: {
         ctx: {
@@ -1021,7 +1454,7 @@ async function opsStateForEnvelope(
         },
         priceProduct,
       },
-      ...(rewritten ? { payload: rewritten } : {}),
+      ...(pricePayload ? { payload: pricePayload } : {}),
     };
   }
 
@@ -1039,11 +1472,17 @@ async function opsStateForEnvelope(
     const todayYmd = todayInRestaurantTz();
     const { product } = await resolveSpecialTarget(deps, productIdRaw);
     const promoCentavos = resolveSpecialPromoCentavos(payload);
+    // BKL-156 — the special product lookup carries the display name; stamp it
+    // for the EXECUTE render (blank/absent ⇒ no stamp, degrade never fabricate).
+    const specialName = product?.name?.trim();
     const canonical: Record<string, unknown> = {
       productId: product ? product.id : productIdRaw,
       date: resolveSpecialDateYmd(dateRaw, todayYmd),
       ...(promoCentavos !== undefined
         ? { promoPriceCentavos: promoCentavos }
+        : {}),
+      ...(specialName !== undefined && specialName !== ""
+        ? { productName: specialName }
         : {}),
     };
     return {
@@ -1080,21 +1519,60 @@ async function opsStateForEnvelope(
           totalInCentavos: order?.totalInCentavos ?? 0,
         },
       },
-      ...(rewritten ? { payload: rewritten } : {}),
+      ...(rewritten ? { payload: rewritten } : wasScrubbed ? { payload } : {}),
     };
   }
 
   if (envelope.kind === "order.status.transition") {
-    const { order, orderId, payload: rewritten } = await resolveOrderTarget(
-      deps,
-      envelope,
-      payload,
-    );
+    const {
+      order,
+      orderId,
+      orderResolutionTrust,
+      displayId,
+      orderNamedInMessage,
+      payload: resolvedPayload,
+    } = await resolveStatusTransitionOrderTarget(deps, envelope, payload, requestText);
+    // BKL-150(b) — normalize a locale/pt-BR status token (cancelled → canceled;
+    // cancelado/pronto/… → the en-US enum) via the single-source
+    // `normalizeOrderStatusToken` (@ibatexas/types) so the strict BKL-090 guard
+    // sees the canonical token. Applied over the (possibly orderId-rewritten)
+    // payload; only rewrites when the token actually differs, else the payload
+    // passes through unchanged (byte-identical). An UNKNOWN token is returned
+    // verbatim by the normalizer, so the guard still fails closed on it.
+    const base = resolvedPayload ?? payload;
+    const rawNewStatus = base.newStatus;
+    const normStatus =
+      typeof rawNewStatus === "string"
+        ? normalizeOrderStatusToken(rawNewStatus)
+        : rawNewStatus;
+    const statusChanged =
+      typeof rawNewStatus === "string" && normStatus !== rawNewStatus;
+    const rewritten = statusChanged
+      ? { ...base, newStatus: normStatus }
+      : (resolvedPayload ?? (wasScrubbed ? payload : undefined));
+    if (statusChanged) {
+      logger.info(
+        {
+          component: "ops-resolver",
+          event: "order.status_transition.token_normalized",
+          from: rawNewStatus,
+          to: normStatus,
+        },
+        "ops order.status.transition: normalized a locale/pt-BR status token to the canonical en-US enum before adjudication (BKL-150b)",
+      );
+    }
     // The pack-orders OrderState the BKL-090 `requireLegalStatusTransition`
     // guard reads: `ctx.orderId` (requireOrderIdForMutation) + the CURRENT
     // `ctx.fulfillmentStatus` (the legality guard). Missing order ⇒ orderId:null
     // ⇒ requireOrderIdForMutation REFUSEs `no_order` BEFORE the legality guard;
     // and an absent status on this `admin:` plane fails the legality guard closed.
+    // FE-T05 — `orderResolutionTrust` is the HydratedIntentIR provenance signal
+    // the pack-orders `requireConfirmationOnGroundedStatusTransition` guard
+    // reads: a `grounded` (auto-resolved "most recent order") target forces a
+    // REQUEST_CONFIRMATION; `authoritative` (an explicit staff reference) does
+    // not. Absent (no order resolved at all) is a no-op — requireOrderIdForMutation
+    // REFUSEs first. `displayId` (MAJOR-2 review fix) rides alongside it so the
+    // confirm guard can NAME the order in its prompt.
     return {
       state: {
         ctx: {
@@ -1103,6 +1581,9 @@ async function opsStateForEnvelope(
           cartId: null,
           orderId,
           fulfillmentStatus: order?.fulfillmentStatus ?? null,
+          ...(orderResolutionTrust ? { orderResolutionTrust } : {}),
+          ...(displayId !== undefined ? { displayId } : {}),
+          ...(orderNamedInMessage !== undefined ? { orderNamedInMessage } : {}),
         },
       },
       ...(rewritten ? { payload: rewritten } : {}),
@@ -1211,10 +1692,17 @@ async function opsStateForEnvelope(
  */
 export function createOpsResolver(deps: OpsResolverDeps): ResolverPort {
   return {
-    async resolve({ plan }): Promise<ReadonlyArray<ResolvedEnvelope>> {
+    async resolve({ plan, cognition }): Promise<ReadonlyArray<ResolvedEnvelope>> {
+      // BKL-150a — the CURRENT staff message, used only by the stale-order-
+      // number-bleed scrub. Read defensively (a text-less caller/test supplies
+      // no perception ⇒ "" ⇒ the scrub is inert, byte-identical legacy path).
+      const perceptionText = (
+        cognition as { perception?: { text?: unknown } } | undefined
+      )?.perception?.text;
+      const requestText = typeof perceptionText === "string" ? perceptionText : "";
       const out: ResolvedEnvelope[] = [];
       for (const env of plan.envelopes) {
-        const { state, payload } = await opsStateForEnvelope(deps, env);
+        const { state, payload } = await opsStateForEnvelope(deps, env, requestText);
         // Rebuild with the SAME actor/taint/nonce/createdAt so the intentHash is
         // canonical and the ops authority (admin:<staffId> + role) is preserved.
         // `payload` is the BKL-089 name-resolution rewrite when it fired (the

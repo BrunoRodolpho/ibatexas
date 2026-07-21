@@ -51,8 +51,11 @@ import type {
 import { unwrapCanonical } from "@adjudicate/core";
 import { localizeClaimEnum } from "./claims-labels.js";
 import {
+  clarifyWithCandidatesText,
   isPropositionFree,
   SAFE_TEMPLATES,
+  SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
+  SAFE_ESCALATE_EMERGENCY_TEMPLATE,
   type Template,
   type TemplateSlot,
   VALIDATED_TEMPLATES,
@@ -232,10 +235,29 @@ export interface RenderedLine {
  * The output `text` is the joined lines. NO branch calls a model (§O#3); every
  * output byte is a static template literal or a VALIDATED field value.
  */
+/**
+ * BKL-170 — the render-only view of a `disambiguationCandidates` carrier entry: the
+ * renderer reads ONLY the customer-facing `label` (the `kind`/`id` are the adopter's
+ * routing handles, opaque here). Structural, so the fuller 0.8.0 context type is
+ * assignable.
+ */
+export interface RenderDisambiguationCandidate {
+  readonly label: string;
+}
+
 export function render(
   canonicalClaims: readonly CanonicalClaim[],
   terminal: TurnTerminal,
   suppressions: readonly SuppressionRecord[] = [],
+  candidates: readonly RenderDisambiguationCandidate[] = [],
+  // BKL-184 — when the request carries allergen-family phrasing (the adapter
+  // computes it via the classifier's own net), an UNKNOWN terminal renders the
+  // allergen abstain-plus-handoff-offer variant. Default false → byte-identical.
+  allergenAsk: boolean = false,
+  // BKL-209 — when the request carries medical-emergency phrasing (the adapter
+  // computes it via the deterministic net), an ESCALATE terminal renders the
+  // emergency safe template. Default false → byte-identical.
+  emergencyAsk: boolean = false,
 ): RenderResult {
   // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
   // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
@@ -248,7 +270,14 @@ export function render(
     const { subject, type, value } = unwrapCanonical(c);
     return { subject, type, value, verdict: "VALIDATED" as const };
   });
-  return renderRenderables(renderableClaims, terminal, suppressions);
+  return renderRenderables(
+    renderableClaims,
+    terminal,
+    suppressions,
+    candidates,
+    allergenAsk,
+    emergencyAsk,
+  );
 }
 
 /**
@@ -263,10 +292,13 @@ export function renderRenderables(
   renderableClaims: readonly RenderableClaim[],
   terminal: TurnTerminal,
   suppressions: readonly SuppressionRecord[] = [],
+  candidates: readonly RenderDisambiguationCandidate[] = [],
+  allergenAsk: boolean = false,
+  emergencyAsk: boolean = false,
 ): RenderResult {
   // ── 1. §O#5 render-half: a non-RENDER terminal emits ONLY the safe template. ──
   if (terminal !== "RENDER") {
-    return renderTerminalResult(terminal, suppressions);
+    return renderTerminalResult(terminal, suppressions, candidates, allergenAsk, emergencyAsk);
   }
 
   // ── 2. RENDER path: index by type for the Inv 6 1:1 proposition lookup, then
@@ -289,17 +321,49 @@ export function renderRenderables(
  * terminal template is the entire customer-facing output.
  *
  * §I terminals are DISTINCT (RENDER · UNKNOWN · ESCALATE · CLARIFY): only a true
- * human-handoff ESCALATE renders the handoff copy; an honest-ignorance UNKNOWN —
- * and a CLARIFY — render the epistemic SELF-REPORT (registry §5, Inv 6), never
- * "vou encaminhar para um atendente". Conflating UNKNOWN with ESCALATE would
- * mis-assert that the system is escalating when it is merely reporting that it
- * could not confirm.
+ * human-handoff ESCALATE renders the handoff copy; an honest-ignorance UNKNOWN
+ * renders the epistemic SELF-REPORT, and a CLARIFY renders the disambiguation ASK
+ * (BKL-148) — both proposition-free (registry §5, Inv 6), never "vou encaminhar
+ * para um atendente". Conflating UNKNOWN with ESCALATE would mis-assert that the
+ * system is escalating when it is merely reporting that it could not confirm; and
+ * (pre-BKL-148) collapsing CLARIFY into UNKNOWN answered a disambiguation turn with
+ * a bare "não localizei" instead of asking which record the customer means.
  */
 function renderTerminalResult(
   terminal: TurnTerminal,
   _suppressions: readonly SuppressionRecord[],
+  candidates: readonly RenderDisambiguationCandidate[] = [],
+  allergenAsk: boolean = false,
+  emergencyAsk: boolean = false,
 ): RenderResult {
-  const template = terminal === "ESCALATE" ? SAFE_TEMPLATES.escalate : SAFE_TEMPLATES.unknown;
+  // BKL-170 — a CLARIFY the adopter enriched with first-party, owner-scoped
+  // disambiguation candidates (0.8.0 `disambiguationCandidates` carrier) renders the
+  // proposition-free CLARIFY-with-candidates ask that VOICES the specific handles,
+  // superseding the generic clarify. Absent/empty → the generic clarify (byte-identical
+  // to pre-0.8.0). The labels are ADOPTER carrier vocabulary (never a claim value / a
+  // suppressed-value re-leak), so this stays within §O#5.
+  if (terminal === "CLARIFY" && candidates.length > 0) {
+    const text = clarifyWithCandidatesText(candidates.map((c) => c.label));
+    return { text, terminal, lines: [{ kind: "TERMINAL", text }] };
+  }
+  // BKL-184 — an allergen-family ask that lands on honest ignorance renders the
+  // abstain-plus-handoff-offer variant (still proposition-free — the defensive
+  // isPropositionFree gate below applies to it identically). Every other UNKNOWN
+  // renders the generic template, byte-identical.
+  const template =
+    terminal === "ESCALATE"
+      ? // BKL-209 — a medical-emergency ESCALATE renders the emergency safe
+        // variant (number-free directive to seek emergency care + honest limit +
+        // staff notice); every other ESCALATE renders the generic handoff line,
+        // byte-identical.
+        emergencyAsk
+        ? SAFE_ESCALATE_EMERGENCY_TEMPLATE
+        : SAFE_TEMPLATES.escalate
+      : terminal === "CLARIFY"
+        ? SAFE_TEMPLATES.clarify
+        : allergenAsk
+          ? SAFE_UNKNOWN_ALLERGEN_TEMPLATE
+          : SAFE_TEMPLATES.unknown;
   // Defensive: a TERMINAL template MUST be proposition-free (it cannot carry a
   // domain fact). If somehow it weren't, abstain to the bare unknown line rather
   // than risk a leak.

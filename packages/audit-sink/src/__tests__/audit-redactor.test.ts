@@ -6,7 +6,12 @@
 // header.
 
 import { describe, it, expect, vi } from "vitest"
-import { buildAuditRecord, buildEnvelope } from "@adjudicate/core"
+import {
+  buildAuditRecord,
+  buildEnvelope,
+  sha256Canonical,
+  verifyAuditRecord,
+} from "@adjudicate/core"
 import type { AuditRecord } from "@adjudicate/core"
 import { createAuditRedactor } from "../audit-redactor.js"
 
@@ -21,6 +26,7 @@ import { createAuditRedactor } from "../audit-redactor.js"
 function makeRecord(
   kind: string,
   payload: unknown,
+  metadata?: Record<string, unknown>,
 ): AuditRecord {
   const envelope = buildEnvelope({
     kind,
@@ -35,6 +41,7 @@ function makeRecord(
     decision: { kind: "EXECUTE", basis: [] },
     durationMs: 1,
     at: "2025-01-01T00:00:00.001Z",
+    ...(metadata === undefined ? {} : { metadata }),
   })
 }
 
@@ -292,9 +299,11 @@ describe("audit-redactor — regex defense for unmatched field names", () => {
 // ── Per-intent-kind rules ────────────────────────────────────────────────────
 
 describe("audit-redactor — per-intent-kind field rules", () => {
-  it("redacts whatsapp.message.send body even when content has no PII regex hit", () => {
+  it("redacts twilio.message.send body even when content has no PII regex hit", () => {
+    // BKL-177: whatsapp.message.send retired; twilio.message.send is the live
+    // WhatsApp egress wrapper carrying the identical body/variable redaction.
     const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
-    const record = makeRecord("whatsapp.message.send", {
+    const record = makeRecord("twilio.message.send", {
       to: "+5511999999999",
       template: "order_confirmation_v2",
       body: "Olá Maria, seu pedido está pronto.",
@@ -609,5 +618,143 @@ describe("audit-redactor — fail-open on cyclic input", () => {
     const out = r.redact(cyclicRecord)
     expect(out.envelope.payload).toEqual({ __redactor_error: true })
     expect(warn).toHaveBeenCalled()
+  })
+})
+
+// ── FE-T05 review (MAJOR-1a) — record.metadata redaction ────────────────────
+//
+// `record.metadata` (the ADR-124 v5 governance/observability sidecar — e.g.
+// the Language Engine's materialized ExtractionIR/HydratedIntentIR,
+// apps/api/src/claustrum/language-engine/audit-metadata.ts) previously rode
+// through `redact()` UNTOUCHED (a plain `...record` spread) — a synthetic-
+// or model-smuggled PII value landing in metadata would have reached NATS/
+// Postgres/console in cleartext. This suite pins the fix: metadata is walked
+// through the SAME global REDACT/HASH/regex defenses as the payload, the
+// fail-open path stubs it too, and — the load-bearing safety property —
+// redacting metadata can NEVER invalidate tamper-evidence, because metadata
+// is EXCLUDED from the `auditHash` pre-image (v5+, ADR-124).
+
+describe("audit-redactor — record.metadata (FE-T05 review MAJOR-1a)", () => {
+  it("redacts PII nested anywhere inside metadata (field-name REDACT + regex defense)", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const record = makeRecord(
+      "order.status.transition",
+      { orderId: "order_1", newStatus: "ready" },
+      {
+        languageEngine: {
+          hydratedIntentIR: {
+            payload: {
+              orderId: "order_1",
+              newStatus: "ready",
+              // Synthetic: a field name the global REDACT set catches.
+              cpf: "12345678900",
+              // Synthetic: no matching field name, but the regex defense
+              // still catches the EMAIL SHAPE inside a free-form string.
+              notes: "contate joao@example.com para confirmar",
+            },
+          },
+        },
+      },
+    )
+    const out = r.redact(record)
+    const hydrated = (
+      out.metadata as {
+        languageEngine: { hydratedIntentIR: { payload: Record<string, unknown> } }
+      }
+    ).languageEngine.hydratedIntentIR.payload
+
+    expect(hydrated.orderId).toBe("order_1")
+    expect(hydrated.newStatus).toBe("ready")
+    expect(hydrated.cpf).not.toBe("12345678900")
+    expect(String(hydrated.notes)).not.toContain("joao@example.com")
+  })
+
+  it("redacting metadata NEVER invalidates OUTER tamper-evidence (auditHash still round-trips; the only PERMITTED verifyAuditRecord miss is the pre-existing, documented envelope_intent_mismatch from the actor.sessionId hash — never `tampered`)", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const record = makeRecord(
+      "order.status.transition",
+      { orderId: "order_1", newStatus: "ready" },
+      { languageEngine: { hydratedIntentIR: { payload: { cpf: "12345678900" } } } },
+    )
+    const out = r.redact(record)
+    // The OUTER auditHash pre-image (record minus auditHash/signature/
+    // metadata — mirrors recomputeAuditHash exactly) must round-trip. This
+    // is the property that would break if metadata redaction leaked into
+    // the pre-image.
+    const { auditHash, signature: _sig, metadata: _meta, ...rest } = out as AuditRecord & {
+      signature?: unknown
+    }
+    void _sig
+    void _meta
+    expect(sha256Canonical(rest)).toBe(auditHash)
+    // Same documented pattern as audit-redaction-contract.test.ts's P0-15
+    // suite: a plain (non-agent) actor.sessionId is legitimately hashed by
+    // redaction, which `verifyAuditRecord`'s envelope.intentHash leg
+    // correctly flags — that is the ONLY permitted non-`true` outcome.
+    const verification = verifyAuditRecord(out)
+    if (verification.verified !== true) {
+      expect(verification.reason).toBe("envelope_intent_mismatch")
+    }
+  })
+
+  it("PROVES metadata is excluded from the auditHash pre-image: two otherwise-identical records with DIFFERENT metadata redact to the SAME auditHash", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const payload = { orderId: "order_1", newStatus: "ready" }
+    const recordA = makeRecord("order.status.transition", payload, {
+      languageEngine: { hydratedIntentIR: { payload: { note: "A" } } },
+    })
+    const recordB: AuditRecord = {
+      ...recordA,
+      metadata: { languageEngine: { hydratedIntentIR: { payload: { note: "B — completely different" } } } },
+    }
+    const outA = r.redact(recordA)
+    const outB = r.redact(recordB)
+    expect(outA.metadata).not.toEqual(outB.metadata)
+    expect(outA.auditHash).toBe(outB.auditHash)
+  })
+
+  it("idempotent — redact(redact(record)) with metadata equals redact(record)", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const record = makeRecord(
+      "order.status.transition",
+      { orderId: "order_1", newStatus: "ready" },
+      { languageEngine: { hydratedIntentIR: { payload: { cpf: "12345678900" } } } },
+    )
+    const once = r.redact(record)
+    const twice = r.redact(once)
+    expect(twice).toEqual(once)
+  })
+
+  it("a record with NO metadata redacts byte-identically to before (metadata key stays absent)", () => {
+    const r = createAuditRedactor({ hashSecret: "salt", warn: vi.fn() })
+    const record = makeRecord("order.status.transition", {
+      orderId: "order_1",
+      newStatus: "ready",
+    })
+    const out = r.redact(record)
+    expect(out.metadata).toBeUndefined()
+    expect(Object.hasOwn(out, "metadata")).toBe(false)
+  })
+
+  it("fail-open path stubs metadata too (never leaks it on a redactor crash)", () => {
+    const warn = vi.fn()
+    const r = createAuditRedactor({ hashSecret: "s", warn })
+    const baseRecord = makeRecord(
+      "customer.profile.update",
+      { name: { first: "X" } },
+      { languageEngine: { hydratedIntentIR: { payload: { cpf: "12345678900" } } } },
+    )
+    const cyclicName: Record<string, unknown> = { first: "X" }
+    cyclicName.self = cyclicName
+    const cyclicRecord: AuditRecord = {
+      ...baseRecord,
+      envelope: {
+        ...baseRecord.envelope,
+        payload: { name: cyclicName },
+      },
+    }
+    const out = r.redact(cyclicRecord)
+    expect(out.envelope.payload).toEqual({ __redactor_error: true })
+    expect(out.metadata).toEqual({ __redactor_error: true })
   })
 })

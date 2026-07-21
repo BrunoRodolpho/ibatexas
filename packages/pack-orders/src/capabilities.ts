@@ -127,13 +127,30 @@ const rawOrdersCapabilityPlanner: CapabilityPlanner<OrderState, OrderContext> =
         allowedIntents.push(
           "order.checkout.create",
           "order.cancel",
-          "order.amend.request",
+          // FE-T09 (D-a, the amend inversion): the grouped
+          // `order.amend.request` is REMOVED as a model target —
+          // resolver-composed-only (its remaining producer is the
+          // deterministic legacy/HTTP amend route, unchanged by this Pack).
+          // The model instead proposes the three granular single-op amend
+          // kinds; each has an authored extraction schema
+          // (`order-amend-granular.schema.ts`) so the model only ever sees
+          // an NL item reference (+ quantity where relevant) — never
+          // orderId/variantId/itemId/allergens (FE-1.2).
+          "order.amend.add_item",
+          "order.amend.update_qty",
+          "order.amend.remove_item",
           "order.note.add",
+          // FE-D28 — review-by-chat is now real: the resolver stamps the
+          // (Identity-class) orderId + productId (order-note-review.schema.ts
+          // exposes only rating/comment + the NL item/orderReference refs), so
+          // the orders planner advertises it to authenticated customers.
+          "order.review.submit",
         )
       }
-      // `order.cancel.system` is NEVER LLM-proposable — the taint gate
-      // enforces TRUSTED for system-only kinds (see types.ts taint
-      // policy); the planner omits it for defence in depth.
+      // The system-only kinds (`order.projection.create`,
+      // `order.status.reconcile`) are NEVER LLM-proposable — the taint gate
+      // enforces TRUSTED for them (see types.ts taint policy); the planner
+      // omits them for defence in depth.
       void context
 
       return {

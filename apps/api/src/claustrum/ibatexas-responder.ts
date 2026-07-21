@@ -45,6 +45,7 @@ import {
 } from "./prompts/ibatexas-prompts.js";
 import { emitModelCallTrace } from "./llm-trace.js";
 import { completeWithEmptyRetry } from "./complete-with-retry.js";
+import { PINNED_COMPLETION_TEMPERATURE } from "./model-call-defaults.js";
 import {
   closedHoursBackstop,
   closedHoursDisclosure,
@@ -290,10 +291,21 @@ function draftLeaksCapabilityId(
 // completeWith(), so an override remains forensically visible.
 
 /** Neutral, audit-accurate line substituted when the grounded reply contradicts
- *  the authoritative decision. Claims only that the request was registered —
- *  never a specific success/failure outcome. */
+ *  the authoritative decision on a turn that ACTUALLY COMMITTED a mutation. Claims
+ *  only that the request was registered — honest here because a real EXECUTE ran
+ *  (the contradiction case: the model wrongly said "no access" after the runtime
+ *  acted). NEVER used on a no-op turn — see BKL-210. */
 export const GROUNDED_SAFE_FALLBACK_PTBR =
   "Recebi sua solicitação e ela foi registrada. Se precisar de mais detalhes, posso ajudar.";
+
+/** BKL-210 — the HONEST fallback for a clamped draft on a turn that committed
+ *  NOTHING (no executed kind). The old single fallback claimed "foi registrada"
+ *  even when nothing was adjudicated — live-caught firing for an injection probe
+ *  AND an LGPD-erasure ask (a real false reassurance: the customer believed the
+ *  request was on file). This variant asserts NO world-state change and offers
+ *  the honest next step, never a receipt. */
+export const NO_CAPABILITY_HONEST_FALLBACK_PTBR =
+  "Não consegui concluir essa solicitação por aqui. Se preferir, posso te encaminhar para um atendente.";
 
 const NO_AUTHORITY_PATTERNS: ReadonlyArray<RegExp> = [
   /\bnao (tenho|possuo|teria) acesso\b/,
@@ -334,9 +346,11 @@ export function groundedReplyContradicts(text: string): string | null {
 // {executed, rewritten_and_executed, executed_plan} (a kernel EXECUTE decision is
 // NOT enough — dispatch can still be "failed"), AND the executed envelope kind is
 // one that justifies that specific claim. Critically, "pagamento aprovado/
-// confirmado" is justified ONLY by a settlement intent (payment.charge/cash/
-// refund.confirm) — NEVER by order.checkout.create or payment.pix.regenerate
-// (those create a checkout/QR; they do not settle money).
+// confirmado" is justified ONLY by an inbound settlement intent
+// (payment.cash.confirm; payment.charge.confirm was retired in BKL-176) —
+// NEVER by order.checkout.create or payment.pix.regenerate (those create a
+// checkout/QR; they do not settle money), and NEVER by a refund (opposite money
+// direction — CLAUDE.md excludes it).
 //
 // Conservative by design: it flags only clear domain success-claims that lack a
 // matching execution (minimising false blocks); anything it doesn't recognise
@@ -355,6 +369,12 @@ export interface SuccessClaimClass {
   /** The class's domain noun (a regex fragment). Guards the F1b FALSE-FAILURE mirror
    *  so a shared verb root does not cross-flag a different-noun honest failure. */
   readonly noun?: string;
+  /** BKL-194 — RECEIPT-semantics class: the action COMPLETES on receipt ("avaliação
+   *  recebida" IS the success, not an in-flight status), so the PENDING_STATUS mood
+   *  exemption must NOT rescue its claims ("recebid…" is this class's own completion
+   *  verb — the exemption would swallow the exact live false-success). Future/
+   *  conditional clauses still exempt (an honest "vou registrar" stays unflagged). */
+  readonly receiptIsCompletion?: true;
 }
 
 /** Build a claim class from a domain noun + a verb-root alternation. Matches BOTH
@@ -393,23 +413,75 @@ function claimClass(
 // Completion-verb ROOTS per domain (the builder appends -ado/-ido/-ei/-ou…).
 // Irregulars (feito/feita) are added as `extra` literals.
 export const SUCCESS_CLAIM_CLASSES: ReadonlyArray<SuccessClaimClass> = [
-  claimClass("order-placed", "pedido", "registr|confirm|realiz|finaliz|efetu|conclu|fech|cri", ["order.checkout.create"], [/\bpedido\b[^.!?]{0,30}\bfeito\b/, /\bfeito\b[^.!?]{0,15}\b(?:o |seu )?pedido\b/]),
+  // BKL-194 — order.reorder ALSO genuinely places an order, so it justifies the
+  // order-placed family (a reorder-executed turn saying "pedido criado" is honest).
+  claimClass("order-placed", "pedido", "registr|confirm|realiz|finaliz|efetu|conclu|fech|cri", ["order.checkout.create", "order.reorder"], [/\bpedido\b[^.!?]{0,30}\bfeito\b/, /\bfeito\b[^.!?]{0,15}\b(?:o |seu )?pedido\b/]),
   claimClass("purchase-completed", "compra", "finaliz|conclu|realiz|confirm|efetu|fech", ["order.checkout.create"], [/\bcompra\b[^.!?]{0,20}\bfeita\b/]),
   // payment-settled = an INBOUND payment was approved/settled. A REFUND confirmation
   // is the opposite money direction and must NOT justify a "pagamento aprovado"
   // claim (review finding 12) — it justifies only the `refund-done` class below.
   // Wider negation window (30) so honest-failure phrasings aren't mis-substituted.
-  claimClass("payment-settled", "pagamento", "aprov|confirm|realiz|efetu|conclu|liquid|quit", ["payment.charge.confirm", "payment.cash.confirm"], [/\b(?:esta|ta|ja)\s+pago\b/, /\bpix\s+pago\b/, /\bpaguei\b/], 30),
+  // BKL-176 — `payment.charge.confirm` was RETIRED (dead taxonomy); the sole
+  // remaining justifier is the inbound `payment.cash.confirm`. Deliberately NOT
+  // repointed onto `payment.status.reconcile`: that kind is direction-agnostic
+  // (it also reconciles refunds), so admitting it would break `payment-settled`'s
+  // refund-direction exclusion (CLAUDE.md). Both remaining justifiers are still
+  // zero-emitter today, so a "pagamento confirmado" claim degrades to UNKNOWN
+  // absent a real settle event — the intended anti-confabulation posture.
+  claimClass("payment-settled", "pagamento", "aprov|confirm|realiz|efetu|conclu|liquid|quit", ["payment.cash.confirm"], [/\b(?:esta|ta|ja)\s+pago\b/, /\bpix\s+pago\b/, /\bpaguei\b/], 30),
   claimClass("order-canceled", "pedido", "cancel", ["order.cancel"], [/\bcancelamento\b[^.!?]{0,20}\b(?:realizad|efetuad|concluid)\w*/]),
   claimClass("cart-item-added", "carrinho", "adicion|inclu|atualiz", ["order.item.add", "order.item.update", "order.item.remove"], [/\bitem\b[^.!?]{0,15}\badicionad\w*/]),
   claimClass("refund-done", "reembolso", "process|emit|realiz|efetu|conclu|confirm|aprov", ["payment.refund.issue", "payment.refund.confirm"]),
   claimClass("note-added", String.raw`observac\w*`, "adicion", ["order.note.add"]),
-  claimClass("order-amended", "pedido", "alter|atualiz", ["order.amend.request", "order.amend.add_item", "order.amend.update_qty", "order.amend.remove_item"], [/\badicionad\w*\b[^.!?]{0,15}\bao pedido\b/, /\baltera\w*\b[^.!?]{0,22}\b(?:registrad|realizad)\w*/]),
+  // BKL-194 — order.type.switch IS an order amendment ("pedido alterado para
+  // retirada"), so it joins the justifier set (prevents a latent false-clamp of an
+  // honest type-switch confirmation).
+  claimClass("order-amended", "pedido", "alter|atualiz", ["order.amend.request", "order.amend.add_item", "order.amend.update_qty", "order.amend.remove_item", "order.type.switch"], [/\badicionad\w*\b[^.!?]{0,15}\bao pedido\b/, /\baltera\w*\b[^.!?]{0,22}\b(?:registrad|realizad)\w*/]),
   claimClass("reservation-confirmed", "reserva", "confirm|garant|realiz|efetu|conclu", ["reservation.create", "reservation.modify", "reservation.checkin", "reservation.complete"], [/\breserva\b[^.!?]{0,20}\bfeita\b/, /\bmesa\b[^.!?]{0,20}\b(?:reservad|garantid|confirmad)\w*/, /\bcheck-?in\b[^.!?]{0,15}\b(?:feito|confirmad|realizad)\w*/, /\b(?:agendad\w*|agendamento)\b[^.!?]{0,25}\b(?:confirmad|realizad|feito|concluid)\w*/]),
   // PIX code/QR generation — justified by a checkout (PIX) or a regenerate.
   { id: "pix-generated", claim: [/\b(?:codigo )?pix\b[^.!?]{0,18}\b(?:gerad|criad|criei|gerei)\w*/, /\bgerei\b[^.!?]{0,15}\bpix\b/], negated: [/\b(?:nao|nunca|jamais)\b[^.!?]{0,14}\b(?:gerad|criad|gerei)\w*/], justifiedBy: ["order.checkout.create", "payment.pix.regenerate"], noun: "pix" },
   // Fulfillment is NEVER performed by the chat responder — any such claim is unearned.
   { id: "fulfillment-claimed", claim: [/\b(?:a caminho|saiu pra entrega|saiu para entrega|em preparo|no preparo|mandei pro preparo|ja separei|esta sendo preparad|pronto pra retirar|pronto para retirar|pode (?:vir )?(?:retirar|buscar))\b/], negated: [/\bnao\b[^.!?]{0,10}\b(?:a caminho|saiu|pronto)\b/], justifiedBy: [] },
+  // ── BKL-194 sweep additions (the taxonomy outgrew the original 11 classes) ──
+  //
+  // review-received — THE live false-success (session 9ff869ed): "Sua avaliação de
+  // 5 estrelas…foi recebida e registrada" with ZERO order.review.submit rows.
+  // RECEIPT-semantics: `receiptIsCompletion` disables the PENDING_STATUS exemption
+  // ("recebid…" is this class's completion verb, not an in-flight status — the
+  // exemption would swallow the exact live prose). The rating sense of "nota"
+  // ("sua nota foi registrada") rides here via a `nota(?! fiscal)` extra so it can
+  // never cross-match the fiscal class below. Wide 60-char extra: the live gap
+  // between "avaliação" and its verb was exactly 40 chars (a longer displayId
+  // would have slipped the builder's default window).
+  {
+    ...claimClass("review-received", String.raw`avaliac\w*`, "receb|registr|envi|grav|comput", ["order.review.submit"], [
+      /\bavaliac\w*\b[^.!?]{0,60}\b(?:recebid|registrad|enviad|gravad|computad)\w*/,
+      /\b(?:sua |a )?nota(?! fiscal)\b[^.!?]{0,25}\b(?:recebid|registrad|enviad|gravad|computad)\w*/,
+      /\bobrigad[oa]\b[^.!?]{0,20}\bavaliac\w*/,
+    ]),
+    receiptIsCompletion: true,
+  },
+  // reservation-canceled — "sua reserva foi cancelada" (the order-canceled twin;
+  // that class's noun guard is "pedido", so reservations were unguarded).
+  claimClass("reservation-canceled", "reserva", "cancel", ["reservation.cancel"]),
+  // coupon-applied — "cupom aplicado" / "desconto aplicado".
+  claimClass("coupon-applied", "cupom", "aplic|ativ|adicion|resgat", ["order.coupon.apply"], [/\bdesconto\b[^.!?]{0,20}\baplicad\w*/]),
+  // address-updated — "endereço atualizado/alterado/cadastrado/removido".
+  claimClass("address-updated", String.raw`endereco\w*`, "atualiz|alter|salv|cadastr|adicion|remov", ["customer.address.add", "customer.address.remove", "order.address.change"]),
+  // preferences-saved — "preferências atualizadas"; the irregular short participle
+  // "salvas" (not "salvadas") needs the extra literal.
+  claimClass("preferences-saved", "preferencias?", "salv|atualiz|registr|grav", ["customer.preferences.update"], [/\bpreferencias?\b[^.!?]{0,25}\bsalvas?\b/]),
+  // payment-method-switched — "forma de pagamento alterada". Distinct from
+  // payment-settled (different verb family; the full-phrase noun keeps the bare
+  // "pagamento" classes from cross-matching).
+  claimClass("payment-method-switched", "(?:forma|metodo|meio)s? de pagamento", "alter|troc|mud|atualiz", ["payment.method.switch"]),
+  // fiscal-emitted — "nota fiscal emitida/gerada". SYSTEM-only kind: it can never
+  // execute inside a chat turn, so in practice this is unearnable on the customer
+  // plane (the honest justifier is listed for the day a read surfaces real state).
+  claimClass("fiscal-emitted", "nota fiscal", "emit|ger", ["order.fiscal.emit"], [/\b(?:nfc-?e|nfe|danfe)\b[^.!?]{0,30}\b(?:emitid|gerad)\w*/]),
+  // data-anonymized — LGPD: "seus dados foram apagados/anonimizados/excluídos".
+  // A confabulated deletion promise is a privacy harm, not just UX.
+  claimClass("data-anonymized", "dados", "apag|anonimiz|exclu|remov|delet", ["customer.anonymize"]),
 ];
 
 /** The envelope kinds the runtime ACTUALLY executed this turn (empty unless the
@@ -503,12 +575,14 @@ function clauseAround(sentence: string, start: number): string {
  *  clause ("…, se precisar de algo avise") no longer suppresses a completed claim
  *  in a DIFFERENT clause (review finding 5). A clause that asserts definite success
  *  ("…com sucesso") is never pending-exempt (finding 8). */
-function claimIsMoodExempt(sentence: string, claimRe: RegExp): boolean {
+function claimIsMoodExempt(sentence: string, claimRe: RegExp, skipPending = false): boolean {
   const m = claimRe.exec(sentence);
   if (m === null) return false;
   const clause = clauseAround(sentence, m.index);
   if (FUTURE_OR_CONDITIONAL.test(clause) || FUTURE_OR_CONDITIONAL_SE.test(clause)) return true;
-  if (PENDING_STATUS.test(clause) && !DEFINITE_SUCCESS.test(clause)) return true;
+  // BKL-194 — receipt-semantics classes (`receiptIsCompletion`) skip the pending
+  // exemption: "recebid…" is their completion verb, not an in-flight status.
+  if (!skipPending && PENDING_STATUS.test(clause) && !DEFINITE_SUCCESS.test(clause)) return true;
   return false;
 }
 
@@ -572,7 +646,7 @@ function unearnedClaimInSentence(
     // elsewhere in the sentence no longer blanket-suppresses a completed claim.
     const matched = cls.claim.find((re) => re.test(sentenceText));
     if (matched === undefined) continue;
-    if (claimIsMoodExempt(sentenceText, matched)) continue; // future/conditional/pending clause
+    if (claimIsMoodExempt(sentenceText, matched, cls.receiptIsCompletion === true)) continue; // future/conditional(/pending) clause
     if (!cls.justifiedBy.some((k) => executed.has(k))) return cls.id;
   }
   return null;
@@ -640,20 +714,40 @@ export function replyLeaksSpanish(text: string): string | null {
   return null;
 }
 
+/** BKL-210 — pick the neutral fallback by OUTCOME: the audit-accurate
+ *  "registrada" line ONLY when a mutation genuinely committed this turn (the
+ *  contradiction-after-EXECUTE case, where a "couldn't do it" line would be a
+ *  false FAILURE); otherwise the HONEST no-op line (nothing was registered, so
+ *  claiming so is a false success — the injection / LGPD-noop case). */
+function neutralFallbackFor(acted: unknown): string {
+  return executedKinds(acted).size > 0
+    ? GROUNDED_SAFE_FALLBACK_PTBR
+    : NO_CAPABILITY_HONEST_FALLBACK_PTBR;
+}
+
+/** True when `text` is either neutral fallback — used by the closed-hours /
+ *  rewrite guards to detect "the success guard already clobbered this draft",
+ *  now that the clobber target is outcome-dependent (BKL-210). */
+function isNeutralFallback(text: string): boolean {
+  return text === GROUNDED_SAFE_FALLBACK_PTBR || text === NO_CAPABILITY_HONEST_FALLBACK_PTBR;
+}
+
 /** Apply the deterministic post-completion guards to a model-produced draft:
- *  substitute the neutral, audit-accurate line if the reply makes a no-authority
- *  claim (F1) or claims a success the runtime did not grant (F1b). Preserves the
- *  draft's token usage so the loop's cost accounting stays correct. This is a FULL
- *  replacement (not `withText`): a confabulated draft's artifacts/meta are
- *  deliberately discarded — only the cost accounting (usage) survives. */
+ *  substitute the neutral line (outcome-aware, BKL-210) if the reply makes a
+ *  no-authority claim (F1) or claims a success the runtime did not grant (F1b).
+ *  Preserves the draft's token usage so the loop's cost accounting stays correct.
+ *  This is a FULL replacement (not `withText`): a confabulated draft's
+ *  artifacts/meta are deliberately discarded — only the cost accounting (usage)
+ *  survives. */
 function guardDraft(draft: DraftResponse, acted: unknown): DraftResponse {
   if (
     groundedReplyContradicts(draft.text) !== null ||
     replyClaimsUnearnedSuccess(draft.text, acted) !== null
   ) {
+    const fallback = neutralFallbackFor(acted);
     return draft.usage === undefined
-      ? { text: GROUNDED_SAFE_FALLBACK_PTBR }
-      : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
+      ? { text: fallback }
+      : { text: fallback, usage: draft.usage };
   }
   // F6 (BKL-064): a Spanish-leaked draft slips past the pt-BR lexicons above —
   // clamp it to a neutral pt-BR line that asserts no domain fact.
@@ -707,14 +801,17 @@ function observedGuardDraft(
 function clampCapabilityIdLeak(
   draft: DraftResponse,
   turnId: string | undefined,
+  acted: unknown,
 ): DraftResponse {
   logger.warn(
     { component: "responder", event: "success_guard.clamp", turnId, guard: "capability_id_leak" },
     "responder clamped a draft that echoed a raw capability id",
   );
+  // BKL-210 — outcome-aware: the accurate "registrada" only if a mutation ran.
+  const fallback = neutralFallbackFor(acted);
   return draft.usage === undefined
-    ? { text: GROUNDED_SAFE_FALLBACK_PTBR }
-    : { text: GROUNDED_SAFE_FALLBACK_PTBR, usage: draft.usage };
+    ? { text: fallback }
+    : { text: fallback, usage: draft.usage };
 }
 
 /** Closed-hours delivery guard. Runs the deterministic `closedHoursBackstop`
@@ -747,13 +844,13 @@ function closedHoursDeliveryGuard(
   // `scheduled.accepted` is true ONLY for a proven scheduled PICKUP (never a
   // delivery/immediate order that also EXECUTEs while closed → those keep the degrade).
   const clobbered =
-    repaired.text !== draft.text || repaired.text === GROUNDED_SAFE_FALLBACK_PTBR;
+    repaired.text !== draft.text || isNeutralFallback(repaired.text);
   if (scheduled.accepted && clobbered) {
     const text = closedHoursScheduledConfirmation(signal, scheduled.awaitingPixPayment);
     return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
   }
 
-  if (repaired.text === GROUNDED_SAFE_FALLBACK_PTBR) {
+  if (isNeutralFallback(repaired.text)) {
     const text = closedHoursDisclosure(signal);
     return repaired.usage === undefined ? { text } : { text, usage: repaired.usage };
   }
@@ -775,7 +872,7 @@ function surfaceRewriteClamp(
   // Finding 21: guardDraft (F1/F1b) runs BEFORE this and may have substituted the
   // neutral fallback. Appending a specific clamp reason onto that generic line reads
   // as contradictory — the fallback already supersedes the clamp note, so leave it.
-  if (draft.text === GROUNDED_SAFE_FALLBACK_PTBR) return draft;
+  if (isNeutralFallback(draft.text)) return draft;
   const reason = typeof decision.reason === "string" ? decision.reason.trim() : "";
   if (reason.length === 0 || /\b(pii|mascar)/i.test(reason)) return draft;
   // Finding 9: only suppress the clamp notice when the model ALREADY conveyed THIS
@@ -916,6 +1013,10 @@ export function createIbatexasResponder(
           maxTokens,
           system: args.system,
           messages: [{ role: "user", content: args.userText }],
+          // FE-T01 (D3) — pin temperature so the synthesis completion is
+          // deterministic on the wire instead of falling to Ollama's ~0.8
+          // default (temperature was never sent before this).
+          temperature: PINNED_COMPLETION_TEMPERATURE,
         }),
       { maxAttempts: EMPTY_COMPLETION_MAX_ATTEMPTS },
     );
@@ -941,6 +1042,8 @@ export function createIbatexasResponder(
         outputTokens: completion.outputTokens,
         durationMs,
         at: new Date().toISOString(),
+        // FE-T01 — the SAME constant passed to `deps.model.complete()` above.
+        temperature: PINNED_COMPLETION_TEMPERATURE,
         ...(args.intentHash === undefined ? {} : { intentHash: args.intentHash }),
       });
     }
@@ -1163,7 +1266,7 @@ export function createIbatexasResponder(
           // ② defense-in-depth: if the model still echoed a raw capability id, clamp
           // it to the neutral fallback before it can reach the customer.
           const draft = draftLeaksCapabilityId(rawDraft.text, capabilities)
-            ? clampCapabilityIdLeak(rawDraft, turnId)
+            ? clampCapabilityIdLeak(rawDraft, turnId, input.acted)
             : rawDraft;
           // F1 + F1b: post-completion guards. The grounded prompt is only a soft
           // instruction — never let a model reply that contradicts the audited

@@ -145,7 +145,11 @@ export function refuseTransitionStatusUnknown(detail?: string): Refusal {
   return refuse(
     "STATE",
     "order.status.unknown",
-    "Não consegui confirmar o status atual do pedido — verifique o pedido e tente de novo.",
+    // BKL-150(b): name the valid target tokens so a staff typo ("cancelled",
+    // "pronto") gets an actionable correction instead of a dead end. The guard
+    // stays strict — no normalization here.
+    "Não consegui confirmar o status do pedido. Os status válidos são: confirmed, " +
+      "preparing, ready, in_delivery, delivered ou canceled — verifique e tente de novo.",
     detail,
   )
 }
@@ -155,6 +159,31 @@ export function refuseCheckoutMissingPaymentMethod(): Refusal {
     "STATE",
     "order.checkout.payment_method_missing",
     "Escolhe primeiro como você quer pagar (PIX, cartão ou dinheiro).",
+  )
+}
+
+// ── Fiscal refusals (NEW-014) ───────────────────────────────────────────
+
+/** `order.fiscal.emit` on an order that has NOT reached a fiscal-eligible
+ *  state (delivered) — a fiscal document must never be emitted for an
+ *  incomplete sale. System-emitted; the userFacing is for audit/observability. */
+export function refuseFiscalNotEligible(detail?: string): Refusal {
+  return refuse(
+    "STATE",
+    "order.fiscal.not_eligible",
+    "O pedido ainda não está em um estado fiscalmente elegível para emissão.",
+    detail,
+  )
+}
+
+/** `order.fiscal.emit` that exceeded the bounded retry cap — fail-closed
+ *  rather than hammer SEFAZ / the provider. */
+export function refuseFiscalRetryExceeded(detail?: string): Refusal {
+  return refuse(
+    "BUSINESS_RULE",
+    "order.fiscal.retry_exceeded",
+    "Número máximo de tentativas de emissão fiscal atingido para este pedido.",
+    detail,
   )
 }
 

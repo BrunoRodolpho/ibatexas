@@ -1,0 +1,246 @@
+# order.note.add — FE-T14. `body` is the only model-extractable field
+# (Directive, required, free text) — CRITICAL DESIGN RULE 6 (verbatim-
+# fidelity): the model must copy the note text EXACTLY, never summarize,
+# paraphrase, or invent content that lands in an audit record.
+#
+# `order.note.add` was ALREADY fully wired for auto-resolve BEFORE this
+# ticket (ORDER_AUTORESOLVE_KINDS + AUTORESOLVE_CONFIRM_KINDS both already
+# list it) — `orderId` is a "most recent order" GUESS, hence `grounded` and
+# confirmationRequired: true, same posture as order.status.transition.
+capability: order.note.add
+source: tickets/language-engine/issues/14-rollout-convenience-mutating-verbs.md
+plane: customer
+cases:
+  - id: basic-no-onion
+    utterance: "adiciona uma observação no meu pedido: sem cebola, por favor"
+    note: >-
+      Canonical shape (the schema's own worked example) — direct register,
+      explicit note text after a colon.
+    expectPayload:
+      extractionIR:
+        payload:
+          body: sem cebola, por favor
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: sem cebola, por favor
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: formal-gostaria
+    utterance: Gostaria de anotar no meu pedido que o entregador toque a campainha duas vezes.
+    note: Formal/polite register, longer note content.
+    expectPayload:
+      extractionIR:
+        payload:
+          body: o entregador toque a campainha duas vezes
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: o entregador toque a campainha duas vezes
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: colloquial-poe-uma-nota
+    utterance: põe uma nota no meu pedido, sem picles
+    note: Colloquial register ("põe uma nota").
+    expectPayload:
+      extractionIR:
+        payload:
+          body: sem picles
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: sem picles
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: question-form
+    utterance: dá pra deixar um recado no meu pedido? deixa na portaria
+    note: Question-form register ("dá pra...?") followed by the note content.
+    expectPayload:
+      extractionIR:
+        payload:
+          body: deixa na portaria
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: deixa na portaria
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: brusque-anota-ai
+    utterance: "anota aí: apartamento 42, interfone quebrado"
+    note: Brusque/telegraphic register.
+    expectPayload:
+      extractionIR:
+        payload:
+          body: "apartamento 42, interfone quebrado"
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: "apartamento 42, interfone quebrado"
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: polite-gentileza
+    utterance: por gentileza, adiciona uma observação no meu pedido dizendo que é sem cebola
+    note: Very polite register ("por gentileza").
+    expectPayload:
+      extractionIR:
+        payload:
+          body: sem cebola
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: sem cebola
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: context-embedded
+    utterance: minha campainha não funciona, anota isso no meu pedido
+    note: Context-embedded register — states the fact before the instruction.
+    expectPayload:
+      extractionIR:
+        payload:
+          body: minha campainha não funciona
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: minha campainha não funciona
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: formal-solicito
+    utterance: "Solicito o registro da seguinte observação no meu pedido: entregar após as 19h."
+    note: Formal/bureaucratic register.
+    expectPayload:
+      extractionIR:
+        payload:
+          body: entregar após as 19h
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: entregar após as 19h
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: casual-so-avisando
+    utterance: só avisando, meu pedido é sem picles e sem maionese
+    note: Casual register ("só avisando").
+    expectPayload:
+      extractionIR:
+        payload:
+          body: sem picles e sem maionese
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: sem picles e sem maionese
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  - id: allergy-mention-in-note
+    utterance: "adiciona uma nota no meu pedido: tenho alergia a amendoim, por favor cuidado"
+    note: >-
+      Allergy mentioned in a free-text note — the mention legitimately lands
+      in `body` (Directive-class note content, field-trust.ts's own
+      definition), same posture as payment.refund.issue.yaml's own allergy-
+      mention cases. This is NOT the structured Hard-Rule-#1 allergens array
+      (order.item.add's schema, which this capability's schema has no slot
+      for regardless).
+    expectPayload:
+      extractionIR:
+        payload:
+          body: tenho alergia a amendoim, por favor cuidado
+        provenanceTrust:
+          body: untrusted
+      hydratedIntentIR:
+        payload:
+          body: tenho alergia a amendoim, por favor cuidado
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          body: untrusted
+        confirmationRequired: true
+
+  # ── Arm: absence — a bare invocation with NO note content at all. The
+  #    model must NOT fabricate a body (the schema's own instruction: "nunca
+  #    resuma, parafraseie ou invente conteúdo"); extractionIR correctly
+  #    omits the field. Since `body` is this capability's ONLY field and is
+  #    required, an honest omission is not a silent no-op: pack-orders'
+  #    `executeNoteAdd` guard (policies.ts) REFUSEs on an empty/missing body
+  #    (`note_body_empty`) — the closest this capability comes to a CLARIFY,
+  #    since the schema has no slot to ask a follow-up question through;
+  #    the customer sees an honest "what should the note say?" refusal
+  #    rather than a silently-created empty note. ──────────────────────────
+  - id: bare-no-content-absence
+    utterance: adiciona uma observação no meu pedido
+    note: >-
+      No note text anywhere in the utterance — just the bare capability
+      request. extractionIR.payload is correctly EMPTY (body absent, never
+      invented — the FE-T14 persona-refinement finding this case exists to
+      pin: the model must NOT fabricate content for an empty field). Decision
+      is REQUEST_CONFIRMATION, not REFUSE — live-calibration finding: orderId
+      is auto-resolved ("most recent order"), and every auto-resolve kind
+      forces a park-for-confirmation BEFORE the executeNoteAdd empty-body
+      guard gets a chance to run (that guard only fires at EXECUTE time, on
+      confirm). This is a pre-existing sequencing property of the shared
+      auto-resolve-confirm path (order.cancel/note.add/amend all share it),
+      not a persona-lever regression — documented here rather than pinning a
+      decision this case never live-produces.
+    expectPayload:
+      extractionIR:
+        payload: {}
+      hydratedIntentIR:
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+        confirmationRequired: true
+      decision: REQUEST_CONFIRMATION

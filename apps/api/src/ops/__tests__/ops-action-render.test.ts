@@ -143,6 +143,87 @@ describe("BKL-149 — per-verb deterministic success templates", () => {
   });
 });
 
+describe("BKL-156 — product-name enrichment (truthful; degrade to generic when absent)", () => {
+  it("product.availability.set names the product when the resolver stamped productName", () => {
+    expect(
+      renderOpsActionAnswer(
+        executed("product.availability.set", {
+          productId: "prod_1",
+          available: false,
+          productName: "Picanha",
+        }),
+      ),
+    ).toBe('Pronto — produto "Picanha" marcado como esgotado (86).');
+    expect(
+      renderOpsActionAnswer(
+        executed("product.availability.set", {
+          productId: "prod_1",
+          available: true,
+          productName: "Picanha",
+        }),
+      ),
+    ).toBe('Pronto — produto "Picanha" marcado como disponível novamente.');
+  });
+
+  it("product.price.set names the product when stamped", () => {
+    expect(
+      renderOpsActionAnswer(
+        executed("product.price.set", {
+          productId: "prod_1",
+          priceCentavos: 9_500,
+          productName: "Picanha",
+        }),
+      ),
+    ).toBe('Pronto — preço do produto "Picanha" atualizado para R$ 95,00.');
+  });
+
+  it("menu.special.set names the product (with and without a promo price)", () => {
+    expect(
+      renderOpsActionAnswer(
+        executed("menu.special.set", {
+          productId: "prod_1",
+          date: "2026-07-11",
+          promoPriceCentavos: 4_500,
+          productName: "Feijoada",
+        }),
+      ),
+    ).toBe('Pronto — "Feijoada" definido como especial de 11/07/2026 por R$ 45,00.');
+    expect(
+      renderOpsActionAnswer(
+        executed("menu.special.set", {
+          productId: "prod_1",
+          date: "2026-07-11",
+          productName: "Feijoada",
+        }),
+      ),
+    ).toBe('Pronto — "Feijoada" definido como especial de 11/07/2026.');
+  });
+
+  it("a blank/whitespace productName degrades to the generic form (never fabricated or empty)", () => {
+    expect(
+      renderOpsActionAnswer(
+        executed("product.availability.set", {
+          productId: "prod_1",
+          available: false,
+          productName: "   ",
+        }),
+      ),
+    ).toBe("Pronto — produto marcado como esgotado (86).");
+  });
+
+  it("a non-string productName is ignored by the render (degrade, never throw)", () => {
+    expect(
+      renderOpsActionAnswer(
+        executed("product.price.set", {
+          productId: "prod_1",
+          priceCentavos: 9_500,
+          productName: 123,
+        }),
+      ),
+    ).toBe("Pronto — preço do produto atualizado para R$ 95,00.");
+  });
+});
+
 describe("BKL-149 — safe degradation (a new verb is never a falsehood, only less specific)", () => {
   it("an executed kind with no template renders the safe generic line", () => {
     expect(renderOpsActionAnswer(executed("some.future.verb", { any: 1 }))).toBe(

@@ -3,18 +3,15 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 70,
+    "intentKinds": 62,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
       "guest"
     ],
     "planners": 6,
-    "registeredTools": 18,
-    "unadvertised": [
-      "order.review.submit",
-      "whatsapp.handoff.request"
-    ]
+    "registeredTools": 20,
+    "unadvertised": []
   },
   "nodes": [
     {
@@ -334,8 +331,10 @@
       "type": "intent",
       "label": "order.amend.add_item",
       "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
+        "advertisedContexts": [
+          "authed-customer"
+        ],
+        "chatDrivable": true,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -355,28 +354,6 @@
       "id": "intent:order.amend.remove_item",
       "type": "intent",
       "label": "order.amend.remove_item",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-orders",
-        "domain": "order",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:order.amend.request",
-      "type": "intent",
-      "label": "order.amend.request",
       "meta": {
         "advertisedContexts": [
           "authed-customer"
@@ -398,12 +375,36 @@
       }
     },
     {
+      "id": "intent:order.amend.request",
+      "type": "intent",
+      "label": "order.amend.request",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
+        "composedPack": "ibatexas/pack-orders",
+        "domain": "order",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
       "id": "intent:order.amend.update_qty",
       "type": "intent",
       "label": "order.amend.update_qty",
       "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
+        "advertisedContexts": [
+          "authed-customer"
+        ],
+        "chatDrivable": true,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -428,28 +429,6 @@
           "authed-customer"
         ],
         "chatDrivable": true,
-        "composedPack": "ibatexas/pack-orders",
-        "domain": "order",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:order.cancel.system",
-      "type": "intent",
-      "label": "order.cancel.system",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -546,6 +525,28 @@
           "guest"
         ],
         "chatDrivable": true,
+        "composedPack": "ibatexas/pack-orders",
+        "domain": "order",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
+      "id": "intent:order.fiscal.emit",
+      "type": "intent",
+      "label": "order.fiscal.emit",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -731,13 +732,13 @@
       "type": "intent",
       "label": "order.review.submit",
       "meta": {
-        "advertisedContexts": [],
+        "advertisedContexts": [
+          "authed-customer"
+        ],
         "chatDrivable": true,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
-        "flags": [
-          "unadvertised"
-        ],
+        "flags": [],
         "knownKind": true,
         "plausibleDecisions": [
           "EXECUTE",
@@ -820,116 +821,6 @@
       "id": "intent:payment.cash.confirm",
       "type": "intent",
       "label": "payment.cash.confirm",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.cancel",
-      "type": "intent",
-      "label": "payment.charge.cancel",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.confirm",
-      "type": "intent",
-      "label": "payment.charge.confirm",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.create",
-      "type": "intent",
-      "label": "payment.charge.create",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.expire",
-      "type": "intent",
-      "label": "payment.charge.expire",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-payments",
-        "domain": "payment",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:payment.charge.fail",
-      "type": "intent",
-      "label": "payment.charge.fail",
       "meta": {
         "advertisedContexts": [],
         "chatDrivable": false,
@@ -1466,28 +1357,6 @@
       }
     },
     {
-      "id": "intent:reservation.waitlist.notify",
-      "type": "intent",
-      "label": "reservation.waitlist.notify",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-reservations",
-        "domain": "reservation",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
       "id": "intent:schedule.override.set",
       "type": "intent",
       "label": "schedule.override.set",
@@ -1514,32 +1383,11 @@
       "type": "intent",
       "label": "whatsapp.handoff.request",
       "meta": {
-        "advertisedContexts": [],
+        "advertisedContexts": [
+          "authed-customer",
+          "guest"
+        ],
         "chatDrivable": true,
-        "composedPack": "ibatexas/pack-whatsapp",
-        "domain": "whatsapp",
-        "flags": [
-          "unadvertised"
-        ],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:whatsapp.message.send",
-      "type": "intent",
-      "label": "whatsapp.message.send",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
         "composedPack": "ibatexas/pack-whatsapp",
         "domain": "whatsapp",
         "flags": [],
@@ -1559,28 +1407,6 @@
       "id": "intent:whatsapp.session.handover",
       "type": "intent",
       "label": "whatsapp.session.handover",
-      "meta": {
-        "advertisedContexts": [],
-        "chatDrivable": false,
-        "composedPack": "ibatexas/pack-whatsapp",
-        "domain": "whatsapp",
-        "flags": [],
-        "knownKind": true,
-        "plausibleDecisions": [
-          "EXECUTE",
-          "REFUSE",
-          "ESCALATE",
-          "REQUEST_CONFIRMATION",
-          "DEFER",
-          "REWRITE"
-        ],
-        "staffRoute": false
-      }
-    },
-    {
-      "id": "intent:whatsapp.template.send",
-      "type": "intent",
-      "label": "whatsapp.template.send",
       "meta": {
         "advertisedContexts": [],
         "chatDrivable": false,
@@ -1634,7 +1460,7 @@
       "type": "pack",
       "label": "ibatexas/pack-payments",
       "meta": {
-        "intentCount": 17,
+        "intentCount": 12,
         "policyDefault": "REFUSE",
         "version": "1.0.0"
       }
@@ -1644,7 +1470,7 @@
       "type": "pack",
       "label": "ibatexas/pack-reservations",
       "meta": {
-        "intentCount": 8,
+        "intentCount": 7,
         "policyDefault": "REFUSE",
         "version": "1.0.0"
       }
@@ -1654,7 +1480,7 @@
       "type": "pack",
       "label": "ibatexas/pack-whatsapp",
       "meta": {
-        "intentCount": 5,
+        "intentCount": 3,
         "policyDefault": "REFUSE",
         "version": "1.1.0"
       }
@@ -1689,7 +1515,7 @@
       "label": "ibatexas/pack-orders capability planner",
       "meta": {
         "advertisedCounts": {
-          "authed-customer": 9,
+          "authed-customer": 12,
           "guest": 5
         },
         "pack": "ibatexas/pack-orders"
@@ -1725,8 +1551,8 @@
       "label": "ibatexas/pack-whatsapp capability planner",
       "meta": {
         "advertisedCounts": {
-          "authed-customer": 0,
-          "guest": 0
+          "authed-customer": 1,
+          "guest": 1
         },
         "pack": "ibatexas/pack-whatsapp"
       }
@@ -1750,11 +1576,29 @@
       }
     },
     {
-      "id": "tool:order.amend.request",
+      "id": "tool:order.amend.add_item",
       "type": "tool",
-      "label": "order.amend.request",
+      "label": "order.amend.add_item",
       "meta": {
-        "capability": "order.amend.request",
+        "capability": "order.amend.add_item",
+        "surface": "chat"
+      }
+    },
+    {
+      "id": "tool:order.amend.remove_item",
+      "type": "tool",
+      "label": "order.amend.remove_item",
+      "meta": {
+        "capability": "order.amend.remove_item",
+        "surface": "chat"
+      }
+    },
+    {
+      "id": "tool:order.amend.update_qty",
+      "type": "tool",
+      "label": "order.amend.update_qty",
+      "meta": {
+        "capability": "order.amend.update_qty",
         "surface": "chat"
       }
     },
@@ -1917,7 +1761,27 @@
     },
     {
       "from": "planner:ibatexas/pack-orders",
-      "to": "intent:order.amend.request",
+      "to": "intent:order.amend.add_item",
+      "type": "advertises",
+      "meta": {
+        "contexts": [
+          "authed-customer"
+        ]
+      }
+    },
+    {
+      "from": "planner:ibatexas/pack-orders",
+      "to": "intent:order.amend.remove_item",
+      "type": "advertises",
+      "meta": {
+        "contexts": [
+          "authed-customer"
+        ]
+      }
+    },
+    {
+      "from": "planner:ibatexas/pack-orders",
+      "to": "intent:order.amend.update_qty",
       "type": "advertises",
       "meta": {
         "contexts": [
@@ -2011,6 +1875,16 @@
       }
     },
     {
+      "from": "planner:ibatexas/pack-orders",
+      "to": "intent:order.review.submit",
+      "type": "advertises",
+      "meta": {
+        "contexts": [
+          "authed-customer"
+        ]
+      }
+    },
+    {
       "from": "planner:ibatexas/pack-payments",
       "to": "intent:payment.pix.regenerate",
       "type": "advertises",
@@ -2058,6 +1932,17 @@
       "meta": {
         "contexts": [
           "authed-customer"
+        ]
+      }
+    },
+    {
+      "from": "planner:ibatexas/pack-whatsapp",
+      "to": "intent:whatsapp.handoff.request",
+      "type": "advertises",
+      "meta": {
+        "contexts": [
+          "authed-customer",
+          "guest"
         ]
       }
     },
@@ -2163,11 +2048,6 @@
     },
     {
       "from": "pack:ibatexas/pack-orders",
-      "to": "intent:order.cancel.system",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-orders",
       "to": "intent:order.cart.ensure",
       "type": "declares"
     },
@@ -2184,6 +2064,11 @@
     {
       "from": "pack:ibatexas/pack-orders",
       "to": "intent:order.coupon.apply",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-orders",
+      "to": "intent:order.fiscal.emit",
       "type": "declares"
     },
     {
@@ -2244,31 +2129,6 @@
     {
       "from": "pack:ibatexas/pack-payments",
       "to": "intent:payment.cash.confirm",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.cancel",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.confirm",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.create",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.expire",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-payments",
-      "to": "intent:payment.charge.fail",
       "type": "declares"
     },
     {
@@ -2362,11 +2222,6 @@
       "type": "declares"
     },
     {
-      "from": "pack:ibatexas/pack-reservations",
-      "to": "intent:reservation.waitlist.notify",
-      "type": "declares"
-    },
-    {
       "from": "pack:ibatexas/pack-whatsapp",
       "to": "intent:conversation.message.append",
       "type": "declares"
@@ -2378,17 +2233,7 @@
     },
     {
       "from": "pack:ibatexas/pack-whatsapp",
-      "to": "intent:whatsapp.message.send",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-whatsapp",
       "to": "intent:whatsapp.session.handover",
-      "type": "declares"
-    },
-    {
-      "from": "pack:ibatexas/pack-whatsapp",
-      "to": "intent:whatsapp.template.send",
       "type": "declares"
     },
     {
@@ -2432,8 +2277,18 @@
       "type": "registers"
     },
     {
-      "from": "intent:order.amend.request",
-      "to": "tool:order.amend.request",
+      "from": "intent:order.amend.add_item",
+      "to": "tool:order.amend.add_item",
+      "type": "registers"
+    },
+    {
+      "from": "intent:order.amend.remove_item",
+      "to": "tool:order.amend.remove_item",
+      "type": "registers"
+    },
+    {
+      "from": "intent:order.amend.update_qty",
+      "to": "tool:order.amend.update_qty",
       "type": "registers"
     },
     {

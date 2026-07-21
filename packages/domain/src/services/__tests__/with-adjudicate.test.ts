@@ -28,6 +28,7 @@ import {
   refuse,
   type AuditSink,
   type Decision,
+  type IntentEnvelope,
 } from "@adjudicate/core"
 
 // ── Mock the pure kernel so we drive each Decision branch directly ─────────
@@ -47,6 +48,7 @@ import {
   CommandRefusedError,
   type AdjudicatedResult,
 } from "../__shared__/with-adjudicate.js"
+import { STRUCTURAL_REJECTION_CODE } from "../__shared__/envelope-structural-gate.js"
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -297,6 +299,127 @@ describe("withAdjudicate — kernel chokepoint", () => {
       expect(out.decision.kind).toBe("DEFER")
       expect(executor).not.toHaveBeenCalled()
     })
+  })
+})
+
+// ── FE-T04: structural boundary gate ────────────────────────────────────────
+//
+// The command-service chokepoint's twin of the customer-plane gateway's gate
+// (apps/api/src/routes/__shared__/customer-intent-gateway.ts) — same
+// `isStructurallyMalformed` predicate, same `STRUCTURAL_REJECTION_CODE`,
+// reused via `@ibatexas/domain`'s public export. Runs BEFORE `adjudicate()`,
+// so these tests assert the mocked kernel is never even called for a
+// malformed value.
+
+describe("withAdjudicate — structural boundary gate (FE-T04)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("REFUSEs a value that is not envelope-shaped at all, before adjudicate() runs", async () => {
+    const executor = vi.fn().mockResolvedValue("should-not-run")
+    const sink = makeSink()
+
+    const out = await withAdjudicate(
+      { totally: "not an envelope" } as unknown as IntentEnvelope<string, unknown>,
+      dummyState,
+      dummyPolicy,
+      executor,
+      { auditSink: sink },
+    )
+
+    expect(out.decision.kind).toBe("REFUSE")
+    expect(out.decision.kind === "REFUSE" && out.decision.refusal.code).toBe(
+      STRUCTURAL_REJECTION_CODE,
+    )
+    expect(mockAdjudicate).not.toHaveBeenCalled()
+    expect(executor).not.toHaveBeenCalled()
+    expect(out.result).toBeUndefined()
+  })
+
+  it("REFUSEs a well-formed envelope missing a required field (nonce)", async () => {
+    const wellFormed = makeEnvelope(1)
+    const { nonce: _dropped, ...missingNonce } =
+      wellFormed as unknown as Record<string, unknown>
+    const executor = vi.fn()
+
+    const out = await withAdjudicate(
+      missingNonce as unknown as IntentEnvelope<string, unknown>,
+      dummyState,
+      dummyPolicy,
+      executor,
+    )
+
+    expect(out.decision.kind).toBe("REFUSE")
+    expect(mockAdjudicate).not.toHaveBeenCalled()
+    expect(executor).not.toHaveBeenCalled()
+  })
+
+  it("REFUSEs an envelope carrying an extra, undeclared key", async () => {
+    const withExtraKey = { ...makeEnvelope(1), notPartOfTheSchema: "sneaky" }
+    const executor = vi.fn()
+
+    const out = await withAdjudicate(
+      withExtraKey as unknown as IntentEnvelope<string, unknown>,
+      dummyState,
+      dummyPolicy,
+      executor,
+    )
+
+    expect(out.decision.kind).toBe("REFUSE")
+    expect(mockAdjudicate).not.toHaveBeenCalled()
+    expect(executor).not.toHaveBeenCalled()
+  })
+
+  it("records a tamper-evident SYSTEM-actor audit record for the structural rejection", async () => {
+    const sink = makeSink()
+
+    await withAdjudicate(
+      { nope: true } as unknown as IntentEnvelope<string, unknown>,
+      dummyState,
+      dummyPolicy,
+      vi.fn(),
+      { auditSink: sink },
+    )
+
+    expect(sink.emit).toHaveBeenCalledTimes(1)
+    const record = sink.emit.mock.calls[0]![0]
+    const blob = JSON.stringify(record)
+    expect(blob).toContain(STRUCTURAL_REJECTION_CODE)
+    expect(blob).toContain("system")
+    expect(blob).toContain("structural_rejected")
+  })
+
+  it("a rejecting sink does not throw — logged, decision still returned", async () => {
+    const log = makeLog()
+    const sink = { emit: vi.fn().mockRejectedValue(new Error("sink down")) } as never
+
+    const out = await withAdjudicate(
+      { nope: true } as unknown as IntentEnvelope<string, unknown>,
+      dummyState,
+      dummyPolicy,
+      vi.fn(),
+      { auditSink: sink, log },
+    )
+
+    expect(out.decision.kind).toBe("REFUSE")
+    await new Promise((r) => setImmediate(r))
+    expect(log.error).toHaveBeenCalledTimes(1)
+    expect(String(log.error.mock.calls[0]![0])).toContain(
+      "structural-rejection audit emit failed",
+    )
+  })
+
+  it("does NOT affect a well-formed envelope — falls through to adjudicate() unchanged (byte-identical positive control)", async () => {
+    mockAdjudicate.mockReturnValue(decisionExecute([]))
+    const executor = vi.fn().mockResolvedValue("ok")
+
+    const out = await withAdjudicate(makeEnvelope(5), dummyState, dummyPolicy, executor)
+
+    expect(mockAdjudicate).toHaveBeenCalledTimes(1)
+    expect(out.decision.kind).toBe("EXECUTE")
+    expect(out.result).toBe("ok")
+    expect(executor).toHaveBeenCalledWith({ value: 5 })
   })
 })
 

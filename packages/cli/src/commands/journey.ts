@@ -18,7 +18,7 @@
 // exclui packages/cli). Import dinâmico para não pesar o startup do ibx.
 
 import { existsSync, realpathSync } from "node:fs"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Command } from "commander"
@@ -331,6 +331,395 @@ async function runJourneyCoverage(opts: {
 
   // ── Saída limpa ─────────────────────────────────────────────────────────
   reportCoverageClean(report, totalsLine, opts.json === true, deps)
+}
+
+// ── `ibx journey extraction-accuracy` (T07, FE-2.3/FE-2.4) ─────────────────
+// THIN registration: all composition lives in `@ibatexas/journeys`
+// (`src/extraction/accuracy-cli.ts` drives the live run;
+// `src/extraction/accuracy.ts` scores it + owns the baseline/waiver gate —
+// the coverage command's EXACT --json/--verify-file/--waivers/--out idiom,
+// re-keyed to extraction CASES (`capability:caseId`) instead of coverage
+// CELLS. Quarantine reuses `ibx journey flake --ledger <path>
+// --list-quarantined` unchanged — see accuracy.ts's header, no new ledger.
+
+type AccuracyCliResult = Awaited<ReturnType<JourneysModule["runExtractionAccuracyCli"]>>
+type AccuracyReport = AccuracyCliResult["report"]
+type AccuracyVerifyResult = ReturnType<JourneysModule["verifyAccuracyBaseline"]>
+
+function formatAccuracyTotalsLine(report: AccuracyReport): string {
+  if (report.byCapability.length === 0) return "0 casos rodados"
+  return report.byCapability
+    .map((c) => `${c.capability}: ${c.passing}/${c.total} (${(c.ratio * 100).toFixed(1)}%)`)
+    .join(", ")
+}
+
+function reportAccuracyProblems(report: AccuracyReport, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
+  for (const p of report.problems) {
+    console.error(chalk.red(`✗ ${p.file}: ${p.code} — ${p.message}`))
+  }
+}
+
+async function writeAccuracyViews(
+  report: AccuracyReport,
+  outDir: string,
+  json: boolean,
+): Promise<void> {
+  await mkdir(outDir, { recursive: true })
+  await writeFile(
+    join(outDir, "accuracy-report.json"),
+    `${JSON.stringify(report, null, 2)}\n`,
+  )
+  await writeFile(
+    join(outDir, "accuracy-summary.json"),
+    `${JSON.stringify(report.byCapability, null, 2)}\n`,
+  )
+  if (!json) {
+    console.log(
+      chalk.dim(`views gravadas em ${outDir}/accuracy-report.json + accuracy-summary.json`),
+    )
+  }
+}
+
+function renderAccuracyVerifyHuman(
+  result: AccuracyVerifyResult,
+  totalsLine: string,
+  verifyFile: string,
+): void {
+  for (const r of result.regressions) {
+    console.error(chalk.red(`✗ regressão: ${r.case} estava passing na baseline, agora ${r.state}`))
+  }
+  for (const key of result.quarantinedClaims) {
+    console.warn(chalk.yellow(`⚠ ${key} passing na baseline, agora waived-quarantined (flake ledger)`))
+  }
+  for (const key of result.waivedClaims) {
+    console.warn(chalk.yellow(`⚠ ${key} passing na baseline, agora coberto por waiver`))
+  }
+  if (result.newlyPassing.length > 0) {
+    console.log(
+      chalk.dim(
+        `${result.newlyPassing.length} caso(s) passing ainda fora da baseline — atualize ${verifyFile} para reivindicá-los.`,
+      ),
+    )
+  }
+  if (result.ok) {
+    console.log(chalk.green(`✓ Sem regressão de acurácia. ${totalsLine}`))
+  } else {
+    console.error(chalk.red(`${result.regressions.length} regressão(ões) de acurácia. ${totalsLine}`))
+  }
+}
+
+async function verifyAccuracyCli(
+  report: AccuracyReport,
+  verifyFile: string,
+  totalsLine: string,
+  json: boolean,
+  deps: JourneysModule,
+): Promise<void> {
+  const verifyPath = resolveUserPath(verifyFile)
+  let baselineRaw: unknown
+  try {
+    baselineRaw = JSON.parse(await readFile(verifyPath, "utf-8"))
+  } catch {
+    console.error(chalk.red(`Baseline ilegível: ${verifyPath}`))
+    process.exitCode = 1
+    return
+  }
+  const baselineParsed = deps.AccuracyBaselineSchema.safeParse(baselineRaw)
+  if (!baselineParsed.success) {
+    console.error(chalk.red(`Baseline inválida (${verifyFile}): esperado {"passing": [...]}`))
+    process.exitCode = 1
+    return
+  }
+  const result = deps.verifyAccuracyBaseline(report, baselineParsed.data)
+
+  if (json) {
+    console.log(JSON.stringify({ ...report, verify: { file: verifyFile, ...result } }, null, 2))
+  } else {
+    renderAccuracyVerifyHuman(result, totalsLine, verifyFile)
+  }
+  if (!result.ok) process.exitCode = 1
+}
+
+function reportAccuracyClean(report: AccuracyReport, totalsLine: string, json: boolean, deps: JourneysModule): void {
+  if (json) {
+    console.log(JSON.stringify(report, null, 2))
+    return
+  }
+  console.log(chalk.green(`✓ ${totalsLine}`))
+  if (report.dormantWaivers.length > 0) {
+    console.log(
+      chalk.dim(
+        `waivers dormentes (capability/caseId fora do corpus atual): ${report.dormantWaivers
+          .map((w) => `${w.capability}${w.caseId ? `:${w.caseId}` : ""}`)
+          .join(", ")}`,
+      ),
+    )
+  }
+  console.log()
+  console.log(
+    chalk.dim("baseline (packages/journeys/governance/extraction-accuracy-baseline.json):"),
+  )
+  console.log(JSON.stringify(deps.accuracyBaseline(report), null, 2))
+}
+
+async function runJourneyExtractionAccuracy(opts: {
+  json?: boolean
+  verifyFile?: string
+  corpusDir?: string
+  apiBaseUrl?: string
+  envFile?: string
+  waivers?: string
+  out?: string
+  quarantined?: string
+  customerIndex?: string
+  resetCustomerTokenBudget?: boolean
+}): Promise<void> {
+  const deps = await import("@ibatexas/journeys")
+  const { runExtractionAccuracyCli, ExtractionAccuracyCliError } = deps
+
+  const onProgress = (line: string): void => {
+    if (opts.json === true) process.stderr.write(`${line}\n`)
+    else console.log(chalk.dim(line))
+  }
+
+  try {
+    const { report } = await runExtractionAccuracyCli({
+      ...(opts.corpusDir === undefined ? {} : { corpusDir: resolveUserPath(opts.corpusDir) }),
+      ...(opts.apiBaseUrl === undefined ? {} : { apiBaseUrl: opts.apiBaseUrl }),
+      ...(opts.envFile === undefined
+        ? { envFile: resolveUserPath(join(MONOREPO_ROOT, ".env.test")) }
+        : { envFile: resolveUserPath(opts.envFile) }),
+      ...(opts.waivers === undefined ? {} : { waiversPath: resolveUserPath(opts.waivers) }),
+      ...(opts.quarantined === undefined ? {} : { quarantined: parseIdList(opts.quarantined) }),
+      ...(opts.customerIndex === undefined
+        ? {}
+        : { customerIndex: Number.parseInt(opts.customerIndex, 10) }),
+      ...(opts.resetCustomerTokenBudget === undefined
+        ? {}
+        : { resetCustomerTokenBudget: opts.resetCustomerTokenBudget }),
+      onProgress,
+    })
+
+    if (!report.ok) {
+      reportAccuracyProblems(report, opts.json === true)
+      process.exitCode = 1
+      return
+    }
+
+    if (opts.out !== undefined) {
+      await writeAccuracyViews(report, resolveUserPath(opts.out), opts.json === true)
+    }
+
+    const totalsLine = formatAccuracyTotalsLine(report)
+
+    if (opts.verifyFile !== undefined) {
+      await verifyAccuracyCli(report, opts.verifyFile, totalsLine, opts.json === true, deps)
+      return
+    }
+
+    reportAccuracyClean(report, totalsLine, opts.json === true, deps)
+  } catch (err) {
+    if (err instanceof ExtractionAccuracyCliError) {
+      console.error(chalk.red(err.message))
+      process.exitCode = 1
+      return
+    }
+    throw err
+  }
+}
+
+// ── `ibx journey extraction-consistency` (FE-T08) ───────────────────────────
+// THIN registration: the CERTIFYING, per-commit, MODEL-FREE extraction gate
+// (contrast `extraction-accuracy`, which drives the LIVE model — this command
+// NEVER does). All pure logic lives in @ibatexas/journeys
+// (src/extraction/static-gate.ts); this command's only job is the
+// cross-package file I/O the check-bypass sanctioned exception (leg 6)
+// exists for: reading the apps/api golden-fragment file(s) the committed
+// schema-binding references, and the corpus/baseline/waivers files.
+//
+// Four checks, all offline (no network beyond what pnpm install already did):
+//   1. the corpus loads and schema-validates (loadExtractionCorpus, same
+//      loader `ibx journey extraction-accuracy` uses for a live run).
+//   2. the waivers file loads and schema-validates (computeAccuracyReport's
+//      own loader, driven with zero results so ONLY waivers-file problems
+//      can surface).
+//   3. every case the baseline claims `passing` still exists in the corpus
+//      (checkBaselineAgainstCorpus) — catches a corpus rename/removal that
+//      forgot to update the baseline.
+//   4. the committed schema-binding's recorded hash of each golden
+//      extraction-prompt fragment still matches that file's CURRENT bytes
+//      (checkSchemaBinding) — catches an extraction-schema/persona change
+//      whose golden fixture was correctly regenerated (so FE-T06's OWN
+//      golden gate is green) but whose accuracy impact was never reviewed.
+//
+// `--update-binding` recomputes the binding's hashes from the CURRENT golden
+// fragment bytes and writes them back — the acknowledgment step an author
+// runs (after reviewing `ibx journey extraction-accuracy`'s impact) once a
+// schema change is intentional.
+
+interface ExtractionConsistencyFlags {
+  json?: boolean
+  updateBinding?: boolean
+  corpusDir?: string
+  baseline?: string
+  waivers?: string
+  binding?: string
+}
+
+const DEFAULT_BASELINE_PATH = "packages/journeys/governance/extraction-accuracy-baseline.json"
+const DEFAULT_BINDING_PATH = "packages/journeys/governance/extraction-schema-binding.json"
+
+async function runJourneyExtractionConsistency(opts: ExtractionConsistencyFlags): Promise<void> {
+  const deps = await import("@ibatexas/journeys")
+  const {
+    loadExtractionCorpus,
+    computeAccuracyReport,
+    AccuracyBaselineSchema,
+    checkBaselineAgainstCorpus,
+    ExtractionSchemaBindingSchema,
+    checkSchemaBinding,
+    checkSchemaBindingCompleteness,
+    recomputeSchemaBinding,
+  } = deps
+
+  const corpusDirOpt = opts.corpusDir === undefined ? undefined : resolveUserPath(opts.corpusDir)
+  const baselinePath = resolveUserPath(opts.baseline ?? DEFAULT_BASELINE_PATH)
+  const waiversPath = opts.waivers === undefined ? undefined : resolveUserPath(opts.waivers)
+  const bindingPath = resolveUserPath(opts.binding ?? DEFAULT_BINDING_PATH)
+
+  const problems: string[] = []
+
+  // 1. Corpus loads + schema-validates.
+  let corpus: Awaited<ReturnType<typeof loadExtractionCorpus>> | undefined
+  try {
+    corpus = await loadExtractionCorpus(corpusDirOpt)
+  } catch (err) {
+    problems.push(`corpus: ${(err as Error).message}`)
+  }
+
+  // 2. Waivers load + schema-validate (zero results isolates JUST the waivers check).
+  const waiverReport = await computeAccuracyReport({
+    results: [],
+    ...(waiversPath === undefined ? {} : { waiversPath }),
+  })
+  for (const p of waiverReport.problems) problems.push(`waivers: ${p.code} — ${p.message}`)
+
+  // 3. Baseline loads + schema-validates + is consistent with the corpus.
+  let baseline: import("@ibatexas/journeys").AccuracyBaseline | undefined
+  try {
+    const raw: unknown = JSON.parse(await readFile(baselinePath, "utf-8"))
+    const parsed = AccuracyBaselineSchema.safeParse(raw)
+    if (!parsed.success) {
+      problems.push(`baseline: invalid shape (${baselinePath})`)
+    } else {
+      baseline = parsed.data
+    }
+  } catch (err) {
+    problems.push(`baseline: unreadable (${baselinePath}): ${(err as Error).message}`)
+  }
+  if (baseline !== undefined && corpus !== undefined) {
+    const consistency = checkBaselineAgainstCorpus(baseline, corpus)
+    for (const key of consistency.orphanedBaselineClaims) {
+      problems.push(
+        `baseline: orphaned claim "${key}" — no matching case in the committed corpus (renamed/removed/typo?)`,
+      )
+    }
+  }
+
+  // 4. Schema binding: load + schema-validate + hash-compare against the CURRENT golden fragment bytes.
+  let binding: import("@ibatexas/journeys").ExtractionSchemaBinding | undefined
+  try {
+    const raw: unknown = JSON.parse(await readFile(bindingPath, "utf-8"))
+    const parsed = ExtractionSchemaBindingSchema.safeParse(raw)
+    if (!parsed.success) {
+      problems.push(`schema-binding: invalid shape (${bindingPath})`)
+    } else {
+      binding = parsed.data
+    }
+  } catch (err) {
+    problems.push(`schema-binding: unreadable (${bindingPath}): ${(err as Error).message}`)
+  }
+
+  if (binding !== undefined) {
+    const goldenFragmentContents = new Map<string, string>()
+    for (const entry of binding.bindings) {
+      try {
+        goldenFragmentContents.set(
+          entry.goldenFragmentPath,
+          await readFile(resolveUserPath(entry.goldenFragmentPath), "utf-8"),
+        )
+      } catch {
+        problems.push(`schema-binding: golden fragment file missing: ${entry.goldenFragmentPath}`)
+      }
+    }
+
+    // Completeness (review MINOR, #266): checkSchemaBinding above only
+    // verifies entries ALREADY in the binding file — a brand-new
+    // capability's golden fragment, never bound at all, has nothing to
+    // drift FROM and would otherwise silently escape the acknowledgment
+    // layer entirely. Scan the director(y/ies) the EXISTING binding
+    // entries live in (no new hardcoded path to drift from the actual
+    // layout) for every *.json fragment, and require each one to have an
+    // entry.
+    const goldenDirs = new Set(binding.bindings.map((entry) => dirname(entry.goldenFragmentPath)))
+    const committedGoldenFragmentPaths: string[] = []
+    for (const dir of goldenDirs) {
+      try {
+        const names = await readdir(resolveUserPath(dir))
+        for (const name of names) {
+          if (name.endsWith(".json")) committedGoldenFragmentPaths.push(join(dir, name))
+        }
+      } catch (err) {
+        problems.push(`schema-binding: golden fragment directory unreadable (${dir}): ${(err as Error).message}`)
+      }
+    }
+    const completeness = checkSchemaBindingCompleteness(binding, committedGoldenFragmentPaths)
+    for (const path of completeness.unboundGoldenFragments) {
+      problems.push(
+        `schema-binding: UNBOUND golden fragment "${path}" — no binding entry exists for it at all ` +
+          "(a new capability's schema escaped the acknowledgment layer). Add an entry to " +
+          `${bindingPath} (capability, goldenFragmentPath, goldenFragmentSha256), then re-run ` +
+          "`ibx journey extraction-consistency --update-binding`.",
+      )
+    }
+
+    if (opts.updateBinding === true) {
+      const fresh = recomputeSchemaBinding(binding, goldenFragmentContents)
+      await writeFile(bindingPath, `${JSON.stringify(fresh, null, 2)}\n`)
+      console.log(chalk.green(`✓ schema-binding updated: ${bindingPath}`))
+      for (const p of problems) console.error(chalk.yellow(`⚠ (unrelated, still present) ${p}`))
+      if (problems.length > 0) process.exitCode = 1
+      return
+    }
+
+    const bindingCheck = checkSchemaBinding(binding, goldenFragmentContents)
+    for (const drift of bindingCheck.drift) {
+      problems.push(
+        `schema-binding: DRIFT for "${drift.capability}" (${drift.goldenFragmentPath}) — expected ` +
+          `${drift.expectedSha256.slice(0, 12)}…, actual ${drift.actualSha256.slice(0, 12)}… — the ` +
+          "extraction schema/persona changed since the corpus/baseline was last reviewed for accuracy " +
+          "impact. Re-run `ibx journey extraction-accuracy`, review the impact, then re-commit the " +
+          "binding: `ibx journey extraction-consistency --update-binding`.",
+      )
+    }
+  }
+
+  if (opts.json === true) {
+    console.log(JSON.stringify({ ok: problems.length === 0, problems }, null, 2))
+  } else if (problems.length === 0) {
+    console.log(
+      chalk.green(
+        "✓ extraction-consistency: corpus/baseline/waivers/schema-binding all consistent (no live model needed).",
+      ),
+    )
+  } else {
+    for (const p of problems) console.error(chalk.red(`✗ ${p}`))
+  }
+  if (problems.length > 0) process.exitCode = 1
 }
 
 // ── `ibx journey migrate` (T1b-5) ───────────────────────────────────────────
@@ -968,4 +1357,93 @@ export function registerJourneyCommands(group: Command): void {
         await runJourneyCoverage(opts)
       },
     )
+
+  group
+    .command("extraction-accuracy")
+    .description(
+      "Meter de acurácia de extração (FE-2.3/FE-2.4, FE-T07): roda o corpus de extração (packages/journeys/extraction-corpus/*.yaml) contra o modelo AO VIVO via o canal ops-chat, materializa ExtractionIR/HydratedIntentIR via o audit-reader oracle, e reporta acurácia por capability. --verify-file falha (exit 1) em regressão passing→not-passing contra a baseline; waivers em packages/journeys/governance/extraction-accuracy-waivers.json; quarentena via `ibx journey flake --ledger <path> --list-quarantined` (mesma máquina do flake ledger, arquivo distinto).",
+    )
+    .option("--json", "Emite o relatório de acurácia em JSON")
+    .option(
+      "--verify-file <path>",
+      "Compara os casos passing contra a baseline commitada (CI gate; exit 1 em regressão)",
+    )
+    .option(
+      "--corpus-dir <path>",
+      "Diretório alternativo do corpus de extração (default: packages/journeys/extraction-corpus/)",
+    )
+    .option(
+      "--api-base-url <url>",
+      "Base da API AO VIVO a driblar (default: IBX_TEST_API_URL ou http://localhost:3001)",
+    )
+    .option(
+      "--env-file <path>",
+      "Arquivo .env do stack de teste (default: <repo>/.env.test; shell env tem precedência)",
+    )
+    .option(
+      "--waivers <path>",
+      "Arquivo de waivers alternativo (default: packages/journeys/governance/extraction-accuracy-waivers.json)",
+    )
+    .option(
+      "--out <dir>",
+      "Grava as duas views (accuracy-report.json + accuracy-summary.json) no diretório",
+    )
+    .option(
+      "--quarantined <ids>",
+      "Case keys (<capability>:<caseId>) em quarentena, separados por vírgula (seam — o flake ledger é a fonte autoritativa)",
+    )
+    .option(
+      "--customer-index <n>",
+      "Índice em ACCURACY_RUN_CUSTOMER_PHONES (0-9, default 0) — a identidade seeded que o lado customer-plane autentica. Pool existe porque o F4 token-budget guard mede por customerId, não sessionId: uma corrida longa (ou várias tickets) contra o MESMO índice acumula no mesmo contador e eventualmente REFUSE com token_budget.exhausted (ver accuracy-runner.ts).",
+    )
+    .option(
+      "--reset-customer-token-budget",
+      "Opt-in: limpa o contador de token-budget da identidade customer-plane resolvida ANTES desta corrida (uma vez, nunca no meio de um pass). Isolamento de estado do harness no Redis do stack efêmero — o guard/threshold/código de produção ficam intocados (ver accuracy-cli.ts).",
+    )
+    .action(
+      async (opts: {
+        json?: boolean
+        verifyFile?: string
+        corpusDir?: string
+        apiBaseUrl?: string
+        envFile?: string
+        waivers?: string
+        out?: string
+        quarantined?: string
+        customerIndex?: string
+        resetCustomerTokenBudget?: boolean
+      }) => {
+        await runJourneyExtractionAccuracy(opts)
+      },
+    )
+
+  group
+    .command("extraction-consistency")
+    .description(
+      "Gate CERTIFICANTE, por-commit, SEM MODELO (FE-T08): valida offline que o corpus de extração carrega, os waivers são válidos, a baseline não reivindica nenhum caso órfão (renomeado/removido do corpus), e o schema-binding (hash do golden fragment do FE-T06) ainda bate com os bytes atuais — sem isso, uma mudança de schema regenerada corretamente no golden gate passaria silenciosamente sem revisão de impacto na acurácia. --update-binding recomputa o hash e regrava o binding (rode após revisar `ibx journey extraction-accuracy`).",
+    )
+    .option("--json", "Emite o relatório em JSON")
+    .option(
+      "--update-binding",
+      "Recomputa o hash do schema-binding a partir dos golden fragments atuais e regrava o arquivo",
+    )
+    .option(
+      "--corpus-dir <path>",
+      "Diretório alternativo do corpus de extração (default: packages/journeys/extraction-corpus/)",
+    )
+    .option(
+      "--baseline <path>",
+      "Arquivo de baseline alternativo (default: packages/journeys/governance/extraction-accuracy-baseline.json)",
+    )
+    .option(
+      "--waivers <path>",
+      "Arquivo de waivers alternativo (default: packages/journeys/governance/extraction-accuracy-waivers.json)",
+    )
+    .option(
+      "--binding <path>",
+      "Arquivo de schema-binding alternativo (default: packages/journeys/governance/extraction-schema-binding.json)",
+    )
+    .action(async (opts: ExtractionConsistencyFlags) => {
+      await runJourneyExtractionConsistency(opts)
+    })
 }

@@ -4,10 +4,10 @@
   "digests": {
     "ibatexas/pack-customer-onboarding": "399a5988b5d8a0f4aabc6b01c043e62ac58314cee9bcbdfbff6af77aa301b8e6",
     "ibatexas/pack-ops": "f995702bcc1e4711902b4366a719935dd9f9e834852060e52a136101e3d6ed49",
-    "ibatexas/pack-orders": "fcdee1eeb81d3ec12b27d032b87afe442d962d228de700ba30cfb3e90f86c362",
-    "ibatexas/pack-payments": "9c3b80526ebb75af3b672c95c56e9ca68ba4720af481035ce9166f71b824860c",
-    "ibatexas/pack-reservations": "0b2b76bab6de0295cbfedfa5e23a16ccf8d9a75728b5f6d85bb71f90671e59dd",
-    "ibatexas/pack-whatsapp": "ee4620f0643462d9c6bf7e00b1cada0ca44cf924f33758d8769c302499a2c06f",
+    "ibatexas/pack-orders": "e1ed85aedc912337b36d5cdd0425f49a97288f9230d61fea8d8c233f293e2502",
+    "ibatexas/pack-payments": "917b545580f6e137fdc4cd0892d7d77d3c7e77df2ef692d9e94e37463c21c548",
+    "ibatexas/pack-reservations": "ec48324c57fb12dcd3609af5e7a2c1aa9b66cccb9bf4523a8d14e9e5451699dc",
+    "ibatexas/pack-whatsapp": "be8c54fb48320129da5f91fe1d869511b183d7ab2a2b47136136bee178aad262",
     "pack-payments-pix": "75f161563b3672a05145ffe3e41e0a9b3890233a572370fdbf5d911bc7c9e5fa"
   },
   "seals": [
@@ -24,22 +24,22 @@
     {
       "packId": "ibatexas/pack-orders",
       "packVersion": "1.1.0",
-      "digest": "fcdee1eeb81d3ec12b27d032b87afe442d962d228de700ba30cfb3e90f86c362"
+      "digest": "e1ed85aedc912337b36d5cdd0425f49a97288f9230d61fea8d8c233f293e2502"
     },
     {
       "packId": "ibatexas/pack-payments",
       "packVersion": "1.0.0",
-      "digest": "9c3b80526ebb75af3b672c95c56e9ca68ba4720af481035ce9166f71b824860c"
+      "digest": "917b545580f6e137fdc4cd0892d7d77d3c7e77df2ef692d9e94e37463c21c548"
     },
     {
       "packId": "ibatexas/pack-reservations",
       "packVersion": "1.0.0",
-      "digest": "0b2b76bab6de0295cbfedfa5e23a16ccf8d9a75728b5f6d85bb71f90671e59dd"
+      "digest": "ec48324c57fb12dcd3609af5e7a2c1aa9b66cccb9bf4523a8d14e9e5451699dc"
     },
     {
       "packId": "ibatexas/pack-whatsapp",
       "packVersion": "1.1.0",
-      "digest": "ee4620f0643462d9c6bf7e00b1cada0ca44cf924f33758d8769c302499a2c06f"
+      "digest": "be8c54fb48320129da5f91fe1d869511b183d7ab2a2b47136136bee178aad262"
     },
     {
       "packId": "pack-payments-pix",

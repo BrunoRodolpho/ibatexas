@@ -9,38 +9,67 @@ type RedisClientType = ReturnType<typeof createClient>
 let redis: RedisClientType | null = null
 let connectingPromise: Promise<RedisClientType> | null = null
 
+// Read a non-negative integer knob from the environment (Hard Rule #3 — never
+// hardcode; all timeouts/attempts are env-configurable). Falls back on a
+// missing/blank/non-finite/negative value.
+function readIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined || raw === "") return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : fallback
+}
+
 export async function getRedisClient(): Promise<RedisClientType> {
   if (redis?.isOpen) return redis
   if (connectingPromise) return connectingPromise
 
-  connectingPromise = (async () => {
+  const attempt = (async () => {
     const redisUrl = process.env.REDIS_URL
     if (!redisUrl) {
-      connectingPromise = null
       throw new Error("REDIS_URL env var required")
     }
     // Connect timeout + bounded reconnect so a Redis stall fails fast instead of
     // hanging callers indefinitely. All knobs are env-configurable (Hard Rule #3).
-    const connectTimeout = process.env.REDIS_CONNECT_TIMEOUT_MS
-      ? Number(process.env.REDIS_CONNECT_TIMEOUT_MS)
-      : 5_000
-    const maxReconnectAttempts = process.env.REDIS_MAX_RECONNECT_ATTEMPTS
-      ? Number(process.env.REDIS_MAX_RECONNECT_ATTEMPTS)
-      : 10
-    const maxReconnectDelay = process.env.REDIS_RECONNECT_MAX_DELAY_MS
-      ? Number(process.env.REDIS_RECONNECT_MAX_DELAY_MS)
-      : 3_000
+    const connectTimeout = readIntEnv("REDIS_CONNECT_TIMEOUT_MS", 5_000)
+    const maxReconnectAttempts = readIntEnv("REDIS_MAX_RECONNECT_ATTEMPTS", 10)
+    // Floor at 1ms: readIntEnv accepts 0, but a 0 base collapses both the backoff
+    // (base * 2**retries) and the jitter (random * base) to 0 — turning the
+    // reconnect strategy into a zero-delay busy-loop that hammers a downed Redis
+    // every tick. The clamp keeps the backoff strictly positive.
+    const baseReconnectDelay = Math.max(
+      1,
+      readIntEnv("REDIS_RECONNECT_BASE_DELAY_MS", 100),
+    )
+    const maxReconnectDelay = readIntEnv("REDIS_RECONNECT_MAX_DELAY_MS", 3_000)
+
     const client = createClient({
       url: redisUrl,
       socket: {
         connectTimeout,
-        // Bounded backoff: linear up to maxReconnectDelay; give up after
-        // maxReconnectAttempts so callers get a connection error rather than a hang.
+        // Bounded exponential backoff, capped + jittered. After maxReconnectAttempts
+        // node-redis stops reconnecting so a single caller never hangs; the NEXT
+        // getRedisClient() then starts a fresh connection cycle (boundary-level
+        // auto-reconnect below), so a transient Redis outage self-heals without a
+        // process restart (FE-D20). While disconnected, commands reject and callers
+        // keep failing closed exactly as before — reconnect only restores service.
         reconnectStrategy: (retries: number) => {
           if (retries >= maxReconnectAttempts) {
             return new Error("Redis: max reconnect attempts exceeded")
           }
-          return Math.min((retries + 1) * 200, maxReconnectDelay)
+          const backoff = Math.min(
+            baseReconnectDelay * 2 ** retries,
+            maxReconnectDelay,
+          )
+          const jitter = Math.floor(Math.random() * baseReconnectDelay)
+          const delay = Math.min(backoff + jitter, maxReconnectDelay)
+          // Structured, ops-visible reconnect signal (distinguishes "Redis down"
+          // from "model down" per the FE-D20 finding).
+          console.warn(
+            `[Redis] connection lost — reconnect attempt ${
+              retries + 1
+            }/${maxReconnectAttempts} in ${delay}ms`,
+          )
+          return delay
         },
       },
     })
@@ -48,18 +77,35 @@ export async function getRedisClient(): Promise<RedisClientType> {
     client.on("error", (err) => {
       console.error("[Redis] Client error:", (err as Error).message)
     })
-    // Only nullify on permanent disconnect ('end' event) so next call reconnects
+    // Ops-visible signal that service has been restored after a drop.
+    client.on("ready", () => {
+      console.info("[Redis] connection ready")
+    })
+    // Drop the singleton on permanent disconnect ('end') so the next call
+    // reconnects. Guard against a late 'end' from a superseded client clobbering
+    // a freshly-rebuilt singleton.
     client.on("end", () => {
-      redis = null
-      connectingPromise = null
+      if (redis === client) redis = null
     })
     await client.connect()
     redis = client
-    connectingPromise = null
     return client
   })()
 
-  return connectingPromise
+  connectingPromise = attempt
+  // Fail closed WITHOUT wedging: once the attempt settles, clear the cached
+  // in-flight promise. On rejection (Redis unreachable — e.g. a Postgres-disconnect
+  // cascade) this is what lets the NEXT getRedisClient() start a fresh attempt
+  // instead of returning a permanently-rejected promise forever (the FE-D20 wedge);
+  // the caller of this call still sees the rejection and fails closed as today. On
+  // success the singleton `redis` short-circuits future calls. Both branches are
+  // handled so a rejection never leaks as an unhandled rejection.
+  const clearIfCurrent = (): void => {
+    if (connectingPromise === attempt) connectingPromise = null
+  }
+  attempt.then(clearIfCurrent, clearIfCurrent)
+
+  return attempt
 }
 
 export async function closeRedisClient(): Promise<void> {

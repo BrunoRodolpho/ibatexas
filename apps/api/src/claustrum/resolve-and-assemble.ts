@@ -22,16 +22,24 @@
  *    not-found → null ctx fields → the owning pack's stateGuards REFUSE cleanly.
  */
 
-import { getRedisClient, rk, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
-import { Channel } from "@ibatexas/types";
+import { getRedisClient, rk, medusaAdmin, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
+import { Channel, type OrderEventItem } from "@ibatexas/types";
 import {
   createOrderQueryService,
+  createOrderService,
   createPaymentQueryService,
   createCustomerService,
   createReservationService,
   prisma,
 } from "@ibatexas/domain";
 import { parseAgentSessionNamespace } from "./agent-guards.js";
+// FE-T13 — reuse the ops-plane displayId parser (pure, no ops-specific
+// dependency) rather than re-deriving the same `#1234`-style parse rule.
+import { parseDisplayIdRef } from "../ops/ops-order-resolution.js";
+// BKL-140 — reuse the SINGLE non-terminal-stage set the discovery-fallback read
+// already uses (turn-reads.ts), rather than re-deriving a byte-parallel copy
+// (FE-D07 duplication lesson). No cycle: turn-reads never imports this module.
+import { ACTIVE_FULFILLMENT_STAGES } from "./turn-reads.js";
 
 /**
  * Per-session LLM-token Redis counter key. Single source of truth (write side:
@@ -358,6 +366,30 @@ export async function loadCartCtx(
   return buildCartCtx(base, payload, await loadCart(cartId));
 }
 
+/**
+ * FE-T09b review fix (MAJOR-1) — "does this session have a cart with items
+ * in it RIGHT NOW?" Reuses the exact same BKL-028 active-cart key + fetch
+ * as `loadCartCtx` (never a second source of truth for "what is the
+ * active cart"). Exported for `amend-preference-correction.ts`'s
+ * both-states disambiguation: a bare "no pedido" reference from a
+ * mid-cart customer ("põe mais uma coca no pedido") colloquially means
+ * their IN-PROGRESS cart, not a placed order — favor the cart. Fail-
+ * CLOSED to `false` (no cart) on any read error, same posture as
+ * `loadCartCtx` itself.
+ */
+export async function hasNonEmptyActiveCart(sessionId: string | undefined): Promise<boolean> {
+  if (sessionId === undefined) return false;
+  try {
+    const redis = await getRedisClient();
+    const cartId = await redis.get(rk(`cart:active:session:${sessionId}`));
+    if (cartId === null) return false;
+    const { cart } = await loadCart(cartId);
+    return cart !== null && !cart.completed_at && (cart.items?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 // ── Reservations (reservation.* targeting a slot / existing reservation) ─────
 function slotFromRow(
   row: { id: string; date: Date; startTime: string; maxCovers: number; reservedCovers: number } | null,
@@ -476,6 +508,46 @@ interface ResolveArgs {
    * need it; absent → no cart found → conservative ctx (guards REFUSE cleanly).
    */
   readonly sessionId?: string;
+  /**
+   * FE-T14 — the raw utterance text (`cognition.perception.text`,
+   * ibatexas-resolver.ts — the SAME source `correctAmendPreference` already
+   * reads). Used ONLY by the allergen-mention detector below
+   * (customer.preferences.update); every other kind ignores it. Optional and
+   * fail-closed-to-absent, mirroring `sessionId`'s own posture — a caller
+   * that omits it (e.g. an HTTP route with no conductor cognition) simply
+   * never trips the detector, never crashes.
+   */
+  readonly utteranceText?: string;
+}
+
+/**
+ * FE-T14 — deterministic allergen-mention detector for
+ * `customer.preferences.update` (mirrors amend-preference-correction.ts's
+ * marker-pattern idiom, one seam over: detection here stamps a ctx flag a
+ * composed ADOPTER guard interprets — refuseAllergenMentionGuard,
+ * compose-policy-packs.ts — rather than resolving/re-routing anything
+ * itself; the kernel stays the sole REFUSE authority, CLAUDE.md rule #9).
+ *
+ * Deliberately broad, not narrow: every Portuguese allergen-root word
+ * (alergia, alérgico/a, alergênico, alergista, anafilaxia is a DIFFERENT
+ * root so not covered — see the second pattern) shares the `alerg` stem,
+ * so a single case-insensitive substring test catches the whole family
+ * without a maintained word list. Over-triggering is the SAFE failure mode
+ * here (a false-positive REFUSE just redirects to the explicit channel,
+ * annoying but harmless); under-triggering would silently let an allergen-
+ * shaped ask succeed as a no-op — the exact "dishonest success reply"
+ * this detector exists to prevent.
+ *
+ * `al[eé]rg` (not a bare `alerg`): "alergia"/"alergênico"/"alergista" spell
+ * the stem WITHOUT an accent, but "alérgico"/"alérgica" (the far more
+ * common everyday adjective — "sou alérgico a amendoim") spell it WITH one
+ * — a plain `/alerg/i` silently misses every adjective form.
+ */
+const ALLERGEN_MENTION_PATTERN = /al[eé]rg|anafil/i;
+
+/** Pure — no IO/clock/RNG. Case-insensitive substring test. */
+export function isAllergenMentionUtterance(text: string | undefined): boolean {
+  return typeof text === "string" && ALLERGEN_MENTION_PATTERN.test(text);
 }
 
 // Order kinds resolved by id (→ loadOrderCtx, which confirms customer ownership
@@ -507,18 +579,55 @@ export const ORDER_BY_ID_KINDS = new Set([
 // "muda o endereço do meu pedido" resolve to the most-recent order instead of
 // dead-ending. MUST stay in lockstep with AUTORESOLVE_CONFIRM_KINDS
 // (compose-policy-packs.ts): a kind auto-resolved here but not confirmed there
-// would EXECUTE against a silently-guessed target. The granular amend kinds
-// (add_item/update_qty/remove_item) are deliberately absent — they carry an
-// explicit orderId from the amend flow, so there is nothing to auto-resolve.
+// would EXECUTE against a silently-guessed target.
+//
+// FE-T09 (D-a, the amend inversion): the granular amend kinds
+// (add_item/update_qty/remove_item) are now MODEL-proposable — the model is
+// never shown an `orderId` field (it is Identity-class, forbidden by
+// `order-amend-granular.schema.ts`), so unlike the old assumption ("they
+// carry an explicit orderId from the amend flow"), a model-driven granular
+// amend needs the SAME "most-recent order" auto-resolve `order.amend.request`
+// already gets. Added here alongside it.
 const ORDER_AUTORESOLVE_KINDS = new Set([
   "order.cancel",
   "payment.pix.regenerate",
   "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
   "order.note.add",
   "order.address.change",
   "order.type.switch",
+  // FE-D28 — order.review.submit's orderId is Identity-class (never model-
+  // emitted); the reviewed order is auto-resolved to the customer's most-recent
+  // order (or an explicit `orderReference` display number — see
+  // `applyAutoResolve`'s review special-case). Same confirm-first posture as
+  // the modify kinds: the customer sees the resolved order + product before a
+  // public review posts. MUST stay in lockstep with AUTORESOLVE_CONFIRM_KINDS.
+  "order.review.submit",
 ]);
-const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel"]);
+// FE-T14 — reservation.modify's schema never shows the model a
+// `reservationId` field (Identity-class, forbidden) and, before this
+// change, had NO auto-resolve path at all: `resolveReservationId` below is
+// only invoked for kinds in this set, so `reservation.modify` could never
+// reach a reservationId from chat despite being advertised
+// (plannerAdvertisedBy, definitions.ts) and offered on the customer
+// planner's allowed-intent set (surfaces.json) — a live, customer-facing
+// gap. Added alongside reservation.cancel with IDENTICAL semantics: resolve
+// to the customer's one active reservation when unambiguous (never a guess
+// among several), forcing a confirm (AUTORESOLVE_CONFIRM_KINDS,
+// compose-policy-packs.ts, mirrors this addition).
+const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel", "reservation.modify"]);
+
+// FE-D27 — the kinds whose timeSlotId may be grounded from an NL date/time pair
+// (the pure-chat "mesa pra 4 sexta às 20h" path) instead of a listed slot id.
+// reservation.modify is handled separately (its slot key is `newTimeSlotId`).
+const RESERVATION_SLOT_RESOLVE_KINDS = new Set([
+  "reservation.create",
+  "reservation.waitlist.join",
+]);
+/** The ISO calendar-date shape check_availability's own `date` field uses (YYYY-MM-DD). */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // 034-F1 (review finding 6/7): refund payloads (PaymentRefundIssuePayload /
 // PaymentRefundConfirmPayload) carry ONLY paymentId — never orderId. Since
@@ -529,8 +638,20 @@ const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel"]);
 // explicit paymentId — so it does NOT force a confirm like the NL autoresolve path.
 const REFUND_OWNERSHIP_KINDS = new Set(["payment.refund.issue", "payment.refund.confirm"]);
 
-/** NL→id: explicit orderId wins; else auto-resolve the customer's most-recent order. */
-async function resolveOrderId(
+/**
+ * NL→id: explicit orderId wins; else auto-resolve the customer's most-recent
+ * order. Exported (FE-T13) so the customer-plane READ executors
+ * (`check_order_status` / `get_payment_status`, claustrum-bootstrap.ts) can
+ * reuse the SAME "most recent order" resolution the mutating
+ * `ORDER_AUTORESOLVE_KINDS` path already relies on, rather than re-deriving a
+ * byte-parallel copy — those two reads now forbid a model-facing `orderId`
+ * field (Identity class, read-tool-schemas.ts), so they need the identical
+ * auto-resolve fallback this function already gives `order.amend.*`/
+ * `order.cancel`/etc. Passing `{}` (no explicit orderId) always takes the
+ * auto-resolve branch, which is exactly what a read-tool call needs since its
+ * schema can never carry one.
+ */
+export async function resolveOrderId(
   payload: Ctx,
   customerId: string,
 ): Promise<{ orderId: string | null; autoResolved: boolean }> {
@@ -550,6 +671,193 @@ async function resolveOrderId(
   }
 }
 
+/**
+ * FE-T13 — resolve `check_order_status`/`get_payment_status`'s optional
+ * `orderReference` field (a display-number NL reference the customer may
+ * name, e.g. "pedido 1234" / "#1234" — CHECK_ORDER_STATUS_READ_SCHEMA /
+ * GET_PAYMENT_STATUS_READ_SCHEMA, read-tool-schemas.ts) to a concrete owned
+ * orderId. Mirrors the ops-plane displayId resolution idiom
+ * (`parseDisplayIdRef`, ops-order-resolution.ts) but customer-scoped: unlike
+ * `OrderQueryService.findByDisplayId` (no owner scoping — the internal/staff
+ * path), a match here is IDOR-checked against `customerId` before being
+ * trusted, since a customer could name ANOTHER customer's display number.
+ * Falls through to {@link resolveOrderId}'s "most recent order" auto-resolve
+ * (unchanged) when: no reference was given, it doesn't parse as a display
+ * number, or the parsed number matches no order owned by this customer —
+ * never returns a foreign order, and never throws (a lookup failure degrades
+ * to the auto-resolve fallback, fail-safe).
+ */
+/** A disambiguation candidate for the read executor's CLARIFY-shaped result. */
+export interface OrderReferenceCandidate {
+  readonly orderId: string;
+  readonly displayId: number;
+}
+
+/**
+ * The outcome of resolving a customer's order reference for a read tool. Adds two
+ * BKL-140 fields to the FE-T13 shape (both default false/[]), so existing callers
+ * that destructure `{ orderId }` are unaffected:
+ *  - `ambiguous` — an id-less/date reference matched ≥2 owned orders; the executor
+ *    returns a disambiguation-shaped result instead of silently guessing one.
+ *  - `candidates` — the ambiguous orders' `{orderId, displayId}` (display numbers
+ *    the CLARIFY copy can name).
+ */
+export interface ResolvedOrderReference {
+  readonly orderId: string | null;
+  readonly autoResolved: boolean;
+  readonly referenceMatched: boolean;
+  readonly ambiguous: boolean;
+  readonly candidates: ReadonlyArray<OrderReferenceCandidate>;
+}
+
+const NO_ORDER_REFERENCE: ResolvedOrderReference = {
+  orderId: null,
+  autoResolved: false,
+  referenceMatched: false,
+  ambiguous: false,
+  candidates: [],
+};
+
+/** The order-row fields the reference resolver reads (a narrow of OrderProjection). */
+interface OrderRefRow {
+  readonly id: string;
+  readonly displayId: number;
+  readonly fulfillmentStatus: string | null;
+  readonly medusaCreatedAt: Date;
+}
+
+function toOrderCandidate(o: OrderRefRow): OrderReferenceCandidate {
+  return { orderId: o.id, displayId: o.displayId };
+}
+
+/** The restaurant-timezone calendar day (`YYYY-MM-DD`) for an instant — the same
+ *  `Intl` idiom the schedule/date-anchor code uses (schedule-date-resolver.ts). */
+function restaurantDayStr(instant: Date | string): string {
+  const tz = process.env.RESTAURANT_TIMEZONE || "America/Sao_Paulo";
+  const d = typeof instant === "string" ? new Date(instant) : instant;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(d);
+}
+
+/** Shift a `YYYY-MM-DD` calendar day by whole days (deterministic, TZ-free). */
+function shiftDayStr(ymd: string, deltaDays: number): string {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+// FE-D24 — pt-BR weekday markers → day-of-week (0=Sun … 6=Sat). Ordered for a
+// stable scan; diacritic + `-feira`/plural variants explicit. Mirrors the
+// schedule-date-resolver marker idiom, but this resolver looks BACKWARD (orders are
+// past), where schedule-date-resolver looks forward (reservations are future).
+const ORDER_WEEKDAY_MARKERS: ReadonlyArray<{ re: RegExp; dow: number }> = [
+  { re: /\bdomingos?\b/i, dow: 0 },
+  { re: /\bsegunda(?:s|-feiras?)?\b/i, dow: 1 },
+  { re: /\bter[çc]a(?:s|-feiras?)?\b/i, dow: 2 },
+  { re: /\bquarta(?:s|-feiras?)?\b/i, dow: 3 },
+  { re: /\bquinta(?:s|-feiras?)?\b/i, dow: 4 },
+  { re: /\bsexta(?:s|-feiras?)?\b/i, dow: 5 },
+  { re: /\bs[áa]bados?\b/i, dow: 6 },
+];
+
+/**
+ * FE-D24 — DETERMINISTIC (no model) parse of a relative-date order reference to the
+ * restaurant-TZ calendar day (`YYYY-MM-DD`) it names, or null when the text carries
+ * no recognized date marker. Backward-looking: "hoje"/"ontem"/"anteontem" and a
+ * named weekday → its most-recent occurrence on-or-before today (orders are past).
+ */
+export function parseRelativeOrderDate(text: string): string | null {
+  const today = restaurantDayStr(new Date());
+  if (/\banteontem\b/i.test(text)) return shiftDayStr(today, -2);
+  if (/\bontem\b/i.test(text)) return shiftDayStr(today, -1);
+  if (/\bhoje\b/i.test(text)) return today;
+  for (const { re, dow } of ORDER_WEEKDAY_MARKERS) {
+    if (re.test(text)) {
+      const todayDow = new Date(`${today}T00:00:00Z`).getUTCDay();
+      const offset = (todayDow - dow + 7) % 7; // 0 when today IS that weekday
+      return shiftDayStr(today, -offset);
+    }
+  }
+  return null;
+}
+
+/** Load the customer's own recent orders (owner-scoped → IDOR-closed), [] on error. */
+async function loadCustomerOrderRows(customerId: string, limit: number): Promise<OrderRefRow[]> {
+  try {
+    const { orders } = await createOrderQueryService().listByCustomer(customerId, { limit });
+    return orders as unknown as OrderRefRow[];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * BKL-140 — the id-less resolution: no display number, no date. Prefer the customer's
+ * ONE active (non-terminal) order — the order they're almost certainly asking about;
+ * ≥2 active → ambiguous (disambiguate, never guess); 0 active but orders exist → the
+ * most-recent order (an honest "your last order …", unchanged from FE-T13); truly no
+ * orders → the honest no-order result.
+ */
+function resolveIdless(orders: OrderRefRow[]): ResolvedOrderReference {
+  const active = orders.filter((o) => ACTIVE_FULFILLMENT_STAGES.has(String(o.fulfillmentStatus)));
+  if (active.length === 1) {
+    return { ...NO_ORDER_REFERENCE, orderId: active[0]!.id, autoResolved: true };
+  }
+  if (active.length >= 2) {
+    return { ...NO_ORDER_REFERENCE, ambiguous: true, candidates: active.map(toOrderCandidate) };
+  }
+  if (orders.length === 0) return NO_ORDER_REFERENCE;
+  return { ...NO_ORDER_REFERENCE, orderId: orders[0]!.id, autoResolved: true };
+}
+
+/**
+ * FE-T13 (+ BKL-140 / FE-D24) — resolve `check_order_status`/`get_payment_status`'s
+ * optional `orderReference` field to a concrete OWNED orderId. Priority:
+ *   1. a display number ("pedido 1234"/"#1234") → the order with that display id
+ *      OWNED by this customer (IDOR-checked — a customer may name another's number).
+ *   2. FE-D24 — a relative date ("de ontem"/"de terça", {@link parseRelativeOrderDate},
+ *      deterministic) → the customer's own order(s) created that restaurant-TZ day
+ *      (owner-scoped → IDOR-closed): exactly one → that order; ≥2 → ambiguous.
+ *   3. BKL-140 — no resolvable reference → {@link resolveIdless} (one active order,
+ *      else disambiguate/most-recent/no-order).
+ * Every branch is customer-scoped, so a foreign order is NEVER returned; a lookup
+ * error degrades to the id-less fallback (fail-safe), never throws.
+ */
+export async function resolveCustomerOrderReference(
+  orderReference: string | undefined,
+  customerId: string,
+): Promise<ResolvedOrderReference> {
+  if (typeof orderReference === "string") {
+    // 1. Explicit display-number reference (IDOR-checked) — unchanged (FE-T13).
+    const displayId = parseDisplayIdRef(orderReference);
+    if (displayId !== null) {
+      try {
+        const candidates = await createOrderQueryService().findByDisplayId(displayId);
+        const owned = candidates.find((o) => o.customerId === customerId);
+        if (owned) {
+          return { ...NO_ORDER_REFERENCE, orderId: owned.id, referenceMatched: true };
+        }
+      } catch {
+        // Fail-safe — fall through, same posture as resolveOrderId's own try/catch.
+      }
+    }
+    // 2. FE-D24 — a relative-date reference filters the customer's OWN orders by day.
+    const targetDay = parseRelativeOrderDate(orderReference);
+    if (targetDay !== null) {
+      const rows = await loadCustomerOrderRows(customerId, 50);
+      const onDay = rows.filter((o) => restaurantDayStr(o.medusaCreatedAt) === targetDay);
+      if (onDay.length === 1) {
+        return { ...NO_ORDER_REFERENCE, orderId: onDay[0]!.id, referenceMatched: true };
+      }
+      if (onDay.length >= 2) {
+        return { ...NO_ORDER_REFERENCE, ambiguous: true, candidates: onDay.map(toOrderCandidate) };
+      }
+      // 0 orders that day → fall through to the id-less resolution below.
+    }
+  }
+  // 3. BKL-140 — id-less active-order-aware resolution.
+  return resolveIdless(await loadCustomerOrderRows(customerId, 20));
+}
+
 /** 034-F1: resolve the orderId that OWNS a payment, for the refund ownership
  *  binding (finding 6/7). Fail-safe to null → resolver leaves the guard inert
  *  (service-layer scoping still applies) rather than REFUSE-ing on a read error. */
@@ -562,11 +870,35 @@ async function resolvePaymentOrderId(paymentId: string): Promise<string | null> 
   }
 }
 
-/** NL→id: explicit reservationId wins; else auto-resolve the only ACTIVE reservation. */
+/**
+ * BKL-223 — a deterministic, first-party label for an ambiguous reservation
+ * candidate ("20/07 às 18h30"), composed from the DB timeSlot's OWN date +
+ * startTime (never model-authored). Mirrors BKL-174's `slotAmbiguousTimes` but
+ * carries the pre-composed string (a reservation needs date + time to
+ * disambiguate, unlike a same-date slot which needs only the time).
+ */
+function reservationCandidateLabel(date: string, startTime: string): string {
+  // date is ISO YYYY-MM-DD (DTO); render DD/MM. startTime is HH:MM → HHh / HHhMM.
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  const dm = d === null ? date : `${d[3]}/${d[2]}`;
+  const t = /^(\d{1,2}):(\d{2})$/.exec(startTime);
+  const hm = t === null ? startTime : t[2] === "00" ? `${t[1]}h` : `${t[1]}h${t[2]}`;
+  return `${dm} às ${hm}`;
+}
+
+/**
+ * NL→id: explicit reservationId wins; else auto-resolve the customer's ONE active
+ * reservation. BKL-223 — a THREE-way outcome (mirrors {@link resolveIdless} for
+ * orders): resolved-one / AMBIGUOUS-many (carry first-party candidate labels for a
+ * CLARIFY, never a guess) / none. Collapsing ≥2 into `reservationId:null` here would
+ * — as before this fix — render `reservation.not_found` even though the reservations
+ * WERE found; the pack-side `clarifyAmbiguousReservation` guard voices the candidates
+ * instead. Owner-scoped (only THIS customer's reservations); fail-safe on read error.
+ */
 async function resolveReservationId(
   payload: Ctx,
   customerId: string,
-): Promise<{ reservationId: string | null; autoResolved: boolean }> {
+): Promise<{ reservationId: string | null; autoResolved: boolean; ambiguousLabels?: string[] }> {
   if (typeof payload.reservationId === "string") {
     return { reservationId: payload.reservationId, autoResolved: false };
   }
@@ -574,14 +906,29 @@ async function resolveReservationId(
     const { reservations } = await createReservationService().listByCustomer(customerId, {
       limit: 10,
     });
-    const active = (reservations as Array<{ id: string; status: string }>).filter(
-      (r) => r.status === "pending" || r.status === "confirmed",
-    );
-    // Only auto-resolve when unambiguous (exactly one active booking); otherwise
-    // leave it for the agent to clarify which one.
-    return active.length === 1
-      ? { reservationId: active[0]!.id, autoResolved: true }
-      : { reservationId: null, autoResolved: false };
+    const active = (
+      reservations as Array<{
+        id: string;
+        status: string;
+        timeSlot: { date: string; startTime: string };
+      }>
+    ).filter((r) => r.status === "pending" || r.status === "confirmed");
+    if (active.length === 1) {
+      return { reservationId: active[0]!.id, autoResolved: true };
+    }
+    if (active.length >= 2) {
+      // ≥2 active → ambiguous: carry the first-party candidate labels for the CLARIFY
+      // (never guess which one). The reservationId stays null so the slot/present
+      // guards still fail closed; the clarify guard pre-empts the not_found refuse.
+      return {
+        reservationId: null,
+        autoResolved: false,
+        ambiguousLabels: active.map((r) =>
+          reservationCandidateLabel(r.timeSlot.date, r.timeSlot.startTime),
+        ),
+      };
+    }
+    return { reservationId: null, autoResolved: false };
   } catch {
     return { reservationId: null, autoResolved: false };
   }
@@ -618,6 +965,22 @@ async function applyAutoResolve(
   customerId: string,
 ): Promise<{ payload: Ctx; autoResolvedMoneyRef: boolean }> {
   if (ORDER_AUTORESOLVE_KINDS.has(kind)) {
+    // FE-D28 — order.review.submit resolves its reviewed order via the FE-T13
+    // display-number path: an explicit `orderReference` ("pedido 1234") is
+    // looked up authoritatively + IDOR-checked, falling back to the customer's
+    // most-recent order when absent/unmatched. Either way the turn confirms the
+    // resolved target (a public review posts against it), so `autoResolvedMoneyRef`
+    // is set whenever an order was resolved — not only on the blind fallback.
+    if (kind === "order.review.submit") {
+      const r = await resolveCustomerOrderReference(
+        typeof payload.orderReference === "string" ? payload.orderReference : undefined,
+        customerId,
+      );
+      if (r.orderId !== null) {
+        return { payload: { ...payload, orderId: r.orderId }, autoResolvedMoneyRef: true };
+      }
+      return { payload, autoResolvedMoneyRef: false };
+    }
     const r = await resolveOrderId(payload, customerId);
     if (r.autoResolved && r.orderId !== null) {
       return { payload: { ...payload, orderId: r.orderId }, autoResolvedMoneyRef: true };
@@ -630,8 +993,109 @@ async function applyAutoResolve(
         autoResolvedMoneyRef: true,
       };
     }
+    // BKL-223 — ≥2 active reservations: stamp the ambiguity marker (mirrors
+    // `resolveReservationSlot`'s `slotAmbiguous*`) so the pack-side
+    // `clarifyAmbiguousReservation` guard voices the candidates as a CLARIFY
+    // instead of a bare not_found REFUSE. NOT an autoresolve (no forced confirm) —
+    // the reservationId stays unstamped so the present/slot guards fail closed.
+    if (r.ambiguousLabels !== undefined && r.ambiguousLabels.length >= 2) {
+      return {
+        payload: {
+          ...payload,
+          reservationAmbiguousCount: r.ambiguousLabels.length,
+          reservationAmbiguousLabels: r.ambiguousLabels,
+        },
+        autoResolvedMoneyRef: false,
+      };
+    }
   }
   return { payload, autoResolvedMoneyRef: false };
+}
+
+/**
+ * FE-D27 — the party size to size availability against. create/waitlist carry a
+ * required `partySize`; a modify may change only the time, so its size falls back to
+ * the (already auto-resolved) reservation's own party size — a slot must fit the same
+ * cover count. Returns undefined when no size can be established (→ no resolution,
+ * honest refuse downstream).
+ */
+async function resolveSlotPartySize(
+  kind: string,
+  payload: Ctx,
+  customerId: string,
+): Promise<number | undefined> {
+  if (kind === "reservation.modify") {
+    if (typeof payload.newPartySize === "number") return payload.newPartySize;
+    const rid = typeof payload.reservationId === "string" ? payload.reservationId : null;
+    if (rid === null) return undefined;
+    const r = await createReservationService().getById(rid, customerId).catch(() => null);
+    return r && typeof r.partySize === "number" ? r.partySize : undefined;
+  }
+  return typeof payload.partySize === "number" ? payload.partySize : undefined;
+}
+
+/**
+ * FE-D27 — NL slot-booking: ground an NL date (+optional time) to a REAL timeSlotId
+ * so a pure-chat "mesa pra 4 sexta às 20h" can book without a prior check_availability
+ * read. Reuses the SAME authoritative `checkAvailability` lookup (the availability
+ * surface is PUBLIC — no IDOR; the reservation WRITE stays governed) with the
+ * UTC-calendar-date discipline FE-D11 fixed. Only when the caller did NOT already pick
+ * a listed slot:
+ *   - exactly one available slot → stamp the slot key (authoritative);
+ *   - ≥2 → stamp `slotAmbiguousCount` + `slotAmbiguousTimes` (the first-party candidate
+ *     `startTime`s; mirrors the amend `itemAmbiguousCount` marker); the slot stays
+ *     UNSTAMPED so the reservation guard REFUSEs, and the pack-side CLARIFY guard
+ *     (BKL-174) names the candidate times instead of a bare slot-missing refuse;
+ *   - 0 → payload unchanged (unstamped slot → the existing honest no-availability
+ *     refuse). Fail-safe: a lookup error degrades to no resolution, never throws.
+ * The date must be ISO (YYYY-MM-DD) — the shape check_availability's `date` field
+ * already proves the 4B emits; a non-ISO value is left for the honest refuse (FE-D24's
+ * relative parser is deliberately NOT reused here — it is BACKWARD-looking for past
+ * orders, wrong for FUTURE reservations).
+ */
+export async function resolveReservationSlot(
+  kind: string,
+  payload: Ctx,
+  customerId: string,
+): Promise<Ctx> {
+  const isCreate = RESERVATION_SLOT_RESOLVE_KINDS.has(kind);
+  const isModify = kind === "reservation.modify";
+  if (!isCreate && !isModify) return payload;
+
+  const slotKey = isModify ? "newTimeSlotId" : "timeSlotId";
+  const dateKey = isModify ? "newDate" : "date";
+  const timeKey = isModify ? "newTime" : "time";
+  // Already grounded (a listed slot was chosen) → nothing to resolve.
+  if (typeof payload[slotKey] === "string") return payload;
+
+  const date = payload[dateKey];
+  if (typeof date !== "string" || !ISO_DATE_RE.test(date)) return payload;
+  const partySize = await resolveSlotPartySize(kind, payload, customerId);
+  if (partySize === undefined) return payload;
+  const time = typeof payload[timeKey] === "string" ? payload[timeKey] : undefined;
+
+  let slots;
+  try {
+    slots = await createReservationService().checkAvailability(date, partySize, time);
+  } catch {
+    return payload; // fail-safe → honest refuse downstream
+  }
+  if (slots.length === 1) {
+    return { ...payload, [slotKey]: slots[0]!.timeSlotId };
+  }
+  if (slots.length >= 2) {
+    // BKL-174 — carry the first-party candidate TIMES (the availability read's own
+    // `startTime`s, never model-authored) alongside the count so the pack-side
+    // CLARIFY guard can NAME the options ("qual horário: 18h30, 20h…?") instead of a
+    // bare slot-missing refuse. The slot key stays UNSTAMPED → the slot guard still
+    // fails closed.
+    return {
+      ...payload,
+      slotAmbiguousCount: slots.length,
+      slotAmbiguousTimes: slots.map((s) => s.startTime),
+    };
+  }
+  return payload; // 0 slots → honest no-availability refuse (slot unstamped)
 }
 
 /**
@@ -649,6 +1113,161 @@ async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
     if (oid !== null) return { ...payload, orderId: oid };
   }
   return payload;
+}
+
+/**
+ * BKL-094 coercion class (team-lead ruling — distinct from the `reason`/
+ * `payment_method`-vs-`payment` KEY-drift question, which stays UNMAPPED
+ * per that ruling): live calibration showed the 4B reliably uses the RIGHT
+ * wire KEY but sometimes a Portuguese/English SYNONYM instead of the closed
+ * enum value itself ("cartão", "crédito", "débito", "credit", "debit",
+ * "dinheiro" for payment_method; "retirada"/"buscar" for delivery_type).
+ * Deterministic, CLOSED synonym maps — never a fuzzy/heuristic match — so an
+ * UNRECOGNIZED value passes through UNCHANGED to `validatePaymentMethod`'s
+ * existing "not in VALID_PAYMENT_METHODS" REFUSE path exactly as before
+ * these maps existed (never mapped to null, never silently dropped).
+ *
+ * WHY this doesn't break "the sidecar stays honest": there is only ONE
+ * payload flowing through this whole pipeline into BOTH the adjudicated
+ * envelope AND `audit-metadata.ts`'s post-hoc sidecar derivation — no
+ * separate "raw wire" channel survives past this seam (by design; see the
+ * ADR-124 v5 sidecar's own doc). Normalizing the VALUE here, before
+ * anything else ever reads it, means `extractionIR.payload.payment_method`
+ * correctly shows the POST-NORMALIZATION value ("card") the guards actually
+ * acted on — "honest" means the sidecar's `provenance` stays
+ * `{producer:"model", trust:"untrusted"}` (never silently promoted to
+ * resolver/authoritative just because it passed through a synonym map), not
+ * that the pre-normalization string survives somewhere for the corpus to
+ * assert against. The corpus therefore asserts POST-normalization values.
+ */
+const PAYMENT_METHOD_VALUE_SYNONYMS: ReadonlyMap<string, string> = new Map([
+  ["pix", "pix"],
+  ["card", "card"],
+  ["cartão", "card"],
+  ["cartao", "card"],
+  ["crédito", "card"],
+  ["credito", "card"],
+  ["débito", "card"],
+  ["debito", "card"],
+  ["credit", "card"],
+  ["debit", "card"],
+  ["cash", "cash"],
+  ["dinheiro", "cash"],
+]);
+
+const DELIVERY_TYPE_VALUE_SYNONYMS: ReadonlyMap<string, string> = new Map([
+  ["pickup", "pickup"],
+  ["retirada", "pickup"],
+  ["buscar", "pickup"],
+  ["delivery", "delivery"],
+  ["entrega", "delivery"],
+]);
+
+/** Case/whitespace-insensitive closed-map lookup; an unrecognized value passes through UNCHANGED (never null, never dropped) — see the synonym maps' own doc for why. */
+function normalizeSynonymValue(value: string, synonyms: ReadonlyMap<string, string>): string {
+  return synonyms.get(value.trim().toLowerCase()) ?? value;
+}
+
+/**
+ * FE-T12 (team-lead review) — rename `order.checkout.create`'s WIRE field
+ * `payment_method` (snake_case, `order-checkout-create.schema.ts`'s model-
+ * facing extraction schema) to the internal `paymentMethod` key
+ * `OrderCheckoutCreatePayload`/`validatePaymentMethod` (pack-orders/src/
+ * policies.ts, BYTE-UNTOUCHED) actually reads, THEN normalizes the VALUE
+ * through `PAYMENT_METHOD_VALUE_SYNONYMS` (see that map's own doc for the
+ * key-vs-value distinction and why this doesn't compromise sidecar honesty).
+ *
+ * WHY snake_case on the wire: live 4B calibration showed a 100%-stable bias
+ * toward `payment_method` over the originally-authored `paymentMethod` on
+ * EVERY observed call — a fact to accommodate deterministically (rename the
+ * wire contract to match what the model reliably produces) rather than fight
+ * with more prompt text. Mirrors the established BKL-094/BKL-089 rename
+ * idiom (payment.refund.issue's `orderReference`→`orderId`, `amount`→
+ * `refundAmountCentavos`): the WIRE name is consumed and REPLACED here, never
+ * left duplicated alongside the internal one — a stray `payment_method` key
+ * surviving into the resolved payload would leak past this seam into the
+ * envelope pack-orders never reads, dead weight at best.
+ *
+ * Pure rename+normalize, unconditional on any other resolution step (no
+ * auto-resolve, no ownership binding) — called first, before
+ * `applyAutoResolve`.
+ */
+function mapCheckoutPaymentMethodWireField(kind: string, payload: Ctx): Ctx {
+  if (kind !== "order.checkout.create") return payload;
+  if (typeof payload.payment_method !== "string") return payload;
+  // Defensive: a caller that already set the internal key (never happens on
+  // the real model-facing path — the extraction schema simply never declares
+  // `paymentMethod` as a field; only `payment_method` is ever shown to the
+  // model) never gets silently overwritten by the wire alias.
+  if (typeof payload.paymentMethod === "string") return payload;
+  const { payment_method: wireValue, ...rest } = payload;
+  return {
+    ...rest,
+    paymentMethod: normalizeSynonymValue(wireValue, PAYMENT_METHOD_VALUE_SYNONYMS),
+  };
+}
+
+/**
+ * FE-T12 (team-lead ruling, cart-seeding investigation follow-up) — same
+ * wire-rename idiom as `mapCheckoutPaymentMethodWireField` (KEY rename +
+ * VALUE normalization via `DELIVERY_TYPE_VALUE_SYNONYMS`), for the SECOND
+ * checkout wire field: `delivery_type` (snake_case, same live-calibration
+ * bias-accommodation logic) -> the internal `deliveryType` key
+ * `buildCartCtx` reads (`payload.deliveryType ?? payload.fulfillment` ->
+ * `ctx.fulfillment`).
+ *
+ * WHY this field exists at all: `requireSlotsFilledForCheckout`
+ * (pack-orders/src/policies.ts, a STATE guard that runs BEFORE
+ * `validatePaymentMethod`/the money-band guards) REFUSEs
+ * `order.checkout.slots_incomplete` whenever `ctx.fulfillment` is null — and
+ * `ctx.fulfillment` was ONLY ever populated from `payload.deliveryType`/
+ * `payload.fulfillment`, a slot the HTTP cart route threads explicitly but
+ * the chat planner never had a schema field for. Chat checkout therefore
+ * structurally could never pass this guard, regardless of payment_method or
+ * cart contents — a real gap live-caught during this ticket's own
+ * cart-seeding investigation, not a pre-existing one this ticket
+ * introduced. This wire field closes it: the model may now supply
+ * pickup/delivery in the same turn as payment_method, and BOTH slots being
+ * spoken lets a chat checkout progress all the way to the money-band
+ * guards — no new confirm path, no guard changes, the same ladder the HTTP
+ * route always had.
+ */
+function mapCheckoutDeliveryTypeWireField(kind: string, payload: Ctx): Ctx {
+  if (kind !== "order.checkout.create") return payload;
+  if (typeof payload.delivery_type !== "string") return payload;
+  if (typeof payload.deliveryType === "string") return payload;
+  const { delivery_type: wireValue, ...rest } = payload;
+  return {
+    ...rest,
+    deliveryType: normalizeSynonymValue(wireValue, DELIVERY_TYPE_VALUE_SYNONYMS),
+  };
+}
+
+/**
+ * team-lead ruling (FE-T14 live-calibration, the T12 payment_method lesson
+ * applied) — same wire-rename idiom as `mapCheckoutPaymentMethodWireField`
+ * (KEY rename only, no value normalization needed — these are freeform
+ * string arrays, not a closed synonym set), for `customer.preferences.
+ * update`'s two wire fields: `dietary_restrictions`/`favorite_categories`
+ * (snake_case, matching live-observed model emission — see customer-
+ * whatsapp-convenience.schema.ts's own doc) -> the STABLE internal
+ * `dietaryFlags`/`favoriteCategories` keys every other consumer (pack-
+ * customer-onboarding/src/types.ts, routes/me.ts, admin-customer-
+ * compose.ts) already reads. Pure rename, unconditional, called first
+ * alongside the checkout renames — before `applyAutoResolve`.
+ */
+function mapPreferencesUpdateWireFields(kind: string, payload: Ctx): Ctx {
+  if (kind !== "customer.preferences.update") return payload;
+  let out = payload;
+  if (Array.isArray(out.dietary_restrictions) && typeof out.dietaryFlags === "undefined") {
+    const { dietary_restrictions: wireValue, ...rest } = out;
+    out = { ...rest, dietaryFlags: wireValue };
+  }
+  if (Array.isArray(out.favorite_categories) && typeof out.favoriteCategories === "undefined") {
+    const { favorite_categories: wireValue, ...rest } = out;
+    out = { ...rest, favoriteCategories: wireValue };
+  }
+  return out;
 }
 
 /**
@@ -674,6 +1293,55 @@ function firstString(...vals: unknown[]): string | undefined {
   return undefined;
 }
 
+/** Lowercase, strip diacritics, split into alnum tokens — for lexical
+ *  comparison only (never customer-facing, never persisted). */
+function normalizeTokens(s: string): string[] {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0);
+}
+
+/**
+ * FE-D17 interim defense (FE-T09b, BKL-154 live-drive follow-up) — a cheap
+ * lexical-overlap sanity floor over the search layer's ranking. Typesense's
+ * fuzzy/semantic ranking can return a best-effort top hit with NO real
+ * relationship to the query on a garbage input (live-demonstrated: query
+ * "xyzzy" still returned A product) — the systemic arbitrary-match defect
+ * is FE-D17 (search-layer fix, not this ticket's scope); this is the
+ * resolver-level floor that refuses to attach an UNRELATED product's
+ * variant/allergens to the customer's request in the meantime. Permissive
+ * by TOKEN/CONTAINMENT overlap (any shared normalized token, or either
+ * string containing the other) — but this is NOT the same as "never
+ * rejects a genuine partial match": a pt-BR DIMINUTIVE ("coquinha" for
+ * "coca") shares no token and no substring with "Coca-Cola" and is treated
+ * as a mismatch (REFUSED) exactly like "xyzzy" today. That is an ACCEPTED
+ * INTERIM COST, not an oversight — a real fuzzy/stemmed match belongs in
+ * the search layer itself (FE-D17), not reimplemented here; this floor's
+ * job is only to stop an UNRELATED top hit from being trusted blindly. See
+ * the "coquinha" regression in resolve-and-assemble.test.ts, which pins
+ * today's refuse behavior deliberately so a future change to this
+ * function is a conscious choice, not an accidental regression either way.
+ */
+function hasLexicalOverlap(query: string, product: { title?: string; tags?: readonly string[] }): boolean {
+  const queryTokens = normalizeTokens(query);
+  if (queryTokens.length === 0) return false;
+  const queryTokenSet = new Set(queryTokens);
+  const candidateTokens = new Set([
+    ...normalizeTokens(product.title ?? ""),
+    ...(product.tags ?? []).flatMap(normalizeTokens),
+  ]);
+  for (const t of queryTokenSet) {
+    if (candidateTokens.has(t)) return true;
+  }
+  const queryNorm = queryTokens.join(" ");
+  const titleNorm = normalizeTokens(product.title ?? "").join(" ");
+  if (titleNorm.length === 0) return false;
+  return titleNorm.includes(queryNorm) || queryNorm.includes(titleNorm);
+}
+
 /**
  * F3/L1 (BKL-061) — deterministic NL→variantId resolution (a READ; keeps this
  * module's read-only invariant). The 4B emits order.item.add with a LOOSE
@@ -681,6 +1349,13 @@ function firstString(...vals: unknown[]): string | undefined {
  * Typesense (`searchProducts`) so the executor's schema (which requires
  * variantId) is satisfiable. Returns undefined on no-match/error → the tool
  * REFUSEs honestly ("não encontrei esse item") rather than adding the wrong one.
+ *
+ * FE-T09b (FE-D17 interim floor) — a non-empty result is no longer trusted
+ * blindly: `hasLexicalOverlap` must agree the top hit actually relates to
+ * `name` before its variantId/allergens are attached. A hit with zero
+ * lexical relationship to the query is treated exactly like no match at
+ * all (same undefined return, same downstream honest refuse) — this
+ * function's return contract is unchanged, only which hits qualify.
  */
 async function resolveProductForItem(
   name: string,
@@ -700,6 +1375,7 @@ async function resolveProductForItem(
     );
     const product = out.products?.[0];
     if (product === undefined) return undefined;
+    if (!hasLexicalOverlap(name, product)) return undefined;
     // allergens = the product's EXPLICIT stored array (Hard Rule #1: authoritative
     // product data, NOT inferred from name/text). Same resolved product as the
     // variant, so they can never disagree.
@@ -712,6 +1388,361 @@ async function resolveProductForItem(
   }
 }
 
+// ── BKL-213 — multi-ITEM decomposition for a compound cart add ──────────────
+// The 4B routinely under-decomposes "duas Farofas E tres Refrigerantes" into a
+// SINGLE order.item.add (Farofa only), dropping the trailing item entirely —
+// distinct from BKL-199 (quantity, already fixed): here whole ITEMS vanish, so
+// a customer asking for two products gets one. Same discipline as NL→variantId
+// and NL→quantity: never trust the model to enumerate — recover the dropped
+// items DETERMINISTICALLY from the customer's own words. The caller (the
+// resolver) emits one more order.item.add per recovered item, each independently
+// re-run through `resolveAndAssemble` (allergen strip/refill, quantity derive,
+// ownership) and adjudicated, so no guard is bypassed. Cart-scoped and reversible
+// (pre-checkout); a mis-recovery adds a cart line the customer can remove.
+
+/** pt-BR item-list conjunction separators: " e ", ",", " mais " (word-bounded so
+ *  "mais" as a size adjective inside a name is not a false split; substring "e"
+ *  inside a word never matches). */
+const ITEM_CONJUNCTION_RE = /\s+e\s+|\s*,\s*|\s+mais\s+/i;
+
+/** A recovered fragment must carry a content word (≥3 chars, not a pure
+ *  quantity/stopword) or it can't name a product. */
+function fragmentHasContentWord(fragment: string): boolean {
+  for (const tok of normalizeTokens(fragment)) {
+    if (tok.length >= 3 && !ITEM_REF_STOPWORDS.has(tok) && quantityFromToken(tok) === undefined) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Max ADDITIONAL cart items recovered from one compound add (5-line chat order
+ *  is already implausible; bounds a pathological utterance). */
+const MAX_ADDITIONAL_CART_ITEMS = 4;
+
+/**
+ * BKL-213 — recover the ADDITIONAL cart-item names a compound "X e Y" add
+ * dropped. Split the full utterance on pt-BR list conjunctions, resolve each
+ * fragment against the catalog, and return the fragment names that resolve to a
+ * DISTINCT product — different variantId from the primary (already added) AND
+ * from each other. Returns `[]` (the safe default) for a single-item utterance,
+ * a one-dish name ("arroz e feijão" resolving to ONE combo → its fragments both
+ * hit the same variant → deduped away), or when nothing distinct resolves. The
+ * caller re-runs `resolveAndAssemble` on each returned name for identical
+ * treatment. Pure of side effects beyond the catalog reads.
+ */
+export async function deriveAdditionalCartItemNames(args: {
+  readonly utteranceText: string | undefined;
+  readonly primaryVariantId: string | undefined;
+  readonly channel: string;
+  readonly sessionId: string | undefined;
+  readonly customerId: string;
+}): Promise<string[]> {
+  const { utteranceText, primaryVariantId, channel, sessionId, customerId } = args;
+  if (typeof utteranceText !== "string" || utteranceText.trim() === "") return [];
+  const fragments = utteranceText
+    .split(ITEM_CONJUNCTION_RE)
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0 && fragmentHasContentWord(f));
+  // A single fragment ⇒ no conjunction ⇒ nothing to recover (the common case).
+  if (fragments.length < 2) return [];
+
+  const names: string[] = [];
+  const seenVariants = new Set<string>();
+  // The primary product is already in the cart via the model's own add — never
+  // re-add it (the "quero duas farofas" fragment resolves to the primary variant
+  // and is dropped here).
+  if (typeof primaryVariantId === "string") seenVariants.add(primaryVariantId);
+
+  for (const fragment of fragments) {
+    if (names.length >= MAX_ADDITIONAL_CART_ITEMS) break;
+    const resolved = await resolveProductForItem(fragment, channel, sessionId, customerId);
+    const variantId = resolved?.variantId;
+    // Only a fragment that resolves to a DISTINCT product becomes an extra add —
+    // this is the "don't split inside an item name / one dish" guard: a
+    // non-resolving fragment, or one that hits an already-covered variant, is
+    // skipped, so over-splitting can never invent a spurious line.
+    if (typeof variantId !== "string" || seenVariants.has(variantId)) continue;
+    seenVariants.add(variantId);
+    names.push(fragment);
+  }
+  return names;
+}
+
+/** The three-way outcome of resolving an NL item reference against a live
+ *  order's line items — see `resolveOrderLineItem`. */
+type OrderLineItemResolution =
+  | { readonly kind: "found"; readonly itemId: string }
+  | { readonly kind: "ambiguous"; readonly count: number }
+  | { readonly kind: "not_found" };
+
+/** A live order/cart line's minimal identifying shape both resolvers below
+ *  match against — see `resolveLineItemByNameOrVariant`. */
+interface ResolvableLineItem {
+  readonly id: string;
+  readonly title?: string;
+  readonly variant_id?: string;
+}
+
+/**
+ * team-lead ruling (FE-T14 live-calibration finding, the variantId bridge) —
+ * the shared NL→line-item matching core BOTH `resolveOrderLineItem` and
+ * `resolveCartLineItem` thread through, so the two can never drift (FE-D07:
+ * duplicated matching logic is exactly the hazard class that ruling warned
+ * against).
+ *
+ * LIVE-CAUGHT DEFECT this closes: the original exact-title-only match
+ * compared the model's casual NL reference ("coca", "guaraná") against each
+ * line's `.title`, which Medusa always sets to the PRODUCT title
+ * ("Refrigerante") — NEVER the variant title ("Coca-Cola") or a customer's
+ * casual single-word reference. Every case in this rollout's item.update/
+ * item.remove/amend.update_qty/amend.remove_item corpora that named a
+ * specific variant this way therefore resolved `not_found` against the REAL
+ * catalog regardless of seeding — a structural gap, not a seeding problem
+ * (first live calibration for this whole capability family; see the PR
+ * body's live-calibration section for the full finding).
+ *
+ * FIX — two arms, tried in order:
+ *   1. Exact-title match FIRST (fast path, no network round-trip): if it
+ *      resolves to EXACTLY one line, done — covers a customer naming the
+ *      literal product title directly ("remove o Refrigerante" with only
+ *      one refrigerante line in the cart).
+ *   2. The variantId bridge: `resolveProductForItem` (the SAME Typesense +
+ *      lexical-overlap-floor search `order.item.add`/`order.amend.add_item`
+ *      already use) resolves the NL reference to a real catalog variantId
+ *      ("coca" -> the Coca-Cola variant), then lines are matched by
+ *      `variant_id` — this is what actually disambiguates two same-titled
+ *      "Refrigerante" lines by which SPECIFIC variant the customer named,
+ *      the exact scenario exact-title-only can never resolve. Only runs
+ *      when arm 1 didn't cleanly resolve (0 or >1 exact-title matches) —
+ *      cheap literal references never pay the round-trip cost.
+ *
+ * The found/ambiguous/not_found contract is preserved EXACTLY: this
+ * BROADENS which references resolve to `found` (a prior `not_found` can now
+ * resolve) but never narrows an existing `found`/`ambiguous` outcome — the
+ * bridge only ever RUNS when arm 1 didn't already conclusively resolve, and
+ * arm 1's own tie (`ambiguous`) is preserved as the fallback result if the
+ * bridge doesn't resolve it to exactly one line either. `hasLexicalOverlap`'s
+ * existing arbitrary-match floor (inside `resolveProductForItem`) still
+ * guards this path — an unrelated top hit still yields `undefined`, which
+ * this function treats as "the bridge didn't help," never a guess.
+ */
+async function resolveLineItemByNameOrVariant(
+  items: readonly ResolvableLineItem[],
+  name: string,
+  channel: string,
+  sessionId: string | undefined,
+  customerId: string,
+): Promise<OrderLineItemResolution> {
+  const needle = name.trim().toLowerCase();
+  const exactMatches = items.filter((i) => (i.title ?? "").toLowerCase() === needle);
+  if (exactMatches.length === 1) return { kind: "found", itemId: exactMatches[0]!.id };
+
+  const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
+  if (resolved?.variantId !== undefined) {
+    const variantMatches = items.filter((i) => i.variant_id === resolved.variantId);
+    if (variantMatches.length === 1) {
+      return { kind: "found", itemId: variantMatches[0]!.id };
+    }
+    if (variantMatches.length > 1) {
+      return { kind: "ambiguous", count: variantMatches.length };
+    }
+  }
+
+  if (exactMatches.length > 1) return { kind: "ambiguous", count: exactMatches.length };
+  return { kind: "not_found" };
+}
+
+/**
+ * FE-T09 (D-a) — NL→itemId resolution for the granular post-checkout amend
+ * kinds `order.amend.update_qty` / `order.amend.remove_item`. These operate
+ * on a line ALREADY on a placed order, not the catalog — a LIVE order fetch
+ * (mirroring the legacy `amend-order.ts` tool's `svc.getOrder`), matched via
+ * `resolveLineItemByNameOrVariant` (see that function's header for the full
+ * exact-title + variantId-bridge design). The stored `OrderProjection.
+ * itemsJson` carries no stable per-line id (`medusa-order.mapper.ts` drops
+ * Medusa's own line-item id when building the projection); a data-model
+ * migration to persist one is tracked separately (FE-D15) — the live fetch
+ * sidesteps it, exactly as the legacy tool does. `MedusaOrder.items[]`
+ * already carries `variant_id` per line (order.service.ts), so no extra
+ * fetch is needed for the bridge's variant-matching arm.
+ *
+ * Two safety upgrades over the legacy tool's exact-first-match, both
+ * PRESERVED by the shared core: zero matches → `"not_found"` (an honest
+ * refuse downstream — never a guess); MULTIPLE matches (e.g. two "coca"
+ * lines) → `"ambiguous"` (carries the match `count`) — review finding
+ * (post-#264): the FIRST cut of this reused `ctx.autoResolvedMoneyRef` /
+ * `confirmOnAutoResolveGuard` (the ORDER-level "which order?" auto-resolve's
+ * confirm mechanism) here too, but that mechanism means "I GUESSED a value,
+ * please confirm the guess" — item-level ambiguity picks NO item at all, so
+ * routing it through a yes/no confirm falsely implies a specific item was
+ * identified, and confirming resumed into a resolver call with
+ * `itemId: undefined` — a dead end ("Item não encontrado" after the
+ * customer just said "yes"). Fixed: `threadResolvedIdsIntoPayload` leaves
+ * `itemId` unset AND does NOT touch `ctx.autoResolvedMoneyRef` for this
+ * case; it instead stamps `itemAmbiguousCount` onto the payload so the
+ * EXECUTOR (`register-ibatexas-tool-packs.ts`) can return an honest,
+ * specific disambiguation reply immediately — reusing the SAME "tool
+ * reports a business-level non-match" idiom the `"not_found"` case already
+ * used (no new kernel Decision, no confirm, no park).
+ *
+ * On a match, `itemId` is the matched line's REAL Medusa line-item id (the
+ * same id the legacy tool's own Medusa PATCH/edit calls use) — the executor
+ * (`register-ibatexas-tool-packs.ts`) does one cheap reverse (id→title)
+ * lookup against the same live order before delegating to the existing,
+ * tested `amendOrder()` (which is title-keyed), rather than re-implementing
+ * Medusa's order-edit mutation calls.
+ */
+async function resolveOrderLineItem(
+  orderId: string,
+  name: string,
+  customerId: string,
+  channel: string,
+  sessionId: string | undefined,
+): Promise<OrderLineItemResolution> {
+  try {
+    const { order, ownershipValid } = await createOrderService(medusaAdmin).getOrder(
+      orderId,
+      customerId,
+    );
+    if (!ownershipValid) return { kind: "not_found" };
+    return await resolveLineItemByNameOrVariant(
+      order.items ?? [],
+      name,
+      channel,
+      sessionId,
+      customerId,
+    );
+  } catch {
+    return { kind: "not_found" };
+  }
+}
+
+/**
+ * FE-T14 — NL→cart-line-itemId resolution for `order.item.update` /
+ * `order.item.remove`. These operate on the ACTIVE SESSION CART (unlike
+ * `resolveOrderLineItem`'s placed-order target), so this is a genuinely
+ * separate lookup — never a catalog-wide guess (`resolveProductForItem`,
+ * used by `order.item.add`, resolves a NEW catalog product; this resolves
+ * an EXISTING cart LINE) — but matched via the SAME
+ * `resolveLineItemByNameOrVariant` core as `resolveOrderLineItem`, kept
+ * mirrored deliberately (FE-D07) rather than re-implementing the exact-
+ * title + variantId-bridge logic a second time.
+ *
+ * `medusaStore`'s raw `/store/carts/:id` response line items carry `id`
+ * (the real Medusa line-item id `update_cart`/`remove_from_cart`'s wire
+ * schema requires), `title` (defaults to the PRODUCT title at add time —
+ * never the variant title, the exact defect the shared core's bridge
+ * closes), and `variant_id` (the real Medusa variant id the bridge matches
+ * against) — a WIDER local shape than `MedusaCartLine` above, which only
+ * projects the fields `buildCartCtx` needs for guard purposes.
+ */
+interface MedusaCartLineWithTitle {
+  readonly id: string;
+  readonly title?: string;
+  readonly variant_id?: string;
+}
+
+async function resolveCartLineItem(
+  cartId: string,
+  name: string,
+  channel: string,
+  sessionId: string | undefined,
+  customerId: string,
+): Promise<OrderLineItemResolution> {
+  try {
+    const data = (await medusaStore(`/store/carts/${cartId}`)) as {
+      cart?: { items?: ReadonlyArray<MedusaCartLineWithTitle> };
+    };
+    return await resolveLineItemByNameOrVariant(
+      data.cart?.items ?? [],
+      name,
+      channel,
+      sessionId,
+      customerId,
+    );
+  } catch {
+    return { kind: "not_found" };
+  }
+}
+
+/** FE-D28 — the three-way outcome of resolving the reviewed product from an
+ *  order's OWN line items (a review is purchase-bound). Mirrors
+ *  `OrderLineItemResolution`'s found/ambiguous/not_found contract, but returns
+ *  the catalog `productId` (what a review attaches to) rather than a line id. */
+type ReviewedProductResolution =
+  | { readonly kind: "found"; readonly productId: string }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "not_found" };
+
+/**
+ * FE-D28 — resolve `order.review.submit`'s (Identity-class, forbidden)
+ * productId from the reviewed order's OWN line items. `getById` is owner-scoped
+ * (SDD §N P0-3), so a non-owner / unattributed order yields no items and
+ * nothing resolves — a customer can only review a product they bought.
+ *
+ *   - Exactly ONE distinct product on the order → resolves unambiguously (no
+ *     `item` reference needed: "dou 5 estrelas pro pedido").
+ *   - A multi-product order is disambiguated by the model's NL `item` reference
+ *     ("a costela"), matched lexically against the lines' titles (the same
+ *     both-ways substring test `hasLexicalOverlap` uses). A single distinct
+ *     product match resolves; multiple → ambiguous; none → not_found.
+ *
+ * NEVER guesses: an ambiguous/no-match reference resolves to nothing and the
+ * caller stamps a ctx marker so the kernel REFUSEs/clarifies honestly (the same
+ * posture the granular-amend itemId not-found/ambiguous path takes). Fail-safe
+ * to `not_found` on any read error.
+ */
+async function resolveReviewedProduct(
+  orderId: string,
+  itemName: string | undefined,
+  customerId: string,
+): Promise<ReviewedProductResolution> {
+  try {
+    const order = await createOrderQueryService().getById(orderId, { customerId });
+    // itemsJson is a Prisma JsonArray on the projection (denormalized line
+    // items, OrderEventItem shape) — cast through unknown per the me.ts review
+    // route's own `itemsJson` access idiom.
+    const items = (
+      Array.isArray(order?.itemsJson) ? order.itemsJson : []
+    ) as unknown as OrderEventItem[];
+    const distinctProductIds = [
+      ...new Set(
+        items
+          .map((it) => it?.productId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    ];
+    if (distinctProductIds.length === 0) return { kind: "not_found" };
+    if (distinctProductIds.length === 1) {
+      return { kind: "found", productId: distinctProductIds[0]! };
+    }
+
+    // Multi-product order: an explicit item reference is required to disambiguate.
+    const needleNorm = normalizeTokens(itemName ?? "").join(" ");
+    if (needleNorm.length === 0) return { kind: "ambiguous" };
+    const matchedProductIds = [
+      ...new Set(
+        items
+          .filter((it) => {
+            const titleNorm = normalizeTokens(it?.title ?? "").join(" ");
+            return (
+              titleNorm.length > 0 &&
+              (titleNorm.includes(needleNorm) || needleNorm.includes(titleNorm))
+            );
+          })
+          .map((it) => it?.productId)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    ];
+    if (matchedProductIds.length === 1) return { kind: "found", productId: matchedProductIds[0]! };
+    if (matchedProductIds.length > 1) return { kind: "ambiguous" };
+    return { kind: "not_found" };
+  } catch {
+    return { kind: "not_found" };
+  }
+}
+
 async function threadResolvedIdsIntoPayload(
   kind: string,
   payload: Ctx,
@@ -719,6 +1750,7 @@ async function threadResolvedIdsIntoPayload(
   customerId: string,
   channel: string,
   sessionId: string | undefined,
+  utteranceText: string | undefined,
 ): Promise<Ctx> {
   let out = payload;
   if (
@@ -735,36 +1767,208 @@ async function threadResolvedIdsIntoPayload(
   ) {
     out = { ...out, customerId };
   }
-  // BKL-061 + BKL-067: order.item.add — resolve a loose product name to the
-  // product (READ) and inject variantId + the product's EXPLICIT allergens
-  // (pack-orders requireExplicitAllergens; Hard Rule #1) + default quantity, so
-  // the executor schema {cartId,variantId,quantity} AND the allergen guard are
-  // satisfiable from the 4B's loose emission. cartId comes from BKL-028 (session
-  // cart) which BKL-066 ensures exists.
-  if (kind === "order.item.add") {
+  // BKL-061 + BKL-067 + FE-T09: order.item.add (cart) / order.amend.add_item
+  // (a placed order) — resolve a loose product name to the product (READ)
+  // and inject variantId + the product's EXPLICIT allergens (pack-orders
+  // requireExplicitAllergens; Hard Rule #1) + default quantity, so the
+  // executor schema AND the allergen guard are satisfiable from the 4B's
+  // loose emission. cartId comes from BKL-028 (session cart) which BKL-066
+  // ensures exists; order.amend.add_item instead carries orderId (already
+  // resolved above by applyAutoResolve's ORDER_AUTORESOLVE_KINDS handling —
+  // the model is never shown orderId, per order-amend-granular.schema.ts).
+  //
+  // Review finding (post-#264, MAJOR): `allergens` used to fill only when
+  // `!Array.isArray(out.allergens)` — a well-formed-but-adversarial
+  // completion smuggling `allergens: []` (or any array) past the extraction
+  // schema was treated as "already resolved" and SURVIVED untouched, and
+  // `requireExplicitAllergens` (pack-orders) only checks the SHAPE (is it
+  // an array?), never the provenance — so a smuggled array defeated the
+  // authoritative fill entirely (Hard Rule #1 / AC3: allergens must be
+  // impossible for the model to populate). Fixed: `allergens` is now
+  // UNCONDITIONALLY stripped from whatever the payload carries and refilled
+  // ONLY from the resolved product — a resolution miss leaves it absent
+  // (never falls back to the stripped value), so `requireExplicitAllergens`
+  // correctly REFUSEs rather than trusting an unverified array. `variantId`
+  // keeps its original conditional-preserve behavior (an explicit, non-NL
+  // variantId is a legitimate non-model input elsewhere — see "does not
+  // override an explicit variantId"); only `allergens` is in this review's
+  // "same one-line class" scope.
+  if (kind === "order.item.add" || kind === "order.amend.add_item") {
     const needsVariant = typeof out.variantId !== "string";
-    const needsAllergens = !Array.isArray(out.allergens);
-    if (needsVariant || needsAllergens) {
-      const name = firstString(out.item, out.product, out.productName, out.name, out.query);
-      if (name) {
-        const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
-        if (resolved !== undefined) {
-          if (needsVariant && resolved.variantId !== undefined) {
-            out = { ...out, variantId: resolved.variantId };
-          }
-          if (needsAllergens && Array.isArray(resolved.allergens)) {
-            out = { ...out, allergens: resolved.allergens };
-          }
+    const { allergens: _modelSuppliedAllergens, ...strippedOfAllergens } = out;
+    out = strippedOfAllergens;
+    const name = firstString(out.item, out.product, out.productName, out.name, out.query);
+    if (name) {
+      const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
+      if (resolved !== undefined) {
+        if (needsVariant && resolved.variantId !== undefined) {
+          out = { ...out, variantId: resolved.variantId };
+        }
+        if (Array.isArray(resolved.allergens)) {
+          out = { ...out, allergens: resolved.allergens };
         }
       }
     }
-    // Review B3: the 4B often emits quantity as a STRING ("2") — the old
-    // `typeof !== "number" → 1` silently rewrote "2 costelas" to quantity 1.
-    // Coerce a positive-integer string; default only when ABSENT. A present
-    // but invalid value (0, negatives, fractions, junk) is left untouched so
-    // AddToCartInputSchema refuses loudly and the customer gets a clarify —
-    // never a silently different quantity.
-    out = { ...out, quantity: coerceQuantity(out.quantity) };
+    // Review B3 + BKL-199: the 4B emits quantity as a STRING ("2") OR — the
+    // common live failure — DROPS the stated number entirely ("dois
+    // Refrigerantes"/"40 Brisket" → quantity absent → 1), silently
+    // under-delivering and making the ≥R$1k confirm band unreachable.
+    // `deriveItemQuantity` recovers the customer's stated count deterministically
+    // from their own words (the NL→variantId discipline for the integer), with
+    // coerceQuantity's string-coerce/default-1 as the fall-through. A present
+    // but invalid value with no parseable NL quantity is still left untouched so
+    // AddToCartInputSchema refuses loudly — never a silently different quantity.
+    out = { ...out, quantity: deriveItemQuantity(out.quantity, name, utteranceText) };
+    // FE-D18 — no-match honesty floor for the amend path. The cart sibling
+    // order.item.add already REFUSEs honestly on an unresolvable item (it is
+    // NOT in AUTORESOLVE_CONFIRM_KINDS → immediate adjudication → the
+    // allergens-absent requireExplicitAllergens REFUSE). order.amend.add_item
+    // IS in that set, so confirmOnAutoResolveGuard would otherwise park a
+    // doomed envelope — no variantId, no allergens — behind a found-implying
+    // "Confirma?" prompt, and the kernel only REFUSEs it on resume. Stamp the
+    // ctx flag `refuseUnresolvedAmendItemGuard` (compose-policy-packs.ts) reads
+    // to REFUSE pre-park with an honest "não encontrei esse item" reply.
+    // Fires ONLY on this stamped-flag path: variantId still absent after
+    // hydration (name absent, no catalog match, or the lexical-overlap floor
+    // refused an arbitrary Typesense hit). An explicit non-model variantId
+    // (needsVariant was false) — including the resolved variantId the resume
+    // leg carries — leaves variantId present, so the flag is never stamped and
+    // the resume re-adjudicates normally.
+    if (kind === "order.amend.add_item" && typeof out.variantId !== "string") {
+      ctx.amendItemUnresolved = true;
+    }
+  }
+  // FE-T09 (D-a) — order.amend.update_qty / order.amend.remove_item: resolve
+  // the model's NL `item` reference against the LIVE order's line items
+  // (never a catalog-wide guess) via `resolveOrderLineItem`, mirroring
+  // amend-order.ts's existing title-match semantics with two safety
+  // upgrades over the legacy exact-first-match: zero matches leave itemId
+  // unresolved so the executor reports an honest not-found (never executing
+  // against a guessed line); MULTIPLE matches stamp `itemAmbiguousCount` on
+  // the payload (never `ctx.autoResolvedMoneyRef` — see the docblock on
+  // `resolveOrderLineItem` for why that would be dishonest here) so the
+  // executor can surface a specific disambiguation reply instead of
+  // guessing between e.g. two "coca" lines. Requires orderId to already be
+  // present (resolved above).
+  if (
+    (kind === "order.amend.update_qty" || kind === "order.amend.remove_item") &&
+    typeof out.itemId !== "string" &&
+    typeof out.orderId === "string"
+  ) {
+    const orderId = out.orderId;
+    // Always decided fresh below (found/ambiguous/not_found) — never
+    // preserved from a pre-existing value, so there is nothing here for an
+    // adversarial completion to smuggle in and have survive unexamined.
+    const { itemAmbiguousCount: _staleAmbiguousCount, ...strippedOfAmbiguity } = out;
+    out = strippedOfAmbiguity;
+    const name = firstString(out.item, out.product, out.name, out.query);
+    if (name) {
+      const resolution = await resolveOrderLineItem(orderId, name, customerId, channel, sessionId);
+      if (resolution.kind === "found") {
+        out = { ...out, itemId: resolution.itemId };
+      } else if (resolution.kind === "ambiguous") {
+        out = { ...out, itemAmbiguousCount: resolution.count };
+      }
+      // resolution.kind === "not_found": itemId stays unresolved — the
+      // executor reports an honest not-found rather than guessing.
+    }
+    if (kind === "order.amend.update_qty") {
+      out = { ...out, quantity: coerceQuantity(out.quantity) };
+    }
+  }
+  // FE-T14 — order.item.update / order.item.remove: same NL→itemId shape as
+  // the granular amend block above, but resolved against the ACTIVE CART
+  // (resolveCartLineItem) rather than a placed order — `update_cart`/
+  // `remove_from_cart`'s wire schema requires a real Medusa cart line-item
+  // id, and the extraction schema only ever gives the model a loose NL
+  // `item` reference (identifiers are model-forbidden). Requires cartId to
+  // already be present (threaded above by the `kind.startsWith("order.")`
+  // block).
+  if (
+    (kind === "order.item.update" || kind === "order.item.remove") &&
+    typeof out.itemId !== "string" &&
+    typeof out.cartId === "string"
+  ) {
+    const cartId = out.cartId;
+    const { itemAmbiguousCount: _staleAmbiguousCount, ...strippedOfAmbiguity } = out;
+    out = strippedOfAmbiguity;
+    const name = firstString(out.item, out.product, out.name, out.query);
+    if (name) {
+      const resolution = await resolveCartLineItem(cartId, name, channel, sessionId, customerId);
+      if (resolution.kind === "found") {
+        out = { ...out, itemId: resolution.itemId };
+      } else if (resolution.kind === "ambiguous") {
+        out = { ...out, itemAmbiguousCount: resolution.count };
+      }
+      // resolution.kind === "not_found": itemId stays unresolved — the
+      // executor reports an honest not-found rather than guessing.
+    }
+    if (kind === "order.item.update") {
+      out = { ...out, quantity: coerceQuantity(out.quantity) };
+    }
+  }
+  // FE-D28 — order.review.submit: resolve the (Identity-class) productId from
+  // the reviewed order's OWN line items (a purchase-bound review), keyed off the
+  // model's optional NL `item` reference. orderId was already resolved by
+  // applyAutoResolve's review special-case (resolveCustomerOrderReference — an
+  // explicit `orderReference` display number or the most-recent fallback). A
+  // single-product order resolves without an item reference; a multi-product
+  // order needs one. NEVER guesses: an ambiguous/no-match resolution leaves
+  // productId unset AND stamps `ctx.reviewProductUnresolved`, so the kernel
+  // REFUSEs honestly (refuseUnresolvedReviewProductGuard, compose-policy-packs.ts)
+  // rather than parking a doomed "Confirma?" behind confirmOnAutoResolveGuard —
+  // the same honest-floor posture as order.amend.add_item's FE-D18 guard. The
+  // model's `item`/`orderReference` reference fields ride along unstripped (the
+  // wire tool's SubmitReviewInputSchema.parse drops them from the Prisma write);
+  // keeping them mirrors the granular-amend `item` precedent and preserves the
+  // audited extraction IR. When orderId did NOT resolve, the flag is left unset
+  // so requireOrderIdForMutation surfaces the specific "which order?" reply.
+  if (
+    kind === "order.review.submit" &&
+    typeof out.productId !== "string" &&
+    typeof out.orderId === "string"
+  ) {
+    const name = firstString(out.item, out.product, out.name, out.query);
+    const resolution = await resolveReviewedProduct(out.orderId, name, customerId);
+    if (resolution.kind === "found") {
+      out = { ...out, productId: resolution.productId };
+    } else {
+      ctx.reviewProductUnresolved = true;
+    }
+  }
+  // FE-T14 — customer.preferences.update: `allergenExclusions` is REQUIRED
+  // on the wire (`CustomerPreferencesUpdatePayload`) and the executor
+  // (update-preferences.ts) hard-REFUSEs when it is not an explicit array —
+  // but it is NEVER on this capability's extraction schema (safety-critical,
+  // Hard Rule #1: allergens are never model-inferred from conversation
+  // text). UNCONDITIONALLY stripped from whatever the payload carries
+  // (mirroring the order.item.add allergens precedent above — a smuggled
+  // array must never survive unexamined) and refilled from the customer's
+  // CURRENT saved preferences, so an ordinary "sou vegetariano" (touching
+  // only dietaryFlags/favoriteCategories) can never silently wipe out an
+  // already-declared allergy. A customer with no saved preferences row yet
+  // defaults to `[]` (the same "no exclusions" default the domain service's
+  // own upsert path uses) — never REFUSEs the turn just because the
+  // customer never explicitly set allergens before.
+  if (kind === "customer.preferences.update") {
+    const { allergenExclusions: _modelSuppliedAllergenExclusions, ...strippedOfAllergens } = out;
+    out = strippedOfAllergens;
+    try {
+      const { customerPrefs } = await createCustomerService().getProfileData(customerId);
+      out = {
+        ...out,
+        allergenExclusions: Array.isArray(customerPrefs?.allergenExclusions)
+          ? customerPrefs.allergenExclusions
+          : [],
+      };
+    } catch {
+      // Fail-closed to the safest "no exclusions known" default rather than
+      // leaving the field unresolved — the executor REFUSEs on a missing
+      // array either way, so a transient read error degrades to the same
+      // honest REFUSE the guard already produces for a genuinely new
+      // customer, never a silent bypass.
+      out = { ...out, allergenExclusions: [] };
+    }
   }
   return out;
 }
@@ -780,6 +1984,162 @@ function coerceQuantity(raw: unknown): unknown {
     }
   }
   return raw;
+}
+
+// BKL-199 — deterministic pt-BR NL→quantity parsing for order.item.add.
+// The 4B routinely DROPS the stated number ("dois Refrigerantes" / "40 Brisket"
+// → payload quantity absent → coerceQuantity defaults to 1), so a customer
+// ordering 2/3/40 silently gets 1 — and the ≥R$1k confirm band is unreachable
+// because no big order can be built. Same discipline as NL→variantId (BKL-061):
+// never trust the model to carry the integer; derive it deterministically from
+// the customer's own words. A resolution miss falls back to today's behavior
+// (coerceQuantity → 1), so this is a strict, safe superset.
+
+/** Accent-stripped pt-BR cardinals (normalizeTokens folds diacritics). A chat
+ *  order of one line item beyond ~twenty is implausible; digits cover the rest. */
+const PT_BR_CARDINALS: Readonly<Record<string, number>> = {
+  um: 1, uma: 1, dois: 2, duas: 2, tres: 3, quatro: 4, cinco: 5, seis: 6,
+  sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12, treze: 13,
+  catorze: 14, quatorze: 14, quinze: 15, dezesseis: 16, dezessete: 17,
+  dezoito: 18, dezenove: 19, vinte: 20,
+};
+
+// A parsed quantity above this is far likelier a misparse (a size/volume/price
+// token — "600" in "600ml") than a real per-line count, so it is NOT treated as
+// a quantity (falls back to the model value / default). "40 brisket" stays legit.
+const MAX_NL_QUANTITY = 99;
+
+/** Parse a single normalized token as a quantity: a pt-BR cardinal word, a bare
+ *  1-2 digit number, or an "Nx"/"xN" form. Returns undefined for anything else
+ *  or an out-of-range value. */
+function quantityFromToken(token: string): number | undefined {
+  const cardinal = PT_BR_CARDINALS[token];
+  if (cardinal !== undefined) return cardinal;
+  const digit = /^(\d{1,2})$/.exec(token) ?? /^(\d{1,2})x$/.exec(token) ?? /^x(\d{1,2})$/.exec(token);
+  if (digit) {
+    const n = Number.parseInt(digit[1]!, 10);
+    if (n >= 1 && n <= MAX_NL_QUANTITY) return n;
+  }
+  return undefined;
+}
+
+/** First quantity token anywhere in a SHORT phrase (the model's item reference —
+ *  e.g. "dois refrigerantes", "40 brisket", "2x farofa"). */
+function quantityInPhrase(phrase: string): number | undefined {
+  for (const tok of normalizeTokens(phrase)) {
+    const q = quantityFromToken(tok);
+    if (q !== undefined) return q;
+  }
+  return undefined;
+}
+
+/** Reference-position stopwords: skipped when locating the item head noun so a
+ *  quantity in the "N [de] ITEM" slot is still adjacent. */
+const ITEM_REF_STOPWORDS: ReadonlySet<string> = new Set([
+  "o", "a", "os", "as", "um", "uma", "de", "do", "da", "dos", "das", "mais",
+]);
+
+/** Locate the item's head noun in the full utterance and read the quantity in
+ *  the slot immediately before it (up to 2 tokens back, skipping stopwords). This
+ *  catches the common case where the model stripped the number from `item`
+ *  ("40 brisket" → item "brisket") but the utterance still says "…40 brisket…".
+ *  Position-bounded so an unrelated number ("600ml") never counts. */
+function quantityBeforeItem(utterance: string, itemRef: string): number | undefined {
+  const uttTokens = normalizeTokens(utterance);
+  const headTokens = normalizeTokens(itemRef).filter((t) => !ITEM_REF_STOPWORDS.has(t));
+  if (uttTokens.length === 0 || headTokens.length === 0) return undefined;
+  const head = headTokens[0]!;
+  // Forgiving match (singular/plural: item "refrigerante" vs utterance
+  // "refrigerantes") — substring both ways for content words ≥3 chars, exact
+  // otherwise (a 1-2 char token would over-match). Mirrors resolveReviewedProduct.
+  const matches = (t: string): boolean =>
+    head.length >= 3 ? t.includes(head) || head.includes(t) : t === head;
+  const idx = uttTokens.findIndex(matches);
+  if (idx <= 0) return undefined;
+  // Nearest first: the token right before the noun, then one more back past a stopword.
+  for (let back = 1; back <= 2 && idx - back >= 0; back++) {
+    const tok = uttTokens[idx - back]!;
+    const q = quantityFromToken(tok);
+    if (q !== undefined) return q;
+    if (!ITEM_REF_STOPWORDS.has(tok)) break; // a non-stopword, non-quantity token ends the slot
+  }
+  return undefined;
+}
+
+/** BKL-199 — resolve order.item.add quantity: the customer's stated number wins
+ *  over the model's (dropped) emission. Try the model's item phrase, then the
+ *  utterance adjacent to the item; only fall back to coerceQuantity (string
+ *  coerce / default 1) when the customer stated no parseable quantity. */
+function deriveItemQuantity(
+  modelQuantity: unknown,
+  itemRef: string | undefined,
+  utteranceText: string | undefined,
+): unknown {
+  if (itemRef) {
+    const inPhrase = quantityInPhrase(itemRef);
+    if (inPhrase !== undefined) return inPhrase;
+    if (utteranceText) {
+      const adjacent = quantityBeforeItem(utteranceText, itemRef);
+      if (adjacent !== undefined) return adjacent;
+    }
+  }
+  return coerceQuantity(modelQuantity);
+}
+
+/** Party-size head nouns a "para N pessoas" phrase attaches to. */
+const PARTY_SIZE_NOUNS: readonly string[] = [
+  "pessoas", "pessoa", "lugares", "lugar", "convidados", "convidado", "gente",
+];
+
+/** Change-target prepositions: the count that follows one is the NEW party size
+ *  ("muda para 4 pessoas"). A count after "de"/"da"/"do" is the CURRENT/descriptive
+ *  size ("muda a reserva DE 4 pessoas para as 20h") — must NOT be treated as the
+ *  new value, so a time-only modify is never corrupted into a party-size change. */
+const PARTY_SIZE_TARGET_PREPOSITIONS: ReadonlySet<string> = new Set(["para", "pra", "pro"]);
+const PARTY_SIZE_SKIP_BEFORE_COUNT: ReadonlySet<string> = new Set([
+  "as", "os", "a", "o", "de", "da", "do",
+]);
+
+/** BKL-227 — recover a reservation party-size the model DROPPED. Same class as
+ *  BKL-199's item quantity: the 4B emits `reservation.modify` for "muda minha
+ *  reserva para 4 pessoas" but leaves `newPartySize` unset, so the modify EXECUTEs
+ *  as a NO-OP (nothing changes). Scan for a party-size head noun, read the count in
+ *  the slot before it, and accept it ONLY when governed by a change-target
+ *  preposition ("para"/"pra") — never a "de N pessoas" descriptive/current mention.
+ *  Reservation party range is 1–20; a match outside it is ignored. */
+function partySizeFromUtterance(utterance: string | undefined): number | undefined {
+  if (!utterance) return undefined;
+  const toks = normalizeTokens(utterance);
+  for (let i = 1; i < toks.length; i++) {
+    if (!PARTY_SIZE_NOUNS.includes(toks[i]!)) continue;
+    // Walk back to the count immediately before the noun, skipping filler
+    // ("para 4 [as] pessoas"). Track the token governing the count.
+    let j = i - 1;
+    while (j >= 0 && PARTY_SIZE_SKIP_BEFORE_COUNT.has(toks[j]!) && quantityFromToken(toks[j]!) === undefined) j--;
+    if (j < 0) continue;
+    const n = quantityFromToken(toks[j]!);
+    if (n === undefined || n < 1 || n > 20) continue;
+    // Require a change-target preposition somewhere in the two tokens before the
+    // count (allows "para 4 pessoas" and "para as 4 pessoas"); reject "de 4 pessoas".
+    const governing = [toks[j - 1], toks[j - 2]].filter((x): x is string => x !== undefined);
+    if (governing.some((g) => PARTY_SIZE_TARGET_PREPOSITIONS.has(g))) return n;
+    if (governing.some((g) => g === "de" || g === "da" || g === "do")) continue;
+    // No explicit preposition ("reserva 4 pessoas") — accept (the common bare form).
+    return n;
+  }
+  return undefined;
+}
+
+/** BKL-227 — for reservation.modify only, stamp a utterance-recovered
+ *  `newPartySize` when the model didn't emit one, so the change actually applies.
+ *  Byte-identical for every other kind and whenever the model DID emit the field
+ *  (its value wins) or the utterance carries no parseable party size. */
+function recoverModifyPartySize(kind: string, payload: Ctx, utteranceText: string | undefined): Ctx {
+  if (kind !== "reservation.modify") return payload;
+  if (typeof payload.newPartySize === "number") return payload;
+  const n = partySizeFromUtterance(utteranceText);
+  if (n === undefined) return payload;
+  return { ...payload, newPartySize: n };
 }
 
 /**
@@ -824,7 +2184,7 @@ async function loadCtxForKind(
  * (guards needing entity state see null → REFUSE cleanly, never panic).
  */
 export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledResolution> {
-  const { kind, payload, customerId, channel, sessionId } = args;
+  const { kind, payload, customerId, channel, sessionId, utteranceText } = args;
   const base = identityCtx(customerId, channel);
   base.sessionTokensConsumed = await readSessionTokensConsumed(channel, customerId);
 
@@ -833,10 +2193,27 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   const agentTokens = await readAgentSessionTokens(channel, sessionId);
   if (agentTokens !== undefined) base.agentTokensConsumed = agentTokens;
 
+  // FE-T12/FE-T14 — wire→internal field renames, first and unconditional
+  // (no dependency on auto-resolve/ownership). Every rename is independent
+  // on the SAME payload — order between them doesn't matter (each only
+  // touches its own key(s), and each is a no-op for every OTHER kind).
+  const normalizedPayload = recoverModifyPartySize(
+    kind,
+    mapPreferencesUpdateWireFields(
+      kind,
+      mapCheckoutDeliveryTypeWireField(kind, mapCheckoutPaymentMethodWireField(kind, payload)),
+    ),
+    utteranceText,
+  );
+
   // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.
-  const auto = await applyAutoResolve(kind, payload, customerId);
+  const auto = await applyAutoResolve(kind, normalizedPayload, customerId);
   const autoResolvedMoneyRef = auto.autoResolvedMoneyRef;
-  const resolvedPayload = await bindRefundOwnership(kind, auto.payload);
+  const boundPayload = await bindRefundOwnership(kind, auto.payload);
+  // FE-D27 — ground an NL date/time to a REAL timeSlotId (create/waitlist) or
+  // newTimeSlotId (modify) when no listed slot was chosen. Runs AFTER applyAutoResolve
+  // so a modify's reservationId (its party-size source) is already resolved.
+  const resolvedPayload = await resolveReservationSlot(kind, boundPayload, customerId);
 
   const orderId =
     typeof resolvedPayload.orderId === "string" ? resolvedPayload.orderId : null;
@@ -851,6 +2228,16 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   );
 
   if (autoResolvedMoneyRef) ctx.autoResolvedMoneyRef = true;
+
+  // FE-T14 — stamp the allergen-mention ctx flag `refuseAllergenMentionGuard`
+  // (compose-policy-packs.ts, an ADOPTER business guard) reads to REFUSE an
+  // allergen-shaped customer.preferences.update honestly, rather than let
+  // the unconditional allergenExclusions strip+refill above silently
+  // succeed as a no-op on exactly the turn where the customer asked to
+  // change their allergies.
+  if (kind === "customer.preferences.update" && isAllergenMentionUtterance(utteranceText)) {
+    ctx.allergenMentionDetected = true;
+  }
 
   // 034-F1: the ownership-confirmed resource set for the kernel authority graph.
   // ONLY ids the customer-scoped load actually returned (resourceOwnerConfirmed)
@@ -880,6 +2267,7 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
     customerId,
     channel,
     sessionId,
+    utteranceText,
   );
 
   return { payload: threadedPayload, ctx, owned, ownershipIndeterminate };

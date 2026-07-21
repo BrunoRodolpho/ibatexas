@@ -5,24 +5,29 @@
  * never sees MUTATING tools (CLAUDE.md rule #9); MUTATING calls are
  * captured as `IntentEnvelope`s and adjudicated through the kernel.
  *
- * This Pack's MUTATING surface is wholly LLM-invisible. The WhatsApp
- * channel-level intents (`whatsapp.message.send`,
- * `whatsapp.template.send`, `whatsapp.session.handover`) are emitted
- * by:
+ * The WhatsApp system-emitted intents (`whatsapp.session.handover`,
+ * `conversation.message.append`) stay wholly LLM-invisible — they are
+ * emitted by:
  *
- *   - the `cart-intelligence` NATS subscriber (templated outreach),
  *   - the `handoff-subscriber` (session handover),
- *   - the `notification.send` subscriber (templated customer messages),
+ *   - the conversation-archiver subscriber (message append),
  *
- * none of which are LLM-proposable. The LLM's only relationship to
- * this domain is INDIRECT, via `handoff_to_human` — which is gated by
- * the `support` Pack (future work) rather than this one.
+ * neither of which is LLM-proposable. (BKL-177 retired the channel-egress
+ * kinds `whatsapp.message.send` + `whatsapp.template.send`; live egress
+ * runs through `twilio.message.send`, not this Pack.)
  *
- * The planner here therefore exposes ZERO MUTATING intents to the LLM
- * by construction; `allowedIntents` returns an empty list for every
- * session context. The `safePlan` wrap is the defence-in-depth
- * guarantee — a future regression that adds a kind to the planner's
- * MUTATING surface throws `PlanConformanceError` at boot.
+ * FE-T14 (BKL-030-activation): `whatsapp.handoff.request` IS now
+ * advertised, unconditionally, for every session context — the governed
+ * intent was fully wired (registered, policied, adjudicable) since F5/L3
+ * but withheld from the model surface pending this activation. It is the
+ * one guest-accessible verb in the whole roster
+ * (docs/architecture/design/agent-tools.md: "Auth: guest") and its own
+ * guards already treat it as always-allowed, so there is no state/context
+ * branch to gate on — "customer asks for a human" should never be blocked
+ * by session state. The `safePlan` wrap remains the defence-in-depth
+ * guarantee for every OTHER kind in this domain — a future regression
+ * that adds one of THEM to the planner's advertised surface still throws
+ * `PlanConformanceError` at boot.
  */
 
 import {
@@ -75,9 +80,10 @@ export const WHATSAPP_TOOL_TO_INTENT: Readonly<
 
 /**
  * Default planner the Pack ships. Returns zero visible read tools and
- * zero allowed intents — see module doc. The signature is preserved so
- * the Pack composes uniformly with `pack-orders` / `pack-reservations`
- * in the kernel's installation list.
+ * advertises exactly one allowed intent (`whatsapp.handoff.request`,
+ * FE-T14/BKL-030-activation), unconditionally — see module doc. The
+ * signature is preserved so the Pack composes uniformly with
+ * `pack-orders` / `pack-reservations` in the kernel's installation list.
  */
 const rawWhatsappCapabilityPlanner: CapabilityPlanner<
   WhatsAppState,
@@ -85,19 +91,13 @@ const rawWhatsappCapabilityPlanner: CapabilityPlanner<
 > = {
   plan(state, context): Plan {
     // Reference the parameters so TypeScript's `noUnusedParameters` is
-    // satisfied. They are intentionally not inspected.
+    // satisfied. They are intentionally not inspected — activation is
+    // unconditional (see module doc).
     void state
     void context
     return {
       visibleReadTools: filterReadOnly(WHATSAPP_TOOLS, []),
-      // F5/L3 (BKL-030): the governed `whatsapp.handoff.request` intent is
-      // fully wired (registered, policied, adjudicable) but NOT yet advertised
-      // to the LLM — advertising it changes the express_intent surface, which
-      // invalidates the content-addressed golden-conversation fixtures
-      // (scripted-pipeline). Activation = advertise here + regenerate those
-      // fixtures (BKL-030-activation), the same registered-but-unadvertised
-      // pattern `order.review.submit` uses.
-      allowedIntents: [],
+      allowedIntents: ["whatsapp.handoff.request"],
     }
   },
 }

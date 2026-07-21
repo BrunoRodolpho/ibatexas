@@ -81,6 +81,17 @@ export const OrderActor = {
 export type OrderActor = (typeof OrderActor)[keyof typeof OrderActor]
 
 
+export const FiscalStatus = {
+  pending: 'pending',
+  approved: 'approved',
+  rejected: 'rejected',
+  timeout: 'timeout',
+  error: 'error'
+} as const
+
+export type FiscalStatus = (typeof FiscalStatus)[keyof typeof FiscalStatus]
+
+
 export const ConversationChannel = {
   whatsapp: 'whatsapp',
   web: 'web'

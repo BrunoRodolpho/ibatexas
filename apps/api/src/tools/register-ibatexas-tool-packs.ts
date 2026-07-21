@@ -41,6 +41,7 @@ import {
   getOrCreateCart,
   handoffToHuman,
   joinWaitlist,
+  medusaAdmin,
   modifyReservation,
   regeneratePix,
   removeFromCart,
@@ -49,6 +50,7 @@ import {
   updateCart,
   updatePreferences,
 } from "@ibatexas/tools";
+import { createOrderService } from "@ibatexas/domain";
 import {
   Channel,
   type AgentContext,
@@ -62,6 +64,13 @@ import type {
   ToolDefinition as TD,
   ToolRegistry as TR,
 } from "@claustrum/core";
+// FE-4 CONTRACT (FE-T26): IBATEXAS_CAPABILITY_DESCRIPTIONS below is now
+// COMPUTED from CAPABILITY_DEFINITIONS, not from IBATEXAS_TOOLS — see its
+// own doc comment.
+import {
+  CAPABILITY_DEFINITIONS,
+  generateCapabilityDescriptions,
+} from "@ibatexas/packs-composed/capability-definitions";
 
 function asCapability(s: string): CapId {
   return s as CapId;
@@ -147,6 +156,63 @@ export function agentCtxFromCapsule(capsule: Capsule): AgentContext {
 }
 
 /**
+ * FE-T09 (D-a) — `order.amend.update_qty` / `order.amend.remove_item`'s
+ * `itemId` is now a REAL Medusa line-item id (resolve-and-assemble.ts's
+ * `resolveOrderLineItem`, resolved from the live order, never a title
+ * stand-in). `amendOrder`'s `handleUpdateQty`/`handleRemoveItem` still match
+ * by title (legacy `AmendOrderInput.itemTitle`, unchanged) — reversing the id
+ * back to a title here is a cheap live re-fetch, cheaper and lower-risk than
+ * teaching `amendOrder` an id-based path. Returns `undefined` when the id no
+ * longer resolves on this order (e.g. a stale/tampered id) — the caller turns
+ * that into an honest not-found response rather than passing an empty title
+ * through to `amendOrder`.
+ */
+/**
+ * FE-T09 review fix (post-#264) — order.amend.update_qty/remove_item: when
+ * `resolve-and-assemble.ts`'s `resolveOrderLineItem` found MULTIPLE
+ * same-titled lines on the order, it stamps `itemAmbiguousCount` on the
+ * payload instead of forcing a confirm (see that file's docblock on
+ * `resolveOrderLineItem` for why routing item-level ambiguity through the
+ * order-level auto-resolve confirm mechanism was dishonest — it implies a
+ * specific item was identified when none was, and confirming resumed into
+ * a lookup with no itemId, a dead end). Surface that as a specific, honest
+ * disambiguation reply BEFORE attempting the id→title reverse lookup below
+ * — `itemId` is unset in this case, so that lookup would just return the
+ * same generic not-found message this is avoiding.
+ */
+export function ambiguousItemReply(
+  input: unknown,
+): { success: false; message: string } | undefined {
+  const p = input as { itemAmbiguousCount?: unknown; item?: unknown };
+  if (typeof p.itemAmbiguousCount !== "number") return undefined;
+  const named =
+    typeof p.item === "string" && p.item.trim() !== "" ? ` "${p.item.trim()}"` : "";
+  return {
+    success: false,
+    message:
+      `Encontrei ${p.itemAmbiguousCount} itens${named} no pedido — qual deles? ` +
+      "Pode descrever com mais detalhes (ex.: valor ou posição no pedido)?",
+  };
+}
+
+async function resolveItemTitleForAmend(
+  orderId: string,
+  itemId: string,
+  customerId: string | undefined,
+): Promise<string | undefined> {
+  try {
+    const { order, ownershipValid } = await createOrderService(medusaAdmin).getOrder(
+      orderId,
+      customerId,
+    );
+    if (!ownershipValid) return undefined;
+    return order.items?.find((i) => i.id === itemId)?.title;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Wrap an existing ibatexas tool handler in the claustrum ToolDefinition shape.
  * The runtime hands `execute` the per-turn Capsule (typed `unknown` in the port
  * to avoid a cycle on Capsule); we narrow it here and pass the handler a derived
@@ -216,13 +282,15 @@ function makeReservationTool(opts: {
 // against its pack's `intents` array (pack-{orders,reservations,customer-
 // onboarding,payments}/src/index.ts) on the WS3 sweep.
 //
-// 18 LLM-callable mutating tools = the union of every pack CapabilityPlanner's
-// `allowedIntents` that has a `@ibatexas/tools` handler. The two payment kinds
-// that ship no handler were DE-ADVERTISED in pack-payments (P0-7) — the
+// 20 LLM-callable mutating tools (FE-T09 (D-a) replaced `order.amend.request`
+// with the three granular amend tools — net +2) = the union of every pack
+// CapabilityPlanner's `allowedIntents` that has a `@ibatexas/tools` handler.
+// The two payment kinds that ship no
+// handler were DE-ADVERTISED in pack-payments (P0-7) — the
 // context-aware leg of `toolRosterDrift()` below now fails the boot if a
 // planner ever advertises a kind with no registered tool.
 const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
-  // ── pack-orders (10) ──────────────────────────────────────────────────────
+  // ── pack-orders (12) ──────────────────────────────────────────────────────
   makeTool({
     id: "ibatexas.cart.ensure.v1",
     capability: "order.cart.ensure",
@@ -239,13 +307,36 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     riskLevel: "low",
     execute: (input, ctx) => addToCart(input as never, ctx),
   }),
+  // BKL-180 — order.cart.sync has NO registered tool: it is identity-tier/unadvertised
+  // (buildToolSurface excludes it) so the toolRosterDrift gate does not require one, and
+  // its ONLY caller (the checkout route's syncLocalCartForCheckout) adjudicates the
+  // envelope with its own inline wrapped-legacy executor. Registering an uncalled tool
+  // here would be a dead handler (the BKL-179 class). A future non-checkout caller
+  // registers a tool THEN, against whatever contract that path needs.
   makeTool({
     id: "ibatexas.cart.updateItem.v1",
     capability: "order.item.update",
     intentKind: "order.item.update",
     description: "Atualizar a quantidade de um item no carrinho.",
     riskLevel: "low",
-    execute: (input, ctx) => updateCart(input as never, ctx),
+    // FE-T14 — order.item.update's extraction schema only ever gives the
+    // model a loose NL `item` reference (identifiers are model-forbidden);
+    // resolve-and-assemble.ts's `resolveCartLineItem` resolves it against
+    // the live cart BEFORE this executor runs. Mirrors the granular amend
+    // tools' `ambiguousItemReply` handling exactly (order.amend.update_qty
+    // below) — an ambiguous or unresolved NL reference must surface an
+    // honest reply, never call `updateCart` with a missing `itemId` (which
+    // would otherwise throw a raw ZodError the customer never sees
+    // explained).
+    execute: (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return Promise.resolve(ambiguous);
+      const p = input as { itemId?: string };
+      if (typeof p.itemId !== "string") {
+        return Promise.resolve({ success: false, message: "Item não encontrado no carrinho." });
+      }
+      return updateCart(input as never, ctx);
+    },
   }),
   makeTool({
     id: "ibatexas.cart.removeItem.v1",
@@ -253,7 +344,16 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "order.item.remove",
     description: "Remover um item do carrinho do cliente.",
     riskLevel: "low",
-    execute: (input, ctx) => removeFromCart(input as never, ctx),
+    // FE-T14 — same NL→itemId resolution posture as order.item.update above.
+    execute: (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return Promise.resolve(ambiguous);
+      const p = input as { itemId?: string };
+      if (typeof p.itemId !== "string") {
+        return Promise.resolve({ success: false, message: "Item não encontrado no carrinho." });
+      }
+      return removeFromCart(input as never, ctx);
+    },
   }),
   makeTool({
     id: "ibatexas.cart.applyCoupon.v1",
@@ -281,13 +381,76 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     requiresConfirmation: true,
     execute: (input, ctx) => cancelOrder(input as never, ctx),
   }),
+  // FE-T09 (D-a, the amend inversion) — the three granular kinds became the
+  // model targets; `order.amend.request`'s tool entry is REMOVED here (it is
+  // no longer model-proposable per capabilities.ts). It stays a valid,
+  // adjudicable pack intent (ordersPack.intents[] still lists it, and its
+  // policy/guard entries are untouched) because the deterministic legacy HTTP
+  // amend route (apps/api/src/routes/order-actions.ts) builds its own
+  // envelope and calls `amendOrder()` via an inline `executor` callback,
+  // bypassing the ToolRegistry / `resolveTool` dispatch entirely — so no live
+  // caller ever resolves "order.amend.request" through this roster.
+  //
+  // Each granular executor maps its own narrow, resolver-hydrated payload
+  // onto `AmendOrderInput` (`@ibatexas/types`) and calls the SAME `amendOrder`
+  // the grouped kind already used — reusing its existing Medusa order-edit +
+  // PONR + PIX-regeneration logic rather than duplicating it. update_qty/
+  // remove_item's `itemId` is resolver-hydrated to a REAL Medusa line-item id
+  // (resolve-and-assemble.ts's `resolveOrderLineItem`, a live order fetch —
+  // never a catalog guess); `resolveItemTitleForAmend` below reverses that id
+  // back to a title here (a second cheap live fetch) because `amendOrder`'s
+  // `handleUpdateQty`/`handleRemoveItem` still match case-insensitively
+  // against the live order's titles via `AmendOrderInput.itemTitle`.
   makeTool({
-    id: "ibatexas.order.amend.v1",
-    capability: "order.amend.request",
-    intentKind: "order.amend.request",
-    description: "Solicitar alteração em um pedido já realizado.",
-    riskLevel: "medium",
-    execute: (input, ctx) => amendOrder(input as never, ctx),
+    id: "ibatexas.order.amend.addItem.v1",
+    capability: "order.amend.add_item",
+    intentKind: "order.amend.add_item",
+    description: "Adicionar um item a um pedido já feito (pós-checkout).",
+    riskLevel: "high",
+    execute: (input, ctx) => {
+      const p = input as { orderId: string; variantId: string; quantity: number };
+      return amendOrder(
+        { orderId: p.orderId, action: "add", variantId: p.variantId, quantity: p.quantity },
+        ctx,
+      );
+    },
+  }),
+  makeTool({
+    id: "ibatexas.order.amend.updateQty.v1",
+    capability: "order.amend.update_qty",
+    intentKind: "order.amend.update_qty",
+    description: "Alterar a quantidade de um item em um pedido já feito (pós-checkout).",
+    riskLevel: "high",
+    execute: async (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return ambiguous;
+      const p = input as { orderId: string; itemId: string; quantity: number };
+      const itemTitle = await resolveItemTitleForAmend(p.orderId, p.itemId, ctx.customerId);
+      if (itemTitle === undefined) {
+        return { success: false, message: "Item não encontrado no pedido." };
+      }
+      return amendOrder(
+        { orderId: p.orderId, action: "update_qty", itemTitle, quantity: p.quantity },
+        ctx,
+      );
+    },
+  }),
+  makeTool({
+    id: "ibatexas.order.amend.removeItem.v1",
+    capability: "order.amend.remove_item",
+    intentKind: "order.amend.remove_item",
+    description: "Remover um item de um pedido já feito (pós-checkout).",
+    riskLevel: "high",
+    execute: async (input, ctx) => {
+      const ambiguous = ambiguousItemReply(input);
+      if (ambiguous) return ambiguous;
+      const p = input as { orderId: string; itemId: string };
+      const itemTitle = await resolveItemTitleForAmend(p.orderId, p.itemId, ctx.customerId);
+      if (itemTitle === undefined) {
+        return { success: false, message: "Item não encontrado no pedido." };
+      }
+      return amendOrder({ orderId: p.orderId, action: "remove", itemTitle }, ctx);
+    },
   }),
   makeTool({
     id: "ibatexas.order.addNote.v1",
@@ -392,17 +555,31 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
 
 /**
  * The pt-BR capability descriptions, keyed by `capability` (=== intentKind).
- * Single-sourced from {@link IBATEXAS_TOOLS} so the prompt-fragment registry
- * (claustrum/prompts/ibatexas-prompts.ts) and the tool roster never drift.
- * This is the prompt CONTENT that, per Hard Rule #4, stays in ibatexas — the
- * PromptComposer (claustrum) owns only the SHAPE.
+ *
+ * FE-4 CONTRACT (FE-T26): COMPUTED from `CAPABILITY_DEFINITIONS.description`
+ * via `generateCapabilityDescriptions` (FE-T21) — no longer read off
+ * {@link IBATEXAS_TOOLS}'s own `description` fields. Same keys, same
+ * values (FE-T21's freshness test proved byte-identity before this
+ * repoint; both sources described the same 18 tools). This is the prompt
+ * CONTENT that, per Hard Rule #4, stays in ibatexas — the PromptComposer
+ * (claustrum) owns only the SHAPE; see `claustrum/prompts/ibatexas-
+ * prompts.ts`'s `ibatexasPromptFragments()`, still the surviving
+ * independent check that this map correctly drives the real rendered
+ * prompt fragments (`claustrum/prompts/__tests__/ibatexas-prompts.
+ * capability-fragments.test.ts`).
+ *
+ * NOTE (accepted, recorded — see docs/architecture/design/fe4-drift-
+ * gates.md): each `makeTool({...description: "..."})` call below STILL
+ * carries its own inline `description` literal on the `TD` object (kept —
+ * `@claustrum/core`'s `ToolDefinition` may consume it internally, and nothing
+ * here proves it never will), but this map no longer reads from it. The two
+ * are DECOUPLED as of this repoint — previously "single-sourced from
+ * IBATEXAS_TOOLS" made them identical by construction; now a divergence
+ * between a tool's inline `description` and `CAPABILITY_DEFINITIONS`'s
+ * `description` for the same kind would go unnoticed by this file alone.
  */
 export const IBATEXAS_CAPABILITY_DESCRIPTIONS: Readonly<Record<string, string>> =
-  Object.freeze(
-    Object.fromEntries(
-      IBATEXAS_TOOLS.map((t) => [String(t.capability), t.description]),
-    ),
-  );
+  generateCapabilityDescriptions(CAPABILITY_DEFINITIONS);
 
 /**
  * Register all ibatexas tool packs onto the conductor's tool registry.
@@ -447,23 +624,54 @@ export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
  * (the planner would emit the envelope, the kernel would adjudicate it, and
  * dispatchDecision would `tool_unresolved` on EXECUTE). This is exactly the
  * dangle `payment.method.switch` / `payment.retry` shipped before P0-7
- * de-advertised them. The documented staff-chat exception is whitelisted
- * (see ADVERTISED_NOT_REGISTERED_WHITELIST); registered-but-unadvertised
- * kinds are WARN-only via `options.onWarn` — unreachable via chat is dead
- * weight, never a dispatch failure (`order.review.submit` is the known case:
- * the orders planner never advertises it; reviews arrive via the web flow).
+ * de-advertised them. The documented staff-chat exception (`reservation.
+ * checkin`/`.complete`, the 9 ops-plane verbs) is now SURFACE-DERIVED
+ * (FE-T22) — see `options.chatSurfacedKinds` — rather than a hand-maintained
+ * per-`(context, kind)` whitelist: a kind advertised-but-unregistered under a
+ * `chatSurfaceExempt` probe (today just `"staff"` — see `RosterDriftContext.
+ * chatSurfaceExempt`) is EXPECTED (not drift) precisely when it is not meant
+ * to be chat-surfaced at all, and `CapabilityDefinition.surfaces` is the
+ * data that already says so. Every OTHER probe (`"authed-customer"` today)
+ * stays STRICT regardless of `chatSurfacedKinds` — this is the P0-7
+ * fail-closed floor the leg exists to enforce, and it must not be silently
+ * widened by an exemption meant only for the staff/ops plane. Registered-
+ * but-unadvertised kinds are WARN-only via `options.onWarn` — unreachable
+ * via chat is dead weight, never a dispatch failure. As of FE-D28 there is no
+ * such kind (`order.review.submit`, the former example, is now advertised by
+ * the orders planner); the WARN path stays for any future registered-but-
+ * unadvertised capability.
  *
- * Pure: the caller supplies the pack intent union AND the planners (the
- * registrar deliberately does not import `@ibatexas/pack-*` /
- * `@ibatexas/packs-composed` to stay dependency-light). Returns a list of
- * human-readable problems; empty array means the roster is healthy.
+ * Pure: the caller supplies the pack intent union, the planners, AND the
+ * chat-surfaced-kinds set (the registrar deliberately does not import
+ * `@ibatexas/pack-*` / `@ibatexas/packs-composed` to stay dependency-light —
+ * `apps/api/src/claustrum-bootstrap.ts` builds `chatSurfacedKinds` from
+ * `@ibatexas/packs-composed/capability-definitions` and passes it in, exactly
+ * like it already does for `planners`). Returns a list of human-readable
+ * problems; empty array means the roster is healthy.
  */
 export interface RosterDriftContext {
-  /** Stable name used in problem messages and the whitelist keys. */
+  /** Stable name used in problem messages. */
   readonly name: string;
   /** The (state, context) pair fed to each CapabilityPlanner.plan(). */
   readonly state: unknown;
   readonly context: unknown;
+  /**
+   * FE-T22 (post-review fix) — whether `options.chatSurfacedKinds` may
+   * exempt an advertised-but-unregistered kind under THIS probe. The retired
+   * `ADVERTISED_NOT_REGISTERED_WHITELIST` was keyed `<context>:<kind>`, and
+   * ALL 10 of its entries were `staff:<kind>` — the customer-facing probe
+   * never had an exemption. `chatSurfacedKinds` on its own is
+   * context-independent (it is just "the set of kinds meant to be
+   * chat-surfaced"), so without this flag it would ALSO exempt a
+   * non-chat-surfaced kind advertised under a customer-facing probe —
+   * silently defeating the P0-7 floor this gate exists to enforce (e.g. a
+   * future re-advertisement of `payment.method.switch` to authed customers,
+   * exactly the class of dangle P0-7 de-advertised, would go unflagged).
+   * Defaults to `false` (unset) — strict by default; only `ROSTER_DRIFT_
+   * CONTEXTS`'s `"staff"` entry opts in, mirroring the old whitelist's
+   * exclusively-staff coverage exactly.
+   */
+  readonly chatSurfaceExempt?: boolean;
 }
 
 /** Mirror of the union ctx shape `deriveIbatexasPlannerContext` builds. */
@@ -513,84 +721,31 @@ export const ROSTER_DRIFT_CONTEXTS: ReadonlyArray<RosterDriftContext> = [
       isAuthenticated: false,
     }),
     context: {},
+    // FE-T22: the ONLY context the chatSurfacedKinds exemption applies
+    // under — matches the retired whitelist, whose 10 entries were ALL
+    // staff:<kind> pairs. See RosterDriftContext.chatSurfaceExempt's doc.
+    chatSurfaceExempt: true,
   },
 ];
 
-// Documented staff-chat exception, keyed `<context>:<kind>`:
-// `reservation.checkin` / `reservation.complete` are STAFF-ROUTE-ONLY BY
-// DESIGN — the live chat planner pins staffId:null so neither is ever
-// proposable via chat, and the admin routes build their envelopes directly
-// (never through this tool registry). The reservations pack still advertises
-// them for a staff session (the pack ships the capability for adopters with
-// a staff chat surface), so under the synthetic "staff" probe they are
-// advertised-but-unregistered — EXPECTED, not drift.
-const ADVERTISED_NOT_REGISTERED_WHITELIST: ReadonlySet<string> = new Set([
-  "staff:reservation.checkin",
-  "staff:reservation.complete",
-  // NEW-032 slice C1: `product.availability.set` is the @ibatexas/pack-ops
-  // staff-plane verb. Its planner advertises it under the synthetic staff
-  // probe (staffId set), but it is NOT a chat tool — the ops persona proposes
-  // it through the future ops conductor, never the customer/LLM chat surface,
-  // so it has no registered chat tool. Advertised-but-unregistered here is
-  // EXPECTED, not drift — same rationale as the reservation staff kinds above.
-  "staff:product.availability.set",
-  // NEW-004: `product.price.set` (the price-change-by-message verb) — same
-  // posture as `product.availability.set`. Advertised by the ops planner under
-  // the staff probe, proposed through the OPS conductor + registered in the OPS
-  // tool registry, NEVER the customer/LLM chat surface (absent from
-  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:product.price.set",
-  // SCN-114: `menu.special.set` (the daily-special-by-message verb) — same
-  // posture as `product.price.set`. Advertised by the ops planner under the staff
-  // probe, proposed through the OPS conductor + registered in the OPS tool
-  // registry, NEVER the customer/LLM chat surface (absent from
-  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:menu.special.set",
-  // BKL-090: `order.status.transition` (the kitchen-advance verb) is now
-  // advertised by the ops planner under the staff probe (owned by pack-orders,
-  // routed via composition). Like `product.availability.set`, it is a
-  // STAFF/OPS-plane verb proposed through the OPS conductor + registered in the
-  // OPS tool registry — NEVER the customer/LLM chat surface, so it has no
-  // registered CHAT tool. Advertised-but-unregistered on the chat roster is
-  // EXPECTED, not drift. (The ops-plane drift parity gate,
-  // `opsPlaneDriftProblems`, separately verifies it IS registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:order.status.transition",
-  // BKL-085: `payment.refund.issue` (the refunds-by-message verb) is advertised
-  // by the ops planner under the staff probe (owned by pack-payments, routed via
-  // composition). Like the two order kinds above, it is a STAFF/OPS-plane money
-  // verb proposed through the OPS conductor + registered in the OPS tool registry
-  // — NEVER the customer/LLM chat surface (it is deliberately absent from
-  // CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  "staff:payment.refund.issue",
-  // BKL-088: `ops.alert.resolve.staff` + `incident.ticket.close.staff` (the
-  // two OWNED ops-plane RESOLUTION verbs) are advertised by the ops planner
-  // under the staff probe. Like `product.availability.set`, they are OPS-plane
-  // verbs proposed through the OPS conductor + registered in the OPS tool
-  // registry — NEVER the customer/LLM chat surface (absent from
-  // CHAT_DRIVABLE_TOOL_KINDS), so they have no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  // (`opsPlaneDriftProblems` separately verifies they ARE registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:ops.alert.resolve.staff",
-  "staff:incident.ticket.close.staff",
-  // SCN-127: `schedule.override.set` (the schedule-override-by-message verb) is
-  // advertised by the ops planner under the staff probe. Like the other OWNED
-  // ops verbs it is a STAFF/OPS-plane verb proposed through the OPS conductor +
-  // registered in the OPS tool registry — NEVER the customer/LLM chat surface
-  // (absent from CHAT_DRIVABLE_TOOL_KINDS), so it has no registered CHAT tool.
-  // Advertised-but-unregistered on the chat roster is EXPECTED, not drift.
-  // (`opsPlaneDriftProblems` separately verifies it IS registered on the OPS
-  // registry with capability===intentKind.)
-  "staff:schedule.override.set",
-]);
+// FE-T22 — ADVERTISED_NOT_REGISTERED_WHITELIST RETIRED. It used to hand-list
+// 10 `<context>:<kind>` pairs (reservation.checkin/.complete under "staff", +
+// 8 ops-plane verbs under "staff") that are advertised-but-unregistered BY
+// DESIGN — every one of them a STAFF/OPS-plane verb never meant to be
+// chat-surfaced at all (`product.availability.set` etc. are "Chat-INVISIBLE
+// by construction", per pack-ops's own module doc). `CapabilityDefinition.
+// surfaces` (FE-4.1 — "surfaces is modeled as data") already says so for
+// every one of those 10 kinds: none of them is `tier: "chat"`, so none
+// carries `"chat"` in `surfaces`. `checkAdvertisedAgainstRegistered` below
+// now takes that as an explicit `chatSurfacedKinds` input (see
+// `ToolRosterDriftOptions`), CONTEXT-SCOPED to `chatSurfaceExempt` probes
+// (post-review fix — `chatSurfacedKinds` alone is context-independent, and
+// ALL 10 retired pairs were `staff:<kind>`; a customer-facing probe must
+// stay strict, never gaining an exemption it never had) instead of the
+// hand-maintained per-pair enumeration. Verified byte-for-byte equivalent to
+// the retired whitelist (all 10 pre-deletion pairs pinned as literals and
+// proven still-exempt UNDER STAFF, still-flagged under authed-customer) in
+// apps/api/src/__tests__/tool-roster-integrity.test.ts.
 
 export interface ToolRosterDriftOptions {
   /**
@@ -606,6 +761,37 @@ export interface ToolRosterDriftOptions {
    * to the returned problems. Defaults to console.warn.
    */
   readonly onWarn?: (message: string) => void;
+  /**
+   * FE-T22 — the kinds meant to be chat-surfaced (i.e. `CapabilityDefinition.
+   * surfaces` includes `"chat"` for a `tier: "chat"` instance — in practice
+   * this is `CHAT_DRIVABLE_TOOL_KINDS`'s membership). Replaces the retired
+   * `ADVERTISED_NOT_REGISTERED_WHITELIST`: a kind advertised-but-unregistered
+   * under a `chatSurfaceExempt` probe (see `RosterDriftContext.
+   * chatSurfaceExempt` — today just `"staff"`, matching every one of the
+   * retired whitelist's 10 entries) is EXPECTED (not a problem) precisely
+   * when it is NOT in this set. This set is, by itself, CONTEXT-INDEPENDENT
+   * (just "the kinds meant to be chat-surfaced") — it is `RosterDriftContext.
+   * chatSurfaceExempt` that scopes WHERE the exemption is allowed to apply.
+   * Under a non-exempt probe (`"authed-customer"` today) this set is
+   * ignored entirely — every advertised-but-unregistered kind there is
+   * ALWAYS a problem (post-review fix: an earlier version of this option
+   * exempted by kind alone, regardless of probe, which would have silently
+   * widened the customer-facing P0-7 floor the leg exists to enforce).
+   *
+   * `undefined` (the default) means NO exemption is granted under ANY probe
+   * — every advertised-but-unregistered kind is a problem, matching this
+   * leg's pre-FE-T22 behavior for any caller that does not opt in (e.g.
+   * `opsPlaneDriftProblems` in `ops/ops-conductor.ts`, which never needs the
+   * exemption: every kind its `opsCapabilityPlanner` advertises IS registered
+   * in the OPS tool registry by construction — see `opsPlaneDriftProblems`'s
+   * own doc). The real chat-registry boot call
+   * (`apps/api/src/claustrum-bootstrap.ts`) supplies it, built from
+   * `@ibatexas/packs-composed/capability-definitions`'s
+   * `generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)` — the registrar
+   * itself still does not import packs-composed (stays dependency-light);
+   * the caller computes and injects the set, exactly like `planners`.
+   */
+  readonly chatSurfacedKinds?: ReadonlySet<string>;
 }
 
 /**
@@ -653,13 +839,16 @@ function advertisedKindsForProbe(
 /**
  * Context-aware leg (P0-7): `advertised ⊆ registered` per named context. Returns
  * a problem per dangling advertised kind; emits WARN (never a problem) for
- * registered-but-unadvertised kinds via `onWarn`.
+ * registered-but-unadvertised kinds via `onWarn`. `chatSurfacedKinds`
+ * (FE-T22) replaces the retired `ADVERTISED_NOT_REGISTERED_WHITELIST` — see
+ * `ToolRosterDriftOptions.chatSurfacedKinds`'s doc for the full contract.
  */
 function checkAdvertisedAgainstRegistered(
   tools: ReadonlyArray<TD<unknown, unknown>>,
   planners: ReadonlyArray<CapabilityPlanner<unknown, unknown>>,
   contexts: ReadonlyArray<RosterDriftContext>,
   onWarn: (message: string) => void,
+  chatSurfacedKinds: ReadonlySet<string> | undefined,
 ): string[] {
   const problems: string[] = [];
   // Registration is keyed by `capability` (resolveTool matches it against
@@ -673,7 +862,18 @@ function checkAdvertisedAgainstRegistered(
     for (const kind of advertised) {
       advertisedAnywhere.add(kind);
       if (registered.has(kind)) continue;
-      if (ADVERTISED_NOT_REGISTERED_WHITELIST.has(`${probe.name}:${kind}`)) {
+      // FE-T22 (post-review fix): exempt ONLY when (a) this probe opts into
+      // the exemption (probe.chatSurfaceExempt — today just "staff", see its
+      // doc) AND (b) the kind is not meant to be chat-surfaced at all
+      // (surface-derived). Every OTHER probe (authed-customer today) stays
+      // STRICT regardless of chatSurfacedKinds — an advertised-but-
+      // unregistered kind there is ALWAYS a problem, which is the P0-7
+      // fail-closed floor this gate exists to enforce.
+      if (
+        probe.chatSurfaceExempt === true &&
+        chatSurfacedKinds !== undefined &&
+        !chatSurfacedKinds.has(kind)
+      ) {
         continue;
       }
       problems.push(
@@ -710,7 +910,13 @@ export function toolRosterDrift(
     const contexts = options?.contexts ?? ROSTER_DRIFT_CONTEXTS;
     const onWarn = options?.onWarn ?? ((m: string) => console.warn(m));
     problems.push(
-      ...checkAdvertisedAgainstRegistered(tools, planners, contexts, onWarn),
+      ...checkAdvertisedAgainstRegistered(
+        tools,
+        planners,
+        contexts,
+        onWarn,
+        options?.chatSurfacedKinds,
+      ),
     );
   }
 

@@ -7,10 +7,10 @@
     "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
     "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
     "ibatexas/pack-ops": "6662a9a5147b214173d61fe9924ef53bd57ac827e832a1765a6b7b86372f74f3",
-    "ibatexas/pack-orders": "381459a63cd339577b333587bf8e3d2e0d735aaa9f6b51666e07372ba6fdb9f1",
-    "ibatexas/pack-payments": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5",
-    "ibatexas/pack-reservations": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163",
-    "ibatexas/pack-whatsapp": "a96900e0b7584d9994ebdade1d6f9de04ab749b071e3f61579cb6a349de6eb35",
+    "ibatexas/pack-orders": "90eec8caf7a2630d9063366f9a02ed36be58c83064dcf2275829c9764a56308a",
+    "ibatexas/pack-payments": "04a8422bf2588b5f82e8ae4171c6da320c689935a8fdda51c6f2e3aa2262b018",
+    "ibatexas/pack-reservations": "2ccf7b7f225947006e3b6f02832872f9a735e0389ecdc4a5d8e1bb73b622e8fe",
+    "ibatexas/pack-whatsapp": "12888c3e9e6082f4d08b8528c2917979f6666dea5d8502b93aab5e4a2026e6d5",
     "pack-payments-pix": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
   },
   "boms": [
@@ -329,7 +329,7 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "9c3ea0c6ef5915a2e3de39550ae07b4659c4fb71cd0caea251c6235d71866abd",
+      "fingerprint": "e710d98e0703ee36a1936c2d6c88f8dab2200cb183a6e5421f1de845e975e02c",
       "intents": [
         "order.address.change",
         "order.amend.add_item",
@@ -337,11 +337,11 @@
         "order.amend.request",
         "order.amend.update_qty",
         "order.cancel",
-        "order.cancel.system",
         "order.cart.ensure",
         "order.cart.sync",
         "order.checkout.create",
         "order.coupon.apply",
+        "order.fiscal.emit",
         "order.item.add",
         "order.item.remove",
         "order.item.update",
@@ -369,6 +369,8 @@
         "order.checkout.payment_method_missing",
         "order.checkout.slots_incomplete",
         "order.default.deny",
+        "order.fiscal.not_eligible",
+        "order.fiscal.retry_exceeded",
         "order.item.allergens_not_explicit",
         "order.item.quantity_invalid",
         "order.item.quantity_over_limit",
@@ -398,9 +400,6 @@
           "name": "order.cancel"
         },
         {
-          "name": "order.cancel.system"
-        },
-        {
           "name": "order.cart.ensure"
         },
         {
@@ -411,6 +410,9 @@
         },
         {
           "name": "order.coupon.apply"
+        },
+        {
+          "name": "order.fiscal.emit"
         },
         {
           "name": "order.item.add"
@@ -494,6 +496,14 @@
           "category": "order"
         },
         {
+          "basisCode": "order.fiscal.not_eligible",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.fiscal.retry_exceeded",
+          "category": "order"
+        },
+        {
           "basisCode": "order.item.allergens_not_explicit",
           "category": "order"
         },
@@ -531,7 +541,7 @@
         "total": 8,
         "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "73eaa904b01b158af438f762e20981927937990ce3142eac5bce2eacb12e6b42"
+        "reportDigest": "5dfd82cade7a0cd31eccdca0de38d3fd969074002a22c9851ab5dc1d9b559eee"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -542,7 +552,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "381459a63cd339577b333587bf8e3d2e0d735aaa9f6b51666e07372ba6fdb9f1"
+      "bomDigest": "90eec8caf7a2630d9063366f9a02ed36be58c83064dcf2275829c9764a56308a"
     },
     {
       "bomVersion": "1.0",
@@ -551,14 +561,9 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "6078379a259c7c8f01682091a7eb3a53c7490996aa5c095291656045460f328a",
+      "fingerprint": "307691484a78adc318f2385ea3c0fa15e3e915a33df6f5457cb7df4a6eb6f8bd",
       "intents": [
         "payment.cash.confirm",
-        "payment.charge.cancel",
-        "payment.charge.confirm",
-        "payment.charge.create",
-        "payment.charge.expire",
-        "payment.charge.fail",
         "payment.create",
         "payment.dispute.open",
         "payment.method.switch",
@@ -592,21 +597,6 @@
       "tools": [
         {
           "name": "payment.cash.confirm"
-        },
-        {
-          "name": "payment.charge.cancel"
-        },
-        {
-          "name": "payment.charge.confirm"
-        },
-        {
-          "name": "payment.charge.create"
-        },
-        {
-          "name": "payment.charge.expire"
-        },
-        {
-          "name": "payment.charge.fail"
         },
         {
           "name": "payment.create"
@@ -711,7 +701,7 @@
         "total": 8,
         "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "29c3a1129daec7bd9e99b5628018cf75c3daf660f1347aaad3855f63779ff89b"
+        "reportDigest": "d355ce91376bcd16a331ddfb0c82a5c5b0e9b069c85210ecc7a5ee36145b8d61"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -722,7 +712,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "b508b35667e5ca69ed61d95a0e862e11657a6cc8f32b442b8d0dd1111ab7cea5"
+      "bomDigest": "04a8422bf2588b5f82e8ae4171c6da320c689935a8fdda51c6f2e3aa2262b018"
     },
     {
       "bomVersion": "1.0",
@@ -731,7 +721,7 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "88186a9b73c8257aec17d133a134cbd5ec9192777acfdc69f66d2c77a55c5e9f",
+      "fingerprint": "ab127e31156d46f46d2264ad0883addf636d2acac5d23272f52f62f004ca4291",
       "intents": [
         "reservation.cancel",
         "reservation.checkin",
@@ -739,8 +729,7 @@
         "reservation.create",
         "reservation.modify",
         "reservation.no_show.mark",
-        "reservation.waitlist.join",
-        "reservation.waitlist.notify"
+        "reservation.waitlist.join"
       ],
       "signals": [],
       "basisCodes": [
@@ -777,9 +766,6 @@
         },
         {
           "name": "reservation.waitlist.join"
-        },
-        {
-          "name": "reservation.waitlist.notify"
         }
       ],
       "rag": [],
@@ -835,7 +821,7 @@
         "total": 8,
         "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "2573a1dbd6cb9a2d7750f36feb8d974ca02fa7afade33190a9339491e6f3f38e"
+        "reportDigest": "43541ab90234413a64f547cfa82fc5a2d981bcae3a2e8f8092a69fd77c09290a"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -846,7 +832,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "c0b9c555e776c2b80a629ca9c0e655d5e46a3ab42cda852beac8cd560ff0a163"
+      "bomDigest": "2ccf7b7f225947006e3b6f02832872f9a735e0389ecdc4a5d8e1bb73b622e8fe"
     },
     {
       "bomVersion": "1.0",
@@ -855,13 +841,11 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "9c60b68d7ada1b5e4b9eaaeeef8e941f2226f926eaab99af6da6289893dc5090",
+      "fingerprint": "bdfebf494e782e2cb641a426f21b9fed19201c22dd28b46545b7b645237eafb5",
       "intents": [
         "conversation.message.append",
         "whatsapp.handoff.request",
-        "whatsapp.message.send",
-        "whatsapp.session.handover",
-        "whatsapp.template.send"
+        "whatsapp.session.handover"
       ],
       "signals": [],
       "basisCodes": [
@@ -879,13 +863,7 @@
           "name": "whatsapp.handoff.request"
         },
         {
-          "name": "whatsapp.message.send"
-        },
-        {
           "name": "whatsapp.session.handover"
-        },
-        {
-          "name": "whatsapp.template.send"
         }
       ],
       "rag": [],
@@ -917,7 +895,7 @@
         "total": 8,
         "passedCount": 8,
         "failedCount": 0,
-        "reportDigest": "47ffcad5f008acca3210617b7d981345165c6e3399db3ba5c8c741ad132b2579"
+        "reportDigest": "44774044eb68d95afa64bc7d4ba9cad25385371d97753729dcbbf30d1de182e2"
       },
       "healthTier": "bronze",
       "healthScore": {
@@ -928,7 +906,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "a96900e0b7584d9994ebdade1d6f9de04ab749b071e3f61579cb6a349de6eb35"
+      "bomDigest": "12888c3e9e6082f4d08b8528c2917979f6666dea5d8502b93aab5e4a2026e6d5"
     },
     {
       "bomVersion": "1.0",

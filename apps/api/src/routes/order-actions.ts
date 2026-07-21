@@ -35,9 +35,11 @@ import {
   InvalidTransitionError,
   type OrderStatusTransitionPayload,
   type PaymentCreatePayload,
+  type PaymentRefundIssuePayload,
   type PaymentRegenerationCountIncrementPayload,
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
+import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,
@@ -56,10 +58,21 @@ import {
   type OrderState,
   type OrderTypeSwitchPayload,
 } from "@ibatexas/pack-orders";
+import {
+  paymentsPolicyBundle,
+  type PaymentMethodSwitchPayload,
+  type PaymentRetryPayload,
+  type PaymentState,
+} from "@ibatexas/pack-payments";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { type AgentContext, Channel } from "@ibatexas/types";
 import { requireAuth } from "../middleware/auth.js";
-import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
+import {
+  buildCustomerEnvelope,
+  runCustomerIntent,
+  type CustomerIntentReply,
+} from "./__shared__/customer-intent-gateway.js";
+import { createOrderCancelConfirmationStore } from "./order-cancel-confirmation-store.js";
 import {
   identityCtx,
   buildOrderCtx,
@@ -201,6 +214,55 @@ async function replaceActivePayment(args: {
 }
 
 /**
+ * BKL-041 — composite-kind adjudication seam for the two customer payment-
+ * replacement routes (PATCH …/payment/method + POST …/payment/retry).
+ *
+ * Before BKL-041 both routes ran {@link replaceActivePayment} DIRECTLY — the
+ * "two-envelope decomposition" (an inner cancel + create) executed without the
+ * route ever adjudicating the `payment.method.switch` / `payment.retry` composite
+ * kind the Pack registers, so `validateMethodSwitch` / `retryDailyCapGuard` were
+ * unreachable (the WS4 executor gap). This helper closes it: it builds the
+ * composite UNTRUSTED customer envelope, adjudicates it through
+ * `paymentsPolicyBundle` (the same kernel `adjudicate()` the Pack ships), and on
+ * EXECUTE runs the supplied executor — the route's `replaceActivePayment` closure.
+ *
+ * The inner cancel + create envelopes inside `replaceActivePayment` REMAIN the
+ * authoritative single-active-payment enforcement; this outer adjudication is
+ * additive composite-kind governance, never a replacement for them. The kinds
+ * stay identity-tier / de-advertised (P0-7): no chat tool is registered, so this
+ * HTTP surface is their only emitter.
+ */
+async function adjudicatePaymentReplacement<R>(args: {
+  kind: "payment.method.switch" | "payment.retry";
+  payload: PaymentMethodSwitchPayload | PaymentRetryPayload;
+  customerId: string;
+  ctx: PaymentState["ctx"];
+  route: string;
+  executor: () => Promise<R>;
+  log: FastifyInstance["log"];
+}): Promise<CustomerIntentReply<R | Record<string, unknown>>> {
+  const envelope = buildCustomerEnvelope<
+    "payment.method.switch" | "payment.retry",
+    PaymentMethodSwitchPayload | PaymentRetryPayload
+  >({
+    kind: args.kind,
+    payload: args.payload,
+    nonce: randomUUID(),
+    customerId: args.customerId,
+  });
+  return runCustomerIntent<R>({
+    envelope,
+    state: { ctx: args.ctx },
+    policy: paymentsPolicyBundle as unknown as Parameters<
+      typeof runCustomerIntent
+    >[0]["policy"],
+    executor: async () => args.executor(),
+    ctx: { customerId: args.customerId, route: args.route, log: args.log },
+    auditSink: getAuditSink(),
+  });
+}
+
+/**
  * Derive a deterministic envelope `nonce` from a logical idempotency
  * identifier (e.g. `${orderId}:cancel`). The same logical key on retry
  * produces the same `intentHash` so the kernel's Execution Ledger can
@@ -231,6 +293,296 @@ class PaymentCancelFailedError extends Error {
     super("order canceled but active payment is not terminal");
     this.name = "PaymentCancelFailedError";
   }
+}
+
+/**
+ * BKL-130 — thrown from the cancel executor when a PAID order's adjudicated
+ * refund did NOT settle (the kernel returned ESCALATE / REQUEST_CONFIRMATION /
+ * REFUSE — e.g. the FE-T03 ≥R$1000 money band escalates a big-ticket refund).
+ * The executor throws BEFORE the order→canceled transition, so state stays
+ * WHOLE (order untouched, payment untouched); the route surfaces it as an
+ * actionable "refund needs review" response. No-half-apply cuts both ways: no
+ * settled refund ⇒ no cancel.
+ */
+export class PaidCancelRefundNotSettledError extends Error {
+  constructor(
+    public readonly orderId: string,
+    public readonly decisionKind: string,
+  ) {
+    super(`paid cancel refund not settled (kernel decision: ${decisionKind})`);
+    this.name = "PaidCancelRefundNotSettledError";
+  }
+}
+
+/**
+ * BKL-103 — make the customer-facing "a human will handle it" promise TRUE.
+ * Both paid-cancel escalation exits (the BKL-036 kernel ESCALATE at step 1 and
+ * the BKL-130 executor's refund-not-settled 409) tell the customer staff will
+ * review — this publishes the BKL-178 `support.handoff_requested` recipe with a
+ * synthetic non-conversation sessionId keyed by the ORDER (the dispute:{id}
+ * precedent, stripe-webhook.ts), so the escalation lands in the escalation
+ * store → Escalações panel + pendingEscalations KPI and fires the staff
+ * WhatsApp ping via the existing handoff-subscriber. The subscriber dedups on
+ * `handoff:{sessionId}`, so a customer RETRYING the cancel surfaces exactly ONE
+ * staff record + ping. Best-effort by design: the customer reply must not fail
+ * on a NATS hiccup — a publish failure logs loudly (the kernel audit row is
+ * the fallback truth). No PII rides the event: displayId + amount only (the
+ * reason string renders verbatim on the Escalações row).
+ */
+async function publishPaidCancelEscalation(
+  orderId: string,
+  order: { readonly displayId: number; readonly totalInCentavos?: number | null },
+  log: FastifyInstance["log"],
+): Promise<void> {
+  const cents = order.totalInCentavos ?? null;
+  // Display-only formatting; the amount stays integer centavos everywhere else.
+  const amount = cents === null ? "" : ` de R$ ${(cents / 100).toFixed(2).replace(".", ",")}`;
+  try {
+    await publishNatsEvent("support.handoff_requested", {
+      sessionId: `order-cancel:${orderId}`,
+      reason: `Cancelamento de pedido pago requer aprovação — pedido #${order.displayId}, reembolso${amount}`,
+    });
+    log.warn(
+      { orderId },
+      "paid-cancel ESCALATE surfaced — support.handoff_requested published (BKL-103)",
+    );
+  } catch (err) {
+    log.error(
+      { orderId, err: (err as Error).message },
+      "paid-cancel ESCALATE surfacing FAILED — escalation is audit-row-only until the customer retries (BKL-103)",
+    );
+  }
+}
+
+/**
+ * The order.cancel EXECUTE money-path — extracted verbatim (BKL-146) from the
+ * `POST /api/orders/:id/cancel` executor so the two-phase confirm route
+ * (`POST /api/orders/:id/cancel/confirm`) runs the IDENTICAL side effects: the
+ * projection-level order + payment transitions, the P2-LOGIC-CANCELPAY
+ * terminality guard, the C3 best-effort Medusa-native cancel, and the
+ * `order.canceled` NATS emit. No behavior change — a byte-for-byte move; both
+ * routes call this so the direct-EXECUTE and confirmed-EXECUTE paths can never
+ * drift (the finalizeCheckout precedent). Throws propagate to each route's
+ * try/catch (PaymentCancelFailedError → 409, InvalidTransitionError → 422).
+ */
+export async function executeOrderCancel(args: {
+  readonly orderId: string;
+  readonly customerId: string;
+  readonly reason: string;
+  readonly order: { readonly fulfillmentStatus: string; readonly displayId: number };
+  readonly orderCmdSvc: ReturnType<typeof createOrderCommandService>;
+  readonly paymentCmdSvc: ReturnType<typeof createPaymentCommandService>;
+  readonly paymentQuerySvc: ReturnType<typeof createPaymentQueryService>;
+  readonly log: FastifyInstance["log"];
+}): Promise<{ success: true; version: number; fulfillmentStatus: string }> {
+  const { orderId, customerId, reason, order, orderCmdSvc, paymentCmdSvc, paymentQuerySvc, log } = args;
+
+  // ── BKL-130: a PAID order must be REFUNDED (adjudicated) BEFORE the cancel
+  // transition ──────────────────────────────────────────────────────────────
+  // Root cause: the executor used to transition order→CANCELED FIRST, then
+  // attempt the payment cancel; a PAID payment's paid→canceled transition is
+  // ILLEGAL (409), leaving a CANCELED order with a LIVE paid payment (a
+  // half-applied money-safety hole — live-reproduced on both CARD and CASH).
+  // paid→canceled stays illegal (never legalized); the money-reversal is a
+  // REFUND. We BUILD + ADJUDICATE a refund envelope THROUGH THE KERNEL first, so
+  // the FE-T03 magnitude bands stay live — a ≥R$1000 refund ESCALATEs, so a
+  // big-ticket paid cancel parks/escalates instead of silently refunding. The
+  // refund WRITE is ledger-only (no Stripe/PIX egress — the provider refund is
+  // the inbound charge.refunded webhook reconcile), so this works identically
+  // for CARD and CASH; a cash refund is recorded operationally, never the
+  // paid→canceled attempt that 409'd. No-half-apply cuts BOTH ways: unless the
+  // refund SETTLES (EXECUTE), the order is NOT canceled either.
+  const paidActive = await paymentCmdSvc.findActiveByOrderId(orderId);
+  if (paidActive && paidActive.status === PaymentStatus.PAID) {
+    const payment = await paymentQuerySvc.getById(paidActive.id);
+    if (payment === null) {
+      throw new PaidCancelRefundNotSettledError(orderId, "payment_not_found");
+    }
+    const currentRefunded = payment.refundedAmountCentavos ?? 0;
+    const refundable = payment.amountInCentavos - currentRefunded;
+    // System-completion actor (the payload actor enum is admin|system; the
+    // cancel-triggered refund is issued BY THE SYSTEM on the customer's behalf).
+    const refundEnvelope = buildSystemEnvelope<"payment.refund.issue", PaymentRefundIssuePayload>({
+      kind: "payment.refund.issue",
+      payload: {
+        paymentId: payment.id,
+        refundAmountCentavos: refundable,
+        refundableBalanceCentavos: refundable,
+        amountInCentavos: payment.amountInCentavos,
+        currentRefundedCentavos: currentRefunded,
+        actor: "system",
+        reason,
+      },
+      sourceSubject: "order.cancel.refund",
+      eventId: `${orderId}:${payment.id}:cancel-refund`,
+    });
+    const refundOutcome = await paymentCmdSvc.issueRefundFromEnvelope(refundEnvelope);
+    if (
+      refundOutcome.decision.kind !== "EXECUTE" &&
+      refundOutcome.decision.kind !== "REWRITE"
+    ) {
+      // Band ESCALATE / REQUEST_CONFIRMATION / REFUSE (e.g. ≥R$1000): do NOT
+      // cancel. State whole — no order transition, payment untouched.
+      log.warn(
+        { orderId, paymentId: payment.id, decision: refundOutcome.decision.kind, refundable },
+        "paid cancel: kernel did not settle the refund (band escalate/refuse) — order NOT canceled (BKL-130)",
+      );
+      throw new PaidCancelRefundNotSettledError(orderId, refundOutcome.decision.kind);
+    }
+    // EXECUTE ⇒ the paid payment is now REFUNDED (terminal). The existing
+    // payment-terminality block below sees no active payment (findActiveByOrderId
+    // → null) ⇒ never attempts the illegal paid→canceled transition ⇒ the old
+    // 409 is no longer reachable for a paid order.
+  }
+
+  // ── R1-DELETE (sibling fix) ────────────────────────────────
+  // Inner mutations migrated from bare-arg `transitionStatus`
+  // to envelope-typed `transitionStatusFromEnvelope`. The
+  // outer `order.cancel` envelope is already adjudicated by
+  // runCustomerIntent; these inner envelopes adjudicate the
+  // projection-level transitions (order + payment).
+  const orderTransitionEnvelope = buildCustomerEnvelope<
+    "order.status.transition",
+    OrderStatusTransitionPayload
+  >({
+    kind: "order.status.transition",
+    payload: {
+      orderId,
+      newStatus: OrderFulfillmentStatus.CANCELED,
+      actor: "customer",
+      actorId: customerId,
+      reason,
+    },
+    nonce: randomUUID(),
+    customerId,
+  });
+  const orderOutcome = await orderCmdSvc.transitionStatusFromEnvelope(
+    orderTransitionEnvelope,
+  );
+  if (
+    orderOutcome.decision.kind !== "EXECUTE" &&
+    orderOutcome.decision.kind !== "REWRITE"
+  ) {
+    // Inner adjudication refused — propagate as transition error.
+    throw new InvalidTransitionError(
+      orderId,
+      order.fulfillmentStatus,
+      OrderFulfillmentStatus.CANCELED,
+    );
+  }
+  const result = orderOutcome.result!;
+
+  // Cancel the active payment so a canceled order never retains a LIVE
+  // payment that could later reconcile to `paid` (P2-LOGIC-CANCELPAY).
+  // We must NOT emit `order.canceled` unless the payment is actually
+  // terminal afterward — otherwise a swallowed cancel failure leaves a
+  // billable payment behind an order the customer believes is canceled.
+  const activePayment = await paymentCmdSvc.findActiveByOrderId(orderId);
+  let paymentTerminal = true; // no active payment ⇒ nothing left to settle
+  if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
+    paymentTerminal = false;
+    try {
+      const paymentCancelEnvelope = buildEnvelope<
+        "payment.status.transition",
+        PaymentStatusTransitionPayload
+      >({
+        kind: "payment.status.transition",
+        payload: {
+          paymentId: activePayment.id,
+          newStatus: PaymentStatus.CANCELED,
+          actor: "customer",
+          actorId: customerId,
+          reason: "Pedido cancelado pelo cliente",
+          // P2-CONC-CONFIRMVER: pin the version we validated against so
+          // a concurrent transition (e.g. a webhook flipping the payment
+          // to `paid`) can't be silently clobbered — it surfaces as a
+          // concurrency error and we re-check terminality below.
+          expectedVersion: activePayment.version,
+        },
+        nonce: randomUUID(),
+        actor: { principal: "user", sessionId: customerId },
+        taint: "TRUSTED",
+      });
+      const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(paymentCancelEnvelope);
+      // EXECUTE/REWRITE ⇒ canceled (terminal). A REFUSE means the kernel
+      // declined (e.g. already terminal) — re-read below rather than assume.
+      paymentTerminal =
+        cancelOutcome.decision.kind === "EXECUTE" ||
+        cancelOutcome.decision.kind === "REWRITE";
+    } catch {
+      // May have failed because the payment is already terminal (benign)
+      // OR because it concurrently moved to a live state like `paid`
+      // (NOT benign). Re-read authoritative state below.
+      paymentTerminal = false;
+    }
+    if (!paymentTerminal) {
+      // Authoritative re-read: no active (non-terminal) payment now ⇒ it
+      // settled to a terminal state ⇒ safe. A still-active payment ⇒ unsafe.
+      const after = await paymentCmdSvc.findActiveByOrderId(orderId);
+      paymentTerminal = after === null;
+    }
+  }
+
+  if (!paymentTerminal) {
+    // Order row is CANCELED but the payment is still live. Do NOT emit
+    // `order.canceled` (downstream treats it as fully settled). Throw so
+    // the route surfaces an actionable 409 — the cancel is retried /
+    // escalated rather than leaving a canceled order with a billable
+    // payment (P2-LOGIC-CANCELPAY).
+    log.error(
+      { orderId, paymentId: activePayment?.id },
+      "order canceled but active payment is not terminal — withholding order.canceled (P2-LOGIC-CANCELPAY)",
+    );
+    throw new PaymentCancelFailedError(activePayment?.id);
+  }
+
+  // C3 (CQRS dual-write): cancel the Medusa-native order too, so the
+  // public."order" row reflects canceled (status + canceled_at) instead
+  // of reading stale `pending`. Kernel-gated like every Medusa mutation.
+  // Best-effort: the domain projection is already authoritative and the
+  // payment is terminal — a Medusa hiccup must NOT undo a successful
+  // cancel (that would resurrect a billable order), so we log and let
+  // the projection + NATS remain the source of truth.
+  //
+  // FIRE-AND-FORGET (finding 29): the result is only logged, so awaiting
+  // it just adds a Medusa admin round-trip to the customer's cancel
+  // response latency for no observable benefit. Run it in a background
+  // async IIFE (persistent Fastify server — the promise survives) whose
+  // try/catch absorbs BOTH a synchronous throw and an async rejection, so
+  // a Medusa hiccup never becomes an unhandled rejection or a 500.
+  void (async () => {
+    try {
+      await medusaAdjudicated({
+        scope: "admin",
+        method: "POST",
+        path: `/admin/orders/${orderId}/cancel`,
+        idempotencyKey: `${orderId}:medusa-cancel:${customerId}`,
+        sourceSubject: "route:order.cancel",
+        auditSink: getAuditSink(),
+      });
+    } catch (err) {
+      log.error(
+        { orderId, error: String(err) },
+        "domain order canceled but Medusa-native cancel failed — public.order may read stale; projection remains authoritative (C3)",
+      );
+    }
+  })();
+
+  await publishNatsEvent("order.canceled", {
+    eventType: "order.canceled",
+    orderId,
+    displayId: order.displayId,
+    customerId,
+    reason,
+    canceledBy: "customer",
+    timestamp: new Date().toISOString(),
+  });
+
+  return {
+    success: true,
+    version: result.version,
+    fulfillmentStatus: result.newStatus,
+  };
 }
 
 /**
@@ -402,6 +754,8 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
   const orderQuerySvc = createOrderQueryService();
   const paymentCmdSvc = createPaymentCommandService(server.log);
   const paymentQuerySvc = createPaymentQueryService();
+  // BKL-146 — single-use store for parked PAID cancels (REQUEST_CONFIRMATION).
+  const cancelConfirmationStore = createOrderCancelConfirmationStore();
 
   // ── Ownership helper ──────────────────────────────────────────────────────
   async function verifyOwnership(orderId: string, customerId: string): Promise<boolean> {
@@ -661,156 +1015,17 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           envelope,
           state: orderState,
           policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
-          executor: async () => {
-            // ── R1-DELETE (sibling fix) ────────────────────────────────
-            // Inner mutations migrated from bare-arg `transitionStatus`
-            // to envelope-typed `transitionStatusFromEnvelope`. The
-            // outer `order.cancel` envelope is already adjudicated by
-            // runCustomerIntent; these inner envelopes adjudicate the
-            // projection-level transitions (order + payment).
-            const orderTransitionEnvelope = buildCustomerEnvelope<
-              "order.status.transition",
-              OrderStatusTransitionPayload
-            >({
-              kind: "order.status.transition",
-              payload: {
-                orderId: id,
-                newStatus: OrderFulfillmentStatus.CANCELED,
-                actor: "customer",
-                actorId: customerId,
-                reason: request.body.reason ?? "Cancelado pelo cliente",
-              },
-              nonce: randomUUID(),
-              customerId,
-            });
-            const orderOutcome = await orderCmdSvc.transitionStatusFromEnvelope(
-              orderTransitionEnvelope,
-            );
-            if (
-              orderOutcome.decision.kind !== "EXECUTE" &&
-              orderOutcome.decision.kind !== "REWRITE"
-            ) {
-              // Inner adjudication refused — propagate as transition error.
-              throw new InvalidTransitionError(
-                id,
-                order.fulfillmentStatus,
-                OrderFulfillmentStatus.CANCELED,
-              );
-            }
-            const result = orderOutcome.result!;
-
-            // Cancel the active payment so a canceled order never retains a LIVE
-            // payment that could later reconcile to `paid` (P2-LOGIC-CANCELPAY).
-            // We must NOT emit `order.canceled` unless the payment is actually
-            // terminal afterward — otherwise a swallowed cancel failure leaves a
-            // billable payment behind an order the customer believes is canceled.
-            const activePayment = await paymentCmdSvc.findActiveByOrderId(id);
-            let paymentTerminal = true; // no active payment ⇒ nothing left to settle
-            if (activePayment && !isTerminalPaymentStatus(activePayment.status as PaymentStatus)) {
-              paymentTerminal = false;
-              try {
-                const paymentCancelEnvelope = buildEnvelope<
-                  "payment.status.transition",
-                  PaymentStatusTransitionPayload
-                >({
-                  kind: "payment.status.transition",
-                  payload: {
-                    paymentId: activePayment.id,
-                    newStatus: PaymentStatus.CANCELED,
-                    actor: "customer",
-                    actorId: customerId,
-                    reason: "Pedido cancelado pelo cliente",
-                    // P2-CONC-CONFIRMVER: pin the version we validated against so
-                    // a concurrent transition (e.g. a webhook flipping the payment
-                    // to `paid`) can't be silently clobbered — it surfaces as a
-                    // concurrency error and we re-check terminality below.
-                    expectedVersion: activePayment.version,
-                  },
-                  nonce: randomUUID(),
-                  actor: { principal: "user", sessionId: customerId },
-                  taint: "TRUSTED",
-                });
-                const cancelOutcome = await paymentCmdSvc.transitionStatusFromEnvelope(paymentCancelEnvelope);
-                // EXECUTE/REWRITE ⇒ canceled (terminal). A REFUSE means the kernel
-                // declined (e.g. already terminal) — re-read below rather than assume.
-                paymentTerminal =
-                  cancelOutcome.decision.kind === "EXECUTE" ||
-                  cancelOutcome.decision.kind === "REWRITE";
-              } catch {
-                // May have failed because the payment is already terminal (benign)
-                // OR because it concurrently moved to a live state like `paid`
-                // (NOT benign). Re-read authoritative state below.
-                paymentTerminal = false;
-              }
-              if (!paymentTerminal) {
-                // Authoritative re-read: no active (non-terminal) payment now ⇒ it
-                // settled to a terminal state ⇒ safe. A still-active payment ⇒ unsafe.
-                const after = await paymentCmdSvc.findActiveByOrderId(id);
-                paymentTerminal = after === null;
-              }
-            }
-
-            if (!paymentTerminal) {
-              // Order row is CANCELED but the payment is still live. Do NOT emit
-              // `order.canceled` (downstream treats it as fully settled). Throw so
-              // the route surfaces an actionable 409 — the cancel is retried /
-              // escalated rather than leaving a canceled order with a billable
-              // payment (P2-LOGIC-CANCELPAY).
-              server.log.error(
-                { orderId: id, paymentId: activePayment?.id },
-                "order canceled but active payment is not terminal — withholding order.canceled (P2-LOGIC-CANCELPAY)",
-              );
-              throw new PaymentCancelFailedError(activePayment?.id);
-            }
-
-            // C3 (CQRS dual-write): cancel the Medusa-native order too, so the
-            // public."order" row reflects canceled (status + canceled_at) instead
-            // of reading stale `pending`. Kernel-gated like every Medusa mutation.
-            // Best-effort: the domain projection is already authoritative and the
-            // payment is terminal — a Medusa hiccup must NOT undo a successful
-            // cancel (that would resurrect a billable order), so we log and let
-            // the projection + NATS remain the source of truth.
-            //
-            // FIRE-AND-FORGET (finding 29): the result is only logged, so awaiting
-            // it just adds a Medusa admin round-trip to the customer's cancel
-            // response latency for no observable benefit. Run it in a background
-            // async IIFE (persistent Fastify server — the promise survives) whose
-            // try/catch absorbs BOTH a synchronous throw and an async rejection, so
-            // a Medusa hiccup never becomes an unhandled rejection or a 500.
-            void (async () => {
-              try {
-                await medusaAdjudicated({
-                  scope: "admin",
-                  method: "POST",
-                  path: `/admin/orders/${id}/cancel`,
-                  idempotencyKey: `${id}:medusa-cancel:${customerId}`,
-                  sourceSubject: "route:order.cancel",
-                  auditSink: getAuditSink(),
-                });
-              } catch (err) {
-                server.log.error(
-                  { orderId: id, error: String(err) },
-                  "domain order canceled but Medusa-native cancel failed — public.order may read stale; projection remains authoritative (C3)",
-                );
-              }
-            })();
-
-            await publishNatsEvent("order.canceled", {
-              eventType: "order.canceled",
+          executor: async () =>
+            executeOrderCancel({
               orderId: id,
-              displayId: order.displayId,
               customerId,
               reason: request.body.reason ?? "Cancelado pelo cliente",
-              canceledBy: "customer",
-              timestamp: new Date().toISOString(),
-            });
-
-            return {
-              success: true,
-              version: result.version,
-              fulfillmentStatus: result.newStatus,
-            };
-          },
+              order,
+              orderCmdSvc,
+              paymentCmdSvc,
+              paymentQuerySvc,
+              log: server.log,
+            }),
           ctx: {
             customerId,
             route: "order.cancel",
@@ -819,6 +1034,32 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           auditSink: getAuditSink(),
           refusalMessages: portugueseRefusalMessages,
         });
+
+        // ── BKL-146 — PAID cancel parks (kernel REQUEST_CONFIRMATION, BKL-036
+        // gatePaidCancel): the executor did NOT run. Store the cancel under a
+        // single-use receipt and enrich the 202 with the confirmationId so the
+        // customer can COMPLETE it via POST /api/orders/:id/cancel/confirm — the
+        // kernel stays the confirm authority (the confirm route re-adjudicates
+        // the IDENTICAL envelope with a confirmationReceipt). Mirrors the
+        // checkout-confirm park (cart.ts).
+        if (out.decision.kind === "REQUEST_CONFIRMATION") {
+          const prompt = out.decision.prompt;
+          const parked = await cancelConfirmationStore.create({
+            kind: "order.cancel",
+            orderId: id,
+            payload: cancelPayload,
+            idempotencyKey: cancelIdempotencyKey,
+            customerId,
+            prompt,
+            createdAt: new Date().toISOString(),
+          });
+          return reply.code(202).send({
+            confirmationRequired: true,
+            confirmationId: parked.confirmationId,
+            prompt,
+            ttlSeconds: parked.ttlSeconds,
+          });
+        }
 
         // ── Translate the AUDITED kernel cancel-PONR refusal back to the legacy
         // 422 HTTP contract (BKL-036 finding 1). The kernel now OWNS the
@@ -848,12 +1089,177 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           }
         }
 
+        // BKL-103 — the kernel ESCALATE (BKL-036 >=R$1000 paid-cancel guard)
+        // returns 503 "Operação requer atendimento humano": surface it to staff
+        // BEFORE replying, so the promise is true (dedup makes retries safe).
+        if (out.decision.kind === "ESCALATE") {
+          await publishPaidCancelEscalation(id, order, server.log);
+        }
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
+        if (err instanceof PaidCancelRefundNotSettledError) {
+          // BKL-130 — a PAID order's refund did not settle (kernel band
+          // escalate/refuse, e.g. ≥R$1000). The order was NOT canceled and the
+          // payment is untouched (state whole); the refund needs human review.
+          // BKL-103 — "avisaremos você" must be true: surface to staff first.
+          await publishPaidCancelEscalation(id, order, server.log);
+          return reply.code(409).send({
+            error:
+              "O reembolso deste pedido precisa de revisão da equipe. Nada foi alterado; avisaremos você.",
+            code: "REFUND_REQUIRES_REVIEW",
+          });
+        }
         if (err instanceof PaymentCancelFailedError) {
           // P2-LOGIC-CANCELPAY: order row was canceled but the payment is still
           // live; order.canceled was withheld. Surface an actionable error so the
           // cancel is retried / escalated.
+          return reply.code(409).send({
+            error: "Não foi possível cancelar o pagamento do pedido. Tente novamente em instantes.",
+            code: "PAYMENT_CANCEL_FAILED",
+          });
+        }
+        if (err instanceof InvalidTransitionError) {
+          return reply.code(422).send({ error: "Transição de status inválida.", from: err.from, to: err.to });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // ── POST /api/orders/:id/cancel/confirm — complete a parked PAID cancel ─────
+  //
+  // BKL-146 — resume the parked cancel (the REQUEST_CONFIRMATION reply from
+  // POST /api/orders/:id/cancel). The single-use receipt is consumed, ownership
+  // re-checked, the order re-loaded FRESH, and the IDENTICAL order.cancel
+  // envelope rebuilt + re-adjudicated through the AUDITED kernel carrying a
+  // confirmationReceipt — so the kernel substitutes EXECUTE for the matching
+  // intentHash while STILL enforcing every state/taint/auth guard (an order that
+  // moved past the cancel PONR since the park is still REFUSEd here; the receipt
+  // substitutes the confirmation, never bypasses a guard). Mirrors POST
+  // /api/cart/checkout/confirm. On EXECUTE the SHARED executeOrderCancel runs the
+  // identical money-path the direct route runs.
+  app.post(
+    "/api/orders/:id/cancel/confirm",
+    {
+      schema: {
+        tags: ["orders"],
+        summary: "Confirmar cancelamento de pedido pago (cliente)",
+        params: OrderIdParams,
+        body: z.object({ confirmationId: z.string().min(1).max(64) }),
+      },
+      preHandler: requireAuth,
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const customerId = request.customerId!;
+
+      // Single-use consume — unknown / expired / already-confirmed → 410 Gone.
+      const pending = await cancelConfirmationStore.consume(request.body.confirmationId);
+      if (!pending) {
+        return reply.status(410).send({
+          statusCode: 410,
+          error: "Gone",
+          message: "Esta confirmação expirou ou já foi utilizada. Refaça o cancelamento.",
+          code: "CONFIRMATION_EXPIRED",
+        });
+      }
+
+      // ── Money-safety ownership (IDOR) ────────────────────────────────────
+      // The receipt binds the parked customerId + orderId. A different logged-in
+      // customer (or a guest holding a leaked receipt) cannot confirm someone
+      // else's cancel, and a receipt cannot be replayed against a different order.
+      if (pending.customerId !== customerId || pending.orderId !== id) {
+        return reply.status(403).send({
+          statusCode: 403,
+          error: "Forbidden",
+          message: "Esta confirmação pertence a outro pedido ou usuário.",
+        });
+      }
+      // Projection-ownership parity with the cancel route (defense-in-depth).
+      if (!(await verifyOwnership(id, customerId))) {
+        return reply.code(404).send({ error: "Pedido não encontrado." });
+      }
+
+      // Re-load the order FRESH so a since-changed status re-adjudicates.
+      const order = await orderQuerySvc.getById(id);
+      if (!order) return reply.code(404).send({ error: "Pedido não encontrado." });
+
+      // Rebuild the IDENTICAL envelope — same kind/payload/nonce/actor → same
+      // intentHash — so the receipt matches and the kernel resolves the confirm.
+      const envelope = buildCustomerEnvelope<"order.cancel", OrderCancelPayload>({
+        kind: "order.cancel",
+        payload: pending.payload,
+        nonce: deriveNonce(pending.idempotencyKey),
+        customerId,
+      });
+      const orderState = {
+        ctx: buildOrderCtx(
+          identityCtx(customerId, "web"),
+          id,
+          order as unknown as OrderProjectionLite,
+        ),
+      };
+
+      try {
+        const out = await runCustomerIntent({
+          envelope,
+          state: orderState,
+          policy: ordersPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
+          executor: async () =>
+            executeOrderCancel({
+              orderId: id,
+              customerId,
+              reason: pending.payload.reason ?? "Cancelado pelo cliente",
+              order,
+              orderCmdSvc,
+              paymentCmdSvc,
+              paymentQuerySvc,
+              log: server.log,
+            }),
+          ctx: { customerId, route: "order.cancel.confirm", log: server.log },
+          auditSink: getAuditSink(),
+          refusalMessages: portugueseRefusalMessages,
+          confirmationReceipt: {
+            intentHash: envelope.intentHash,
+            at: new Date().toISOString(),
+            token: request.body.confirmationId,
+          },
+        });
+
+        // A since-changed order can now REFUSE (e.g. moved past the PONR) — map
+        // the cancel-PONR codes onto the same 422 contract the direct route uses.
+        if (out.decision.kind === "REFUSE") {
+          const refusalCode = out.decision.refusal.code;
+          if (refusalCode === "order.past_ponr" || refusalCode === "order.already_cancelled") {
+            return reply.code(422).send({
+              error: (out.body as { error?: string }).error ?? out.decision.refusal.userFacing,
+              code: order.fulfillmentStatus === "preparing" ? "PONR_EXPIRED" : "PAST_PONR",
+              fulfillmentStatus: order.fulfillmentStatus,
+            });
+          }
+        }
+
+        // BKL-103 — the kernel ESCALATE (BKL-036 >=R$1000 paid-cancel guard)
+        // returns 503 "Operação requer atendimento humano": surface it to staff
+        // BEFORE replying, so the promise is true (dedup makes retries safe).
+        if (out.decision.kind === "ESCALATE") {
+          await publishPaidCancelEscalation(id, order, server.log);
+        }
+        return reply.code(out.statusCode).send(out.body);
+      } catch (err) {
+        if (err instanceof PaidCancelRefundNotSettledError) {
+          // BKL-130 — a PAID order's refund did not settle (kernel band
+          // escalate/refuse, e.g. ≥R$1000). The order was NOT canceled and the
+          // payment is untouched (state whole); the refund needs human review.
+          // BKL-103 — "avisaremos você" must be true: surface to staff first.
+          await publishPaidCancelEscalation(id, order, server.log);
+          return reply.code(409).send({
+            error:
+              "O reembolso deste pedido precisa de revisão da equipe. Nada foi alterado; avisaremos você.",
+            code: "REFUND_REQUIRES_REVIEW",
+          });
+        }
+        if (err instanceof PaymentCancelFailedError) {
           return reply.code(409).send({
             error: "Não foi possível cancelar o pagamento do pedido. Tente novamente em instantes.",
             code: "PAYMENT_CANCEL_FAILED",
@@ -1300,35 +1706,77 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // ── W3 P0-2 (audit remediation) ──────────────────────────────────
+      // ── BKL-041 — governed `payment.retry` composite kind (WS4) ───────
       //
-      // The previous flow chained THREE bypasses: bare-arg
-      // `paymentCmdSvc.transitionStatus` + bare-arg `paymentCmdSvc.create`
-      // + zero kernel adjudication. Now every mutation is an envelope
-      // run through `*FromEnvelope`. Each step's failure surfaces a
-      // pt-BR refusal via the kernel decision.
+      // Pre-BKL-041 this route ran `replaceActivePayment` directly (an inner
+      // cancel + create) and never adjudicated the `payment.retry` composite kind
+      // the Pack registers — so `retryDailyCapGuard` was unreachable (the two-
+      // envelope decomposition the old "Wave 5" note anticipated). We now build the
+      // composite UNTRUSTED customer envelope and adjudicate it through
+      // `paymentsPolicyBundle` first; on EXECUTE the SAME `replaceActivePayment`
+      // logic runs as the kind's executor. The inner cancel + create envelopes
+      // remain the authoritative single-active-payment enforcement.
       //
-      // Wave 5 will replace this two-envelope decomposition with a
-      // composite `payment.retry` intent kind in pack-payments (see
-      // `migration/remediation/W3-INTENT-GAPS.md`).
+      // `retryDailyCapGuard` reads `ctx.dailyRetryCount` (default cap 3, env
+      // `MAX_PAYMENT_RETRIES_PER_DAY`) projected from Redis
+      // (`payment-retry:{customerId}:{YYYY-MM-DD}`); the counter is bumped only
+      // after a retry actually executes. The per-order lifetime cap (`RETRY_LIMIT`,
+      // 10 attempts) stays the fast-fail above.
+      const redis = await getRedisClient();
+      const retryDay = new Date().toISOString().slice(0, 10);
+      const retryCountKey = rk(`payment-retry:${customerId}:${retryDay}`);
+      const dailyRetryCount = Number((await redis.get(retryCountKey)) ?? 0) || 0;
 
-      // Cancel current payment + create the retry attempt as a single
-      // compensating sequence (P1-ERR-PAYSWITCH). Retry uses the SAME method,
-      // so the replacement and the compensation target are identical — the only
-      // distinct outcomes are `ok` and `orphaned`.
+      // Retry uses the SAME method, so the replacement and the compensation target
+      // are identical — the only distinct executor outcomes are `ok` and `orphaned`
+      // (P1-ERR-PAYSWITCH).
       const method = currentPayment.method as PaymentMethodLiteral;
-      const result = await replaceActivePayment({
-        paymentCmdSvc,
+      const retryPayload: PaymentRetryPayload = {
         orderId: id,
-        currentPaymentId: currentPayment.id,
-        currentMethod: method,
+        previousPaymentId: currentPayment.id,
         newMethod: method,
-        amountInCentavos: currentPayment.amountInCentavos,
+      };
+      const out = await adjudicatePaymentReplacement<ReplacePaymentResult>({
+        kind: "payment.retry",
+        payload: retryPayload,
         customerId,
-        cancelReason: "Nova tentativa de pagamento",
+        ctx: {
+          actor: { principal: "user", id: customerId },
+          exists: true,
+          currentStatus: currentPayment.status,
+          currentMethod: method,
+          orderId: id,
+          dailyRetryCount,
+        },
+        route: "payment.retry",
         log: server.log,
+        executor: () =>
+          replaceActivePayment({
+            paymentCmdSvc,
+            orderId: id,
+            currentPaymentId: currentPayment.id,
+            currentMethod: method,
+            newMethod: method,
+            amountInCentavos: currentPayment.amountInCentavos,
+            customerId,
+            cancelReason: "Nova tentativa de pagamento",
+            log: server.log,
+          }),
       });
 
+      // Kernel REFUSE — the daily-retry cap maps to the legacy 429 surface
+      // (RETRY_LIMIT already lives there); any other refusal keeps the gateway 403.
+      if (out.decision.kind === "REFUSE") {
+        if (out.decision.refusal.code === "retry.cap_exceeded") {
+          return reply.code(429).send({
+            error: out.decision.refusal.userFacing,
+            code: "RETRY_CAP",
+          });
+        }
+        return reply.code(out.statusCode).send(out.body);
+      }
+
+      const result = out.body as ReplacePaymentResult;
       if (result.kind === "orphaned") {
         // Both create and compensation failed — actionable error, not a 500.
         return reply.code(503).send({
@@ -1336,6 +1784,11 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           code: "PAYMENT_RETRY_FAILED",
         });
       }
+
+      // The retry executed — bump the daily-retry counter (date-scoped key, 24h
+      // TTL). Best-effort: a counter blip must not fail a completed retry.
+      const bumped = await redis.incr(retryCountKey);
+      if (bumped === 1) await redis.expire(retryCountKey, 86_400);
 
       return reply.send({
         success: true,
@@ -1527,81 +1980,102 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         });
       }
 
-      // ── NEW-P0-X4 (W1 correctness remediation) ───────────────────────
+      // ── BKL-041 — governed `payment.method.switch` composite kind (WS4) ──
       //
-      // The previous flow chained THREE bypasses: bare-arg
-      // `paymentCmdSvc.transitionStatus` × 2 + bare-arg `paymentCmdSvc.create`.
-      // `payment.method.switch` is a registered kind in @ibatexas/pack-payments
-      // (W5) but the route never adjudicated it. We now:
-      //
-      //   1. Build a `payment.method.switch` envelope. (We don't run it
-      //      through the customer-intent-gateway because that gateway is
-      //      for the customer-onboarding/orders kinds; payment kinds go
-      //      directly through the payments policy bundle. This mirrors
-      //      payment-retry / regenerate-pix.)
-      //   2. Cancel-old via `transitionStatusFromEnvelope` and create-new
-      //      via `createFromEnvelope`.
-      //   3. The HTTP-layer pre-checks (paid, same-method, switchable
-      //      states) stay as fast-fails before kernel dispatch.
-
-      // Compensating cancel→create of the ORIGINAL method on create() failure so
-      // the customer is never left with no active payment (P1-ERR-PAYSWITCH).
-      // Held under the per-payment lock so the whole switching_method → cancel →
-      // create → compensate sequence is serialized (cycle-2 invariant).
+      // Pre-BKL-041 this route ran `replaceActivePayment` directly (the
+      // switching_method → cancel → create decomposition) and never adjudicated
+      // the `payment.method.switch` composite kind the Pack registers — so
+      // `validateMethodSwitch` was unreachable (the aspirational "build a
+      // payment.method.switch envelope" note that used to sit here). We now build
+      // the composite UNTRUSTED customer envelope and adjudicate it through
+      // `paymentsPolicyBundle` first; on EXECUTE the SAME `replaceActivePayment`
+      // logic runs as the kind's executor, held under the per-payment lock so the
+      // whole switching_method → cancel → create → compensate sequence stays
+      // serialized (cycle-2 invariant). The inner cancel + create envelopes remain
+      // the authoritative single-active-payment enforcement; the HTTP pre-checks
+      // (paid, same-method, switchable) stay the fast-fails above.
       const currentMethod = currentPayment.method as PaymentMethodLiteral;
-      const result = await withLock(`payment:${currentPayment.id}`, async () => {
-        const replaced = await replaceActivePayment({
-          paymentCmdSvc,
+      const out = await adjudicatePaymentReplacement<ReplacePaymentResult | null>({
+        kind: "payment.method.switch",
+        payload: {
           orderId: id,
-          currentPaymentId: currentPayment.id,
-          currentMethod,
-          newMethod,
-          amountInCentavos: currentPayment.amountInCentavos,
+          fromMethod: currentMethod,
+          toMethod: newMethod,
           customerId,
-          cancelReason: `Troca de método: ${currentMethod} → ${newMethod}`,
-          // Transition old payment → switching_method before canceling (if the
-          // current state allows it). Tolerate a non-EXECUTE here — the cancel +
-          // create inside replaceActivePayment are the authoritative steps.
-          preCancel: canTransitionPayment(currentPayment.status as PaymentStatus, PaymentStatus.SWITCHING_METHOD)
-            ? async () => {
-                const switchingEnvelope = buildEnvelope<
-                  "payment.status.transition",
-                  PaymentStatusTransitionPayload
-                >({
-                  kind: "payment.status.transition",
-                  payload: {
-                    paymentId: currentPayment.id,
-                    newStatus: PaymentStatus.SWITCHING_METHOD,
-                    actor: "customer",
-                    actorId: customerId,
-                    reason: `Troca de ${currentMethod} para ${newMethod}`,
-                  },
-                  nonce: randomUUID(),
-                  actor: { principal: "user", sessionId: customerId },
-                  taint: "TRUSTED",
-                });
-                await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope).catch(ignoreError);
-              }
-            : undefined,
-          log: server.log,
-        });
+        },
+        customerId,
+        ctx: {
+          actor: { principal: "user", id: customerId },
+          exists: true,
+          currentStatus: currentPayment.status,
+          currentMethod,
+          orderId: id,
+        },
+        route: "payment.method.switch",
+        log: server.log,
+        executor: () =>
+          withLock(`payment:${currentPayment.id}`, async () => {
+            const replaced = await replaceActivePayment({
+              paymentCmdSvc,
+              orderId: id,
+              currentPaymentId: currentPayment.id,
+              currentMethod,
+              newMethod,
+              amountInCentavos: currentPayment.amountInCentavos,
+              customerId,
+              cancelReason: `Troca de método: ${currentMethod} → ${newMethod}`,
+              // Transition old payment → switching_method before canceling (if the
+              // current state allows it). Tolerate a non-EXECUTE here — the cancel +
+              // create inside replaceActivePayment are the authoritative steps.
+              preCancel: canTransitionPayment(currentPayment.status as PaymentStatus, PaymentStatus.SWITCHING_METHOD)
+                ? async () => {
+                    const switchingEnvelope = buildEnvelope<
+                      "payment.status.transition",
+                      PaymentStatusTransitionPayload
+                    >({
+                      kind: "payment.status.transition",
+                      payload: {
+                        paymentId: currentPayment.id,
+                        newStatus: PaymentStatus.SWITCHING_METHOD,
+                        actor: "customer",
+                        actorId: customerId,
+                        reason: `Troca de ${currentMethod} para ${newMethod}`,
+                      },
+                      nonce: randomUUID(),
+                      actor: { principal: "user", sessionId: customerId },
+                      taint: "TRUSTED",
+                    });
+                    await paymentCmdSvc.transitionStatusFromEnvelope(switchingEnvelope).catch(ignoreError);
+                  }
+                : undefined,
+              log: server.log,
+            });
 
-        // Only emit method_changed when the NEW method actually became active.
-        // On compensation the original method is restored, so the method did NOT
-        // change and no event is published.
-        if (replaced.kind === "ok") {
-          await publishNatsEvent("payment.method_changed", {
-            eventType: "payment.method_changed",
-            orderId: id,
-            paymentId: replaced.payment.id,
-            previousMethod: currentMethod,
-            newMethod,
-            timestamp: new Date().toISOString(),
-          });
-        }
+            // Only emit method_changed when the NEW method actually became active.
+            // On compensation the original method is restored, so the method did NOT
+            // change and no event is published.
+            if (replaced.kind === "ok") {
+              await publishNatsEvent("payment.method_changed", {
+                eventType: "payment.method_changed",
+                orderId: id,
+                paymentId: replaced.payment.id,
+                previousMethod: currentMethod,
+                newMethod,
+                timestamp: new Date().toISOString(),
+              });
+            }
 
-        return replaced;
-      }, 15);
+            return replaced;
+          }, 15),
+      });
+
+      // Kernel REFUSE (e.g. the `validateMethodSwitch` shape guard) → surface the
+      // gateway's localized decision (403). No mutation ran.
+      if (out.decision.kind === "REFUSE") {
+        return reply.code(out.statusCode).send(out.body);
+      }
+
+      const result = out.body as ReplacePaymentResult | null;
 
       if (!result) {
         return reply.code(409).send({ error: "Operação em andamento. Tente novamente.", code: "LOCK_CONFLICT" });

@@ -45,3 +45,95 @@ export const SHIPPING_RATE_DEFAULT: ShippingRate = {
   pac: { price: 2500, days: 7 },
   sedex: { price: 4200, days: 3 },
 }
+
+// ─── Money-band escalation boundary (centavos) ──────────────────────────
+// FE-T02: single source for the R$1000 (100_000 centavos) boundary shared
+// by `@ibatexas/pack-orders`' checkout-confirm ladder and
+// `@ibatexas/pack-payments`' refund-escalate ladder. The two ladders
+// currently apply DIVERGENT comparators at this exact boundary — orders
+// confirms AT-OR-ABOVE it (`>=`, via `@adjudicate/primitives`'
+// `createConfirmGuard({ comparator: ">=" })`), payments escalates
+// STRICTLY ABOVE it (`>`). This file pins the shared VALUE (and both
+// comparator directions, below) so the divergence is visible in one
+// place; each call site keeps evaluating its own comparator, so no
+// decision changes for any amount. FE-T03 will reconcile the divergence
+// (payments' refund-escalate call site flips to `isAtOrAboveMoneyBand`).
+
+/** R$1000 in centavos — the shared money-band escalation boundary. */
+export const MONEY_BAND_1000_CENTAVOS = 100_000
+
+/**
+ * `amountCentavos >= thresholdCentavos`. This is
+ * `@ibatexas/pack-orders`' checkout-confirm ladder's CURRENT comparator
+ * (expressed declaratively via `createConfirmGuard`'s `comparator: ">="`
+ * rather than a direct call to this helper) — documented here so both
+ * operators are visible in one place, and available as the FE-T03 flip
+ * target for the refund-escalate ladder below.
+ */
+export function isAtOrAboveMoneyBand(
+  amountCentavos: number,
+  thresholdCentavos: number,
+): boolean {
+  return amountCentavos >= thresholdCentavos
+}
+
+/**
+ * `amountCentavos > thresholdCentavos`. Retained as the declarative
+ * complement of `isAtOrAboveMoneyBand`. NOTE (FE-T03/D2): the
+ * refund-escalate ladder no longer uses this — it flipped to
+ * `isAtOrAboveMoneyBand` (`>=`). This helper remains the CONFIRM-band
+ * comparator inside `classifyRefundMagnitudeBand` below.
+ */
+export function isAboveMoneyBand(
+  amountCentavos: number,
+  thresholdCentavos: number,
+): boolean {
+  return amountCentavos > thresholdCentavos
+}
+
+// ─── Shared refund magnitude band classifier (FE-D07) ───────────────────
+//
+// FE-D07: the refund-magnitude decision ladder used to live byte-parallel
+// in TWO places — `@ibatexas/pack-payments`' `paymentsPolicyBundle` (the
+// ops / WhatsApp channel) and `@ibatexas/domain`'s
+// `paymentProjectionPolicyBundle` (the admin-HTTP channel). FE-T03 flipped
+// BOTH escalate comparators to `>=` in lockstep, but the comparator +
+// band-boundary logic stayed duplicated, so the money bands could still
+// fork by channel if one site were edited and the other were not.
+//
+// This is the SINGLE SOURCE of the refund band comparators. Both bundles
+// import and delegate to it for the core EXECUTE / CONFIRM / ESCALATE
+// decision; each keeps its own channel-specific overlays (the ops path's
+// AUT-017 owner-approval + BKL-085 UNTRUSTED-taint overlays) and refusal
+// message shapes, but the amount → band mapping can no longer diverge.
+
+/** The three refund-magnitude bands, in ascending severity. */
+export type RefundMagnitudeBand = "EXECUTE" | "CONFIRM" | "ESCALATE"
+
+/**
+ * Classify a refund amount into its decision band using the CANONICAL
+ * comparators, single-sourced so the two refund ladders can never fork:
+ *
+ *   - amount >= escalateThresholdCentavos → "ESCALATE"  (`isAtOrAboveMoneyBand`, FE-T03/D2)
+ *   - amount >  confirmThresholdCentavos  → "CONFIRM"    (`isAboveMoneyBand`)
+ *   - else                                → "EXECUTE"
+ *
+ * Pure and amount-only — it does NOT apply the amount-invalid / over-balance
+ * / state-divergent REFUSEs (those precede this call in each guard) nor any
+ * channel overlay. Thresholds are passed in (each channel resolves its own
+ * env-backed getters) so the boundary VALUES stay caller-owned while the
+ * COMPARATORS live here once. Centavos integers (CLAUDE.md rule #2).
+ */
+export function classifyRefundMagnitudeBand(
+  amountCentavos: number,
+  confirmThresholdCentavos: number,
+  escalateThresholdCentavos: number,
+): RefundMagnitudeBand {
+  if (isAtOrAboveMoneyBand(amountCentavos, escalateThresholdCentavos)) {
+    return "ESCALATE"
+  }
+  if (isAboveMoneyBand(amountCentavos, confirmThresholdCentavos)) {
+    return "CONFIRM"
+  }
+  return "EXECUTE"
+}

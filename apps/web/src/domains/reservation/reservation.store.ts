@@ -1,5 +1,6 @@
 // Zustand store for reservation flow state
 import { create } from "zustand"
+import type { ReservationDTO } from "@ibatexas/types"
 
 export type ReservationStep = "date-party" | "timeslot" | "requests" | "confirmation"
 
@@ -42,8 +43,14 @@ interface ReservationState {
   slotsError: string | null
 
   // My reservations
-  myReservations: import("@ibatexas/types").ReservationDTO[]
+  myReservations: ReservationDTO[]
   loadingMyReservations: boolean
+
+  // Modify mode (CUS-053) — non-null while editing an existing reservation
+  modifyOriginal: ReservationDTO | null
+  modifySubmitting: boolean
+  modifyError: string | null
+  showSlotPicker: boolean
 
   // Created reservation
   createdReservation: CreatedReservation | null
@@ -60,11 +67,20 @@ interface ReservationState {
   setCreatedReservation: (r: CreatedReservation | null) => void
   setCreating: (v: boolean) => void
   setCreateError: (e: string | null) => void
-  setMyReservations: (r: import("@ibatexas/types").ReservationDTO[], loading: boolean) => void
+  setMyReservations: (r: ReservationDTO[], loading: boolean) => void
+
+  // Modify-mode actions (CUS-053)
+  startModify: (reservation: ReservationDTO) => void
+  cancelModify: () => void
+  setShowSlotPicker: (v: boolean) => void
+  setModifySubmitting: (v: boolean) => void
+  setModifyError: (e: string | null) => void
+  applyModified: (updated: ReservationDTO) => void
+
   reset: () => void
 }
 
-const initialState: Pick<ReservationState, 'step' | 'selectedDate' | 'partySize' | 'selectedSlot' | 'specialRequests' | 'availableSlots' | 'loadingSlots' | 'slotsError' | 'myReservations' | 'loadingMyReservations' | 'createdReservation' | 'creating' | 'createError'> = {
+const initialState: Pick<ReservationState, 'step' | 'selectedDate' | 'partySize' | 'selectedSlot' | 'specialRequests' | 'availableSlots' | 'loadingSlots' | 'slotsError' | 'myReservations' | 'loadingMyReservations' | 'createdReservation' | 'creating' | 'createError' | 'modifyOriginal' | 'modifySubmitting' | 'modifyError' | 'showSlotPicker'> = {
   step: "date-party",
   selectedDate: "",
   partySize: 2,
@@ -78,6 +94,27 @@ const initialState: Pick<ReservationState, 'step' | 'selectedDate' | 'partySize'
   createdReservation: null,
   creating: false,
   createError: null,
+  modifyOriginal: null,
+  modifySubmitting: false,
+  modifyError: null,
+  showSlotPicker: false,
+}
+
+// Fields the modify panel shares with the create wizard — reset together when
+// entering or leaving modify mode so the two flows never bleed into each other.
+const cleanForm = {
+  step: "date-party" as ReservationStep,
+  selectedDate: "",
+  partySize: 2,
+  selectedSlot: null,
+  specialRequests: [] as SpecialRequest[],
+  availableSlots: [] as AvailableSlot[],
+  loadingSlots: false,
+  slotsError: null,
+  modifyOriginal: null,
+  modifySubmitting: false,
+  modifyError: null,
+  showSlotPicker: false,
 }
 
 export const useReservationStore = create<ReservationState>()((set) => ({
@@ -95,5 +132,44 @@ export const useReservationStore = create<ReservationState>()((set) => ({
   setCreateError: (e) => set({ createError: e }),
   setMyReservations: (r, loading) =>
     set({ myReservations: r, loadingMyReservations: loading }),
+
+  // ── Modify mode (CUS-053) ──────────────────────────────────────────────────
+
+  // Enter modify mode: seed the shared form fields from the reservation and
+  // baseline selectedSlot with the CURRENT slot so an untouched time yields no
+  // newTimeSlotId in the diff. Does not touch the myReservations list.
+  startModify: (reservation) =>
+    set({
+      ...cleanForm,
+      modifyOriginal: reservation,
+      selectedDate: reservation.timeSlot.date,
+      partySize: reservation.partySize,
+      specialRequests: reservation.specialRequests,
+      selectedSlot: {
+        timeSlotId: reservation.timeSlot.id,
+        date: reservation.timeSlot.date,
+        startTime: reservation.timeSlot.startTime,
+        durationMinutes: reservation.timeSlot.durationMinutes,
+        availableCovers: 0,
+        tableLocations: [],
+      },
+    }),
+
+  cancelModify: () => set({ ...cleanForm }),
+
+  setShowSlotPicker: (v) => set({ showSlotPicker: v }),
+  setModifySubmitting: (v) => set({ modifySubmitting: v }),
+  setModifyError: (e) => set({ modifyError: e }),
+
+  // Replace the edited row in the list with the server's response, then leave
+  // modify mode with a clean form.
+  applyModified: (updated) =>
+    set((state) => ({
+      ...cleanForm,
+      myReservations: state.myReservations.map((r) =>
+        r.id === updated.id ? updated : r,
+      ),
+    })),
+
   reset: () => set(initialState),
 }))

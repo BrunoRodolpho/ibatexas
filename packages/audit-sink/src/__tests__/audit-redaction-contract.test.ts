@@ -122,8 +122,9 @@ function makeRecord(fx: Fixture, i: number): AuditRecord {
 //   - customer.create               (phone)
 //   - customer.anonymize            (customerId)
 //   - whatsapp.handoff.request      (reason text)
-//   - whatsapp.message.send         (body, variables — template preserved)
-//   - whatsapp.template.send        (variables)
+//   - twilio.message.send           (body, variables — template preserved;
+//                                     the live WhatsApp egress wrapper. BKL-177
+//                                     retired whatsapp.message.send/template.send)
 //   - validation.text.rewrite       (originalText)
 //   - validation.text.refuse        (originalText)
 //   - order.checkout.create         (customer object with email/cpf)
@@ -245,10 +246,12 @@ const CORPUS: Fixture[] = [
     },
   },
 
-  // ── whatsapp.message.send (template name preserved, body redacted) ─────
+  // ── twilio.message.send (live WhatsApp egress; template name preserved, ──
+  // body redacted). BKL-177 retired whatsapp.message.send/template.send; the
+  // identical body/variable redaction rule now lives on this egress wrapper.
   {
-    label: "whatsapp.message.send: order confirmation",
-    kind: "whatsapp.message.send",
+    label: "twilio.message.send: order confirmation",
+    kind: "twilio.message.send",
     payload: {
       to: "+5511999998888",
       template: "order_confirmation_v3",
@@ -257,8 +260,8 @@ const CORPUS: Fixture[] = [
     },
   },
   {
-    label: "whatsapp.message.send: PIX QR payload",
-    kind: "whatsapp.message.send",
+    label: "twilio.message.send: PIX QR payload",
+    kind: "twilio.message.send",
     payload: {
       to: "+5511777776666",
       template: "pix_qr",
@@ -266,11 +269,9 @@ const CORPUS: Fixture[] = [
       variables: { name: "João", cpf: "123.456.789-00" },
     },
   },
-
-  // ── whatsapp.template.send ─────────────────────────────────────────────
   {
-    label: "whatsapp.template.send: reservation reminder",
-    kind: "whatsapp.template.send",
+    label: "twilio.message.send: reservation reminder (template variables)",
+    kind: "twilio.message.send",
     payload: {
       to: "+5511888887777",
       templateName: "reservation_reminder",
@@ -932,7 +933,7 @@ describe("audit-redaction CONTRACT (CI gate)", () => {
     const prehashed = "hashed:abcd1234"
     const fx: Fixture = {
       label: "P0-10 WA pre-hashed session",
-      kind: "whatsapp.message.send",
+      kind: "twilio.message.send",
       payload: { to: "+5511999998888", body: "olá" },
       sessionId: prehashed,
     }

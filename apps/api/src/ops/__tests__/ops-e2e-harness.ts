@@ -72,10 +72,28 @@ import {
 } from "../../claustrum/noop-memory-grounding.js";
 import { composeOpsConductor } from "../ops-conductor.js";
 import { createOpsToolRegistry } from "../ops-tool-registry.js";
-import { OpsSystemChannel } from "../ops-system-channel.js";
+import {
+  OpsSystemChannel,
+  opsConfirmParkExpiresAt,
+} from "../ops-system-channel.js";
+import { buildLanguageEngineAuditMetadata } from "../../claustrum/language-engine/audit-metadata.js";
 
 /** Staff roles the ops matrix knows about. */
 export type StaffRole = "OWNER" | "MANAGER" | "ATTENDANT";
+
+/**
+ * The instant every harness park is stamped with (makeStatefulSession) AND the
+ * default inbound `receivedAt` — so a park is FRESH (age 0) under any confirm-TTL
+ * and the existing confirm-resume e2e arms are byte-identical after FE-D13. A stale
+ * arm passes a LATER `receivedAt` to `runOpsTurn`/`inbound` to age a park past the
+ * TTL; {@link staleReceivedAt} builds one deterministically (no fake timers).
+ */
+export const HARNESS_PARKED_AT = "2026-07-04T12:00:00.000Z";
+
+/** An inbound receivedAt `seconds` after {@link HARNESS_PARKED_AT} (FE-D13 stale arms). */
+export function staleReceivedAt(seconds: number): string {
+  return new Date(Date.parse(HARNESS_PARKED_AT) + seconds * 1000).toISOString();
+}
 
 /** A scripted planner tool call (express_intent, or a read tool like ops_snapshot). */
 export interface ScriptedToolCall {
@@ -143,10 +161,19 @@ export function makeCapturingAuditSink(): CapturingAuditSink {
  * confirm-resume it RE-PROJECTS the ops state (fresh DB read) from the parked
  * envelope before re-adjudicating with the confirmation receipt (CONFIRM→EXECUTE).
  * Availability passes no projector (it EXECUTEs on the first turn — never parks).
+ *
+ * FE-T05b — MAY return a `Promise<unknown>` (awaited below) so a scenario can
+ * wire in the REAL, exported `enrichResumeState` from claustrum-bootstrap.ts
+ * directly (a DB-backed async re-projection), rather than a hand-authored
+ * synchronous mirror of it — the live-disprove root cause (intent_audit
+ * 3362/3366) was a WIRING gap inside `enrichResumeState` itself that a
+ * hand-rolled mirror could not have caught (it "mirrored" a wrong assumption
+ * instead of exercising the real dispatch). Existing synchronous projectors
+ * are unaffected — `await`ing a non-Promise value resolves immediately.
  */
 export function makeAuditedAdjudicator(opts: {
   sink: AuditSink;
-  projectResumeState?: (envelope: IntentEnvelope) => unknown;
+  projectResumeState?: (envelope: IntentEnvelope) => unknown | Promise<unknown>;
 }): Adjudicator {
   const { sink, projectResumeState } = opts;
   const decideWith = async (
@@ -158,6 +185,10 @@ export function makeAuditedAdjudicator(opts: {
     (
       await adjudicateAndAudit(envelope, state as never, policy as never, {
         sink,
+        // FE-T05 — mirrors production's safeAuditedAdjudicate wiring
+        // (claustrum-bootstrap.ts) so the ops e2e harness observes the SAME
+        // AuditRecord.metadata shape a real turn would produce.
+        metadataProvider: buildLanguageEngineAuditMetadata,
         ...(receipt ? { confirmationReceipt: receipt } : {}),
       })
     ).decision;
@@ -185,7 +216,7 @@ export function makeAuditedAdjudicator(opts: {
     resume: async (envelope, state, policy, receipt) => {
       const env = envelope as IntentEnvelope;
       const resumeState = projectResumeState
-        ? projectResumeState(env)
+        ? await projectResumeState(env)
         : state;
       return decideWith(env, resumeState, policy, receipt as ConfirmationReceipt);
     },
@@ -233,11 +264,16 @@ export function makeStatefulSession(): StatefulSession {
       userPrompt,
     ) => {
       const list = parks.get(sessionId) ?? [];
+      // Mirror the production SessionPort (claustrum-bootstrap.ts): stamp the
+      // FE-D33 forward-compat expiresAt on the ops plane so a real park-flow e2e
+      // observes the same entry shape a production park would produce.
+      const expiresAt = opsConfirmParkExpiresAt(sessionId, HARNESS_PARKED_AT);
       list.push({
         envelope: envelope as IntentEnvelope,
         confirmationToken,
         userPrompt,
-        parkedAt: "2026-07-04T12:00:00.000Z",
+        parkedAt: HARNESS_PARKED_AT,
+        ...(expiresAt ? { expiresAt } : {}),
       });
       parks.set(sessionId, list);
     },
@@ -248,7 +284,7 @@ export function makeStatefulSession(): StatefulSession {
         signal,
         deferUntil,
         timeoutMs,
-        parkedAt: "2026-07-04T12:00:00.000Z",
+        parkedAt: HARNESS_PARKED_AT,
       });
       deferred.set(sessionId, list);
     },
@@ -288,11 +324,23 @@ export function scriptedModel(
     const isPlanner = (req.tools?.length ?? 0) > 0;
     const emit = isPlanner && !fired;
     if (emit) fired = true;
+    const emittedCalls = emit ? toolCalls : [];
     return {
       model: "mock",
       stopReason: "end_turn",
-      text: isPlanner ? "" : responderText,
-      toolCalls: emit ? [...toolCalls] : [],
+      // FE-T01 (D4): live-verified against nemotron-3-nano:4b — a planner pass
+      // that emits NO tool call still says SOMETHING in `text` (the real
+      // customer/ops reply is a SEPARATE responder completion; this text is
+      // never rendered). Empty text is realistic ONLY alongside an actual
+      // tool call. Mirroring that here keeps every "no additional intent"
+      // planner pass out of the genuinely-empty-completion repair-or-refuse
+      // path (`isGenuinelyEmptyCompletion` in ibatexas-planner.ts).
+      text: isPlanner
+        ? emittedCalls.length > 0
+          ? ""
+          : "ok (mock planner pass — nothing to propose)"
+        : responderText,
+      toolCalls: [...emittedCalls],
       inputTokens: 5,
       outputTokens: 4,
     };
@@ -464,15 +512,23 @@ export function composeOpsDeps(scenario: OpsDepsScenario) {
   };
 }
 
-/** The inbound "system"-channel staff message the ops conductor turns on. */
-export function inbound(staffId: string, text: string): ChannelMessage {
+/**
+ * The inbound "system"-channel staff message the ops conductor turns on. `receivedAt`
+ * defaults to {@link HARNESS_PARKED_AT} (age-0 vs a harness park — FRESH); a stale arm
+ * passes a later instant (see {@link staleReceivedAt}) to drive the FE-D13 TTL filter.
+ */
+export function inbound(
+  staffId: string,
+  text: string,
+  receivedAt: string = HARNESS_PARKED_AT,
+): ChannelMessage {
   return {
     channel: "system",
     customerId: `staff:${staffId}`,
     conversationId: `admin:${staffId}`,
     externalId: `ops-${staffId}-${randomUUID()}`,
     text,
-    receivedAt: "2026-07-04T12:00:00.000Z",
+    receivedAt,
     locale: "pt-BR",
   };
 }
@@ -492,11 +548,11 @@ export interface OpsTurnResult {
  */
 export async function runOpsTurn(
   deps: unknown,
-  args: { role: StaffRole; staffId: string; text: string },
+  args: { role: StaffRole; staffId: string; text: string; receivedAt?: string },
 ): Promise<OpsTurnResult> {
-  const { role, staffId, text } = args;
+  const { role, staffId, text, receivedAt } = args;
   const conductor = composeOpsConductor(deps as never, { staffId, role });
-  const message = inbound(staffId, text);
+  const message = inbound(staffId, text, receivedAt);
   const capsule = await conductor.openCapsule({
     channel: "system",
     customerId: `staff:${staffId}`,

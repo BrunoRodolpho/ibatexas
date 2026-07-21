@@ -82,6 +82,12 @@ import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generat
  *     degrades SAFE to UNKNOWN pending per-resource PAYMENT key namespacing +
  *     F3 per-turn `owns`; the rows below declare the predicate, they do not by
  *     themselves prove a VALIDATED render fires this turn.
+ *   - `RESERVATION_STATUS` — a customer-scoped, live, first-party reservation
+ *     read (FE-T17; ownership required, `must_read_this_turn`). Owner-scoped +
+ *     per-resource like ORDER_FULFILLMENT_STAGE: keyed `reservation_status:{id}`
+ *     (the investigator's `RESERVATION_KEY`, already wired), falsified by a
+ *     present `reservation_cancelled` fact (the same defense-in-depth staleness
+ *     shape as ORDER_FULFILLMENT_STAGE's `order_cancelled`).
  *   - `PURCHASE_COMPLETED`  — an ACTION claim (`action_outcome`; does NOT imply
  *     settlement — SDD §E / §K Cluster F).
  *
@@ -95,6 +101,64 @@ export const CLAIM_REGISTRY = [
   "STORE_OPEN_NOW",
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
+  "RESERVATION_STATUS",
+  // BKL-139 / FE-D03 — the owner-scoped IN-PROGRESS CART read ("o que tem no meu
+  // carrinho?"). Owner-scoped + per-resource like RESERVATION_STATUS, but its C6
+  // proposition is a DETERMINISTICALLY PRE-COMPOSED summary scalar (itemsSummaryText,
+  // "2x Costela — total R$123,00") — the STORE_HOURS_FOR_DATE `hoursText` precedent for
+  // rendering a list-shaped read as ONE C6 field under the frozen single-scalar kernel.
+  // The money in that string is composed in code from INTEGER CENTAVOS (Hard Rule 2),
+  // NEVER model-authored (FE-D04 / BKL-149).
+  "CART_CONTENTS",
+  // BKL-163 — the PROVABLY-EMPTY cart twin ("o que tem no meu carrinho?" when the
+  // cart has no items). The presence-complement of CART_CONTENTS: the investigator
+  // records `cart_empty:{customerId}` PRESENT ONLY when the owner-scoped cart read
+  // resolved `hasItems: false` (a provable-empty witness — the FE-T17b marker idiom
+  // inverted into a claim-bearing key), so exactly ONE of the pair can ever
+  // VALIDATE in a turn. Answers "carrinho vazio" with a friendly VALIDATED render
+  // instead of the honest-UNKNOWN degrade (PR #291 deviation (a)) — without
+  // weakening soundness: an UNAVAILABLE read still fail-closes (Inv 7), a guest
+  // still resolves ABSENT → honest UNKNOWN (the fail-closed ownership ruling).
+  "CART_EMPTY",
+  // FE-D03 slice C — the owner-scoped LIST/HISTORY reads ("meu histórico de pedidos" /
+  // "meus últimos pagamentos"). The plural/list siblings of ORDER_FULFILLMENT_STAGE /
+  // PAYMENT_STATUS: instead of a single-subject status they render a
+  // DETERMINISTICALLY PRE-COMPOSED, bounded most-recent-N summary scalar
+  // (historySummaryText) — the CART_CONTENTS serialized-scalar idiom for a list-shaped
+  // read under the frozen single-C6-field kernel (FE-D09). Owner-scoped by the
+  // authenticated customerId (order/payment listByCustomer); money composed in code
+  // from INTEGER CENTAVOS (Hard Rule 2), NEVER model-authored.
+  "ORDER_HISTORY",
+  "PAYMENT_HISTORY",
+  // BKL-142 — the PUBLIC menu-catalog reads ("quanto custa a costela?" / "o que vem
+  // no combo?"). perResourceKey by the RESOLVED product id (the shared
+  // menu-item-resolver.ts), ownershipPolicy not_applicable (owned by nobody, like
+  // STORE_HOURS_FOR_DATE), C6-bound to a DETERMINISTICALLY PRE-COMPOSED scalar
+  // (priceText from integer centavos — Hard Rule 2; contentsText from the first-party
+  // description). The dietary-tags twin (MENU_DIETARY_OPTIONS) is DELIBERATELY absent
+  // — "sem glúten/lactose" is allergen-adjacent legal territory behind the BKL-143/
+  // BKL-123 owner gate. MENU_OVERVIEW (the menu-wide list) is the fixed-subject twin
+  // (distinct catalog-LISTING read via the wildcard `searchProducts` path, not the
+  // per-item resolver) — public, single-key, like STORE_HOURS.
+  "MENU_ITEM_PRICE",
+  "MENU_ITEM_CONTENTS",
+  "MENU_OVERVIEW",
+  // BKL-214 — the PUBLIC dietary-PREFERENCE read ("tem opção vegetariana?"). PUBLIC
+  // per-item like MENU_ITEM_PRICE, but the "item" is the dietary TAG (vegetariano/
+  // vegano) resolved deterministically from the utterance; C6-bound to a pre-composed
+  // pt-BR list of tagged product titles (`dietaryText`). RESTRICTED to pure-preference
+  // tags — `sem_gluten`/`sem_lactose` are allergen-adjacent (BKL-143/123 conservative
+  // gate) and never reach this claim (they route to the honest-abstain path). A tag is a
+  // positive PREFERENCE attribute, NEVER a "não contém X" allergen assurance.
+  "MENU_DIETARY",
+  // BKL-136 — the PUBLIC store-info read ("onde fica o restaurante?" / "tem
+  // estacionamento?"). The STORE_HOURS/MENU_OVERVIEW fixed-subject public shape:
+  // single key `store:info`, owned by nobody, C6-bound to a DETERMINISTICALLY
+  // pre-composed pt-BR scalar (`infoText`) derived from the OWNER-ATTESTED Medusa
+  // `store.metadata.address` / `.parking` (written by the committed seed or the
+  // admin — never inferred, never model-authored). Absent/blank metadata → ABSENT
+  // evidence → honest UNKNOWN ("can never ground" closes only when data exists).
+  "STORE_INFO",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -201,10 +265,21 @@ export interface RegistryClaimSpec {
    * public, single-key type whose `schedule:store_open_now` matches the
    * investigator verbatim) leaves this OMITTED — its keys are never parameterized.
    *
-   * NOTE: per-resource alignment is necessary-but-not-sufficient for these
-   * owner-scoped types to go LIVE; the per-turn `owns` threading is a conductor
-   * (`@claustrum/core`) republish (Wall 2, out of scope here). Until then
-   * ORDER/PAYMENT degrade SAFE to UNKNOWN (owns false / read-error / value-absent).
+   * FE-3.3 (FE-T16) — RETIRED CAVEAT: this note used to read "per-resource
+   * alignment is necessary-but-not-sufficient for these owner-scoped types to go
+   * LIVE; the per-turn `owns` threading is a conductor (`@claustrum/core`)
+   * republish (Wall 2, out of scope here); until then ORDER/PAYMENT degrade SAFE
+   * to UNKNOWN." That precondition has since LANDED and is WIRED: the REAL
+   * per-turn `owns` predicate (`buildPerTurnOwnsFromLedger`,
+   * ibatexas-claims-kernel-deps.ts) is threaded as the Conductor's
+   * `claimsKernelDepsForTurn` seam by `claims-pipeline.ts` `buildClaimsSeams`
+   * whenever the claims pipeline is on — it is NOT the process-wide fail-closed
+   * `owns → false` stub. A genuine owner with a PRESENT per-resource read now
+   * VALIDATEs and renders (see tracka-fix-actor-subject.test.ts,
+   * reservation-status-claim.test.ts). ORDER/PAYMENT/RESERVATION still degrade
+   * SAFE to UNKNOWN, but only for the reasons that remain genuinely true: no
+   * ownership attribution this turn, a read error, or an absent/mismatched value
+   * — never a pending upstream precondition.
    */
   readonly perResourceKey?: boolean;
 }
@@ -373,6 +448,13 @@ export const REGISTRY_SPECS = {
     // The investigator records the schedule-style PER-RESOURCE key — parameterize.
     perResourceKey: true,
     // W6 — a present order CANCELLATION falsifies any in-progress fulfillment stage.
+    // DELIBERATELY UNREAD (review ruling 2026-07-17, post-#277): no investigator
+    // read populates `order_cancelled` — the only available read derives from the
+    // SAME per-turn order row as the base ORDER_FULFILLMENT_STAGE read, so firing
+    // it is a tautology that demotes every TRUTHFUL "cancelado" render to UNKNOWN
+    // while catching zero staleness the base misses. The declaration stays for a
+    // future INDEPENDENT cancellation signal (e.g. the order-events stream);
+    // rendering cancellation as a first-class claim is tracked as BKL-160.
     falsifierComplete: true,
     falsifiers: [
       {
@@ -434,6 +516,418 @@ export const REGISTRY_SPECS = {
     ],
     // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
     valueBinding: { key: "payment_status", path: ["status"] },
+  },
+  // FE-T17 — the reservation-status read. Owner-scoped + per-resource, mirroring
+  // ORDER_FULFILLMENT_STAGE exactly: the base key `reservation_status` matches the
+  // investigator's `RESERVATION_KEY` (ibatexas-investigator.ts) and the owner-scope
+  // wiring already declared for it in `OWNER_SCOPED_KEY_PREFIXES` / FIX 2's
+  // `ownerScopedBaseKey` (ibatexas-claims-kernel-deps.ts / ibatexas-planner.ts) — both
+  // pre-date this row and needed no change to pick it up.
+  RESERVATION_STATUS: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "reservation_status",
+        // Ownership required via the reservation service's owner-scoped getById.
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    // Parameterize by subject — matches the investigator's `reservation_status:{id}`.
+    perResourceKey: true,
+    // W6 — a present reservation CANCELLATION falsifies an in-progress reservation
+    // status read. DELIBERATELY UNREAD (review ruling 2026-07-17, post-#277) —
+    // same-row tautology as ORDER_FULFILLMENT_STAGE's `order_cancelled` (see that
+    // type's note): the only available read shares the base read's per-turn
+    // reservation memo, so firing it would demote every truthful "cancelada"
+    // render while catching nothing. Declaration retained for a future
+    // INDEPENDENT signal; render-vs-demote decision = BKL-160.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "reservation_cancelled",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered scalar to the read's pre-composed `statusLine`
+    // (BKL-185, the ORDER_HISTORY serialized-scalar idiom): status + optional
+    // "— DD/MM às HH:MM, para N pessoa(s)" detail, composed DETERMINISTICALLY in
+    // the read (turn-reads.ts composeReservationStatusLine — no clock, no model).
+    // Detail-absent → the scalar IS the bare status → the render is byte-identical
+    // to the pre-BKL-185 status-only form. Ledger-sourced, never model-authored.
+    valueBinding: { key: "reservation_status", path: ["statusLine"] },
+  },
+  // BKL-139 / FE-D03 — the owner-scoped IN-PROGRESS CART read. Structurally the
+  // RESERVATION_STATUS idiom (owner-scoped, per-resource, must_read_this_turn,
+  // falsifier-complete), BUT its C6 value is a DETERMINISTICALLY PRE-COMPOSED summary
+  // scalar (`itemsSummaryText`), following the STORE_HOURS_FOR_DATE `hoursText`
+  // precedent: a list-shaped read (N cart lines) rendered as ONE C6-bound string under
+  // the frozen single-scalar kernel (FE-D09). The subject is the AUTHENTICATED
+  // customerId (the cart is 1-per-customer, resolved server-side from the session's
+  // conversationId — never a model-extracted id), so the investigator records
+  // `cart_contents:{customerId}` and the owner-scope wiring lists `cart_contents:` in
+  // OWNER_SCOPED_KEY_PREFIXES (ibatexas-claims-kernel-deps.ts). A guest owns no cart →
+  // the read is skipped (isAuthenticatedCustomer gate) → the claim resolves ABSENT →
+  // honest UNKNOWN (the fail-closed ownership ruling). The money in `itemsSummaryText`
+  // is composed in code from integer centavos (Hard Rule 2), NEVER model-authored
+  // (FE-D04 / BKL-149).
+  CART_CONTENTS: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "cart_contents",
+        // Ownership required — the cart is the authenticated customer's own
+        // (session-resolved, never a model id); the owner-scope wiring gates it.
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    // Parameterize by subject — matches the investigator's `cart_contents:{customerId}`.
+    perResourceKey: true,
+    // W6 — the `cart_cleared` falsifier is DECLARED (so CART_CONTENTS escapes the W6
+    // UNKNOWN-only cap and can VALIDATE), but DELIBERATELY UNREAD by the investigator —
+    // the SAME disposition as ORDER_FULFILLMENT_STAGE's `order_cancelled` /
+    // RESERVATION_STATUS's `reservation_cancelled` after their review-fix: a
+    // same-cart-row "cleared" signal is tautological AND inert (a cleared/checked-out
+    // cart already reads `hasItems: false` ⇒ `cart_contents` ABSENT ⇒ no present base to
+    // demote). Declaring-without-reading is sound: the runtime arm resolves an
+    // always-absent key ⇒ never fires ⇒ demote-only safety is preserved.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "cart_cleared",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered summary to the read's PRE-COMPOSED `itemsSummaryText`
+    // field (ledger-sourced, deterministic; never model-authored).
+    valueBinding: { key: "cart_contents", path: ["itemsSummaryText"] },
+  },
+  // BKL-163 — CART_EMPTY: the provably-empty cart twin of CART_CONTENTS. The SAME
+  // owner-scoped, must_read_this_turn, perResourceKey shape (subject = the
+  // authenticated customerId), but its evidence key `cart_empty:{customerId}` is
+  // recorded PRESENT by the investigator ONLY when the cart read resolved
+  // `hasItems: false` — presence IS the provable-empty proposition, so the pair is
+  // complementary by construction (a cart with items leaves `cart_empty` ABSENT ⇒
+  // this claim resolves UNKNOWN ⇒ dropped when CART_CONTENTS validates; an empty
+  // cart leaves `cart_contents` ABSENT ⇒ CART_CONTENTS drops and THIS renders).
+  // The C6 proposition is a DETERMINISTIC code-composed scalar (`emptinessText`,
+  // the literal "vazio") — never model-authored.
+  CART_EMPTY: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "cart_empty",
+        // Ownership required — the (empty) cart is the authenticated customer's own
+        // (session-resolved, never a model id); the owner-scope wiring gates it.
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    // Parameterize by subject — matches the investigator's `cart_empty:{customerId}`.
+    perResourceKey: true,
+    // W6 — `cart_item_added` is DECLARED (so CART_EMPTY escapes the W6 UNKNOWN-only
+    // cap and can VALIDATE) but DELIBERATELY UNREAD — the exact CART_CONTENTS
+    // `cart_cleared` disposition: a same-cart-row "item added" signal is tautological
+    // AND inert (a cart that gained an item already reads `hasItems: true` ⇒
+    // `cart_empty` ABSENT ⇒ no present base to demote). Declaring-without-reading is
+    // sound: the runtime arm resolves an always-absent key ⇒ never fires ⇒
+    // demote-only safety preserved.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "cart_item_added",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered scalar to the read's code-composed `emptinessText`
+    // field (ledger-sourced, deterministic; never model-authored).
+    valueBinding: { key: "cart_empty", path: ["emptinessText"] },
+  },
+  // FE-D03 slice C — ORDER_HISTORY: the owner-scoped list read ("meu histórico de
+  // pedidos"). Structurally the CART_CONTENTS idiom (owner-scoped, must_read_this_turn,
+  // perResourceKey by the authenticated customerId), but its C6 proposition is a
+  // DETERMINISTICALLY PRE-COMPOSED bounded most-recent-N summary scalar
+  // (historySummaryText, "Pedido #1042 (entregue, R$89,00), … — mostrando os N mais
+  // recentes") derived from order listByCustomer (owner-scoped). The
+  // `order_history_changed` falsifier is DECLARED (so ORDER_HISTORY escapes the W6
+  // UNKNOWN-only cap and can VALIDATE) but DELIBERATELY UNREAD — the CART_CONTENTS
+  // `cart_cleared` disposition: the summary is a must_read_this_turn SNAPSHOT that
+  // already reflects each order's current status, so a same-read "changed" signal is
+  // tautological AND inert (an always-absent key never fires; demote-only safety holds).
+  ORDER_HISTORY: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "order_history",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    // Parameterize by subject — matches the investigator's `order_history:{customerId}`.
+    perResourceKey: true,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "order_history_changed",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered summary to the read's PRE-COMPOSED `historySummaryText`.
+    valueBinding: { key: "order_history", path: ["historySummaryText"] },
+  },
+  // FE-D03 slice C — PAYMENT_HISTORY: the owner-scoped payment-list read ("meus últimos
+  // pagamentos"). The exact ORDER_HISTORY shape over payment listByCustomer (owner-scoped
+  // via the Payment→OrderProjection.customerId join; includes terminal/refunded rows —
+  // it is billing HISTORY). `payment_history_changed` is likewise DECLARED-but-UNREAD:
+  // must_read_this_turn re-reads each payment's current status (incl. refunded/disputed —
+  // the same facts BKL-006's per-order refund/chargeback probes surface), so the summary
+  // already reflects them and a separate falsifier would demote a snapshot that is
+  // already current — no independent cross-read contradiction (re-verified: the refund/
+  // chargeback probes are per-ORDER and this is a per-CUSTOMER snapshot; wiring them
+  // here would be tautological). Declared-unread, mirroring cart_cleared.
+  PAYMENT_HISTORY: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "payment_history",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: true,
+    perResourceKey: true,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "payment_history_changed",
+        ownershipPolicy: "required",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "payment_history", path: ["historySummaryText"] },
+  },
+  // BKL-142 — MENU_ITEM_PRICE: a PUBLIC per-item catalog read. Clones
+  // STORE_HOURS_FOR_DATE's public (`not_applicable`, `perResourceKey`) shape + the
+  // CART_CONTENTS pre-composed-scalar `valueBinding` (`priceText`, "R$ 89,00" composed
+  // in code from integer centavos — Hard Rule 2, NEVER model-authored). The subject is
+  // the RESOLVED product id (the shared menu-item-resolver.ts drives BOTH the claim
+  // planner's candidate subject AND the investigator's `menu:item_price:{id}` key, so
+  // they match by construction); an unresolvable item → no candidate/absent evidence →
+  // honest UNKNOWN, never an arbitrary product.
+  MENU_ITEM_PRICE: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:item_price",
+        ownershipPolicy: "not_applicable",
+        // UNITS (BKL-121/BKL-125 pin): `cacheable` ttl is enforced in epoch-MILLISECONDS.
+        // 300_000 ms = the ratified 5-minute catalog-freshness bound (vacuous within a
+        // per-turn ledger, honest if an entry ever outlives a turn).
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    perResourceKey: true,
+    // W6 — `menu:item_unpublished` is DECLARED (so this type escapes the W6 UNKNOWN-only
+    // cap and can VALIDATE) but DELIBERATELY UNREAD by the investigator — the SAME
+    // disposition CART_CONTENTS's `cart_cleared` / ORDER_FULFILLMENT_STAGE's
+    // `order_cancelled` took after the #290/#291 review: a "this product row is
+    // unpublished" signal derived from the SAME product row the price came from is a
+    // TAUTOLOGY (an unpublished item already reads ABSENT ⇒ no present base to demote)
+    // AND would re-introduce the exact same-row-tautology class those PRs removed.
+    // Declaring-without-reading is sound: the runtime arm resolves an always-absent key
+    // ⇒ never fires ⇒ demote-only safety is preserved. A future INDEPENDENT signal (a
+    // catalog `product.unpublished` event, not this row) could wire the read.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:item_unpublished",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:item_price", path: ["priceText"] },
+  },
+  // BKL-142 — MENU_ITEM_CONTENTS: same PUBLIC per-item shape, C6-bound to the
+  // first-party `contentsText` (the product description). Same deliberately-unread
+  // `menu:item_unpublished` falsifier disposition as MENU_ITEM_PRICE.
+  MENU_ITEM_CONTENTS: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:item_contents",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    perResourceKey: true,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:item_unpublished",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:item_contents", path: ["contentsText"] },
+  },
+  // BKL-214 — MENU_DIETARY: the PUBLIC dietary-preference read. Same PUBLIC per-item
+  // shape as MENU_ITEM_PRICE/CONTENTS (perResourceKey, ownershipPolicy not_applicable),
+  // but the "resource id" is the dietary TAG (vegetariano/vegano). C6-bound to the
+  // pre-composed `dietaryText` (first-party tagged-product titles, menu-item-resolver.ts).
+  // Same deliberately-unread `menu:item_unpublished` falsifier disposition. Empty tag →
+  // ABSENT evidence → honest UNKNOWN (never a fabricated "we have vegetarian options").
+  MENU_DIETARY: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:dietary",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    perResourceKey: true,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:item_unpublished",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:dietary", path: ["dietaryText"] },
+  },
+  // BKL-142 — MENU_OVERVIEW: the menu-WIDE overview ("o que tem no cardápio?"). PUBLIC
+  // and FIXED-SUBJECT like STORE_HOURS (single key, NOT perResourceKey) — the evidence
+  // is a deterministic listing of the whole catalog, not a per-item read. C6-bound to a
+  // pre-composed scalar (`overviewText` — first-party titles + centavos prices, composed
+  // in menu-item-resolver.ts; NO allergen/dietary — those stay carved out). Same
+  // deliberately-unread `menu:item_unpublished` falsifier disposition as the per-item
+  // menu claims.
+  MENU_OVERVIEW: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:overview",
+        ownershipPolicy: "not_applicable",
+        // ttl in epoch-MILLISECONDS (BKL-121/BKL-125 pin) — 300_000 ms = the ratified
+        // 5-minute catalog-freshness bound (vacuous within a per-turn ledger).
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    // W6 — `menu:item_unpublished` is DECLARED (so MENU_OVERVIEW escapes the W6
+    // UNKNOWN-only cap and can VALIDATE) but DELIBERATELY UNREAD — the SAME disposition
+    // the per-item menu claims + CART_CONTENTS's `cart_cleared` took after the #290/#291
+    // review: an "unpublished item" signal derived from the SAME catalog rows the
+    // overview came from is a same-row TAUTOLOGY (an unpublished item already reads
+    // ABSENT from the published listing ⇒ no present base to demote) that would
+    // re-introduce the exact class those PRs removed. Declaring-without-reading is sound:
+    // the runtime arm resolves an always-absent key ⇒ never fires ⇒ demote-only safety
+    // preserved. A future INDEPENDENT catalog `product.unpublished` event could wire it.
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:item_unpublished",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:overview", path: ["overviewText"] },
+  },
+  // BKL-136 — STORE_INFO: the store address/parking read ("onde fica?"). PUBLIC
+  // fixed-subject single-key like MENU_OVERVIEW (`ownershipPolicy: not_applicable`,
+  // NOT perResourceKey), cacheable at the same 5-minute config-freshness bound. The
+  // `store:info_changed` falsifier is DECLARED (escapes the W6 UNKNOWN-only cap so
+  // STORE_INFO can VALIDATE) but DELIBERATELY UNREAD — the MENU_OVERVIEW
+  // `menu:item_unpublished` disposition: a "changed" signal derived from the SAME
+  // store row the info came from is the same-row tautology #290/#291 removed (a
+  // changed address already reads as the NEW `infoText` — there is no stale present
+  // base to demote within a must-read turn). A future INDEPENDENT store-config
+  // change event could wire the read.
+  STORE_INFO: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "store:info",
+        ownershipPolicy: "not_applicable",
+        // ttl in epoch-MILLISECONDS (BKL-121/BKL-125 pin) — 300_000 ms = the same
+        // 5-minute config-freshness bound MENU_OVERVIEW ratified (vacuous within a
+        // per-turn ledger).
+        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "store:info_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "store:info", path: ["infoText"] },
   },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
@@ -657,21 +1151,44 @@ export function constrainClaimGeneration(
  * kernel's C6 value-binding passes BY CONSTRUCTION — without skipping C6.
  */
 export interface FirstPartyDerivationReads {
-  /** The schedule signal — the SAME `readSchedule()` the investigator records
-   *  (`ibatexas-investigator.ts` SCHEDULE_KEY). Only `mealPeriod` is bound (C6). */
-  readonly scheduleSignal?: { readonly mealPeriod?: unknown };
-  /** BKL-121 — today's operating-hours read (the SAME `readStoreHours()` the
-   *  investigator records under `schedule:store_hours`). Only `hoursText` is bound
-   *  (C6); the re-read is byte-equal to the recorded entry so C6 passes BY
-   *  CONSTRUCTION (a present override/holiday falsifier STILL demotes to UNKNOWN). */
-  readonly storeHours?: { readonly hoursText?: unknown };
-  /** BKL-138 — the DAY-SPECIFIC hours read(s) for THIS turn, keyed by the QUERIED ISO
-   *  date (the candidate `subject`). The SAME `readHoursForDate(date)` the investigator
-   *  records under `schedule:store_hours:{date}`, so the derived `hoursText` is
-   *  byte-equal to the recorded ledger entry and C6 passes BY CONSTRUCTION (a present
-   *  holiday/override falsifier on that date STILL demotes to UNKNOWN). A candidate
-   *  whose `subject` is absent from this map keeps `value: undefined` (C6 ABSTAIN). */
-  readonly storeHoursForDate?: Readonly<Record<string, { readonly hoursText?: unknown }>>;
+  // BKL-126 — the schedule-family derives (scheduleSignal / storeHours /
+  // storeHoursForDate) were REMOVED from this bag: unlike the memoized menu/
+  // store-info reads below, they were FRESH loadSchedule()+clock loads at
+  // claims-validate time, 5-20s (model latency) after the investigator's
+  // recorded read — a mid-turn schedule edit or midnight rollover in that
+  // window diverged the two arms into a C6 REFUSED mis-audited as a model
+  // over-claim. The schedule-family candidates now leave the planner with
+  // `value: undefined` and @claustrum/core claims-validate stage 4b binds the
+  // value from the investigator's OWN recorded ledger entry (only-undefined,
+  // full-entry, same-path projection) — C6 passes BY CONSTRUCTION with the
+  // divergence window deleted, and the override/holiday falsifier arms are
+  // untouched (a present falsifier still demotes). No recorded entry (span
+  // didn't fire / read failed) → value stays undefined → honest UNKNOWN.
+  /** BKL-142 — the per-item PRICE read(s) for THIS turn, keyed by the RESOLVED product
+   *  id (the candidate `subject`). The SAME resolved product the investigator records
+   *  under `menu:item_price:{id}`, so the derived `priceText` is byte-equal to the
+   *  recorded ledger entry and C6 passes BY CONSTRUCTION. A candidate whose `subject`
+   *  is absent from this map keeps `value: undefined` (C6 ABSTAIN → honest UNKNOWN). */
+  readonly menuItemPrice?: Readonly<Record<string, { readonly priceText?: unknown }>>;
+  /** BKL-142 — the per-item CONTENTS read(s) for THIS turn, keyed by resolved product
+   *  id; the SAME product the investigator records under `menu:item_contents:{id}`. */
+  readonly menuItemContents?: Readonly<Record<string, { readonly contentsText?: unknown }>>;
+  /** BKL-214 — the per-TAG dietary read(s) for THIS turn, keyed by the dietary tag
+   *  (vegetariano/vegano); the SAME `dietaryText` the investigator records under
+   *  `menu:dietary:{tag}`, so the derived value is byte-equal (C6 passes by
+   *  construction). Absent tag → value stays undefined → C6 ABSTAIN → honest UNKNOWN. */
+  readonly menuDietary?: Readonly<Record<string, { readonly dietaryText?: unknown }>>;
+  /** BKL-142 — the menu-WIDE overview read for THIS turn (fixed subject, single-key,
+   *  like STORE_HOURS). The SAME `overviewText` the investigator records under
+   *  `menu:overview`, so the derived value is byte-equal (C6 passes by construction).
+   *  Absent (empty/unreadable catalog) → value stays undefined → C6 ABSTAIN → UNKNOWN. */
+  readonly menuOverview?: { readonly overviewText?: unknown };
+  /** BKL-136 — the store-info read for THIS turn (fixed subject, single-key, like
+   *  MENU_OVERVIEW). The SAME `infoText` the investigator records under `store:info`
+   *  (shared per-turn resolver memo), so the derived value is byte-equal (C6 passes
+   *  by construction). Absent (blank/unreadable metadata) → value stays undefined →
+   *  C6 ABSTAIN → honest UNKNOWN. */
+  readonly storeInfo?: { readonly infoText?: unknown };
 }
 
 /**
@@ -699,34 +1216,52 @@ export function deriveBoundValue(
   // No binding ⟹ §5 is value-agnostic for this type — never re-author its value.
   if (candidate.soundness.valueBinding === undefined) return candidate;
 
-  if (candidate.type === "STORE_OPEN_NOW") {
-    if (reads.scheduleSignal === undefined) return candidate;
-    // C6 binds path ["mealPeriod"] against `schedule:store_open_now`; project the
-    // SAME field from the first-party read so claimSide === evidenceSide (PASS).
-    return { ...candidate, value: { mealPeriod: reads.scheduleSignal.mealPeriod } };
-  }
+  // BKL-126 — the STORE_OPEN_NOW / STORE_HOURS / STORE_HOURS_FOR_DATE branches
+  // were removed: their values now bind at @claustrum/core claims-validate stage
+  // 4b from the investigator's recorded ledger entry (see the
+  // FirstPartyDerivationReads note) — same C6 outcome, no divergence window.
 
-  if (candidate.type === "STORE_HOURS") {
-    if (reads.storeHours === undefined) return candidate;
-    // BKL-121 — C6 binds path ["hoursText"] against `schedule:store_hours`; project
-    // the SAME field from the first-party read so claimSide === evidenceSide (PASS).
-    // Public, single-key, re-readable in the planner (like STORE_OPEN_NOW). A present
-    // override/holiday falsifier STILL demotes the derived claim to UNKNOWN (the
-    // runtime arm is NOT skipped by derivation).
-    return { ...candidate, value: { hoursText: reads.storeHours.hoursText } };
-  }
-
-  if (candidate.type === "STORE_HOURS_FOR_DATE") {
-    // BKL-138 — bind the QUERIED date's hours (the candidate `subject` is the ISO
-    // date). Project `hoursText` from the SAME per-date first-party read the
-    // investigator recorded under `schedule:store_hours:{date}` (two-arm byte-equal,
-    // like STORE_HOURS), so C6 passes by construction; a present holiday/override
-    // falsifier ON that date STILL demotes to UNKNOWN (the runtime arm is not skipped
-    // by derivation). No read for this subject (unresolved / absent) → value stays
+  if (candidate.type === "MENU_ITEM_PRICE") {
+    // BKL-142 — bind the resolved item's `priceText` (the candidate `subject` is the
+    // resolved product id). Project `priceText` from the SAME per-item first-party read
+    // the investigator recorded under `menu:item_price:{id}` (byte-equal), so C6 passes
+    // by construction. No read for this subject (unresolvable item) → value stays
     // undefined → C6 ABSTAINs → honest UNKNOWN.
-    const read = reads.storeHoursForDate?.[candidate.subject];
+    const read = reads.menuItemPrice?.[candidate.subject];
     if (read === undefined) return candidate;
-    return { ...candidate, value: { hoursText: read.hoursText } };
+    return { ...candidate, value: { priceText: read.priceText } };
+  }
+
+  if (candidate.type === "MENU_ITEM_CONTENTS") {
+    const read = reads.menuItemContents?.[candidate.subject];
+    if (read === undefined) return candidate;
+    return { ...candidate, value: { contentsText: read.contentsText } };
+  }
+
+  if (candidate.type === "MENU_DIETARY") {
+    // BKL-214 — PUBLIC per-item keyed by the dietary tag (candidate.subject). Bind
+    // `dietaryText` from the per-tag read map. Absent (no tagged product) → value stays
+    // undefined → C6 ABSTAINs → honest UNKNOWN, never a fabricated dietary list.
+    const read = reads.menuDietary?.[candidate.subject];
+    if (read === undefined) return candidate;
+    return { ...candidate, value: { dietaryText: read.dietaryText } };
+  }
+
+  if (candidate.type === "MENU_OVERVIEW") {
+    // BKL-142 — FIXED subject (single-key, like STORE_HOURS): bind `overviewText` from
+    // the single menu-wide read, NOT a per-subject map. Absent read (empty/unreadable
+    // catalog) → value stays undefined → C6 ABSTAINs → honest UNKNOWN.
+    if (reads.menuOverview === undefined) return candidate;
+    return { ...candidate, value: { overviewText: reads.menuOverview.overviewText } };
+  }
+
+  if (candidate.type === "STORE_INFO") {
+    // BKL-136 — FIXED subject (single-key, like MENU_OVERVIEW): bind `infoText` from
+    // the single store-info read. Absent read (blank/unreadable store metadata) →
+    // value stays undefined → C6 ABSTAINs → honest UNKNOWN, never a fabricated
+    // address.
+    if (reads.storeInfo === undefined) return candidate;
+    return { ...candidate, value: { infoText: reads.storeInfo.infoText } };
   }
 
   // Owner-scoped per-resource types have no planner-available first-party read

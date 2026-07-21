@@ -26,6 +26,9 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { createIbatexasClaimPlanner } from "../ibatexas-claim-planner.js";
+import { normalizeClaimPlannerResult } from "@claustrum/core";
+import type { ClaimPlannerInput, Plan } from "@claustrum/core";
 import {
   EvidenceLedger,
   runClaimsKernel,
@@ -88,6 +91,31 @@ const NOW = 10_000;
 const OPEN_SIGNAL = { isClosed: false, mealPeriod: "dinner" } as const;
 
 /** Record the `schedule:store_open_now` entry the investigator would mint. */
+/**
+ * BKL-126 — propose through the REAL claim-planner ADAPTER with THIS turn's
+ * ledger: the planner no longer re-reads the schedule; the candidate binds the
+ * investigator's recorded entry (`bindValueFromLedger`, only-undefined) — the
+ * production path, divergence window deleted.
+ */
+async function proposeBoundOpenNow(
+  text: string,
+  ledger: EvidenceLedger,
+): Promise<readonly CandidateClaim[]> {
+  const planner = createIbatexasPlanner({
+    model: mockModel([claimCall({ type: "STORE_OPEN_NOW", subject: "loja" })]),
+    modelId: "mock",
+    capabilityPlanners: [],
+  });
+  const adapter = createIbatexasClaimPlanner(planner);
+  const input: ClaimPlannerInput = {
+    cognition: state(text),
+    plan: { envelopes: [] } as Plan,
+    ledger,
+  };
+  const { candidates } = normalizeClaimPlannerResult(await adapter.propose(input));
+  return candidates;
+}
+
 function recordSchedule(ledger: EvidenceLedger, signal: unknown): void {
   ledger.record({
     key: "schedule:store_open_now",
@@ -105,37 +133,30 @@ function recordSchedule(ledger: EvidenceLedger, signal: unknown): void {
 describe("Track A 4B — tag→derive→VALIDATED for STORE_OPEN_NOW", () => {
   it("derives value from the first-party read though the model emitted NONE, then VALIDATEs + renders", async () => {
     // The 4B emits ONLY the type tag + subject — NO value (the tool schema has no
-    // `value` field). The planner re-reads the SAME schedule the investigator does.
-    const planner = createIbatexasPlanner({
-      model: mockModel([claimCall({ type: "STORE_OPEN_NOW", subject: "loja" })]),
-      modelId: "mock",
-      capabilityPlanners: [],
-      resolveScheduleSignal: () => OPEN_SIGNAL,
-    });
-    const plan = await planner.proposeClaims(state("Vocês estão abertos agora?"));
-
-    // The value was DERIVED (model authored none): mealPeriod from the read.
-    expect(plan.candidates).toHaveLength(1);
-    const candidate = plan.candidates[0] as CandidateClaim;
-    expect(candidate.type).toBe("STORE_OPEN_NOW");
-    expect(candidate.value).toEqual({ mealPeriod: "dinner" });
-
-    // Feed the derived candidate through the REAL kernel against a ledger whose
-    // bound entry is byte-equal to the derived value → C6 PASSes by construction.
+    // `value` field). BKL-126: the value binds from the INVESTIGATOR's recorded
+    // ledger entry (the full entry; C6 projects `mealPeriod`).
     const ledger = new EvidenceLedger("turn-1");
     recordSchedule(ledger, OPEN_SIGNAL); // no schedule_override present → falsifier inert
+    const candidates = await proposeBoundOpenNow("Vocês estão abertos agora?", ledger);
+
+    expect(candidates).toHaveLength(1);
+    const candidate = candidates[0] as CandidateClaim;
+    expect(candidate.type).toBe("STORE_OPEN_NOW");
+    expect(candidate.value).toMatchObject({ mealPeriod: "dinner" });
+
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW }),
     );
 
     expect(result.perClaim[0]?.verdict).toBe("VALIDATED");
     expect(result.terminal).toBe("RENDER");
     expect(result.renderable).toHaveLength(1);
-    // The derived value equals the ledger entry's bound field (not a model value).
-    // C6 binds against THIS raw ledger enum — it stays `dinner` (F3 is display-only).
-    expect(result.renderable[0]?.value).toEqual({ mealPeriod: "dinner" });
+    // BKL-126 — the bound value is the FULL recorded entry (core stage-4b binds
+    // the whole entry so C6's path projection lines up); the raw ledger enum
+    // stays `dinner` (F3 is display-only).
+    expect(result.renderable[0]?.value).toMatchObject({ mealPeriod: "dinner" });
 
     const out = render(result.renderableCanonical, result.terminal);
     // F3 — the DISPLAYED enum is localized to pt-BR (Hard Rule #4); the raw English
@@ -149,18 +170,11 @@ describe("Track A 4B — tag→derive→VALIDATED for STORE_OPEN_NOW", () => {
 
 describe("Track A 4B — a present override STILL demotes the derived claim (HARD GUARD i)", () => {
   it("UNKNOWN when schedule_override is present, even with a VALID derived value", async () => {
-    const planner = createIbatexasPlanner({
-      model: mockModel([claimCall({ type: "STORE_OPEN_NOW", subject: "loja" })]),
-      modelId: "mock",
-      capabilityPlanners: [],
-      resolveScheduleSignal: () => OPEN_SIGNAL,
-    });
-    const plan = await planner.proposeClaims(state("estão abertos?"));
-    // Sanity: the derived value is the same VALID value as test (1).
-    expect((plan.candidates[0] as CandidateClaim).value).toEqual({ mealPeriod: "dinner" });
-
     const ledger = new EvidenceLedger("turn-2");
     recordSchedule(ledger, OPEN_SIGNAL);
+    const candidates = await proposeBoundOpenNow("estão abertos?", ledger);
+    // Sanity: the bound value carries the same VALID mealPeriod as test (1).
+    expect((candidates[0] as CandidateClaim).value).toMatchObject({ mealPeriod: "dinner" });
     // A PRESENT per-date ScheduleOverride contradicts the computed signal (CE#3).
     ledger.record({
       key: "schedule:schedule_override",
@@ -174,11 +188,11 @@ describe("Track A 4B — a present override STILL demotes the derived claim (HAR
 
     const result = runClaimsKernel(
       ledger,
-      plan.candidates,
+      candidates,
       createIbatexasClaimsKernelDeps({ now: () => NOW }),
     );
 
-    // The falsifier RUNTIME arm fired → UNKNOWN (NOT bypassed by derivation).
+    // The falsifier RUNTIME arm fired → UNKNOWN (NOT bypassed by the binding).
     expect(result.perClaim[0]?.verdict).toBe("UNKNOWN");
     expect(result.renderable).toHaveLength(0);
     const out = render(result.renderableCanonical, result.terminal);

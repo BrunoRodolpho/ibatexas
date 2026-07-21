@@ -115,3 +115,68 @@ describe("⑦ customer-plane ungrounded-money clamp", () => {
     expect(CUSTOMER_UNGROUNDED_MONEY_FALLBACK_PTBR).toMatch(/verificar|confirmar/i);
   });
 });
+
+// ── BKL-194 — the review false-success (live 9ff869ed) + the sweep additions ──
+// The live confabulation: "Sua avaliação…foi recebida e registrada" delivered with
+// ZERO order.review.submit rows. "recebida" sits in PENDING_STATUS, so a naive
+// class would be mood-exempted — `receiptIsCompletion` disables that exemption for
+// receipt-semantics classes. Each sweep class gets both arms (unearned → flagged;
+// committed justifier → passes).
+describe("BKL-194 — review-received + sweep classes", () => {
+  const committed = (kind: string) => ({ kind: "executed", envelope: { kind } });
+  const LIVE_REPRO =
+    "Sua avaliação de 5 estrelas para o pedido 985669 foi recebida e registrada. Obrigado pelo seu feedback!";
+
+  it("flags the LIVE repro verbatim when no review was executed (the 9ff869ed turn)", () => {
+    expect(replyClaimsUnearnedSuccess(LIVE_REPRO, { kind: "refused" })).toBe("review-received");
+  });
+
+  it("passes the SAME prose when order.review.submit genuinely committed", () => {
+    expect(replyClaimsUnearnedSuccess(LIVE_REPRO, committed("order.review.submit"))).toBeNull();
+  });
+
+  it("honest failure ('não foi registrada') is never substituted", () => {
+    expect(
+      replyClaimsUnearnedSuccess("Sua avaliação não foi registrada, tente novamente.", { kind: "refused" }),
+    ).toBeNull();
+  });
+
+  it("future-mood review promise stays exempt (only PENDING is disabled for receipt classes)", () => {
+    expect(
+      replyClaimsUnearnedSuccess("Sua avaliação será registrada em instantes.", { kind: "refused" }),
+    ).toBeNull();
+  });
+
+  it("the rating sense of 'nota' rides review-received; 'nota fiscal' does not", () => {
+    expect(replyClaimsUnearnedSuccess("Sua nota foi registrada, obrigado!", { kind: "refused" })).toBe(
+      "review-received",
+    );
+    expect(replyClaimsUnearnedSuccess("Sua nota fiscal foi emitida.", { kind: "refused" })).toBe(
+      "fiscal-emitted",
+    );
+  });
+
+  it.each([
+    ["reservation-canceled", "Sua reserva foi cancelada.", "reservation.cancel"],
+    ["coupon-applied", "Cupom aplicado ao seu pedido!", "order.coupon.apply"],
+    ["address-updated", "Seu endereço foi atualizado.", "order.address.change"],
+    ["preferences-saved", "Suas preferências foram salvas.", "customer.preferences.update"],
+    ["payment-method-switched", "Sua forma de pagamento foi alterada para PIX.", "payment.method.switch"],
+    ["fiscal-emitted", "Sua nota fiscal foi emitida.", "order.fiscal.emit"],
+    ["data-anonymized", "Seus dados foram apagados do sistema.", "customer.anonymize"],
+  ])("%s: unearned → flagged; committed justifier → passes", (id, prose, kind) => {
+    expect(replyClaimsUnearnedSuccess(prose, { kind: "refused" })).toBe(id);
+    expect(replyClaimsUnearnedSuccess(prose, committed(kind))).toBeNull();
+  });
+
+  it("widened justifiers: reorder earns order-placed; type-switch earns order-amended", () => {
+    expect(replyClaimsUnearnedSuccess("Seu pedido foi registrado!", committed("order.reorder"))).toBeNull();
+    expect(
+      replyClaimsUnearnedSuccess("Seu pedido foi alterado para retirada.", committed("order.type.switch")),
+    ).toBeNull();
+  });
+
+  it("desconto extra rides coupon-applied", () => {
+    expect(replyClaimsUnearnedSuccess("Desconto aplicado!", { kind: "refused" })).toBe("coupon-applied");
+  });
+});

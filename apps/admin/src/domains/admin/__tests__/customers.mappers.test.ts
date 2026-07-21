@@ -101,11 +101,11 @@ describe('sourceLabel', () => {
 
 describe('status / payment / delivery / method labels', () => {
   it('maps order fulfillment status (raw fallback)', () => {
-    expect(orderStatusLabel('preparing')).toBe('preparando')
+    expect(orderStatusLabel('preparing')).toBe('Preparando')
     expect(orderStatusLabel('mystery')).toBe('mystery')
   })
   it('maps payment status with an em-dash for null', () => {
-    expect(paymentStatusLabel('captured')).toBe('pago')
+    expect(paymentStatusLabel('captured')).toBe('Pago')
     expect(paymentStatusLabel(null)).toBe('—')
   })
   it('maps delivery type and payment method', () => {

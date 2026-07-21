@@ -1,9 +1,9 @@
 // admin/ops-snapshot.ts — manager-gated ops situational-snapshot (NEW-040).
 // Locks:
 //   (a) requireManagerRole fail-closed (403) for ATTENDANT (no service call);
-//   (b) 200 composes all four summaries from the mocked service returns;
+//   (b) 200 composes all five summaries from the mocked service returns;
 //   (c) ONE service rejecting → the endpoint still 200s with that sub-summary
-//       as the zero/empty fallback and the other three intact (Promise.allSettled
+//       as the zero/empty fallback and the other four intact (Promise.allSettled
 //       resilience — one bad signal must never 500 the overview).
 //
 // Harness mirrors ops-alerts.test.ts / kitchen.test.ts: an instance-level
@@ -20,12 +20,22 @@ const mockAlertsList = vi.hoisted(() => vi.fn());
 const mockIncidentsList = vi.hoisted(() => vi.fn());
 const mockGetTickets = vi.hoisted(() => vi.fn());
 const mockGetDaySummary = vi.hoisted(() => vi.fn());
+const mockReservationsListAll = vi.hoisted(() => vi.fn());
 
+// Deliberately flat, NOT importOriginal: the real @ibatexas/domain module
+// carries Prisma-backed service factories with import-time side effects this
+// suite must not run. Every export the route touches (BKL-127's
+// createReservationService included) must be listed explicitly here — a
+// hand-audit found this list missing createReservationService, which made
+// `reservations()` throw on every request and silently degrade to its
+// fallback (masked by the allSettled resilience below, so it never failed a
+// test — just polluted every green run's logs and left the signal untested).
 vi.mock("@ibatexas/domain", () => ({
   createOpsAlertService: () => ({ list: mockAlertsList }),
   createIncidentService: () => ({ list: mockIncidentsList }),
   createKitchenService: () => ({ getTickets: mockGetTickets }),
   createDayCloseService: () => ({ getDaySummary: mockGetDaySummary }),
+  createReservationService: () => ({ listAll: mockReservationsListAll }),
 }));
 
 vi.mock("@ibatexas/audit-sink", () => ({ getAuditSink: () => undefined }));
@@ -83,11 +93,25 @@ const DAY_SUMMARY = {
   netCentavos: 105_000,
 };
 
+// total (47) deliberately DIFFERS from reservations.length (3): proves the
+// composer reads the service's authoritative count (BKL-127), not the page
+// length, e.g. when a 500-row page under-covers a busier day. The tally
+// still folds only the returned page, in first-seen order.
+const RESERVATIONS_RESULT = {
+  reservations: [
+    { status: "confirmed" },
+    { status: "confirmed" },
+    { status: "seated" },
+  ],
+  total: 47,
+};
+
 function primeAllHappy(): void {
   mockAlertsList.mockResolvedValue(ALERTS_RESULT);
   mockIncidentsList.mockResolvedValue(INCIDENTS_RESULT);
   mockGetTickets.mockResolvedValue(KITCHEN_BOARD);
   mockGetDaySummary.mockResolvedValue(DAY_SUMMARY);
+  mockReservationsListAll.mockResolvedValue(RESERVATIONS_RESULT);
 }
 
 async function buildServer(staff: StaffContext): Promise<FastifyInstance> {
@@ -112,6 +136,8 @@ interface SnapshotBody {
   incidents: { open: number };
   kitchen: { activeTickets: number; oldestTicketAgeMs: number; queueDepth: Array<{ status: string; count: number }> };
   caixa: { date: string; ordersCount: number; grossCentavos: number; settledCentavos: number; refundedCentavos: number; netCentavos: number };
+  reservations: { date: string; total: number; byStatus: Array<{ status: string; count: number }> };
+  degraded: string[];
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -128,13 +154,14 @@ describe("GET /api/admin/ops/snapshot is manager-gated", () => {
       expect(mockIncidentsList).not.toHaveBeenCalled();
       expect(mockGetTickets).not.toHaveBeenCalled();
       expect(mockGetDaySummary).not.toHaveBeenCalled();
+      expect(mockReservationsListAll).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
   });
 });
 
-describe("GET /api/admin/ops/snapshot composes all four summaries", () => {
+describe("GET /api/admin/ops/snapshot composes all five summaries", () => {
   it("returns 200 folding each service return into its compact sub-summary", async () => {
     primeAllHappy();
     const server = await buildServer(MANAGER);
@@ -169,11 +196,27 @@ describe("GET /api/admin/ops/snapshot composes all four summaries", () => {
         netCentavos: 105_000,
       });
 
+      // Reservations (BKL-127): total + per-status tally, first-seen order.
+      // `date` comes from the restaurant-tz `today`, not the service return —
+      // asserted as a string only (mirrors `body.now` above). total (47) !==
+      // reservations.length (3) proves this reads the service's authoritative
+      // count, not the page length.
+      expect(typeof body.reservations.date).toBe("string");
+      expect(body.reservations.total).toBe(47);
+      expect(body.reservations.byStatus).toEqual([
+        { status: "confirmed", count: 2 },
+        { status: "seated", count: 1 },
+      ]);
+
+      // Every signal read cleanly — nothing degraded.
+      expect(body.degraded).toEqual([]);
+
       // Each signal was read exactly once.
       expect(mockAlertsList).toHaveBeenCalledTimes(1);
       expect(mockIncidentsList).toHaveBeenCalledTimes(1);
       expect(mockGetTickets).toHaveBeenCalledTimes(1);
       expect(mockGetDaySummary).toHaveBeenCalledTimes(1);
+      expect(mockReservationsListAll).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();
     }
@@ -182,11 +225,12 @@ describe("GET /api/admin/ops/snapshot composes all four summaries", () => {
 
 describe("GET /api/admin/ops/snapshot is resilient to one bad signal", () => {
   it("still 200s with a fallback sub-summary when ONE read rejects (allSettled)", async () => {
-    // Kitchen read blows up (e.g. projection hiccup); the other three succeed.
+    // Kitchen read blows up (e.g. projection hiccup); the other four succeed.
     mockAlertsList.mockResolvedValue(ALERTS_RESULT);
     mockIncidentsList.mockResolvedValue(INCIDENTS_RESULT);
     mockGetTickets.mockRejectedValue(new Error("projection unavailable"));
     mockGetDaySummary.mockResolvedValue(DAY_SUMMARY);
+    mockReservationsListAll.mockResolvedValue(RESERVATIONS_RESULT);
 
     const server = await buildServer(MANAGER);
     try {
@@ -197,11 +241,13 @@ describe("GET /api/admin/ops/snapshot is resilient to one bad signal", () => {
 
       // The failed signal degrades to its zero/empty fallback…
       expect(body.kitchen).toEqual({ activeTickets: 0, oldestTicketAgeMs: 0, queueDepth: [] });
+      expect(body.degraded).toEqual(["kitchen"]);
 
-      // …while the other three remain fully intact.
+      // …while the other four remain fully intact.
       expect(body.opsAlerts.open).toBe(5);
       expect(body.incidents.open).toBe(2);
       expect(body.caixa.netCentavos).toBe(105_000);
+      expect(body.reservations.total).toBe(47);
     } finally {
       await server.close();
     }

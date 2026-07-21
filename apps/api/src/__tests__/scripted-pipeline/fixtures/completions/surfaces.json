@@ -1,6 +1,6 @@
 {
   "planner": {
-    "system": "Você é o interpretador de intenções do atendimento da IbateXas.\nSua única função é traduzir o pedido do cliente em uma chamada de \"express_intent\".\nVocê NUNCA executa ações nem altera dados — apenas declara a intenção.\n\nREGRA PRINCIPAL: se o cliente pede QUALQUER ação (adicionar, remover, atualizar\nquantidade, aplicar cupom, criar carrinho, finalizar/pagar, cancelar, adicionar\nobservação, reservar, etc.), você DEVE chamar \"express_intent\" com a capability\ncorrespondente (exatamente uma das opções do enum). Faça isso MESMO que falte algum\ndetalhe (ex.: o id exato do item, do pedido ou do carrinho) — preencha o payload com\no que o cliente disse em linguagem natural (ex.: { item: 'linguiça' } ou\n{ quantidade: 3 }); o handler resolve os identificadores depois. NÃO peça confirmação\ne NÃO faça perguntas de esclarecimento aqui.\n\nUse as ferramentas de leitura apenas para consultar informações. Não invente\ncapabilities fora da lista. Só NÃO chame \"express_intent\" quando o cliente\nclaramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
+    "system": "Você é o interpretador de intenções do atendimento da IbateXas.\nSua única função é traduzir o pedido do cliente em uma chamada de \"express_intent\".\nVocê NUNCA executa ações nem altera dados — apenas declara a intenção.\n\nREGRA PRINCIPAL: se o cliente pede QUALQUER ação (adicionar, remover, atualizar\nquantidade, aplicar cupom, criar carrinho, finalizar/pagar, cancelar, adicionar\nobservação, reservar, etc.), você DEVE chamar \"express_intent\" com a capability\ncorrespondente (exatamente uma das opções do enum). Faça isso MESMO que falte algum\ndetalhe (ex.: o id exato do item, do pedido ou do carrinho) — preencha o payload com\no que o cliente disse em linguagem natural (ex.: { item: 'linguiça' } ou\n{ quantidade: 3 }); o handler resolve os identificadores depois. NÃO peça confirmação\ne NÃO faça perguntas de esclarecimento aqui.\n\nAo finalizar o pedido (order.checkout.create), inclua no payload payment_method\n(pix, card ou cash) e delivery_type (pickup ou delivery) SEMPRE que o cliente\nmencionar essas informações — ex.: \"quero fechar no pix e retirar lá\" => payload:\n{ payment_method: \"pix\", delivery_type: \"pickup\" }.\n\nEm campos de texto livre (como body, reason ou comment), copie EXATAMENTE as\npalavras do cliente SOMENTE quando ele realmente disser algum conteúdo\nespecífico — nunca resuma, parafraseie ou traduza. Se o cliente não disser\nnenhum conteúdo específico para esse campo, NÃO invente nem preencha a partir\ndo contexto da conversa — deixe o campo ausente.\n\nQuando o cliente se referir a um pedido JÁ FEITO/existente (ex.: \"no meu\npedido\", \"no pedido que já fiz\", \"no pedido 4242\"), use as capabilities de\nalteração de pedido (order.amend.add_item / order.amend.update_qty /\norder.amend.remove_item). Para montar um pedido NOVO ou mexer no carrinho em\nandamento (ex.: \"quero uma coca\", \"adiciona ao carrinho\"), use\norder.item.add / order.item.update / order.item.remove.\n\nUse as ferramentas de leitura apenas para consultar informações. Não invente\ncapabilities fora da lista. Só NÃO chame \"express_intent\" quando o cliente\nclaramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
     "tools": [
       {
         "name": "express_intent",
@@ -18,15 +18,19 @@
                 "order.coupon.apply",
                 "order.checkout.create",
                 "order.cancel",
-                "order.amend.request",
+                "order.amend.add_item",
+                "order.amend.update_qty",
+                "order.amend.remove_item",
                 "order.note.add",
+                "order.review.submit",
                 "payment.pix.regenerate",
                 "reservation.create",
                 "reservation.modify",
                 "reservation.cancel",
                 "reservation.waitlist.join",
                 "customer.preferences.update",
-                "customer.pix.details.save"
+                "customer.pix.details.save",
+                "whatsapp.handoff.request"
               ],
               "description": "A capability/intent kind a ser proposta."
             },
@@ -39,7 +43,578 @@
             "capability",
             "payload"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.cart.ensure"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.item.add"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "item": {
+                        "type": "string",
+                        "description": "Referência em linguagem natural ao item do carrinho (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                      },
+                      "quantity": {
+                        "type": "number",
+                        "description": "Quantidade do item a adicionar (padrão: 1 se não informado)."
+                      }
+                    },
+                    "required": [
+                      "item"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.item.update"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "item": {
+                        "type": "string",
+                        "description": "Referência em linguagem natural ao item do carrinho (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                      },
+                      "quantity": {
+                        "type": "number",
+                        "description": "Nova quantidade desejada para o item no carrinho."
+                      }
+                    },
+                    "required": [
+                      "item",
+                      "quantity"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.item.remove"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "item": {
+                        "type": "string",
+                        "description": "Referência em linguagem natural ao item do carrinho (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                      }
+                    },
+                    "required": [
+                      "item"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.coupon.apply"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "description": "Código do cupom de desconto informado pelo cliente."
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.checkout.create"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "payment_method": {
+                        "type": "string",
+                        "enum": [
+                          "pix",
+                          "card",
+                          "cash"
+                        ],
+                        "description": "Forma de pagamento — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza): pix, card, cash. Se o cliente disser \"no pix\"/\"cartão\"/\"em dinheiro\" (ou similar), inclua este campo — ex.: \"pago no pix\" => payment_method: \"pix\". Omita APENAS se o cliente não mencionar uma forma de pagamento — NUNCA escolha uma por conta própria."
+                      },
+                      "delivery_type": {
+                        "type": "string",
+                        "enum": [
+                          "pickup",
+                          "delivery"
+                        ],
+                        "description": "Tipo de entrega — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza): pickup, delivery. Se o cliente disser \"retiro\"/\"buscar\"/\"entrega\"/\"manda pra casa\" (ou similar), inclua este campo — ex.: \"retiro no balcão\" => delivery_type: \"pickup\". Omita APENAS se o cliente não mencionar retirada ou entrega — NUNCA escolha um por conta própria."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.cancel"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string",
+                        "description": "Motivo do cancelamento, se mencionado (ex.: 'mudei de ideia', 'pedido errado'). Omita se não houver motivo explícito."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.add_item"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "item": {
+                        "type": "string",
+                        "description": "Referência em linguagem natural ao item do pedido (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                      },
+                      "quantity": {
+                        "type": "number",
+                        "description": "Quantidade do item a adicionar (padrão: 1 se não informado)."
+                      }
+                    },
+                    "required": [
+                      "item"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.update_qty"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "item": {
+                        "type": "string",
+                        "description": "Referência em linguagem natural ao item do pedido (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                      },
+                      "quantity": {
+                        "type": "number",
+                        "description": "Nova quantidade desejada para o item."
+                      }
+                    },
+                    "required": [
+                      "item",
+                      "quantity"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.amend.remove_item"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "item": {
+                        "type": "string",
+                        "description": "Referência em linguagem natural ao item do pedido (ex.: \"coca\", \"o hambúrguer\"). NUNCA um ID — a referência é resolvida pelo runtime."
+                      }
+                    },
+                    "required": [
+                      "item"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.note.add"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "body": {
+                        "type": "string",
+                        "description": "Texto da observação, EXATAMENTE como o cliente disse — nunca resuma, parafraseie ou invente conteúdo."
+                      }
+                    },
+                    "required": [
+                      "body"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "order.review.submit"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "rating": {
+                        "type": "number",
+                        "description": "Nota de 1 a 5 dada pelo cliente."
+                      },
+                      "comment": {
+                        "type": "string",
+                        "description": "Comentário da avaliação, EXATAMENTE como o cliente disse. Omita se não houver comentário explícito."
+                      },
+                      "item": {
+                        "type": "string",
+                        "description": "Referência em linguagem natural ao item avaliado do pedido (ex.: \"a costela\", \"o hambúrguer\"), SOMENTE se o cliente citar um. NUNCA um ID — a referência é resolvida pelo runtime. Deixe de fora se a avaliação for do pedido como um todo."
+                      },
+                      "orderReference": {
+                        "type": "string",
+                        "description": "Número do pedido avaliado, SOMENTE se o cliente mencionar um explicitamente (ex.: \"1234\", \"#1234\"). Deixe de fora se não for mencionado — resolve automaticamente para o pedido mais recente."
+                      }
+                    },
+                    "required": [
+                      "rating"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "payment.pix.regenerate"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "reservation.create"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "timeSlotId": {
+                        "type": "string",
+                        "description": "ID do horário — um id já retornado por uma leitura anterior nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente. Como ALTERNATIVA, deixe de fora e informe `date` (e `time`): o sistema encontra o horário disponível para essa data."
+                      },
+                      "partySize": {
+                        "type": "number",
+                        "description": "Número de pessoas (1 a 20)."
+                      },
+                      "date": {
+                        "type": "string",
+                        "description": "Data desejada da reserva no formato YYYY-MM-DD (ex.: \"2026-03-15\"), quando o cliente disser a data em vez de escolher um horário já listado. Omita se um timeSlotId já foi escolhido."
+                      },
+                      "time": {
+                        "type": "string",
+                        "description": "Horário desejado no formato HH:MM (ex.: \"20:00\"), se o cliente mencionar. Omita se não houver horário específico."
+                      }
+                    },
+                    "required": [
+                      "partySize"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "reservation.modify"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "newTimeSlotId": {
+                        "type": "string",
+                        "description": "ID do novo horário — SEMPRE um id já retornado por uma leitura anterior nesta conversa (check_availability). Omita se o cliente não quiser mudar o horário."
+                      },
+                      "newPartySize": {
+                        "type": "number",
+                        "description": "Novo número de pessoas (1 a 20). Omita se o cliente não quiser mudar a quantidade de pessoas."
+                      },
+                      "newDate": {
+                        "type": "string",
+                        "description": "Nova data no formato YYYY-MM-DD (ex.: \"2026-03-15\"), quando o cliente quiser mudar o dia sem escolher um horário já listado. Omita se não mudar o horário ou se um newTimeSlotId já foi escolhido."
+                      },
+                      "newTime": {
+                        "type": "string",
+                        "description": "Novo horário no formato HH:MM (ex.: \"20:00\"), se o cliente mencionar. Omita se não houver horário específico."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "reservation.cancel"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string",
+                        "description": "Motivo do cancelamento, se mencionado. Omita se não houver motivo explícito."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "reservation.waitlist.join"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "timeSlotId": {
+                        "type": "string",
+                        "description": "ID do horário — um id já retornado por uma leitura anterior nesta conversa (check_availability), NUNCA inventado ou digitado pelo cliente. Como ALTERNATIVA, deixe de fora e informe `date` (e `time`): o sistema encontra o horário disponível para essa data."
+                      },
+                      "partySize": {
+                        "type": "number",
+                        "description": "Número de pessoas (1 a 20)."
+                      },
+                      "date": {
+                        "type": "string",
+                        "description": "Data desejada da reserva no formato YYYY-MM-DD (ex.: \"2026-03-15\"), quando o cliente disser a data em vez de escolher um horário já listado. Omita se um timeSlotId já foi escolhido."
+                      },
+                      "time": {
+                        "type": "string",
+                        "description": "Horário desejado no formato HH:MM (ex.: \"20:00\"), se o cliente mencionar. Omita se não houver horário específico."
+                      }
+                    },
+                    "required": [
+                      "partySize"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "customer.preferences.update"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "dietary_restrictions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "freeform": true
+                        },
+                        "description": "Restrições alimentares mencionadas pelo cliente (ex.: [\"vegetariano\", \"sem glúten\"]). NUNCA inclua alergias aqui."
+                      },
+                      "favorite_categories": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "freeform": true
+                        },
+                        "description": "Categorias favoritas mencionadas pelo cliente (ex.: [\"churrasco\", \"grelhados\"])."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "customer.pix.details.save"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "capability": {
+                    "const": "whatsapp.handoff.request"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": "string",
+                        "description": "Motivo do pedido de atendimento humano, se mencionado. Omita se não houver motivo explícito."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          ]
         }
       },
       {
@@ -47,7 +622,8 @@
         "description": "Ferramenta de leitura: get_cart. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       },
       {
@@ -55,7 +631,13 @@
         "description": "Ferramenta de leitura: check_order_status. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "orderReference": {
+              "type": "string",
+              "description": "Referência do pedido, SOMENTE se o cliente mencionar uma explicitamente: o número (ex.: \"1234\", \"#1234\") OU uma data relativa (ex.: \"de ontem\", \"de terça\"). Deixe de fora se não for mencionada — resolve automaticamente para o pedido ativo do cliente."
+            }
+          },
+          "additionalProperties": false
         }
       },
       {
@@ -63,7 +645,28 @@
         "description": "Ferramenta de leitura: get_recommendations. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "context": {
+              "type": "string",
+              "enum": [
+                "homepage",
+                "cart",
+                "product_page"
+              ],
+              "description": "Contexto da recomendação (opcional) — de onde a pergunta partiu."
+            },
+            "dietaryTag": {
+              "type": "string",
+              "enum": [
+                "vegetariano",
+                "vegano",
+                "sem_gluten",
+                "sem_lactose"
+              ],
+              "description": "Filtro dietético, SOMENTE se o cliente pedir explicitamente opções vegetarianas/veganas/sem glúten/sem lactose. Deixe de fora em qualquer outro caso."
+            }
+          },
+          "additionalProperties": false
         }
       },
       {
@@ -71,7 +674,8 @@
         "description": "Ferramenta de leitura: get_order_history. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       },
       {
@@ -79,7 +683,16 @@
         "description": "Ferramenta de leitura: get_also_added. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "productId": {
+              "type": "string",
+              "description": "ID do produto — SEMPRE um id já retornado por uma leitura anterior nesta conversa (busca de cardápio, recomendação, carrinho), NUNCA inventado ou digitado pelo cliente."
+            }
+          },
+          "required": [
+            "productId"
+          ],
+          "additionalProperties": false
         }
       },
       {
@@ -87,7 +700,16 @@
         "description": "Ferramenta de leitura: get_ordered_together. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "productId": {
+              "type": "string",
+              "description": "ID do produto — SEMPRE um id já retornado por uma leitura anterior nesta conversa (busca de cardápio, recomendação, carrinho), NUNCA inventado ou digitado pelo cliente."
+            }
+          },
+          "required": [
+            "productId"
+          ],
+          "additionalProperties": false
         }
       },
       {
@@ -95,7 +717,13 @@
         "description": "Ferramenta de leitura: get_payment_status. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "orderReference": {
+              "type": "string",
+              "description": "Referência do pedido, SOMENTE se o cliente mencionar uma explicitamente: o número (ex.: \"1234\", \"#1234\") OU uma data relativa (ex.: \"de ontem\", \"de terça\"). Deixe de fora se não for mencionada — resolve automaticamente para o pedido ativo do cliente."
+            }
+          },
+          "additionalProperties": false
         }
       },
       {
@@ -103,7 +731,8 @@
         "description": "Ferramenta de leitura: get_payment_history. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       },
       {
@@ -111,7 +740,25 @@
         "description": "Ferramenta de leitura: check_availability. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "date": {
+              "type": "string",
+              "description": "Data desejada da reserva, formato YYYY-MM-DD."
+            },
+            "partySize": {
+              "type": "number",
+              "description": "Número de pessoas (1 a 20)."
+            },
+            "preferredTime": {
+              "type": "string",
+              "description": "Horário preferido, formato HH:MM (opcional)."
+            }
+          },
+          "required": [
+            "date",
+            "partySize"
+          ],
+          "additionalProperties": false
         }
       },
       {
@@ -119,7 +766,21 @@
         "description": "Ferramenta de leitura: get_my_reservations. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "confirmed",
+                "seated",
+                "completed",
+                "cancelled",
+                "no_show"
+              ],
+              "description": "Filtrar por status da reserva (opcional)."
+            }
+          },
+          "additionalProperties": false
         }
       },
       {
@@ -127,7 +788,8 @@
         "description": "Ferramenta de leitura: get_my_profile. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       },
       {
@@ -135,7 +797,8 @@
         "description": "Ferramenta de leitura: get_my_preferences. Apenas consulta, não altera dados.",
         "inputSchema": {
           "type": "object",
-          "additionalProperties": true
+          "properties": {},
+          "additionalProperties": false
         }
       }
     ]

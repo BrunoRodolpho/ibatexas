@@ -25,8 +25,6 @@
  *   - order.checkout.create   — UNTRUSTED. Finalize cart → order. Composes
  *                                createPixPendingDeferGuard against PIX flow.
  *   - order.cancel            — UNTRUSTED. Customer-initiated cancel.
- *   - order.cancel.system     — SYSTEM-only. Cron / subscriber auto-cancel
- *                                (e.g., stale / pix_expired).
  *   - order.amend.request     — UNTRUSTED. Modify a placed order within the
  *                                amend window.
  *   - order.note.add          — UNTRUSTED. Add a note to an order.
@@ -36,6 +34,7 @@
  */
 
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
+import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
 
 /**
  * W5-2 expansion: adds the lifecycle / projection / granular-amend
@@ -76,7 +75,6 @@ export type OrderIntentKind =
   | "order.checkout.create"
   | "order.pix.details.set"
   | "order.cancel"
-  | "order.cancel.system"
   | "order.amend.request"
   | "order.amend.add_item"
   | "order.amend.update_qty"
@@ -89,6 +87,7 @@ export type OrderIntentKind =
   | "order.projection.create"
   | "order.status.transition"
   | "order.status.reconcile"
+  | "order.fiscal.emit"
 
 // ── Payloads ────────────────────────────────────────────────────────────
 
@@ -149,6 +148,16 @@ export interface OrderCancelPayload {
 export interface OrderCancelSystemPayload {
   readonly orderId: string
   readonly reason: "stale" | "pix_expired"
+}
+
+/**
+ * NEW-014 — `order.fiscal.emit` (SYSTEM-only). Emit the fiscal document
+ * (NFC-e/NFe) for a delivered order. The subscriber (PR2) builds this from the
+ * order.status_changed→delivered event with a system actor; the resolver stamps
+ * the order state (fulfillmentStatus + fiscalEmitAttempts) the policy reads.
+ */
+export interface OrderFiscalEmitPayload {
+  readonly orderId: string
 }
 
 export interface OrderAmendRequestPayload {
@@ -303,6 +312,7 @@ export type OrderPayload =
   | OrderNoteAddPayload
   | OrderReviewSubmitPayload
   | OrderReorderPayload
+  | OrderFiscalEmitPayload
   | OrderProjectionCreatePayload
   | OrderStatusTransitionPayload
   | OrderStatusReconcilePayload
@@ -358,8 +368,16 @@ export interface OrderState {
     /** Marker recorded after a successful cancel — guards subsequent cancels. */
     readonly lastAction?: "cancelled" | "amended" | null
     /** Order fulfillment status — drives the kernel cancel point-of-no-return
-     *  guard (mirrors the route-layer canPerformAction rule). */
+     *  guard (mirrors the route-layer canPerformAction rule). NEW-014 also
+     *  reads it for the fiscal-eligible gate on `order.fiscal.emit`. */
     readonly fulfillmentStatus?: string | null
+    /**
+     * NEW-014 — how many fiscal-emit attempts this order already had (the
+     * adopter supplies it from the persisted fiscal record / a counter). The
+     * bounded-retry guard REFUSEs `order.fiscal.emit` at/above the cap so a
+     * rejecting SEFAZ is never hammered. Absent ⇒ 0 (first attempt).
+     */
+    readonly fiscalEmitAttempts?: number
     /**
      * SDD §O#10 (adjacent-type confident-wrong) disambiguation signal.
      *
@@ -381,6 +399,38 @@ export interface OrderState {
      * KIND, never on an amount.
      */
     readonly amendItemConfirmed?: boolean
+    /**
+     * FE-T05 (Language Engine, HydratedIntentIR provenance) — how the target
+     * order for `order.status.transition` was resolved:
+     *   - `"authoritative"` — the staff gave an EXPLICIT reference (a display
+     *     number or a customer name; BKL-089 resolution).
+     *   - `"grounded"` — no reference was given; the host auto-resolved "the
+     *     most recent active order" (a GUESS). `requireConfirmationOnGrounded
+     *     StatusTransition` (`./policies.ts`) forces a REQUEST_CONFIRMATION
+     *     whenever this is `"grounded"` — a guessed target must never
+     *     silently EXECUTE a kitchen advance / cancel.
+     * Absent when no order resolved at all (requireOrderIdForMutation REFUSEs
+     * first) or for any other kind (inert everywhere else).
+     */
+    readonly orderResolutionTrust?: "authoritative" | "grounded"
+    /**
+     * FE-T05 review (MAJOR-2) — the resolved order's DISPLAY number, present
+     * whenever `orderResolutionTrust === "grounded"` (an auto-resolved
+     * guess). `requireConfirmationOnGroundedStatusTransition` (`./policies.ts`)
+     * names the order in its confirmation prompt with this — a staff member
+     * confirming a GUESSED target must be able to recognize (and reject) a
+     * wrong one. Absent for any other resolution path / kind.
+     */
+    readonly displayId?: number
+    /**
+     * BKL-190 — present alongside `displayId` on the `"grounded"` path: TRUE
+     * when the CURRENT staff message actually contains the resolved order's
+     * display number (the ops resolver's `orderReferenceAppearsInMessage`
+     * check). The confirm prompt splits its frame on this — a staff message
+     * that DID name the order must not be told "não me disseram qual pedido"
+     * (the extraction schema simply has no field for the reference to ride).
+     */
+    readonly orderNamedInMessage?: boolean
   }
 }
 
@@ -388,10 +438,12 @@ export interface OrderState {
 
 /**
  * Customer-initiated kinds tolerate UNTRUSTED (the LLM proposes them on
- * the user's behalf; the policy decides). `order.cancel.system` is the
- * only system-only kind in this Pack — cron / subscriber callers (e.g.,
- * `stale-order-checker.ts`) emit it with TRUSTED taint; the LLM must
- * never be able to forge a system auto-cancel.
+ * the user's behalf; the policy decides). The system-only kinds
+ * (`order.projection.create`, `order.status.reconcile`) require TRUSTED
+ * taint; the LLM must never be able to forge them. (The former system
+ * auto-cancel kind `order.cancel.system` was retired as a dead duplicate —
+ * BKL-177: `stale-order-checker.ts` drives compensation cancels via
+ * `order.status.transition`→CANCELED, not a bespoke system-cancel kind.)
  *
  * Note that the LEGACY `orderPolicyBundle` mapped `payment.send` and
  * `refund.issue` to TRUSTED; those kinds belong to the `payment` domain
@@ -400,9 +452,10 @@ export interface OrderState {
  */
 export const orderTaintPolicy = createSystemTaintPolicy({
   systemOnlyKinds: [
-    "order.cancel.system",
     "order.projection.create",
     "order.status.reconcile",
+    // NEW-014 — fiscal emission is SYSTEM-only; the LLM must never forge it.
+    "order.fiscal.emit",
   ],
   userMinimum: "UNTRUSTED",
 })
@@ -413,8 +466,12 @@ export const orderTaintPolicy = createSystemTaintPolicy({
  * REQUEST_CONFIRMATION trigger for large-ticket checkouts. R$ 1.000 by
  * default — orders at or above this prompt the user for explicit
  * confirmation before EXECUTE. Centavos integer.
+ *
+ * FE-T02: single-sourced from `@ibatexas/types`' `MONEY_BAND_1000_CENTAVOS`
+ * — the same boundary `@ibatexas/pack-payments`' refund-escalate ladder
+ * reads (with its own, currently-divergent, `>` comparator).
  */
-export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = 100_000
+export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = MONEY_BAND_1000_CENTAVOS
 
 /**
  * ESCALATE trigger for refund-equivalent flows in the order domain — a
@@ -423,8 +480,16 @@ export const CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS = 100_000
  * a human. Below this threshold, the cancel is REFUSEd by the
  * cancel-eligibility guard; above it, the escalate-on-shipped guard
  * takes precedence.
+ *
+ * The same R$1000 boundary as `MONEY_BAND_1000_CENTAVOS` in
+ * `@ibatexas/types`, structurally a separate band (order.cancel, not
+ * checkout) but numerically identical — FE-D01 single-sources the VALUE
+ * so it can never drift from the checkout / refund ladders. Its comparator
+ * is already the canonical `>=` (`escalateLargeCancel` in `./policies.ts`
+ * uses `createEscalateGuard({ comparator: ">=" })`), consistent with
+ * FE-T03/D2's exact-R$1000-escalates decision — no comparator flip needed.
  */
-export const ESCALATE_CANCEL_AMOUNT_CENTAVOS = 100_000
+export const ESCALATE_CANCEL_AMOUNT_CENTAVOS = MONEY_BAND_1000_CENTAVOS
 
 // ── Domain constants ────────────────────────────────────────────────────
 

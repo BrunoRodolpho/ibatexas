@@ -32,6 +32,7 @@ import { IBATEXAS_COMPOSED_CAPABILITY_PLANNERS } from "@ibatexas/packs-composed"
 import {
   createIbatexasPlanner,
   EXPRESS_INTENT_TOOL,
+  EXTRACTION_FAILURE_KIND,
   type StaffEnvelopeRole,
 } from "../claustrum/ibatexas-planner.js";
 import { STAFF_ROLES } from "../claustrum/staff-role-matrix.js";
@@ -44,6 +45,7 @@ import {
   withAuthenticatedOwner,
   IBATEXAS_READ_TOOL_EXECUTORS,
 } from "../claustrum-bootstrap.js";
+import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "../claustrum/language-engine/wire-schemas.js";
 import type { AgentContext } from "@ibatexas/types";
 
 // ── Doubles ──────────────────────────────────────────────────────────────────
@@ -72,7 +74,15 @@ function mockModel(toolCalls: ToolCall[] | ToolCall[][]): {
     return {
       model: "mock",
       stopReason: calls.length > 0 ? "tool_use" : "end_turn",
-      text: "",
+      // FE-T01 (D4): live-verified against nemotron-3-nano:4b — a tool-call
+      // completion has empty `content`, while a legitimate no-tool-call
+      // completion (small-talk / no proposable intent) still says SOMETHING
+      // in `text`. Mirroring that here keeps every existing "no mutation"
+      // fixture out of the new genuinely-empty-completion (text AND
+      // toolCalls both empty) repair-or-refuse path — see
+      // `isGenuinelyEmptyCompletion` in ibatexas-planner.ts. Tests that need
+      // a TRUE genuinely-empty completion use a bespoke inline double.
+      text: calls.length > 0 ? "" : "ok (mock conversational reply)",
       toolCalls: calls,
       inputTokens: 1,
       outputTokens: 1,
@@ -120,7 +130,11 @@ function expressIntent(capability: string, payload: unknown = { ok: true }): Too
 
 describe("createIbatexasPlanner — intent extraction", () => {
   it("maps an in-plan express_intent to a matching IntentEnvelope", async () => {
-    const { model } = mockModel([expressIntent("order.item.add", { sku: "x", qty: 2 })]);
+    // Payload uses order.item.add's OWN authored schema fields (FE-T14:
+    // {item, quantity}) — this test asserts basic envelope-shape mapping
+    // (kind/actor/taint/payload passthrough of REAL fields), not the
+    // plan-time filter's junk-stripping behavior (covered elsewhere).
+    const { model } = mockModel([expressIntent("order.item.add", { item: "x", quantity: 2 })]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
@@ -135,7 +149,7 @@ describe("createIbatexasPlanner — intent extraction", () => {
     expect(env.actor.principal).toBe("llm");
     expect(env.actor.sessionId).toBe("conv-1");
     expect(env.taint).toBe("UNTRUSTED");
-    expect(env.payload).toEqual({ sku: "x", qty: 2 });
+    expect(env.payload).toEqual({ item: "x", quantity: 2 });
     expect(plan.capabilities).toEqual(["order.item.add"]);
   });
 
@@ -204,8 +218,14 @@ describe("createIbatexasPlanner — allowlist enforcement", () => {
     expect(plan.rationale).toMatch(/dropped out-of-plan \[order\.cancel\]/);
   });
 
-  it("drops a malformed express_intent payload without throwing", async () => {
-    const { model } = mockModel([
+  // FE-T01 (D3): a malformed express_intent payload (the frozen provider's
+  // JSON.parse-failure `{raw}` passthrough) used to be silently dropped to a
+  // respond-only reply. It now yields an explicit, AUDITED extraction-failure
+  // envelope — the unowned EXTRACTION_FAILURE_KIND fails closed through the
+  // kernel's real "no pack owns this kind" REFUSE path (capability-policy.ts),
+  // never a silent drop and never a real domain capability.
+  it("a malformed express_intent payload yields an explicit extraction-failure envelope, not a silent drop", async () => {
+    const { model, complete } = mockModel([
       { id: "bad", name: EXPRESS_INTENT_TOOL, input: { nope: true } },
       { id: "bad2", name: EXPRESS_INTENT_TOOL, input: "not-an-object" },
     ]);
@@ -216,7 +236,31 @@ describe("createIbatexasPlanner — allowlist enforcement", () => {
     });
 
     const plan = await planner.propose(mkState("???"));
-    expect(plan.envelopes).toEqual([]);
+    expect(plan.envelopes).toHaveLength(1);
+    const env = plan.envelopes[0]!;
+    expect(env.kind).toBe(EXTRACTION_FAILURE_KIND);
+    expect(env.payload).toEqual({ reason: "malformed_tool_call" });
+    expect(env.actor.principal).toBe("llm");
+    expect(env.taint).toBe("UNTRUSTED");
+    expect(plan.capabilities).toEqual([]);
+    // No retry for a malformed (non-empty toolCalls) completion — one call only.
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("a malformed express_intent ALONGSIDE a valid one does not override the valid envelope", async () => {
+    const { model } = mockModel([
+      expressIntent("order.item.add", { sku: "x", qty: 1 }),
+      { id: "bad", name: EXPRESS_INTENT_TOOL, input: { nope: true } },
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("adiciona um x e também ???"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe("order.item.add");
   });
 
   it("skips the LLM call entirely when nothing is proposable or readable", async () => {
@@ -230,6 +274,218 @@ describe("createIbatexasPlanner — allowlist enforcement", () => {
     const plan = await planner.propose(mkState("oi"));
     expect(plan.envelopes).toEqual([]);
     expect(complete).not.toHaveBeenCalled(); // no proposable intents → no LLM spend
+  });
+});
+
+// ── FE-T01 — extraction-wire hardening (temperature, empty-repair-or-refuse) ─
+
+describe("createIbatexasPlanner — extraction-wire failures (FE-T01)", () => {
+  it("pins temperature on the outbound CompletionRequest", async () => {
+    const { model, complete } = mockModel([expressIntent("order.item.add")]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    await planner.propose(mkState("quero um x"));
+    expect(complete).toHaveBeenCalledTimes(1);
+    const req = complete.mock.calls[0]![0] as CompletionRequest;
+    expect(req.temperature).toBe(0);
+  });
+
+  it("a genuinely empty completion (no text, no tool calls) that survives the bounded repair yields an explicit extraction-failure REFUSE, not a silent respond-only pass-through", async () => {
+    const complete = vi.fn(
+      async (): Promise<Completion> => ({
+        model: "mock",
+        stopReason: "end_turn",
+        text: "",
+        toolCalls: undefined,
+        inputTokens: 1,
+        outputTokens: 0,
+      }),
+    );
+    const model: ModelProvider = {
+      complete,
+      stream: () => {
+        throw new Error("stream not used by planner");
+      },
+      embed: async () => {
+        throw new Error("embed not used by planner");
+      },
+    };
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("quero um x"));
+    expect(plan.envelopes).toHaveLength(1);
+    const env = plan.envelopes[0]!;
+    expect(env.kind).toBe(EXTRACTION_FAILURE_KIND);
+    expect(env.payload).toEqual({ reason: "empty_completion" });
+    // Bounded repair: > 1 attempt (the default budget), never unbounded.
+    expect(complete.mock.calls.length).toBeGreaterThan(1);
+    expect(complete.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it("recovers from a genuinely empty completion after one repair retry (no REFUSE)", async () => {
+    let call = 0;
+    const complete = vi.fn(async (): Promise<Completion> => {
+      call += 1;
+      if (call === 1) {
+        return {
+          model: "mock",
+          stopReason: "end_turn",
+          text: "",
+          toolCalls: undefined,
+          inputTokens: 1,
+          outputTokens: 0,
+        };
+      }
+      return {
+        model: "mock",
+        stopReason: "tool_use",
+        text: "",
+        toolCalls: [expressIntent("order.item.add", { sku: "x", qty: 1 })],
+        inputTokens: 1,
+        outputTokens: 1,
+      };
+    });
+    const model: ModelProvider = {
+      complete,
+      stream: () => {
+        throw new Error("stream not used by planner");
+      },
+      embed: async () => {
+        throw new Error("embed not used by planner");
+      },
+    };
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("quero um x"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe("order.item.add");
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT retry/REFUSE a legitimate no-intent completion (empty toolCalls, non-empty text)", async () => {
+    const { model, complete } = mockModel([]); // mockModel now supplies non-empty text when calls=[]
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("qual o horário de vocês?"));
+    expect(plan.envelopes).toEqual([]);
+    expect(complete).toHaveBeenCalledTimes(1); // no retry fired
+  });
+});
+
+// ── BKL-162 — completion-boundary resilience (silent-turn defect) ────────────
+// Live-reproduced 2/2: on the read-tool surface the 4B emits malformed tool-call
+// XML → Ollama HTTP 500 → the completion call THROWS → the turn aborted before
+// turn_trace with no reply and no incident (silent-customer class). The planner
+// must CAPTURE the throw, retry once (the read-surface repair), then degrade to
+// the same honest extraction-failure REFUSE the empty/malformed seams use.
+describe("createIbatexasPlanner — completion-boundary resilience (BKL-162)", () => {
+  /** A model whose `complete` behaves per-call — used to inject a throw that
+   *  mimics the local Ollama endpoint 500-ing on malformed tool-call XML. */
+  function scriptedModel(
+    behavior: (call: number) => Completion,
+  ): { model: ModelProvider; complete: ReturnType<typeof vi.fn> } {
+    let call = 0;
+    const complete = vi.fn(async (): Promise<Completion> => behavior((call += 1)));
+    const model: ModelProvider = {
+      complete,
+      stream: () => {
+        throw new Error("stream not used by planner");
+      },
+      embed: async () => {
+        throw new Error("embed not used by planner");
+      },
+    };
+    return { model, complete };
+  }
+
+  const ollama500 = (): never => {
+    throw new Error(
+      "Ollama 500: XML syntax error on line 3: element <function> closed by </parameter>",
+    );
+  };
+
+  const toolCallCompletion = (calls: ToolCall[]): Completion => ({
+    model: "mock",
+    stopReason: "tool_use",
+    text: "",
+    toolCalls: calls,
+    inputTokens: 1,
+    outputTokens: 1,
+  });
+
+  it("pass-1 completion that throws on every attempt degrades to an honest extraction-failure REFUSE — the throw is captured, never propagated", async () => {
+    const { model, complete } = scriptedModel(() => ollama500());
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    // propose() RESOLVES (does not throw) — the silent abort is gone.
+    const plan = await planner.propose(mkState("qual o status do meu pedido?"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe(EXTRACTION_FAILURE_KIND);
+    expect(plan.envelopes[0]!.payload).toEqual({ reason: "completion_error" });
+    // Bounded retry: > 1 attempt, never unbounded.
+    expect(complete.mock.calls.length).toBeGreaterThan(1);
+    expect(complete.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it("pass-1 completion that throws once then succeeds recovers (no REFUSE)", async () => {
+    const { model, complete } = scriptedModel((call) =>
+      call === 1
+        ? ollama500()
+        : toolCallCompletion([expressIntent("order.item.add", { item: "x", quantity: 1 })]),
+    );
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    const plan = await planner.propose(mkState("quero um x"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe("order.item.add");
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("read-loop pass-2 completion that throws degrades to an honest extraction-failure REFUSE, with the executed reads still surfaced", async () => {
+    const { model, complete } = scriptedModel((call) =>
+      call === 1
+        ? toolCallCompletion([readCall("get_cart", { cartId: "c1" })]) // pass 1: reads only
+        : ollama500(), // pass 2 (and its bounded retry) throw
+    );
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      readToolExecutors: { get_cart: async () => ({ cart: { items: [] } }) },
+    });
+
+    const plan = await planner.propose(mkStateWithCustomer("cus_1"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.kind).toBe(EXTRACTION_FAILURE_KIND);
+    expect(plan.envelopes[0]!.payload).toEqual({ reason: "completion_error" });
+    // pass-1 (1 call) + pass-2 bounded retry (>= 2 calls).
+    expect(complete.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // The owner-scoped read that DID execute before the failure is still recorded.
+    expect(plan.readToolCalls?.map((c) => c.name)).toContain("get_cart");
   });
 });
 
@@ -268,6 +524,295 @@ describe("createIbatexasPlanner — LLM tool surface", () => {
   });
 });
 
+// ── FE-T05 review (MINOR-3) — the per-capability wire-schema embed ──────────
+
+describe("createIbatexasPlanner — buildToolSurface per-capability extraction schema (FE-1.1/FE-1.4)", () => {
+  it("embeds the allOf/if-then payload sub-schema when a registered capability is allowed", async () => {
+    // order.note.add, then order.checkout.create, were this test's
+    // successive "no authored schema yet" examples (FE-T05, then T11/T12) —
+    // FE-T14 + T12 authored the entire real drivable surface (25/26 tickets
+    // done, this is the last one), so no REAL capability is unauthored
+    // anymore. Uses a capability name that will never be registered to
+    // preserve the test's original additive-proof intent permanently.
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [
+        capPlanner([], ["order.status.transition", "nonexistent.capability.probe"]),
+      ],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+    const schema = ei.inputSchema as {
+      allOf?: ReadonlyArray<{
+        if: { properties: { capability: { const: string } } };
+        then: { properties: { payload: unknown } };
+      }>;
+    };
+
+    expect(schema.allOf).toBeDefined();
+    // Exactly one if/then clause — only order.status.transition has an
+    // authored schema; nonexistent.capability.probe (no authored schema)
+    // contributes NOTHING to allOf.
+    expect(schema.allOf).toHaveLength(1);
+    expect(schema.allOf![0]!.if.properties.capability.const).toBe(
+      "order.status.transition",
+    );
+    // The embedded payload sub-schema is EXACTLY the registered wire schema
+    // — proves the wiring, not just that SOME allOf exists.
+    expect(schema.allOf![0]!.then.properties.payload).toEqual(
+      EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.status.transition"),
+    );
+  });
+
+  it("is byte-identical to the pre-FE-T05 generic shape when NO allowed capability has an authored schema", async () => {
+    // FE-T14 + T12 authored the entire real drivable surface, so this test
+    // — whose whole point is the NO-schema fallback path — needs
+    // permanently-synthetic capability names rather than a real "still
+    // unauthored" fixture (there isn't one anymore) or the shared
+    // ORDER_INTENTS constant the other ~30 planner-mechanics tests rely on.
+    const noSchemaIntents = ["nonexistent.capability.probe.a", "nonexistent.capability.probe.b"];
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, noSchemaIntents)],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+
+    expect(ei.inputSchema).toEqual({
+      type: "object",
+      properties: {
+        capability: {
+          type: "string",
+          enum: noSchemaIntents,
+          description: "A capability/intent kind a ser proposta.",
+        },
+        payload: {
+          type: "object",
+          description: "Dados da intenção (campos específicos da capability).",
+        },
+      },
+      required: ["capability", "payload"],
+      additionalProperties: false,
+    });
+    expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
+  });
+
+  it("FE-T14: embeds one allOf/if-then clause per authored order-cart-item kind when ORDER_INTENTS is in play", async () => {
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+    const schema = ei.inputSchema as {
+      allOf?: ReadonlyArray<{
+        if: { properties: { capability: { const: string } } };
+        then: { properties: { payload: unknown } };
+      }>;
+    };
+
+    expect(schema.allOf).toHaveLength(ORDER_INTENTS.length);
+    const clauseCapabilities = schema.allOf!.map((c) => c.if.properties.capability.const);
+    expect(new Set(clauseCapabilities)).toEqual(new Set(ORDER_INTENTS));
+    for (const kind of ORDER_INTENTS) {
+      const clause = schema.allOf!.find((c) => c.if.properties.capability.const === kind)!;
+      expect(clause.then.properties.payload).toEqual(
+        EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind),
+      );
+    }
+  });
+
+  // FE-T09 (D-a, the amend inversion): the three granular post-checkout
+  // amend kinds each have an authored schema; the grouped order.amend.request
+  // does NOT — proving it contributes no allOf clause is the schema-level
+  // proof that it has no reachable model producer.
+  it("embeds one allOf/if-then clause PER granular amend kind; the grouped order.amend.request contributes NOTHING (FE-T09)", async () => {
+    const { model } = mockModel([]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [
+        capPlanner(
+          [],
+          [
+            "order.amend.request",
+            "order.amend.add_item",
+            "order.amend.update_qty",
+            "order.amend.remove_item",
+          ],
+        ),
+      ],
+    });
+
+    await planner.propose(mkState("oi"));
+    const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+    const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+    const schema = ei.inputSchema as {
+      allOf?: ReadonlyArray<{
+        if: { properties: { capability: { const: string } } };
+        then: { properties: { payload: unknown } };
+      }>;
+    };
+
+    expect(schema.allOf).toHaveLength(3);
+    const discriminatedKinds = schema.allOf!.map((c) => c.if.properties.capability.const);
+    expect(discriminatedKinds.sort()).toEqual(
+      ["order.amend.add_item", "order.amend.remove_item", "order.amend.update_qty"].sort(),
+    );
+    expect(discriminatedKinds).not.toContain("order.amend.request");
+    for (const clause of schema.allOf!) {
+      expect(clause.then.properties.payload).toEqual(
+        EXTRACTION_SCHEMAS_BY_CAPABILITY.get(clause.if.properties.capability.const),
+      );
+    }
+  });
+});
+
+// ── FE-T11 (review) — plan-time payload filter ──────────────────────────────
+
+describe("createIbatexasPlanner — plan-time payload filter (FE-T11 review)", () => {
+  it("payment.pix.regenerate: a smuggled orderId (no declared channel) is DROPPED — the empty schema's payload is always {}", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.pix.regenerate", { orderId: "order_HALLUCINATED" }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.pix.regenerate"])],
+    });
+
+    const plan = await planner.propose(mkState("gera um pix novo"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({});
+  });
+
+  it("order.status.transition: orderId is a DECLARED legacy channel (BKL-089) and survives; allergens/cpf (undeclared junk) are DROPPED, newStatus (the real field) passes through", async () => {
+    const { model } = mockModel([
+      expressIntent("order.status.transition", {
+        orderId: "4242",
+        newStatus: "ready",
+        allergens: ["amendoim"],
+        cpf: "12345678900",
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["order.status.transition"])],
+    });
+
+    const plan = await planner.propose(mkState("avança o 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      newStatus: "ready",
+    });
+  });
+
+  it("payment.refund.issue: orderId is a DECLARED legacy channel (the pre-existing refund-by-message path) and survives alongside orderReference/amount/reason; cpf/allergens (undeclared junk) are DROPPED", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.refund.issue", {
+        orderId: "4242",
+        orderReference: "4242",
+        amount: 50,
+        reason: "cliente pediu",
+        cpf: "12345678900",
+        allergens: ["amendoim"],
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.refund.issue"])],
+    });
+
+    const plan = await planner.propose(mkState("reembolsa 50 do pedido 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      orderReference: "4242",
+      amount: 50,
+      reason: "cliente pediu",
+    });
+  });
+
+  it("payment.refund.issue: the BKL-094 amount aliases (refundAmountCentavos/value/valor) are DECLARED legacy channels and survive too — the exact shape the e2e refund suite's REFUND_CALL helper scripts (caught this live: a naive filter broke 21 tests here)", async () => {
+    const { model } = mockModel([
+      expressIntent("payment.refund.issue", {
+        orderId: "4242",
+        refundAmountCentavos: 5_000,
+        reason: "cliente pediu",
+        forgedField: "should be stripped",
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["payment.refund.issue"])],
+    });
+
+    const plan = await planner.propose(mkState("reembolsa 50 reais do pedido 4242"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({
+      orderId: "4242",
+      refundAmountCentavos: 5_000,
+      reason: "cliente pediu",
+    });
+  });
+
+  it("order.amend.add_item: no declared legacy channel — a smuggled orderId/variantId/allergens are ALL dropped, item/quantity (the real fields) pass through", async () => {
+    const { model } = mockModel([
+      expressIntent("order.amend.add_item", {
+        item: "coca",
+        quantity: 1,
+        orderId: "order_9",
+        variantId: "var_coke",
+        allergens: ["gluten"],
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["order.amend.add_item"])],
+    });
+
+    const plan = await planner.propose(mkState("adiciona uma coca no meu pedido"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({ item: "coca", quantity: 1 });
+  });
+
+  it("an UNAUTHORED capability's payload passes through completely VERBATIM (no authored schema yet — zero behavior change)", async () => {
+    // order.item.add, then order.checkout.create, were this test's
+    // successive examples — FE-T14 then T12 authored them both (the entire
+    // real drivable surface is now covered), so this uses a permanently
+    // unregistered capability name to preserve the test's original intent.
+    const { model } = mockModel([
+      expressIntent("nonexistent.capability.probe", { sku: "x", qty: 2, anything: "goes" }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner(ORDER_READS, ["nonexistent.capability.probe"])],
+    });
+
+    const plan = await planner.propose(mkState("quero adicionar 2 costelas"));
+    expect(plan.envelopes).toHaveLength(1);
+    expect(plan.envelopes[0]!.payload).toEqual({ sku: "x", qty: 2, anything: "goes" });
+  });
+});
+
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 describe("createIbatexasPlanner — envelope schema", () => {
@@ -297,7 +842,7 @@ describe("createIbatexasPlanner — invariants (property)", () => {
       "order.item.add",
       "order.cart.ensure",
       "order.coupon.apply",
-      "payment.charge.create",
+      "payment.create",
       "reservation.book",
     ];
     let checked = 0;
@@ -462,7 +1007,16 @@ describe("createIbatexasPlanner — read-tool enrichment loop (BKL-027)", () => 
 
     expect(complete).toHaveBeenCalledTimes(2); // exactly one extra hop
     expect(execCalls).toHaveLength(1);
-    expect(execCalls[0]!.input).toEqual({ cartId: "c1" });
+    // FE-T13 (team-lead P5 ruling) — the executor receives the SANITIZED
+    // input, not the model's raw call: get_cart's authored schema
+    // (read-tool-schemas.ts) has ZERO fields, so sanitizeReadToolInput drops
+    // the model-supplied `cartId` before it ever reaches the executor
+    // (mirrors production: get_cart's real executor already ignores its
+    // input entirely, deriving the cart id from session state). The RAW
+    // model call is still recorded verbatim in `plan.readToolCalls` for
+    // telemetry (see the "does NOT loop" test below) — only the dispatched
+    // execution input is sanitized.
+    expect(execCalls[0]!.input).toEqual({});
     // The executor receives the AUTHENTICATED turn state (identity ← state).
     expect(execCalls[0]!.customerId).toBe("cus_1");
     expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);
@@ -940,18 +1494,24 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
   });
 
   it("option ABSENT: intentHash is byte-identical to a direct buildEnvelope (regression pin)", async () => {
+    // order.item.add, then order.checkout.create, were this test's
+    // successive examples — FE-T14 then T12 authored them both (sku/qty
+    // aren't either's schema fields, so the plan-time filter would now
+    // strip them), so this uses a permanently unregistered capability name
+    // to preserve the test's original intent: envelope-hash regression
+    // pinning, not filter proof.
     const payload = { sku: "x", qty: 2 };
-    const { model } = mockModel([expressIntent("order.item.add", payload)]);
+    const { model } = mockModel([expressIntent("nonexistent.capability.probe", payload)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, ["nonexistent.capability.probe"])],
       deriveNonce: FIXED_NONCE,
     });
 
     const env = (await planner.propose(mkState("quero 2 costelas"))).envelopes[0]!;
     const direct = buildEnvelope({
-      kind: "order.item.add",
+      kind: "nonexistent.capability.probe",
       payload,
       actor: { principal: "llm", sessionId: "conv-1" },
       taint: "UNTRUSTED",
@@ -1076,6 +1636,13 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
 
   // ── (3) adversarial: the model can never influence envelope.actor ───────────
   it("adversarial (option ABSENT): payload actor/role/principal keys never touch envelope.actor", async () => {
+    // order.item.add, then order.checkout.create, were this test's
+    // successive "no authored schema yet" examples — FE-T14 then T12
+    // authored them both (the entire real drivable surface is now covered),
+    // so this uses a permanently unregistered capability name to preserve
+    // the test's original "payload passes through verbatim" premise: it
+    // proves actor-authority isolation, not the plan-time filter (that has
+    // its own dedicated coverage elsewhere).
     const evil = {
       sku: "x",
       actor: { principal: "system", sessionId: "admin:root", role: "OWNER" },
@@ -1083,11 +1650,11 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
       role: "OWNER",
       principal: "user",
     };
-    const { model } = mockModel([expressIntent("order.item.add", evil)]);
+    const { model } = mockModel([expressIntent("nonexistent.capability.probe", evil)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner(ORDER_READS, ORDER_INTENTS)],
+      capabilityPlanners: [capPlanner(ORDER_READS, ["nonexistent.capability.probe"])],
       deriveNonce: FIXED_NONCE,
     });
 
@@ -1099,6 +1666,12 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
   });
 
   it("adversarial (option PRESENT): payload actor/role keys never override the injected staff actor", async () => {
+    // order.note.add, then order.checkout.create, were this test's
+    // successive "no authored schema yet" examples — FE-T14 then T12
+    // authored them both (the entire real drivable surface is now covered),
+    // so this uses a permanently unregistered capability name to preserve
+    // the test's "payload passes through verbatim" premise — this proves
+    // staff-actor isolation, not the plan-time filter.
     const evil = {
       orderId: "o1",
       body: "x",
@@ -1107,11 +1680,11 @@ describe("createIbatexasPlanner — staff envelope-actor (NEW-032 slice A)", () 
       principal: "system",
       sessionId: "admin:root",
     };
-    const { model } = mockModel([expressIntent("order.note.add", evil)]);
+    const { model } = mockModel([expressIntent("nonexistent.capability.probe", evil)]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [capPlanner([], ["order.note.add"])],
+      capabilityPlanners: [capPlanner([], ["nonexistent.capability.probe"])],
       staffEnvelopeActor: { staffId: "stf_9", role: "ATTENDANT" },
       deriveNonce: FIXED_NONCE,
     });

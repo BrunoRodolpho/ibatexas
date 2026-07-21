@@ -210,6 +210,65 @@ describe("lattice rule 3 — conversational + VALIDATED RENDER → render", () =
   });
 });
 
+// ── Rule 3b (BKL-225) — a committed mutation's action reply wins over a degenerate render
+
+describe("lattice rule 3b — committed EXECUTE/REWRITE mutation keeps its deterministic action reply", () => {
+  it("EXECUTE + ≥1 envelope + degenerate UNKNOWN terminal → keep_draft (the amend-resume 'sim' bug: don't clobber 'Pronto! Adicionei…' with a degenerate render)", () => {
+    const v = decideRenderPrecedence(
+      ctx({ decision: execute(), plan: plan(1), claims: claimsResult("UNKNOWN"), requestText: "sim" }),
+    );
+    expect(v).toEqual({ decision: "keep_draft", mechanism: "committed_mutation_action" });
+  });
+
+  it("REWRITE + ≥1 envelope + degenerate CLARIFY terminal → keep_draft (committed mutation reply wins)", () => {
+    const rewrite = (): Decision => ({
+      kind: "REWRITE",
+      rewritten: envelope("rw-1"),
+      reason: "normalized",
+      basis: [],
+    });
+    const v = decideRenderPrecedence(
+      ctx({ decision: rewrite(), plan: plan(1), claims: claimsResult("CLARIFY"), requestText: "sim" }),
+    );
+    expect(v).toEqual({ decision: "keep_draft", mechanism: "committed_mutation_action" });
+  });
+
+  it("rule 3 STILL WINS: EXECUTE + ≥1 envelope + VALIDATED RENDER → render (a mixed read+act turn never withholds the validated read)", () => {
+    const v = decideRenderPrecedence(
+      ctx({ decision: execute(), plan: plan(1), claims: claimsResult("RENDER") }),
+    );
+    expect(v).toEqual({ decision: "render", mechanism: "validated_render" });
+  });
+
+  it("rule 1 STILL WINS: EXECUTE + ≥1 envelope + suppression → render (safety no-leak outranks the mutation reply)", () => {
+    const v = decideRenderPrecedence(
+      ctx({ decision: execute(), plan: plan(1), claims: claimsResult("UNKNOWN", [suppression()]) }),
+    );
+    expect(v).toEqual({ decision: "render", mechanism: "claims_escalate_or_suppression" });
+  });
+
+  it("rule 1 STILL WINS: EXECUTE + ≥1 envelope + claims terminal ESCALATE → render (safety)", () => {
+    const v = decideRenderPrecedence(
+      ctx({ decision: execute(), plan: plan(1), claims: claimsResult("ESCALATE") }),
+    );
+    expect(v).toEqual({ decision: "render", mechanism: "claims_escalate_or_suppression" });
+  });
+
+  it("money-band UNCHANGED: a resumed ESCALATE decision + ≥1 envelope → keep_draft via rule 2 (the escalate copy wins, never rule 3b)", () => {
+    const v = decideRenderPrecedence(
+      ctx({ decision: escalate(), plan: plan(1), claims: claimsResult("UNKNOWN"), requestText: "sim" }),
+    );
+    expect(v).toEqual({ decision: "keep_draft", mechanism: "live_action_decision" });
+  });
+
+  it("no-regression: a conversational EXECUTE with ZERO envelopes stays on rule 4 (statement keeps prose)", () => {
+    const v = decideRenderPrecedence(
+      ctx({ decision: execute(), plan: plan(0), claims: claimsResult("UNKNOWN"), requestText: "meu pedido chegou, obrigado!" }),
+    );
+    expect(v).toEqual({ decision: "keep_draft", mechanism: "conversational_prose" });
+  });
+});
+
 // ── Rule 4 — a conversational degrade: question renders safe, statement keeps prose
 
 describe("lattice rule 4 — conversational degrade by request SHAPE", () => {

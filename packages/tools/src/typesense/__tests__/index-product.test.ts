@@ -105,6 +105,29 @@ describe("indexProduct", () => {
       expect(upsertedDoc.embedding).toBeUndefined()
     })
 
+    it("stores the product embedding under the v2 cache namespace (FE-D17 — evicts poisoned pseudo-vectors)", async () => {
+      await indexProduct(mockMedusaProduct, { generateEmbedding: mockGenerateEmbedding })
+
+      const cacheKey = mockGenerateEmbedding.mock.calls[0][1] as string
+      // rk() prefixes the env, so assert on the namespace substring.
+      expect(cacheKey).toContain("product_embedding:v2:")
+      expect(cacheKey).toContain(mockMedusaProduct.id)
+    })
+
+    it("stores under the v3 namespace when EMBEDDINGS_PROVIDER=ollama (BKL-034 — 768-dim space never collides with v2)", async () => {
+      const saved = process.env.EMBEDDINGS_PROVIDER
+      process.env.EMBEDDINGS_PROVIDER = "ollama"
+      try {
+        await indexProduct(mockMedusaProduct, { generateEmbedding: mockGenerateEmbedding })
+        const cacheKey = mockGenerateEmbedding.mock.calls[0][1] as string
+        expect(cacheKey).toContain("product_embedding:v3:")
+        expect(cacheKey).not.toContain(":v2:")
+      } finally {
+        if (saved === undefined) delete process.env.EMBEDDINGS_PROVIDER
+        else process.env.EMBEDDINGS_PROVIDER = saved
+      }
+    })
+
     it("does not throw when embedding generation fails", async () => {
       await expect(
         indexProduct(mockMedusaProduct, { generateEmbedding: mockGenerateEmbeddingFailing })
@@ -225,6 +248,16 @@ describe("indexProductsBatch", () => {
     const [docs] = mockImport.mock.calls[0]
     expect(docs[0].embedding).toEqual(TEST_EMBEDDING)
     expect(docs[1].embedding).toEqual(TEST_EMBEDDING)
+  })
+
+  it("embeds each product under the v2 cache namespace (FE-D17 — evicts poisoned pseudo-vectors)", async () => {
+    const products = [mockMedusaProduct, { ...mockMedusaProduct, id: "prod_2" }]
+
+    await indexProductsBatch(products, { generateEmbedding: mockGenerateEmbedding })
+
+    for (const call of mockGenerateEmbedding.mock.calls) {
+      expect(call[1] as string).toContain("product_embedding:v2:")
+    }
   })
 
   it("skips embedding for individual products that fail (non-blocking batch)", async () => {

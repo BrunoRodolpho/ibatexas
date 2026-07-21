@@ -20,8 +20,12 @@
 import type {
   ClaimsKernelDepsForTurn,
   ConductorOptions,
+  RenderCarriersForTurn,
 } from "@claustrum/core";
+import type { EvidenceLedger } from "@adjudicate/core";
+import type { DisambiguationCandidate } from "./classify-only-reads.js";
 import { assertClaimDefinitionRegistryValid } from "./claim-definition-registry.js";
+import { claimsRenderDriftProblems } from "./claims-render-drift.js";
 import {
   createIbatexasClaimsRenderer,
   createIbatexasClaimsRenderPrecedence,
@@ -38,6 +42,10 @@ import {
   createPerTurnClaimsKernelDeps,
 } from "./ibatexas-claims-kernel-deps.js";
 import { createIbatexasInvestigator } from "./ibatexas-investigator.js";
+import {
+  localDateParts,
+  resolveQueriedScheduleDate,
+} from "./schedule-date-resolver.js";
 import type { ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 
 /** Env flag that opts a boot into the claims pipeline (default off). */
@@ -59,6 +67,52 @@ export function claimsPipelineEnabled(
  * CLAIMS-VALIDATE stages also ran (handleTurn 6a guards on a `claims` result),
  * so a partial wiring can never render from an absent claim set.
  */
+/**
+ * BKL-152-edge (ibatexas rider / @claustrum/core 0.8.0 `renderCarriersForTurn`
+ * carrier seam) — thread the RESOLVED queried schedule date so the required-claim
+ * decomposer's STORE_OPEN_NOW suppression is EXACT on `weekday == today` (see
+ * `required-claim-decomposer.ts` `DateAnchorSignal`). `resolvedQueryDate` is
+ * PRESENT ⟺ the request resolves to a CONFIRMED NON-TODAY day; a today/unresolvable
+ * anchor OMITS it, and the decomposer — told the seam is ACTIVE via
+ * `createIbatexasClaimsRenderer({ renderCarriersActive: true })` — reads
+ * absent-under-active as "today → KEEP STORE_OPEN_NOW". Clock-pure boundary: THIS
+ * callback owns the clock (`new Date()`) and the tz (`RESTAURANT_TIMEZONE`);
+ * @claustrum/core threads the result verbatim (no clock/RNG/IO crosses the seam).
+ *
+ * `disambiguationCandidates` (BKL-170/BKL-189) IS sourced here — via the per-turn
+ * stash: the classify-only ambiguous branch cannot reach this ledger+text callback
+ * directly (its owned-set data lives in the claim-planner stage), so
+ * `buildClaimsSeams` keys a WeakMap by the turn's `EvidenceLedger` — the ONE
+ * object identity `handleTurn` passes to BOTH the claim planner (`propose` input)
+ * and this callback. The planner adapter writes ≥2 labeled candidates on the
+ * ambiguous-CLARIFY branch; this callback reads them. WeakMap semantics make the
+ * carrier request-scoped by construction: distinct turns hold distinct ledger
+ * instances (no cross-turn contamination) and entries are collected with the
+ * ledger (no teardown hook needed, no leak). No stash → the field is OMITTED —
+ * byte-identical to the pre-BKL-189 carrier (#332 pins hold).
+ */
+export function createIbatexasRenderCarriersForTurn(
+  readDisambiguationCandidates?: (
+    ledger: EvidenceLedger,
+  ) => readonly DisambiguationCandidate[] | undefined,
+): RenderCarriersForTurn {
+  return ({ ledger, requestText }) => {
+    const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
+    const now = new Date();
+    const resolved = resolveQueriedScheduleDate(requestText, tz, now);
+    const dateCarrier =
+      resolved === null || resolved.isoDate === localDateParts(tz, now).isoDate
+        ? {}
+        : { resolvedQueryDate: resolved.isoDate };
+    const candidates = readDisambiguationCandidates?.(ledger);
+    const candidateCarrier =
+      candidates !== undefined && candidates.length > 0
+        ? { disambiguationCandidates: candidates }
+        : {};
+    return { ...dateCarrier, ...candidateCarrier };
+  };
+}
+
 export type ClaimsSeams = Pick<
   ConductorOptions,
   | "investigator"
@@ -68,6 +122,7 @@ export type ClaimsSeams = Pick<
   | "claimsRenderer"
   | "claimsRenderPrecedence"
   | "activeResourcesForTurn"
+  | "renderCarriersForTurn"
 >;
 
 export interface BuildClaimsSeamsDeps {
@@ -105,6 +160,15 @@ export interface BuildClaimsSeamsDeps {
    * best-effort runtime resolver; tests inject a fixed map.
    */
   readonly resolveKernelVersions?: () => ResolvedKernelVersions;
+  /**
+   * BKL-209 — best-effort SAFETY sink invoked when a turn resolves to a medical-
+   * emergency ESCALATE (the deterministic distress net + ESCALATE terminal), so
+   * the emergency reaches staff. Threaded into the render adapter; the boot root
+   * wires it to publish `support.handoff_requested`. Fire-and-forget + MUST NOT
+   * throw (the adapter also guards it). Omitted (the per-trigger factory / tests)
+   * → no staff surface, render byte-identical.
+   */
+  readonly onSafetyEmergency?: (ctx: { readonly turnId?: string }) => void;
 }
 
 /**
@@ -180,13 +244,44 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
   // This is what makes a dangling template (a template with no backing
   // ClaimDefinition) mechanically impossible at load.
   assertClaimDefinitionRegistryValid();
+  // FE-3.3 (FE-T16) — the customer-plane advertised-⊆-renderable BOOT gate,
+  // mirroring the ops plane's `opsPlaneDriftProblems` (ops-conductor.ts): every
+  // PROPOSABLE customer claim type (CLAIM_REGISTRY) not in the deliberate
+  // exception list must have a validated render template (slot-grammar.ts
+  // VALIDATED_TEMPLATES), else a validated read of that type could only ever
+  // dead-end in the honest-abstain UNKNOWN with no path to render the fact it
+  // proved. Promotes the pre-existing unit-test-only subset pin
+  // (proposable-renderable-drift.test.ts, BKL-112) into a REAL fail-closed boot
+  // guard, so a FUTURE proposable type shipped without a template fails boot,
+  // not merely CI.
+  const claimsRenderDrift = claimsRenderDriftProblems();
+  if (claimsRenderDrift.length > 0) {
+    throw new Error(
+      "[claims-pipeline] customer-plane render drift check failed (FE-3.3 / BKL-112):\n  " +
+        claimsRenderDrift.join("\n  "),
+    );
+  }
   // F2 observability (RCA 2026-06-29): the pipeline is ENABLED — surface a loud
   // warning if the LINKED kernels are below the egress-brand floor, so the
   // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
   warnOnBelowFloorKernel(deps);
+  // BKL-189 — the per-turn disambiguation-candidate carrier: keyed by the turn's
+  // EvidenceLedger (the object identity shared by the claim-planner input and the
+  // renderCarriersForTurn callback), written by the planner adapter's ambiguous
+  // branch, read by the carriers callback below. One WeakMap per seam set (the
+  // managed-agent plane builds its own seams → its own stash); entries die with
+  // the ledger (request-scoped, concurrency-safe, leak-free by construction).
+  const disambiguationStash = new WeakMap<
+    EvidenceLedger,
+    readonly DisambiguationCandidate[]
+  >();
   return {
     investigator: createIbatexasInvestigator(),
-    claimPlanner: createIbatexasClaimPlanner(deps.planner),
+    claimPlanner: createIbatexasClaimPlanner(deps.planner, {
+      stashDisambiguationCandidates: (ledger, candidates) => {
+        disambiguationStash.set(ledger, candidates);
+      },
+    }),
     // W5a F2 — build the kernel deps via the REAL per-turn builder
     // (createPerTurnClaimsKernelDeps), not the process-wide fail-closed stub. The
     // R2a per-turn `now` is supplied PER TURN by the Conductor's `clock()` seam
@@ -223,6 +318,14 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // present-only IDOR filter as `buildPerTurnOwnsFromLedger`. Inert while the
     // flag is OFF (this whole seam set is only wired when ENABLE_CLAIMS_PIPELINE).
     activeResourcesForTurn: activeResourcesFromLedger,
+    // BKL-152-edge (@claustrum/core 0.8.0 carrier seam) — thread the resolved
+    // queried schedule date into `ClaimsRenderContext.resolvedQueryDate` so the
+    // decomposer's STORE_OPEN_NOW suppression is EXACT on weekday==today. Pure
+    // passthrough on claustrum's side; the clock lives in this callback. Absent
+    // (unwired) → the decomposer keeps its pure #301 rule (byte-identical).
+    renderCarriersForTurn: createIbatexasRenderCarriersForTurn((ledger) =>
+      disambiguationStash.get(ledger),
+    ),
     // E-2 render-from-claims (SDD §B / §Q.7) — the loop-level closure of the
     // "claims-not-prose" thesis. When ON, `handleTurn` stage 6a renders the reply
     // TEXT from the VALIDATED claim set via the pure `renderer-from-claims`
@@ -230,7 +333,14 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // superseding the model draft. On no-renderable-claim the claustrum loop
     // falls back to the operational responder draft (never raw model prose as a
     // confident fact; never silence). Inert while the flag is COMMITTED OFF.
-    claimsRenderer: createIbatexasClaimsRenderer(),
+    claimsRenderer: createIbatexasClaimsRenderer({
+      renderCarriersActive: true,
+      // BKL-209 — the emergency staff-surface sink (support.handoff_requested),
+      // wired by the boot root; unset on the per-trigger factory → no surface.
+      ...(deps.onSafetyEmergency === undefined
+        ? {}
+        : { onSafetyEmergency: deps.onSafetyEmergency }),
+    }),
     // BKL-155/153 (@claustrum/core 0.7.0) — the RENDER-vs-DRAFT precedence seam,
     // PAIRED with `claimsRenderer` above so it is only consulted on the SAME
     // claims-ON customer plane where the render runs (the OPS conductor keeps its

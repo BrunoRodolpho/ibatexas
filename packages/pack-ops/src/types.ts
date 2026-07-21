@@ -108,6 +108,17 @@ export interface ProductAvailabilitySetPayload {
   readonly productId: string
   readonly available: boolean
   readonly reason?: string
+  /**
+   * BKL-156 — OPTIONAL display-only product name, STAMPED by the ops resolver
+   * as a by-product of its name→id resolution (never model-emitted, never
+   * surfaced to the LLM). The guards and the executor IGNORE it entirely (it
+   * gates nothing and is not written); it exists only so the deterministic
+   * EXECUTE render (`ops-action-render.ts`) can name the product truthfully
+   * ("produto Picanha marcado como esgotado") instead of the generic
+   * "produto marcado…". Absent ⇒ the render degrades to the generic form
+   * (a direct-id hit carries no resolved name). Must be a string when present.
+   */
+  readonly productName?: string
 }
 
 /**
@@ -124,6 +135,10 @@ export interface ProductPriceSetPayload {
   readonly productId: string
   readonly priceCentavos: number
   readonly reason?: string
+  /** BKL-156 — OPTIONAL display-only product name, resolver-stamped (never
+   *  model-emitted). Guards + executor IGNORE it; the deterministic EXECUTE
+   *  render names the product truthfully. See {@link ProductAvailabilitySetPayload.productName}. */
+  readonly productName?: string
 }
 
 /**
@@ -155,6 +170,10 @@ export interface MenuSpecialSetPayload {
   readonly productId: string
   readonly date: string
   readonly promoPriceCentavos?: number
+  /** BKL-156 — OPTIONAL display-only product name, resolver-stamped (never
+   *  model-emitted). Guards + executor IGNORE it; the deterministic EXECUTE
+   *  render names the product truthfully. See {@link ProductAvailabilitySetPayload.productName}. */
+  readonly productName?: string
 }
 
 /**
@@ -228,11 +247,18 @@ export type OpsPayload =
   | IncidentCloseStaffPayload
   | ScheduleOverrideSetPayload
 
+// BKL-156 — `productName` is an OPTIONAL display-only key on the three
+// product-target verbs, resolver-stamped for the EXECUTE render (see each
+// payload's `productName` doc). Admitted by the validators (so the closed-key
+// gate does not REFUSE it) but semantically ignored — validated only as an
+// optional string.
+
 /** The keys the strict `product.availability.set` validator admits. */
 export const PRODUCT_AVAILABILITY_SET_KEYS: ReadonlySet<string> = new Set([
   "productId",
   "available",
   "reason",
+  "productName",
 ])
 
 /** The keys the strict `product.price.set` validator admits (NEW-004). */
@@ -240,6 +266,7 @@ export const PRODUCT_PRICE_SET_KEYS: ReadonlySet<string> = new Set([
   "productId",
   "priceCentavos",
   "reason",
+  "productName",
 ])
 
 /** The keys the strict `menu.special.set` validator admits (SCN-114). */
@@ -247,6 +274,7 @@ export const MENU_SPECIAL_SET_KEYS: ReadonlySet<string> = new Set([
   "productId",
   "date",
   "promoPriceCentavos",
+  "productName",
 ])
 
 /** The keys the strict `ops.alert.resolve.staff` validator admits (BKL-088). */

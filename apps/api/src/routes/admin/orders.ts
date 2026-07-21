@@ -10,11 +10,13 @@ import {
   createOrderCommandService,
   createOrderQueryService,
   createPaymentQueryService,
+  createFiscalDocumentService,
   ConcurrencyError,
   ProjectionNotFoundError,
   InvalidTransitionError,
   prisma,
   type OrderStatusTransitionPayload,
+  type FiscalDocumentRecord,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
@@ -68,7 +70,15 @@ function mapProjectionItems(itemsJson: unknown): Array<Record<string, unknown>> 
   if (!Array.isArray(itemsJson)) return [];
   return (itemsJson as Array<Record<string, unknown>>).map((i, idx) => ({
     ...i,
-    id: (i as { variantId?: string }).variantId ?? `item-${idx}`,
+    // FE-D15 / BKL-167 — prefer Medusa's STABLE line-item id (`OrderEventItem.id`,
+    // threaded through the projection since #295) so admin line references are
+    // precise. Additive + backward-compatible: a pre-FE-D15 row (no `id`) falls back
+    // to the prior variantId-or-index fake, so legacy rows are byte-unchanged until
+    // the BKL-167 backfill populates their ids.
+    id:
+      (i as { id?: string }).id ??
+      (i as { variantId?: string }).variantId ??
+      `item-${idx}`,
     unit_price: (i as { priceInCentavos?: number }).priceInCentavos ?? 0,
   }));
 }
@@ -83,7 +93,11 @@ function mapFallbackItems(items: unknown): unknown {
 }
 
 /** Build the admin order-detail response from a projection row. */
-function buildProjectionOrderDetail(projection: OrderDetailProjection, cp: ActivePaymentRow | null) {
+function buildProjectionOrderDetail(
+  projection: OrderDetailProjection,
+  cp: ActivePaymentRow | null,
+  fiscal: FiscalDocumentRecord | null = null,
+) {
   return {
     id: projection.id,
     display_id: projection.displayId,
@@ -112,6 +126,20 @@ function buildProjectionOrderDetail(projection: OrderDetailProjection, cp: Activ
       pixExpiresAt: cp.pixExpiresAt?.toISOString() ?? null,
       version: cp.version,
     } : null,
+    // NEW-014 — the order's fiscal (NFC-e) record. `provider` is ALWAYS carried
+    // so the admin UI can label a mock emission "NFC-e SIMULADA (mock)" — a mock
+    // approval must never read as fiscal truth to the owner (review gate).
+    fiscal: fiscal
+      ? {
+          status: fiscal.status,
+          provider: fiscal.provider,
+          attempts: fiscal.attempts,
+          accessKey: fiscal.accessKey,
+          xmlUrl: fiscal.xmlUrl,
+          pdfUrl: fiscal.pdfUrl,
+          rejectionReason: fiscal.rejectionReason,
+        }
+      : null,
     statusHistory: projection.statusHistory.map((h) => ({
       id: h.id,
       fromStatus: h.fromStatus,
@@ -139,6 +167,8 @@ function buildFallbackOrderDetail(order: Record<string, unknown>) {
     subtotal: reaisToCentavos((order.subtotal as number) ?? 0),
     shipping_total: reaisToCentavos((order.shipping_total as number) ?? 0),
     items: mapFallbackItems(order.items),
+    // NEW-014 — fiscal data only exists on the projection path.
+    fiscal: null,
     source: "medusa_fallback" as const,
   };
 }
@@ -365,6 +395,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
   });
   const querySvc = createOrderQueryService();
   const paymentQuerySvc = createPaymentQueryService();
+  const fiscalSvc = createFiscalDocumentService();
 
   // ── GET /api/admin/orders ──────────────────────────────────────────────────
   // INTENTIONALLY open to any authenticated staff (no requireManagerRole),
@@ -526,7 +557,8 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
 
           if (projection) {
             const cp = await paymentQuerySvc.getActiveByOrderId(id).catch(() => null);
-            return reply.send({ order: buildProjectionOrderDetail(projection, cp) });
+            const fiscal = await fiscalSvc.getByOrderId(id).catch(() => null);
+            return reply.send({ order: buildProjectionOrderDetail(projection, cp, fiscal) });
           }
         } catch (projErr) {
           if (!isTableMissing(projErr)) throw projErr;

@@ -136,6 +136,16 @@ export type OrderStatusHistory = Prisma.OrderStatusHistoryModel
  */
 export type OrderEventLog = Prisma.OrderEventLogModel
 /**
+ * Model FiscalDocument
+ * NEW-014 — ONE fiscal document record per order (attempt-tracking + outcome).
+ * Written ONLY by the fiscal-emitter subscriber's post-adjudication executor
+ * (order.fiscal.emit EXECUTE). `provider` is persisted on EVERY record so a
+ * mock emission can never read as fiscal truth (NEW-014 review gate — the
+ * admin surface labels provider "mock" as "NFC-e SIMULADA"). `attempts` feeds
+ * the pack's fiscalEmitRetryCapGuard via ctx.fiscalEmitAttempts.
+ */
+export type FiscalDocument = Prisma.FiscalDocumentModel
+/**
  * Model Payment
  * Payment record for an order. ONE active (non-terminal) payment per order.
  * Historical attempts are kept with terminal status for audit trail.

@@ -261,7 +261,7 @@ export interface AuditRedactorOptions {
   /**
    * Per-intent-kind hook. Returns a list of field paths (dot-joined or
    * bracket-notation) to redact regardless of name match. Used by Packs
-   * that ship semi-structured payloads (e.g. `whatsapp.message.send.body`).
+   * that ship semi-structured payloads (e.g. `twilio.message.send.body`).
    *
    * Today implemented inline via {@link INTENT_KIND_FIELD_RULES}; the option
    * is exposed for future per-deployment overrides without code changes.
@@ -306,8 +306,9 @@ function classifyRedactorError(err: unknown): AuditRedactorFailureReason {
 //
 //   1. `whatsapp.session.handover.*` — free-form reason text that often quotes
 //      a customer's last message (which may contain CPF/email).
-//   2. `whatsapp.message.send.body` — the actual outbound message body. The
-//      template name is fine; the rendered body is not.
+//   2. `twilio.message.send.body` — the actual outbound message body (the
+//      live WhatsApp egress wrapper). The template name is fine; the
+//      rendered body is not.
 //   3. `customer.anonymize.customerId` — already covered by HASH_FIELDS, but
 //      listed here to document the intent.
 //
@@ -339,15 +340,11 @@ function classifyRedactorError(err: unknown): AuditRedactorFailureReason {
 //      hope the regex catches every leak.
 
 export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<string>>> = {
-  // ── WhatsApp body, variables, and handover reason fields ───────────────
-  // F-5: WhatsAppMessageSendPayload's variable map is `templateVariables`,
-  // not `variables`. We keep `variables` as an alias for defense-in-depth
-  // against any payload variant that uses the shorter name.
-  "whatsapp.message.send": ["body", "text", "templateVariables", "variables"],
-  // F-5: WhatsAppTemplateSendPayload's variable map is `templateVariables`.
-  // `to` is hashed via HASH_FIELDS if it ever lands as a phone; the rule
-  // here covers the rendered variable values.
-  "whatsapp.template.send": ["templateVariables", "variables"],
+  // ── WhatsApp handover reason / append body fields ──────────────────────
+  // BKL-177: the whatsapp.message.send + whatsapp.template.send rules were
+  // retired with those kinds. The identical body/text/variable redaction for
+  // LIVE WhatsApp egress lives on the `twilio.message.send` wrapper rule
+  // below (exempt `twilio.` prefix) — no live PII vector is uncovered.
   // F-5: the staff-driven takeover kind. `reason`/`lastMessage` carry
   // free-form text that often quotes the customer.
   "whatsapp.session.handover": ["reason", "lastMessage"],
@@ -356,8 +353,8 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   "whatsapp.handoff.request": ["reason"],
   // F-6: persistence-side conversation append. The `body` field carries
   // the literal customer-typed text (often CPF/email/name fragments). The
-  // wire-egress `whatsapp.message.send.body` was already covered; this is
-  // the missing archival sibling per pack-whatsapp's W5-6 design.
+  // live wire-egress `twilio.message.send.body` is covered below; this is
+  // the archival sibling per pack-whatsapp's W5-6 design.
   "conversation.message.append": ["body", "text"],
 
   // ── Payment-domain free-form reasons (F-6) ──────────────────────────────
@@ -369,11 +366,10 @@ export const INTENT_KIND_FIELD_RULES: Readonly<Record<string, ReadonlyArray<stri
   "payment.waive": ["reason"],
   "payment.status.force": ["reason"],
   "pix.charge.refund": ["reason"],
-  // Defense-in-depth — these `reason` fields are typed but technically
-  // closed enums in pack-payments. We still over-redact in case a Pack
-  // bump introduces a free-form string in the future.
-  "payment.charge.fail": ["reason"],
-  "payment.charge.cancel": ["reason"],
+  // Defense-in-depth — this `reason` field is typed but technically a
+  // closed enum in pack-payments. We still over-redact in case a Pack
+  // bump introduces a free-form string in the future. (BKL-176 removed the
+  // retired payment.charge.fail/cancel entries here.)
   "payment.status.transition": ["reason"],
 
   // ── Order-domain free-form text fields (F-6) ───────────────────────────
@@ -548,7 +544,6 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "order.coupon.apply", // cartId/code; code is a short opaque promo handle
   "order.checkout.create", // PII in pixDetails covered by global REDACT (name/email/cpf)
   "order.pix.details.set", // PII in name/email/cpf covered by global REDACT_FIELDS
-  "order.cancel.system", // orderId + reason: closed enum ("stale"|"pix_expired")
   "order.amend.request", // orderId + changes[] (op enum + variantId/itemId)
   "order.amend.add_item", // orderId/variantId/quantity/allergens
   "order.amend.update_qty", // orderId/itemId/quantity
@@ -558,13 +553,13 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "order.reorder", // previousOrderId + paymentMethod: closed enum
   "order.projection.create", // customerId covered by global HASH_FIELDS
   "order.status.reconcile", // orderId/newStatus(short status enum)/source: closed enum
+  "order.fiscal.emit", // NEW-014 — orderId only (customerTaxId lives in the PR2 provider input, never on the envelope)
 
   // ── Reservation Pack — opaque-id-only payloads ───────────────────────
   "reservation.checkin", // reservationId only
   "reservation.complete", // reservationId only
   "reservation.no_show.mark", // reservationId only
   "reservation.waitlist.join", // timeSlotId/partySize
-  "reservation.waitlist.notify", // waitlistId only
 
   // ── AUT-038 staff-CRUD plane — id-only / closed-enum payloads ────────
   // (staff.create / staff.update are NOT here — they carry hourlyRateCentavos
@@ -585,10 +580,8 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   // boundary; no kind is allowlisted in this section today.
 
   // ── Payment Pack — opaque-id-only or closed-enum reason payloads ─────
+  // (BKL-176 removed the retired payment.charge.create/confirm/expire entries.)
   "payment.create", // orderId/paymentId/method enum/amountCentavos/stripePaymentIntentId
-  "payment.charge.create", // alias of payment.create — same shape
-  "payment.charge.confirm", // paymentId/wireStatus/stripeEventId
-  "payment.charge.expire", // paymentId + reason: closed enum ("pix_expired")
   "payment.pix.regenerate", // orderId/paymentId/currentRegenerationCount
   "payment.method.switch", // customerId covered by global HASH_FIELDS
   "payment.retry", // orderId/previousPaymentId/newMethod enum
@@ -684,6 +677,31 @@ export function createAuditRedactor(
         hashSecret,
       )
 
+      // FE-T05 review (MAJOR-1a) — walk `record.metadata` (the ADR-124 v5
+      // governance/observability sidecar — e.g. the Language Engine's
+      // materialized ExtractionIR/HydratedIntentIR, `apps/api/src/claustrum/
+      // language-engine/audit-metadata.ts`) through the SAME global REDACT/
+      // HASH/regex defenses as the payload. No per-intent-kind path rules
+      // here (`kindFieldPaths` empty) — metadata's shape is a sidecar, not
+      // the payload, so path-relative kind rules don't apply, but the
+      // GLOBAL field-name (redactFields/hashFields) and regex (CPF/email/
+      // phone/card) defenses still catch anything PII-shaped at any depth —
+      // defense-in-depth alongside the schema-driven filter in
+      // `buildLanguageEngineAuditMetadata` (which limits what gets IN in
+      // the first place). Safe to recompute the hash afterward: `metadata`
+      // is EXCLUDED from the auditHash pre-image (v5+, ADR-124 — verified
+      // below in `recomputeAuditHash`), so redacting it can never invalidate
+      // tamper-evidence.
+      const redactedMetadata =
+        record.metadata === undefined
+          ? undefined
+          : (walk(record.metadata, "", {
+              redactFields,
+              hashFields,
+              kindFieldPaths: new Set<string>(),
+              hashSecret,
+            }) as Record<string, unknown>)
+
       // P1-2 (audit-2026-05-24 C-1): walk `decision.rewritten.payload`
       // with the SAME per-kind rule as `envelope.payload`.
       //
@@ -739,6 +757,10 @@ export function createAuditRedactor(
           payload: redactedPayload,
         },
         decision: redactedDecision,
+        // FE-T05 review (MAJOR-1a) — omit the key entirely when there was no
+        // metadata to begin with (hash-stable / no-`undefined`-key precision,
+        // matching the rest of this module's spread conventions).
+        ...(redactedMetadata === undefined ? {} : { metadata: redactedMetadata }),
       }
 
       // P0-15 Option A: recompute auditHash over the redacted record so
@@ -806,6 +828,11 @@ export function createAuditRedactor(
           payload: { __redactor_error: true },
         },
         decision: stubbedDecision,
+        // FE-T05 review (MAJOR-1a) — the fail-open path must not leak
+        // metadata PII either (mirrors the payload/decision stubbing above).
+        ...(record.metadata === undefined
+          ? {}
+          : { metadata: { __redactor_error: true } }),
       }
       // The fail-open stub payload also needs a recomputed auditHash so
       // `verifyAuditRecord` doesn't surface false-positive tamper warnings
@@ -1003,7 +1030,7 @@ function walk(value: unknown, path: string, ctx: WalkContext): unknown {
 
 // String leaf. If this string is at a path that the per-intent-kind rule names,
 // it gets the full `[REDACTED]` treatment regardless of content. This is how we
-// scrub `whatsapp.message.send.body` even when the body is a fully-formed
+// scrub `twilio.message.send.body` even when the body is a fully-formed
 // sentence with no PII regex match. Otherwise the regex/length defenses run.
 function walkString(value: string, path: string, ctx: WalkContext): string {
   if (path.length > 0 && pathMatchesKindRule(path, ctx.kindFieldPaths)) {

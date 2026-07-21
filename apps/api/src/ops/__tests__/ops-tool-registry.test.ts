@@ -284,7 +284,7 @@ describe("order.note.add executor — POST-adjudication note write", () => {
     expect(extras).toEqual({ author: "staff", authorId: "staff_7" });
   });
 
-  it("preserves an explicit isInternal:false (default applies only when omitted)", async () => {
+  it("forces isInternal to true even when the payload carries false (FE-D30 — ops notes always internal)", async () => {
     const { deps, writeAdjudicatedNote } = makeDeps();
     const tool = toolByKind(deps, "order.note.add");
     await tool.execute(
@@ -292,7 +292,7 @@ describe("order.note.add executor — POST-adjudication note write", () => {
       capsule("staff_7"),
     );
     const [payload] = writeAdjudicatedNote.mock.calls[0]!;
-    expect((payload as { isInternal?: boolean }).isInternal).toBe(false);
+    expect((payload as { isInternal?: boolean }).isInternal).toBe(true);
   });
 
   it("omits authorId when the Capsule carries no staffId (never fabricates one)", async () => {
@@ -397,7 +397,14 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
   // the closed shape is documented (the live probe's empty inputSchema left the
   // planner guessing field names + pt-BR values). This asserts the contract, NOT
   // any runtime normalization — the guard still reads `newStatus` verbatim.
-  it("declares the closed contract in inputSchema: orderId + the six English newStatus targets, no pt/alias values", () => {
+  //
+  // BKL-166 — reconciled with the authored wire schema
+  // (`order-status-transition.schema.ts`, FE-T05): `newStatus` is the ONLY
+  // required model-emitted field; `orderId` is an OPTIONAL order-reference channel
+  // (the BKL-089 resolver tries it first, else falls back to the context order),
+  // NOT required. The earlier `required: ["orderId", "newStatus"]` overstated
+  // orderId as mandatory and contradicted the authored schema's declared fields.
+  it("declares the closed contract in inputSchema: required newStatus (six English targets), optional orderId, no pt/alias values", () => {
     const { deps } = makeDeps();
     const tool = toolByKind(deps, "order.status.transition");
     const schema = tool.inputSchema as {
@@ -410,11 +417,14 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
       additionalProperties: boolean;
     };
     expect(schema.type).toBe("object");
-    // Only orderId + newStatus are model-emitted; actor/actorId/reason are
+    // newStatus is the sole required model field; actor/actorId/reason are
     // Capsule-forced by the executor, so the contract is closed to extras.
-    expect(schema.required).toEqual(["orderId", "newStatus"]);
+    expect(schema.required).toEqual(["newStatus"]);
     expect(schema.additionalProperties).toBe(false);
+    // orderId stays a documented, OPTIONAL property (a resolver-tried reference),
+    // never listed in `required` — matching the authored wire schema.
     expect(schema.properties.orderId.type).toBe("string");
+    expect(schema.required).not.toContain("orderId");
     // Exactly the six English fulfillment targets, verbatim — the enum the live
     // probe's wrong field names + pt-BR values (confirmado/cancel) never reached.
     const enumValues = schema.properties.newStatus.enum;
@@ -431,6 +441,85 @@ describe("order.status.transition executor — POST-adjudication kitchen-advance
     for (const v of enumValues) expect(isKnownOrderStatus(v)).toBe(true);
     expect(enumValues).not.toContain("pending");
     expect(enumValues).not.toContain("confirmado");
+  });
+});
+
+// BKL-147 — the empty inputSchema on the OTHER ops verbs left the model-facing
+// contract taught ONLY by persona prose (a verb without one is planner-unreachable,
+// the BKL-144 class). Each verb now declares the CLOSED model-facing SUBMIT
+// contract (documentation + enum-test anchor; NOT surfaced to the LLM, NOT runtime
+// normalization — the resolver still rewrites references→ids and reais→centavos).
+// These anchors pin the required keys + closed-to-extras posture so a future edit
+// that loosens/renames a contract trips here.
+describe("BKL-147 — ops verbs declare a typed model-facing inputSchema (contract anchor)", () => {
+  interface JsonSchema {
+    type?: string;
+    properties?: Record<string, { type?: string }>;
+    required?: readonly string[];
+    additionalProperties?: boolean;
+  }
+
+  // Every governed ops verb → the model-emitted required keys the resolver needs.
+  const EXPECTED_REQUIRED: Record<string, readonly string[]> = {
+    "product.availability.set": ["productId", "available"],
+    "product.price.set": ["productId", "priceCentavos"],
+    "menu.special.set": ["productId", "date"],
+    "order.note.add": ["orderId", "body"],
+    // BKL-166 — only newStatus is required; orderId is an optional resolver
+    // channel (reconciled with order-status-transition.schema.ts, FE-T05).
+    "order.status.transition": ["newStatus"],
+    "payment.refund.issue": ["orderReference"],
+    "ops.alert.resolve.staff": ["alertId"],
+    "incident.ticket.close.staff": ["incidentId"],
+    "schedule.override.set": ["date", "isOpen"],
+  };
+
+  it("every governed ops verb has a non-empty object inputSchema, closed to extras, with the expected required keys", () => {
+    const { deps } = makeDeps();
+    for (const [kind, required] of Object.entries(EXPECTED_REQUIRED)) {
+      const schema = toolByKind(deps, kind).inputSchema as JsonSchema;
+      expect(schema.type, kind).toBe("object");
+      expect(schema.properties, kind).toBeDefined();
+      // No verb still carries the empty placeholder that left the planner guessing.
+      expect(Object.keys(schema.properties ?? {}).length, kind).toBeGreaterThan(0);
+      // Closed CONTRACT — the pack's strict validators REFUSE unknown keys.
+      expect(schema.additionalProperties, kind).toBe(false);
+      expect(schema.required, kind).toEqual(required);
+      // Every required key is actually declared as a property.
+      for (const key of required) {
+        expect(schema.properties?.[key], `${kind}.${key}`).toBeDefined();
+      }
+    }
+  });
+
+  it("payment.refund.issue advertises the money-tier submit shape {orderReference, amount?, reason?} — never the canonical paymentId/refundAmountCentavos (resolver/Capsule-stamped)", () => {
+    const { deps } = makeDeps();
+    const schema = toolByKind(deps, "payment.refund.issue").inputSchema as JsonSchema;
+    const props = schema.properties ?? {};
+    expect(Object.keys(props).sort()).toEqual(["amount", "orderReference", "reason"]);
+    // The canonical/forced fields are NEVER model-emitted, so the doc contract
+    // must not advertise them (they are stamped by the resolver/executor).
+    for (const forbidden of [
+      "paymentId",
+      "refundAmountCentavos",
+      "refundableBalanceCentavos",
+      "actor",
+      "actorId",
+    ]) {
+      expect(props[forbidden], forbidden).toBeUndefined();
+    }
+  });
+
+  it("money fields are typed to their wire units: priceCentavos/promoPriceCentavos are integers, refund amount is reais (number)", () => {
+    const { deps } = makeDeps();
+    const price = toolByKind(deps, "product.price.set").inputSchema as JsonSchema;
+    expect(price.properties?.priceCentavos?.type).toBe("integer");
+    const special = toolByKind(deps, "menu.special.set").inputSchema as JsonSchema;
+    expect(special.properties?.promoPriceCentavos?.type).toBe("integer");
+    const refund = toolByKind(deps, "payment.refund.issue").inputSchema as JsonSchema;
+    // Refund amount is REAIS on the wire (the persona teaches reais; the resolver
+    // converts to centavos), so it is a number, not an integer.
+    expect(refund.properties?.amount?.type).toBe("number");
   });
 });
 

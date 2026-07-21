@@ -1,0 +1,59 @@
+{
+  "bindings": [
+    {
+      "capability": "order.status.transition",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-status-transition.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "c02bcc1b453218de13c535cd90599a596e4e2b6fb4b771bb8d67787bfdd150cc"
+    },
+    {
+      "capability": "payment.refund.issue",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-refund-issue.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "0a8b52187be819cff10aa12c2004294da6a84c935e121b5e89beb467e34125b9"
+    },
+    {
+      "capability": "payment.pix.regenerate",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-pix-regenerate.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "4ed1bebeac183fcdffb108796d2bfcfd27fdb52128eacbf22d09bd5b8bc71531"
+    },
+    {
+      "capability": "read-tools:12-tool-roster",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/read-tools.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "2c9daad1707799d4ee7e09b46b0f75364de5755d85f9b8bed9685602086f04dc"
+    },
+    {
+      "capability": "order.checkout.create",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-checkout-create.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "157421097da4ab8b1dc8af16f9828f44933ed38fc640d4f87ed5dfea7e785846"
+    },
+    {
+      "capability": "order.cancel",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-cancel.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "158ec6544ff403a487f33750b3d39328bf15fc1a3d4964cfdf6abb0e7b756809"
+    },
+    {
+      "capability": "order-amend-granular:3-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-amend-granular.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "a94fddd92a852a95638b3c5d037c59be1856db92f8ae70c22f4ed5ea8f61a4a2"
+    },
+    {
+      "capability": "order-cart-item:5-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-cart-item.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "6a62a3d3ae8197791626c54594ff6a7ecbe7548dd1863c5391ec6b056c4c8524"
+    },
+    {
+      "capability": "order-note-review:2-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-note-review.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "e98e2b54b1c0d51081b4dc33b15d59af9b590aaea0cf6b230edf52655c18b389"
+    },
+    {
+      "capability": "reservation-convenience:4-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/reservation-convenience.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "a10643fedb132b6b87db09b814f214e31b989b9cadaa16af6c20941902a9b81f"
+    },
+    {
+      "capability": "customer-whatsapp-convenience:3-kind-group",
+      "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/customer-whatsapp-convenience.extraction-prompt-fragment.json",
+      "goldenFragmentSha256": "8a61e00e16e28a03119a8e3677e05f04d763c183cec43a81f920684191fe991d"
+    }
+  ]
+}

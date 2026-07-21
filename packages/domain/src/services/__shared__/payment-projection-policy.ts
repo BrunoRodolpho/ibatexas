@@ -43,6 +43,10 @@ import {
   type PolicyBundle,
 } from "@adjudicate/core/kernel"
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
+import {
+  classifyRefundMagnitudeBand,
+  MONEY_BAND_1000_CENTAVOS,
+} from "@ibatexas/types"
 
 // ── Intent kinds + payloads ────────────────────────────────────────────────
 
@@ -59,6 +63,11 @@ export type PaymentProjectionIntentKind =
   // separate envelope so the bump is kernel-visible. Wave 5 will fold
   // this into a composite `payment.pix.regenerate` kind.
   | "payment.regeneration.count.increment"
+  // BKL-178: chargeback opened at Stripe — ADJUDICATE-ONLY, always
+  // ESCALATEs for human review. Behavior-parity mirror of
+  // `@ibatexas/pack-payments`' `escalateAlwaysOnDispute` (FE-D07 tracked
+  // duplication); Wave 5 promotes this to the pack.
+  | "payment.dispute.open"
 
 /** Supported payment instruments (CLAUDE.md PIX-first). */
 export type PaymentMethod = "pix" | "card" | "cash"
@@ -105,8 +114,8 @@ export interface PaymentMethodSwitchPayload {
  * `ESCALATE_REFUND_THRESHOLD_CENTAVOS = 100_000` in pack-payments-pix):
  *
  *   - amount ≤ R$500 (50_000 centavos)              → EXECUTE
- *   - R$500 < amount ≤ R$1000 (100_000 centavos)    → REQUEST_CONFIRMATION
- *   - amount > R$1000                               → ESCALATE
+ *   - R$500 < amount < R$1000 (100_000 centavos)    → REQUEST_CONFIRMATION
+ *   - amount ≥ R$1000                               → ESCALATE (FE-T03/D2)
  *
  * The route layer's two-step receipt protocol gates above the R$200
  * `REFUND_CONFIRMATION_THRESHOLD_CENTAVOS` operator-experience
@@ -141,6 +150,23 @@ export interface PaymentRegenerationCountIncrementPayload {
   readonly currentCount: number
 }
 
+/**
+ * BKL-178: chargeback opened at Stripe (`charge.dispute.created`). A
+ * system-actor envelope the webhook mints ALONGSIDE the DISPUTED reconcile.
+ * Carries NO state mutation of its own — the domain guard
+ * `escalateAlwaysOnDispute` ALWAYS ESCALATEs it for human review, and the
+ * payment's DISPUTED status is written by `payment.status.reconcile` (status
+ * truth). Behavior-parity with `@ibatexas/pack-payments`'
+ * `PaymentDisputeOpenPayload`/`escalateAlwaysOnDispute` (FE-D07 tracked
+ * duplication); Wave 5 promotes it to the pack.
+ */
+export interface PaymentDisputeOpenPayload {
+  readonly paymentId: string
+  readonly stripeEventId: string
+  /** Chargeback amount in centavos (Stripe `dispute.amount`). */
+  readonly disputeAmountCentavos?: number
+}
+
 export type PaymentProjectionPayload =
   | PaymentCreatePayload
   | PaymentStatusTransitionPayload
@@ -148,6 +174,7 @@ export type PaymentProjectionPayload =
   | PaymentMethodSwitchPayload
   | PaymentRefundIssuePayload
   | PaymentRegenerationCountIncrementPayload
+  | PaymentDisputeOpenPayload
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -179,7 +206,10 @@ export interface PaymentProjectionState {
  * `ESCALATE_REFUND_THRESHOLD_CENTAVOS = 100_000`.
  *
  * EXECUTE at or below CONFIRM threshold; REQUEST_CONFIRMATION between
- * CONFIRM and ESCALATE; ESCALATE above the escalate ceiling.
+ * CONFIRM and ESCALATE; ESCALATE at-or-above the escalate ceiling
+ * (FE-T03/D2 — comparator flipped from strict `>` to `>=`, matching
+ * `@ibatexas/pack-payments`' refund-escalate ladder for behavior-parity
+ * between the admin-HTTP path (this bundle) and the ops/WhatsApp path).
  *
  * Env overrides (set in `.env` or process env):
  *   REFUND_CONFIRM_THRESHOLD_CENTAVOS  — default 50_000 (R$500)
@@ -198,7 +228,14 @@ export function getRefundConfirmThresholdCentavos(): number {
 }
 
 export function getRefundEscalateThresholdCentavos(): number {
-  return readEnvCentavos("REFUND_ESCALATE_THRESHOLD_CENTAVOS", 100_000)
+  // FE-D07: fallback single-sourced from `@ibatexas/types`'
+  // `MONEY_BAND_1000_CENTAVOS` (=== 100_000), the same value the
+  // `@ibatexas/pack-payments` getter reads, so the escalate boundary can't
+  // drift by channel. Env override still wins when set.
+  return readEnvCentavos(
+    "REFUND_ESCALATE_THRESHOLD_CENTAVOS",
+    MONEY_BAND_1000_CENTAVOS,
+  )
 }
 
 /**
@@ -234,6 +271,8 @@ export const paymentProjectionTaintPolicy = createSystemTaintPolicy({
     "payment.create",
     "payment.status.reconcile",
     "payment.regeneration.count.increment",
+    // BKL-178 — dispute.open is minted only by the Stripe webhook (SYSTEM).
+    "payment.dispute.open",
   ],
   userMinimum: "UNTRUSTED",
 })
@@ -325,7 +364,7 @@ const executeAll: PaymentGuard = (envelope) => {
  *
  *   - amount ≤ 0                                    → REFUSE (invalid)
  *   - amount > refundable balance                   → REFUSE (over-refund)
- *   - amount > ESCALATE_REFUND_THRESHOLD_CENTAVOS   → ESCALATE
+ *   - amount ≥ ESCALATE_REFUND_THRESHOLD_CENTAVOS   → ESCALATE (FE-T03/D2)
  *   - amount > CONFIRM_REFUND_THRESHOLD_CENTAVOS    → REQUEST_CONFIRMATION
  *   - else                                          → EXECUTE
  *
@@ -402,7 +441,19 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
   }
 
   const escalateThreshold = getRefundEscalateThresholdCentavos()
-  if (payload.refundAmountCentavos > escalateThreshold) {
+  const confirmThreshold = getRefundConfirmThresholdCentavos()
+  // FE-D07: the EXECUTE / CONFIRM / ESCALATE band mapping is single-sourced
+  // in `@ibatexas/types.classifyRefundMagnitudeBand`, shared byte-for-byte
+  // with the ops/WhatsApp `@ibatexas/pack-payments` bundle so this admin-HTTP
+  // route can never fork the money bands. FE-T03/D2 lives inside the helper:
+  // escalate uses `>=`, so an exact R$1000 refund ESCALATEs identically on
+  // both channels (pinned by apps/api's refund-band-channel-parity.test.ts).
+  const band = classifyRefundMagnitudeBand(
+    payload.refundAmountCentavos,
+    confirmThreshold,
+    escalateThreshold,
+  )
+  if (band === "ESCALATE") {
     return decisionEscalate(
       "human",
       "refund_above_escalate_threshold",
@@ -416,8 +467,7 @@ const refundMagnitudeGuard: PaymentGuard = (envelope, state) => {
     )
   }
 
-  const confirmThreshold = getRefundConfirmThresholdCentavos()
-  if (payload.refundAmountCentavos > confirmThreshold) {
+  if (band === "CONFIRM") {
     const reais = (payload.refundAmountCentavos / 100)
       .toFixed(2)
       .replace(".", ",")
@@ -501,6 +551,33 @@ const regenerationCountCapGuard: PaymentGuard = (envelope, state) => {
   ])
 }
 
+/**
+ * BKL-178 — chargebacks ALWAYS ESCALATE. A `charge.dispute.created` from
+ * Stripe is too serious to auto-process: the payment is reconciled to
+ * DISPUTED (status truth, a separate `payment.status.reconcile` envelope)
+ * and this guard routes the dispute itself to human review. Reads no state,
+ * so it fires uniformly.
+ *
+ * FE-D07 PARALLEL SET (byte-parallel twin — keep in lockstep): this mirrors
+ * `@ibatexas/pack-payments`' `escalateAlwaysOnDispute`
+ * (`ESCALATE("human", "dispute_opened_requires_review")`). The domain
+ * projection deliberately duplicates rather than imports the pack (no
+ * domain→pack dependency), exactly like the refund-magnitude + regeneration
+ * guards above. A future promote-wave single-sources the pair (the #289
+ * `classifyRefundMagnitudeBand` shape); until then, the cross-bundle parity
+ * pin in `apps/api/src/__tests__/dispute-escalate-bundle-parity.test.ts`
+ * fails the moment the two guards fork.
+ */
+const escalateAlwaysOnDispute: PaymentGuard = (envelope) => {
+  if (envelope.kind !== "payment.dispute.open") return null
+  return decisionEscalate("human", "dispute_opened_requires_review", [
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+      reason: "dispute_opened",
+      kind: envelope.kind,
+    }),
+  ])
+}
+
 // ── PolicyBundle ──────────────────────────────────────────────────────────
 
 export const paymentProjectionPolicyBundle: PolicyBundle<
@@ -511,6 +588,11 @@ export const paymentProjectionPolicyBundle: PolicyBundle<
   stateGuards: [requirePaymentExists, refuseTerminalTransition],
   authGuards: [],
   taint: paymentProjectionTaintPolicy,
-  business: [refundMagnitudeGuard, regenerationCountCapGuard, executeAll],
+  business: [
+    escalateAlwaysOnDispute,
+    refundMagnitudeGuard,
+    regenerationCountCapGuard,
+    executeAll,
+  ],
   default: "REFUSE",
 }

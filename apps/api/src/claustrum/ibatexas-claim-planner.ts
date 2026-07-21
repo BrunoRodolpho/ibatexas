@@ -69,14 +69,43 @@ import type {
   ClaimPlannerResult,
 } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
+import {
+  buildClassifyOnlyCandidates,
+  classifyOnlyReadsEnabled,
+  classifyOnlyRequiredTypes,
+  deriveDisambiguationCandidates,
+  type DisambiguationCandidate,
+} from "./classify-only-reads.js";
 import { selectCandidateClaim, type RegistryClaimType } from "./claim-registry.js";
 import type { ClaimAuthContext, ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 import { ownedResourceIdsByBaseKey } from "./ibatexas-claims-kernel-deps.js";
+import { completeWithResilience } from "./complete-with-retry.js";
 import {
   classifyRequestSpans,
   decomposeRequiredClaims,
   REQUIRED_CLAIM_CLOSURE,
 } from "./required-claim-decomposer.js";
+
+// BKL-168 — total proposeClaims completion attempts (incl. the first) before the F1
+// safe-terminal degrade. The F1 catch already guarantees never-silent (a throw →
+// synthesized safe UNKNOWN); this adds a bounded jittered RETRY before that degrade
+// so a transient 4B tool-call-XML flake self-heals instead of always degrading.
+// Reuses the planner's EXISTING extraction retry budget (same planner-layer
+// completion-retry concern, already an .env.example knob) rather than minting a new
+// env var — config-from-env (Hard Rule #3), no new knob to document.
+const PROPOSE_CLAIMS_RETRY_MAX_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.EXTRACTION_EMPTY_RETRY_MAX_ATTEMPTS ?? "2", 10) || 2,
+);
+
+/** BKL-168 — test seam: injectable retry timing for the proposeClaims resilience
+ *  wrap, so a forced-throw test drives the retry without real timers. Defaults
+ *  (production): the shared bounded/jittered sleep + the env-tuned attempt budget. */
+export interface ClaimPlannerCompletionRetryOptions {
+  readonly maxAttempts?: number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly delayForAttempt?: (n: number) => number;
+}
 
 /**
  * BKL-110 — the claim types the §O#15 decomposer has DEMOTE-AUTHORITY over: the
@@ -238,6 +267,21 @@ function synthesizeSafeTerminalCandidates(
  */
 export function createIbatexasClaimPlanner(
   planner: ClaimAwarePlannerPort,
+  options: {
+    readonly completionRetry?: ClaimPlannerCompletionRetryOptions;
+    /**
+     * BKL-189 — the per-turn disambiguation-candidate stash WRITER, injected by
+     * `buildClaimsSeams` (claims-pipeline.ts) which keys a WeakMap by THIS
+     * turn's EvidenceLedger — the one object identity shared with the
+     * `renderCarriersForTurn` callback. Called ONLY on the classify-only
+     * ambiguous-CLARIFY branch with ≥2 labeled candidates; absent (unwired
+     * host / tests) → byte-identical behavior.
+     */
+    readonly stashDisambiguationCandidates?: (
+      ledger: EvidenceLedger,
+      candidates: readonly DisambiguationCandidate[],
+    ) => void;
+  } = {},
 ): ClaimPlannerPort {
   return {
     async propose(
@@ -259,6 +303,18 @@ export function createIbatexasClaimPlanner(
           : { ownedByBaseKey: ownedResourceIdsByBaseKey(input.ledger) }),
       };
 
+      // FE-T18 (FE-3.0 / D1) — the classify-only read bypass. Gated OFF by
+      // default (ENABLE_CLASSIFY_ONLY_READS); when ON, a turn whose text
+      // classifies WHOLESALE into the narrow owner-scoped eligible set
+      // (classify-only-reads.ts) skips the model's `propose_claim` call
+      // entirely — the candidate claim is framed deterministically from the
+      // AUTHENTICATED owner-scoped context instead. Any OTHER turn (flag OFF,
+      // no read span matched, or a mixed/ineligible span) falls through to the
+      // EXISTING model-call path below, byte-identical to today.
+      const classifyOnlyRequired = classifyOnlyReadsEnabled()
+        ? classifyOnlyRequiredTypes(input.cognition.perception.text)
+        : undefined;
+
       // Delegate to the existing planner's registry-walled `proposeClaims` (the
       // `ClaimPlan.candidates` are the typed `@adjudicate/core` `CandidateClaim`s
       // that PASSED the constrained-generation wall — the `runClaimsKernel` input
@@ -266,7 +322,8 @@ export function createIbatexasClaimPlanner(
       // tool-call XML the model client THROWS on (~1/3 turns) — the FLAKE fail-open.
       // A SUCCESSFUL call (empty or not) is the planner's HONEST signal and is
       // surfaced UNCHANGED (see the `flaked` gate below); only a THROW triggers the
-      // safe-terminal synthesis.
+      // safe-terminal synthesis. SKIPPED ENTIRELY on the classify-only path — no
+      // model call is made, so there is nothing to flake.
       let candidates: ReadonlyArray<CandidateClaim>;
       // BKL-077 — the planner-FORCED turn terminal (§O#9 safety ESCALATE / P4-unmapped
       // or owner-scoped-ambiguity CLARIFY). `proposeClaims` already COMPUTES it; the
@@ -275,31 +332,104 @@ export function createIbatexasClaimPlanner(
       // ESCALATE outranks a would-be RENDER, and a forced CLARIFY is honored even on an
       // EMPTY candidate set (the 3-payments "which order?" turn). Stays `undefined` on
       // the flake (throw) path — the model produced no signal, so the turn still
-      // degrades to the synthesized safe UNKNOWN below, never a masked ESCALATE.
+      // degrades to the synthesized safe UNKNOWN below, never a masked ESCALATE. On the
+      // classify-only path a forced CLARIFY instead comes from FIX 2's ≥2-owned
+      // ambiguity (buildClassifyOnlyCandidates) — the deterministic mirror of the
+      // model path's OWN FIX 2 branch, never a safety ESCALATE (see
+      // classify-only-reads.ts's documented residual FE-D12: no model call ⟹
+      // no model-self-reported safety marker on this path).
       let forcedTerminal: ClaimPlannerForcedTerminal | undefined;
       let flaked = false;
-      try {
-        const plan = await planner.proposeClaims(input.cognition, auth);
-        candidates = plan.candidates;
-        forcedTerminal = plan.forcedTerminal;
-      } catch (err) {
-        flaked = true;
-        candidates = [];
-        forcedTerminal = undefined;
-        // OBSERVABILITY: the throw no longer escapes to @claustrum/core's
-        // claims-validate (which used to log the "degrading to no-claims" degrade),
-        // so the ~1/3-turn 4B tool-call flake would go SILENT in VictoriaLogs. Log
-        // it HERE instead, with a stable event marker the logging pipeline keys on.
-        // Best-effort + NEVER re-thrown (telemetry must not break a turn).
-        logger.warn(
+      if (classifyOnlyRequired !== undefined) {
+        const built = buildClassifyOnlyCandidates(
+          classifyOnlyRequired,
+          auth,
+          input.cognition.conversationId,
+          // BKL-183 — the PUBLIC per-item subjects (menu items) resolve from THIS
+          // turn's ledger (the investigator's own deterministic reads); owner
+          // subjects keep riding `auth.ownedByBaseKey`, unchanged.
+          input.ledger,
+          // BKL-203 — the request text lets a ≥2-owned-order customer bind an
+          // EXPLICITLY-NAMED order by displayId instead of dead-ending in the
+          // ambiguity CLARIFY (owner-scoped match — never cross-owner).
+          input.cognition.perception.text,
+        );
+        candidates = built.candidates;
+        forcedTerminal = built.forcedTerminal;
+        // BKL-189 — the CLARIFY-with-candidates PRODUCER: on the ambiguous
+        // branch, label the dropped owned set off THIS turn's ledger ("#displayId")
+        // and stash it keyed by the ledger for the renderCarriersForTurn callback
+        // (same per-turn object identity — see claims-pipeline.ts). <2 labelable
+        // candidates → no stash → the generic CLARIFY stays byte-identical.
+        if (
+          built.forcedTerminal === "CLARIFY" &&
+          built.ambiguousOwnedSets !== undefined &&
+          input.ledger !== undefined &&
+          options.stashDisambiguationCandidates !== undefined
+        ) {
+          const disambiguation = deriveDisambiguationCandidates(
+            built.ambiguousOwnedSets,
+            input.ledger,
+          );
+          if (disambiguation.length >= 2) {
+            options.stashDisambiguationCandidates(input.ledger, disambiguation);
+          }
+        }
+        logger.info(
           {
             component: "claim-planner",
-            event: "claim_planner.propose_failed",
+            event: "claim_planner.classify_only",
             turnId: input.cognition.turnId,
-            err: err instanceof Error ? err.message : String(err),
+            candidateTypes: [...new Set(candidates.map((c) => c.type))],
+            ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
           },
-          "claim-planner proposeClaims failed; synthesizing safe UNKNOWN candidates for required claim types",
+          "claim-planner: classify-only read path — propose_claim model call skipped",
         );
+      } else {
+        // BKL-168 — a bounded, jittered RETRY around the completion boundary BEFORE
+        // the F1 safe-terminal degrade: a transient 4B tool-call-XML flake (the
+        // ~1/3-turn Ollama throw) self-heals on a re-prompt instead of ALWAYS
+        // degrading. `completeWithResilience` CAPTURES the throw internally, so there
+        // is NO duplicate catch layer — `ok:false` arrives only after every attempt
+        // threw, and is then the SAME safe-UNKNOWN degrade as before (flaked = true),
+        // now with a structured completion_error event.
+        const retry = options.completionRetry ?? {};
+        const proposeResult = await completeWithResilience(
+          () => planner.proposeClaims(input.cognition, auth),
+          {
+            maxAttempts: retry.maxAttempts ?? PROPOSE_CLAIMS_RETRY_MAX_ATTEMPTS,
+            ...(retry.sleep ? { sleep: retry.sleep } : {}),
+            ...(retry.delayForAttempt ? { delayForAttempt: retry.delayForAttempt } : {}),
+          },
+        );
+        if (proposeResult.ok) {
+          candidates = proposeResult.completion.candidates;
+          forcedTerminal = proposeResult.completion.forcedTerminal;
+        } else {
+          flaked = true;
+          candidates = [];
+          forcedTerminal = undefined;
+          // OBSERVABILITY: the throw no longer escapes to @claustrum/core's
+          // claims-validate (which used to log the "degrading to no-claims" degrade),
+          // so the ~1/3-turn 4B tool-call flake would go SILENT in VictoriaLogs. Log
+          // it HERE with a stable, STRUCTURED completion_error marker (reason +
+          // attempts, mirroring the planner's extraction_failure seam). Best-effort +
+          // NEVER re-thrown (telemetry must not break a turn).
+          logger.warn(
+            {
+              component: "claim-planner",
+              event: "claim_planner.propose_failed",
+              reason: "completion_error",
+              turnId: input.cognition.turnId,
+              attempts: proposeResult.attempts,
+              err:
+                proposeResult.error instanceof Error
+                  ? proposeResult.error.message
+                  : String(proposeResult.error),
+            },
+            "claim-planner proposeClaims failed after retry; synthesizing safe UNKNOWN candidates for required claim types",
+          );
+        }
       }
       // BKL-111 — the model's proposal (constrained-generation survivors) BEFORE the
       // demote filter reassigns `candidates`, so the prose-preserved signal below can

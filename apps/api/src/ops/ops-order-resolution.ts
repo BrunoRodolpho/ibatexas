@@ -134,6 +134,41 @@ function tokensSubset(a: readonly string[], b: readonly string[]): boolean {
   return a.every((t) => set.has(t));
 }
 
+/**
+ * BKL-150(a) — does the CURRENT staff message contain the order REFERENCE the
+ * model put in the payload? A deterministic anti-bleed check reusing this
+ * module's own reference forms (the ops resolver honors a model-supplied
+ * `orderId` ONLY when it is grounded in the current message; a reference the
+ * message does not contain is a cross-turn bleed to drop):
+ *   - a DISPLAY-ID number (`parseDisplayIdRef`) must appear as a STANDALONE
+ *     integer token (optional leading `#` / leading zeros), never a digit
+ *     substring of a larger number;
+ *   - a NAME / free-text reference must have EVERY normalized token
+ *     (`normalizeOrderRef`) present as a WHOLE token of the normalized message
+ *     — the same whole-token idiom `resolveByCustomerName` uses, so "ana" never
+ *     matches "banana" and a full-name ref the message only half-names is not
+ *     falsely honored.
+ * Returns `false` for an empty message or empty reference (the caller treats an
+ * absent message as "cannot classify" and keeps the legacy honor-the-ref path).
+ */
+export function orderReferenceAppearsInMessage(
+  rawRef: string,
+  messageText: string,
+): boolean {
+  const text = messageText.trim();
+  if (text === "" || rawRef.trim() === "") return false;
+
+  const displayId = parseDisplayIdRef(rawRef);
+  if (displayId !== null) {
+    return new RegExp(`(?<!\\d)#?0*${displayId}(?!\\d)`).test(text);
+  }
+
+  const refTokens = nameTokens(rawRef);
+  if (refTokens.length === 0) return false;
+  const messageTokens = new Set(nameTokens(text));
+  return refTokens.every((t) => messageTokens.has(t));
+}
+
 /** Keep only well-formed candidates (the read is first-party but its runtime
  *  shape is not guaranteed by the type system). */
 function validCandidates(
@@ -242,4 +277,41 @@ export async function resolveOrderByReference(
     return resolveByDisplayId(displayId, reads);
   }
   return resolveByCustomerName(reference, reads);
+}
+
+/** Which reference kind a "most recent" resolution was attempted through. */
+export type MostRecentOrderResolution =
+  | { readonly kind: "resolved"; readonly order: OrderCandidate }
+  | { readonly kind: "none" };
+
+/**
+ * FE-T05 — resolve "the most recent order" DETERMINISTICALLY: the first
+ * ACTIVE (non-terminal) candidate in `listRecentActive()`'s result. The
+ * production read orders by `medusaCreatedAt DESC` (see the `orderCmdSvc`
+ * wiring in `claustrum-bootstrap.ts`), so the first row IS the most recent —
+ * this resolver additionally re-filters to active-only (defense in depth,
+ * mirroring `resolveByCustomerName`'s posture) rather than trust the read's
+ * pre-scoping.
+ *
+ * This is a GUESS, never an explicit reference — the caller is expected to
+ * tag its provenance `grounded` (never `authoritative`) and force a
+ * confirmation (FE-1.5). A read throw or an empty active set degrades to
+ * `{kind:"none"}` (fail-closed — never silently pick a stale/terminal order).
+ */
+export async function resolveMostRecentActiveOrder(
+  reads: OrderReferenceReads,
+): Promise<MostRecentOrderResolution> {
+  let rows: readonly OrderCandidate[];
+  try {
+    rows = await reads.listRecentActive();
+  } catch (err) {
+    logger.warn(
+      { component: "ops-order-resolution", via: "most_recent", err: (err as Error).message },
+      "most-recent-active order lookup failed — treating as no resolution (fail-closed)",
+    );
+    return { kind: "none" };
+  }
+  const active = validCandidates(rows).filter(isActiveOrder);
+  const mostRecent = active[0];
+  return mostRecent === undefined ? { kind: "none" } : { kind: "resolved", order: mostRecent };
 }

@@ -72,9 +72,8 @@ import { failSafeMemory } from "./claustrum/fail-safe-memory.js";
 import { noopGroundingProvider, noopMemoryProvider } from "./claustrum/noop-memory-grounding.js";
 import { OllamaFetchClient } from "./claustrum/ollama-fetch-client.js";
 import { providerCanEmbed } from "./claustrum/provider-embed-capability.js";
-import type { StoreHoursRead, StoreHoursForDateRead } from "./claustrum/turn-reads.js";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
-import { WebChannel } from "@claustrum/channel-web";
+import { WebConfirmChannel } from "./claustrum/web-confirm-channel.js";
 
 // Kernel types — @adjudicate/core is the source of truth for envelope +
 // decision shapes. The runtime imports them as types ONLY (per claustrum
@@ -112,8 +111,6 @@ import {
   emitLlmCall,
   getRedisClient,
   getScheduleSignal,
-  getTodayHoursText,
-  getHoursTextForDate,
   invalidateScheduleCache,
   loadSchedule,
   rk,
@@ -133,6 +130,8 @@ import {
   // NEW-032 ops plane — admin product read + kernel-gated egress.
   medusaAdmin,
   medusaAdjudicated,
+  // BKL-034 — boot-time embeddings provider/dimension gate.
+  assertEmbeddingProviderDimension,
 } from "@ibatexas/tools";
 import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -228,6 +227,20 @@ import {
   IBATEXAS_COMPOSED_PACKS,
   composedIntentKinds,
 } from "@ibatexas/packs-composed";
+// FE-T22: the surface-derived chat-surfaced-kinds set, replacing the retired
+// ADVERTISED_NOT_REGISTERED_WHITELIST — see register-ibatexas-tool-packs.ts's
+// ToolRosterDriftOptions.chatSurfacedKinds for the full contract.
+// FE-T25 (FE-4.3): generateOpsForbiddenDestructiveKinds repoints
+// opsPlaneDriftProblems's BKL-096 forbidden-verb check off the hand-
+// authored FORBIDDEN_OPS_DESTRUCTIVE_KINDS — see ops-conductor.ts's
+// OpsPlaneDriftProblems input `forbiddenOpsKinds` doc for the full contract,
+// and docs/architecture/design/fe4-drift-gates.md for the full per-gate
+// classification table across all four boot drift gates.
+import {
+  CAPABILITY_DEFINITIONS,
+  generateChatDrivableToolKinds,
+  generateOpsForbiddenDestructiveKinds,
+} from "@ibatexas/packs-composed/capability-definitions";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
@@ -257,6 +270,7 @@ import {
   warnOncePerMessage,
 } from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
+import { renderCustomerActionAnswer } from "./claustrum/customer-action-render.js";
 // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate (flag-gated in
 // buildResponder): the pure discriminator + the safe template render source.
 import { shouldDegradeToSafeUnknown } from "./claustrum/interrogative-discriminator.js";
@@ -277,7 +291,11 @@ import {
   type TurnTraceWriter,
 } from "./claustrum/turn-trace-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
-import { sessionTokenKey, resolveAndAssemble } from "./claustrum/resolve-and-assemble.js";
+import {
+  sessionTokenKey,
+  resolveAndAssemble,
+  resolveCustomerOrderReference,
+} from "./claustrum/resolve-and-assemble.js";
 import {
   buildCustomerAuthority,
   customerPrincipalForSession,
@@ -302,6 +320,7 @@ import {
 } from "./claustrum/audit-read-paths.js";
 // ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
 import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
+import { buildLanguageEngineAuditMetadata } from "./claustrum/language-engine/audit-metadata.js";
 import {
   composeOpsConductor,
   opsPlaneDriftProblems,
@@ -320,12 +339,22 @@ import {
   buildOpsRefundResumeState,
   buildOpsPriceResumeState,
   buildOpsSpecialResumeState,
+  buildOpsOrderStatusTransitionResumeState,
+  buildOpsOrderNoteAddResumeState,
+  buildOpsAvailabilityResumeState,
+  buildOpsAlertResumeState,
+  buildOpsIncidentResumeState,
+  buildOpsScheduleResumeState,
+  toOpsResolverOrder,
 } from "./ops/ops-resolver.js";
 import {
   readOpsProductPricing,
   computeOpsPricingSnapshot,
 } from "./ops/ops-price-read.js";
-import { OpsSystemChannel } from "./ops/ops-system-channel.js";
+import {
+  OpsSystemChannel,
+  opsConfirmParkExpiresAt,
+} from "./ops/ops-system-channel.js";
 import type { OrderCandidate } from "./ops/ops-order-resolution.js";
 import {
   createOpsSnapshotReadExecutor,
@@ -581,29 +610,8 @@ export interface ClaustrumBootstrapOptions {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
-  /**
-   * BKL-121 — per-turn TODAY's operating-hours source for the claim planner's
-   * STORE_HOURS tag-then-derive. Default: the production resolver (Redis read-through
-   * `loadSchedule()` + env timezone → {@link getTodayHoursText}). Injectable so
-   * deterministic suites can PIN it (the production resolver depends on wall-clock
-   * time). Return `undefined` to leave a STORE_HOURS candidate value-undefined (C6
-   * ABSTAIN → honest UNKNOWN).
-   */
-  readonly resolveStoreHours?: () =>
-    | Promise<StoreHoursRead | undefined>
-    | StoreHoursRead
-    | undefined;
-  /**
-   * BKL-138 — per-turn DAY-SPECIFIC operating-hours source for the claim planner's
-   * STORE_HOURS_FOR_DATE tag-then-derive (SCN-002/003). Default: the production
-   * resolver (Redis read-through `loadSchedule()` + env timezone →
-   * {@link getHoursTextForDate} for the QUERIED `isoDate`). Injectable so
-   * deterministic suites can PIN it. Return `undefined` to leave a
-   * STORE_HOURS_FOR_DATE candidate value-undefined (C6 ABSTAIN → honest UNKNOWN).
-   */
-  readonly resolveHoursForDate?: (
-    isoDate: string,
-  ) => Promise<StoreHoursForDateRead | undefined> | StoreHoursForDateRead | undefined;
+  // BKL-126 — resolveStoreHours / resolveHoursForDate options removed (values
+  // bind from the investigator ledger at core stage 4b; no fresh re-read).
 }
 
 /**
@@ -793,35 +801,45 @@ async function readSpecialProductViaMedusa(
   return p ? { id: p.id, status: p.status, name: p.title } : null;
 }
 
-/**
- * Re-assemble the per-envelope SystemState ctx for a parked (already-resolved)
- * envelope on the resume path. The claustrum resume path adjudicates against
- * `resolution.state` (channel + customerId), not the plan-stage resolver's
- * enriched ctx — so without this the pack stateGuards would panic on the stub.
- * The parked envelope carries the RESOLVED id, so we re-load its entity state
- * (scoped to customerId). Fail-safe: falls back to the supplied state on any gap.
- */
-async function enrichResumeState(
-  envelope: IntentEnvelope,
-  state: unknown,
-): Promise<unknown> {
-  // BKL-085 — the OPS-plane confirm-resume (an `admin:`-session `payment.refund.issue`
-  // parked by the UNTRUSTED-taint overlay) re-projects its own PaymentState from the
-  // payment row, NOT the customer-scoped `resolveAndAssemble` below (whose reads are
-  // scoped to a real `customerId`; the ops plane's `staff:<id>`/`admin:<id>` owns no
-  // customer resources, so that path would project `exists:false` and REFUSE a valid
-  // "sim"). The parked payload's `paymentId` was DB-stamped by the ops resolver
-  // (trusted); a FRESH read here is money-safe (a since-parked terminal / partial
-  // refund still REFUSEs via the terminal guard / the divergence check).
-  if (
-    envelope.kind === "payment.refund.issue" &&
-    envelope.actor.sessionId.startsWith("admin:")
-  ) {
-    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
-    const paymentId =
-      typeof payload.paymentId === "string" ? payload.paymentId : "";
-    if (paymentId === "") return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
-    try {
+// ── BKL-164 — the ops-plane confirm-resume state table ────────────────────────
+//
+// One row per governed ops kind, replacing five (now nine) near-byte-identical
+// `enrichResumeState` branches. Every ops kind's resume RE-PROJECTS its OWN
+// per-kind SystemState from a FRESH re-read of the parked (resolver-trusted)
+// reference — NOT the customer-scoped `resolveAndAssemble` fallback, which is
+// scoped to a real `customerId` and no-ops for the ops plane's `staff:<id>`
+// (projecting the state absent ⇒ a spurious REFUSE on a valid "sim"). The
+// shared wrapper below owns the invariant outer shape (admin-session guard,
+// staffId/tenantId derivation, empty-reference short-circuit, and the
+// fail-closed try/catch); each entry supplies only what varies — the payload
+// key, the fresh read, and the builder. Behavior is byte-identical to the prior
+// per-branch code for the five wired kinds (refund/price/special/status/note),
+// pinned by their existing unit + e2e suites.
+interface OpsResumeCtx {
+  readonly staffId: string;
+  readonly tenantId: string;
+}
+
+interface OpsResumeEntry {
+  /** The payload key holding the parked entity reference. ABSENT for a keyless
+   *  UPSERT kind (`schedule.override.set`) whose resume re-projects fixed ctx. */
+  readonly payloadKey?: string;
+  /** Re-project the resume state from a non-empty reference. Called inside the
+   *  shared try/catch — a throw ⇒ `notFound` (fail-closed). */
+  readonly project: (ref: string, ctx: OpsResumeCtx) => Promise<unknown>;
+  /** The empty-reference / read-threw state (a clean not-found ⇒ REFUSE). */
+  readonly notFound: (ctx: OpsResumeCtx) => unknown;
+}
+
+const OPS_RESUME_TABLE: Readonly<Record<string, OpsResumeEntry>> = {
+  // BKL-085 — refunds-by-message. The parked payload's `paymentId` was DB-stamped
+  // by the ops resolver (trusted); a FRESH read is money-safe (a since-parked
+  // terminal / partial refund still REFUSEs via the terminal / divergence guard).
+  // Uses only `tenantId` (no staffId in the PaymentState ctx).
+  "payment.refund.issue": {
+    payloadKey: "paymentId",
+    notFound: ({ tenantId }) => buildOpsRefundResumeState(null, tenantId),
+    project: async (paymentId, { tenantId }) => {
       const p = await createPaymentQueryService().getById(paymentId);
       return buildOpsRefundResumeState(
         p === null
@@ -834,74 +852,157 @@ async function enrichResumeState(
               version: p.version,
               orderId: p.orderId,
             },
-        (process.env.KERNEL_TENANT_ID ?? "ibatexas"),
+        tenantId,
       );
-    } catch {
-      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE, never
-      // a stale/authorized resume.
-      return buildOpsRefundResumeState(null, (process.env.KERNEL_TENANT_ID ?? "ibatexas"));
-    }
-  }
-
-  // NEW-004 — the OPS-plane price confirm-resume (an `admin:`-session
-  // `product.price.set` parked by the UNTRUSTED-taint CONFIRM overlay)
-  // re-projects its own `{ ctx, priceProduct }` from a FRESH pricing read of the
-  // parked (resolver-rewritten, trusted) productId — NOT the customer-scoped
-  // `resolveAndAssemble` below (the ops plane's `staff:<id>` owns no products, so
-  // that path would project priceProduct absent and REFUSE a valid "sim"). The
-  // fresh read is safe: a since-parked change to differently-priced variants / a
-  // vanished product REFUSEs on resume via the uniform / existence guards.
-  if (
-    envelope.kind === "product.price.set" &&
-    envelope.actor.sessionId.startsWith("admin:")
-  ) {
-    const tenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
-    // The parked envelope's actor.sessionId is `admin:<staffId>` (stamped by the
-    // planner from the authenticated JWT); the staffId is the suffix.
-    const staffId = envelope.actor.sessionId.slice("admin:".length);
-    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
-    const productId =
-      typeof payload.productId === "string" ? payload.productId : "";
-    if (productId === "") {
-      return buildOpsPriceResumeState(null, { staffId, tenantId });
-    }
-    try {
-      const pricing = computeOpsPricingSnapshot(
-        await readOpsProductPricing(medusaAdmin, productId),
+    },
+  },
+  // NEW-004 — price. A since-parked change to divergent variants / a vanished
+  // product REFUSEs on resume via the uniform / existence guards.
+  "product.price.set": {
+    payloadKey: "productId",
+    notFound: (ctx) => buildOpsPriceResumeState(null, ctx),
+    project: async (productId, ctx) =>
+      buildOpsPriceResumeState(
+        computeOpsPricingSnapshot(await readOpsProductPricing(medusaAdmin, productId)),
+        ctx,
+      ),
+  },
+  // SCN-114 — daily special. A vanished product / now-past date REFUSEs on resume
+  // via the existence / not-past guards (the builder re-reads a FRESH today).
+  "menu.special.set": {
+    payloadKey: "productId",
+    notFound: (ctx) => buildOpsSpecialResumeState(null, ctx),
+    project: async (productId, ctx) =>
+      buildOpsSpecialResumeState(await readSpecialProductViaMedusa(productId), ctx),
+  },
+  // FE-T05b — kitchen-advance. A vanished / status-changed order REFUSEs on resume
+  // via requireOrderIdForMutation / requireLegalStatusTransition on the FRESH read.
+  "order.status.transition": {
+    payloadKey: "orderId",
+    notFound: () => buildOpsOrderStatusTransitionResumeState("", null),
+    project: async (orderId) => {
+      const order = await createOrderQueryService().getById(orderId);
+      return buildOpsOrderStatusTransitionResumeState(
+        orderId,
+        order === null ? null : toOpsResolverOrder(order),
       );
-      return buildOpsPriceResumeState(pricing, { staffId, tenantId });
-    } catch {
-      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
-      return buildOpsPriceResumeState(null, { staffId, tenantId });
-    }
-  }
+    },
+  },
+  // FE-D14 — note.add (latent: no confirm-forcing guard parks it today, but wired
+  // identically so a future one resumes correctly).
+  "order.note.add": {
+    payloadKey: "orderId",
+    notFound: () => buildOpsOrderNoteAddResumeState("", null),
+    project: async (orderId) => {
+      const order = await createOrderQueryService().getById(orderId);
+      return buildOpsOrderNoteAddResumeState(
+        orderId,
+        order === null ? null : toOpsResolverOrder(order),
+      );
+    },
+  },
+  // ── BKL-164 — the four remaining LATENT kinds (no confirm-forcing guard parks
+  // them today; pre-wired so any future one resumes correctly instead of a
+  // spurious REFUSE). Each mirrors its plan-stage `opsStateForEnvelope` shape. ──
+  "product.availability.set": {
+    payloadKey: "productId",
+    notFound: (ctx) => buildOpsAvailabilityResumeState(null, ctx),
+    project: async (productId, ctx) => {
+      const p = await readSpecialProductViaMedusa(productId);
+      return buildOpsAvailabilityResumeState(
+        p === null ? null : { id: p.id, status: p.status },
+        ctx,
+      );
+    },
+  },
+  "ops.alert.resolve.staff": {
+    payloadKey: "alertId",
+    notFound: (ctx) => buildOpsAlertResumeState(null, ctx),
+    project: async (alertId, ctx) => {
+      const a = await createOpsAlertService().get(alertId);
+      return buildOpsAlertResumeState(
+        a === null ? null : { id: a.id, status: a.status },
+        ctx,
+      );
+    },
+  },
+  "incident.ticket.close.staff": {
+    payloadKey: "incidentId",
+    notFound: (ctx) => buildOpsIncidentResumeState(null, ctx),
+    project: async (incidentId, ctx) => {
+      const i = await createIncidentService().get(incidentId);
+      return buildOpsIncidentResumeState(
+        i === null ? null : { id: i.id, status: i.status },
+        ctx,
+      );
+    },
+  },
+  // Keyless UPSERT — no entity to re-read; re-project ctx + a FRESH today.
+  "schedule.override.set": {
+    notFound: (ctx) => buildOpsScheduleResumeState(ctx),
+    project: async (_ref, ctx) => buildOpsScheduleResumeState(ctx),
+  },
+};
 
-  // SCN-114 — the OPS-plane daily-special confirm-resume (an `admin:`-session
-  // `menu.special.set` parked by the UNTRUSTED-taint CONFIRM overlay) re-projects
-  // its own `{ ctx, special }` from a FRESH product read of the parked (resolver-
-  // rewritten, trusted) productId + a FRESH today reading — NOT the customer-
-  // scoped `resolveAndAssemble` below (the ops plane's `staff:<id>` owns no
-  // products, so that path would project `special` absent and REFUSE a valid
-  // "sim"). The fresh reads are safe: a vanished product / a now-past date REFUSE
-  // on resume via the existence / not-past guards.
-  if (
-    envelope.kind === "menu.special.set" &&
-    envelope.actor.sessionId.startsWith("admin:")
-  ) {
-    const tenantId = process.env.KERNEL_TENANT_ID ?? "ibatexas";
-    const staffId = envelope.actor.sessionId.slice("admin:".length);
-    const payload = (envelope.payload ?? {}) as Record<string, unknown>;
-    const productId =
-      typeof payload.productId === "string" ? payload.productId : "";
-    if (productId === "") {
-      return buildOpsSpecialResumeState(null, { staffId, tenantId });
-    }
-    try {
-      const product = await readSpecialProductViaMedusa(productId);
-      return buildOpsSpecialResumeState(product, { staffId, tenantId });
-    } catch {
-      // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE.
-      return buildOpsSpecialResumeState(null, { staffId, tenantId });
+/**
+ * Re-assemble the per-envelope SystemState ctx for a parked (already-resolved)
+ * envelope on the resume path. The claustrum resume path adjudicates against
+ * `resolution.state` (channel + customerId), not the plan-stage resolver's
+ * enriched ctx — so without this the pack stateGuards would panic on the stub.
+ * The parked envelope carries the RESOLVED id, so we re-load its entity state
+ * (scoped to customerId). Fail-safe: falls back to the supplied state on any gap.
+ */
+// FE-T05b — exported (was module-private) so e2e tests can exercise the REAL
+// resume state-assembly dispatch directly (ops-e2e-harness.ts's
+// `projectResumeState`), instead of a hand-authored mirror of it. A
+// hand-rolled mirror is exactly what let the live-disproved order.status.
+// transition wiring gap (intent_audit 3362/3366) ship undetected — it
+// "mirrored" a wrong assumption about this function's behaviour rather than
+// calling the function itself. Pure export addition; no behavior change.
+export async function enrichResumeState(
+  envelope: IntentEnvelope,
+  state: unknown,
+): Promise<unknown> {
+  // BKL-164 — the OPS-plane confirm-resume re-projects its OWN per-kind
+  // SystemState via OPS_RESUME_TABLE (was five near-byte-identical branches),
+  // NOT the customer-scoped `resolveAndAssemble` below (whose reads are scoped to
+  // a real `customerId`; the ops plane's `staff:<id>`/`admin:<id>` owns no
+  // customer resources, so that path would project the state absent and REFUSE a
+  // valid "sim"). Each entry re-reads the parked (resolver-trusted) reference
+  // FRESH — money/state-safe: a since-parked terminal / vanished / illegal target
+  // still REFUSEs, never a stale-state EXECUTE. The four LATENT kinds
+  // (availability/alert/incident/schedule) have no confirm-forcing guard parking
+  // them today, but resume correctly the moment one ever does.
+  if (envelope.actor.sessionId.startsWith("admin:")) {
+    const entry = OPS_RESUME_TABLE[envelope.kind];
+    if (entry !== undefined) {
+      const ctx: OpsResumeCtx = {
+        // The parked envelope's actor.sessionId is `admin:<staffId>` (planner-
+        // stamped from the authenticated JWT); the staffId is the suffix.
+        staffId: envelope.actor.sessionId.slice("admin:".length),
+        tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
+      };
+      // A keyless kind (schedule.override.set — a stateless UPSERT) always
+      // re-projects; a keyed kind short-circuits to `notFound` on an
+      // absent/malformed reference (WITHOUT a read), else re-reads it fresh.
+      if (entry.payloadKey !== undefined) {
+        const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+        const raw = payload[entry.payloadKey];
+        const ref = typeof raw === "string" ? raw : "";
+        if (ref === "") return entry.notFound(ctx);
+        try {
+          return await entry.project(ref, ctx);
+        } catch {
+          // Fail-closed: a read error re-projects a not-found state ⇒ REFUSE,
+          // never a stale/authorized resume.
+          return entry.notFound(ctx);
+        }
+      }
+      try {
+        return await entry.project("", ctx);
+      } catch {
+        return entry.notFound(ctx);
+      }
     }
   }
 
@@ -1156,6 +1257,12 @@ async function safeAuditedAdjudicate(
         sink: deps.sink,
         ...(deps.ledger ? { ledger: deps.ledger } : {}),
         ...(receipt ? { confirmationReceipt: receipt } : {}),
+        // FE-T05 (Language Engine) — ADR-124 v5 synchronous metadata hook.
+        // Runs AFTER buildAuditRecord (so it sees the FINAL, post-resolution
+        // envelope) and BEFORE sink.emit; excluded from the auditHash
+        // pre-image. Inert (returns undefined) for every capability besides
+        // `order.status.transition` — see language-engine/audit-metadata.ts.
+        metadataProvider: buildLanguageEngineAuditMetadata,
       },
     );
     return result.decision;
@@ -1355,6 +1462,40 @@ async function assertAuditPostgresReady(pool: Pool): Promise<void> {
  * pt-BR by its stable `code`, via the `@adjudicate/locales-pt-br` registry.
  * Exported for unit testing (claustrum-explainer.test.ts).
  */
+/**
+ * BKL-145 — the STAFF-VOICED explainer overlay for the OPS plane only. The base
+ * explainer's copy is customer-voiced ("Preciso confirmar seu cadastro…" onboards
+ * a CUSTOMER), which is the wrong audience for a staff refusal on the manager
+ * channel. This decorator overlays a small staff-voiced pt-BR map for
+ * NON-SECURITY codes and falls through to the base for everything else —
+ * SECURITY renders are NEVER overlaid (the base's leak-proof branch stays the
+ * only author of those), and unmapped codes render base-identically. Injected in
+ * `opsConductorDeps` ONLY; every customer-plane conductor keeps the bare base
+ * (byte-identical).
+ */
+export function opsExplainer(base: ExplainerPort): ExplainerPort {
+  // Staff-voiced pt-BR overlays, keyed by stable refusal code. Keep this map
+  // SMALL and staff-actionable — it is not a second locale registry.
+  const OPS_REFUSAL_OVERLAY: Readonly<Record<string, string>> = {
+    // The customer copy asks for a WhatsApp number (onboarding). Staff need the
+    // actual unblock: identify the order.
+    "auth.required":
+      "Essa ação precisa de um pedido identificado — me diga o número do pedido.",
+    // The pack copy says "pra você" (customer-addressed); staff variant.
+    "order.not_found":
+      "Não encontrei esse pedido — confira o número e tente de novo.",
+  };
+  return {
+    render(refusal): string {
+      if (refusal.kind !== "SECURITY") {
+        const overlay = OPS_REFUSAL_OVERLAY[refusal.code];
+        if (overlay !== undefined) return overlay;
+      }
+      return base.render(refusal);
+    },
+  };
+}
+
 export function ibatexasExplainer(): ExplainerPort {
   // Generic, detail-free pt-BR fallbacks — used when the registry has no entry
   // for `code` (and, for SECURITY, instead of `userFacing`).
@@ -1699,6 +1840,21 @@ function hasResolvableOrderId(input: unknown): input is { orderId: string } {
 }
 
 /**
+ * FE-T13 — read `check_order_status`/`get_payment_status`'s optional
+ * `orderReference` field (CHECK_ORDER_STATUS_READ_SCHEMA /
+ * GET_PAYMENT_STATUS_READ_SCHEMA, read-tool-schemas.ts's ONE model-facing
+ * field for these two tools — a display-number NL reference, e.g. "1234" /
+ * "#1234", NEVER the internal orderId). Returns `undefined` when absent or
+ * blank, so the caller's `resolveCustomerOrderReference` call takes its
+ * auto-resolve branch exactly as when no reference was given at all. Pure.
+ */
+function readOrderReference(input: unknown): string | undefined {
+  if (input === null || typeof input !== "object") return undefined;
+  const ref = (input as { orderReference?: unknown }).orderReference;
+  return typeof ref === "string" && ref.trim().length > 0 ? ref : undefined;
+}
+
+/**
  * Advertised-read-tool NAME → owner-scoped executor. Keys are the 12 advertised
  * read-tool names, each with a backing @ibatexas/tools handler (4 are aliases:
  * check_availability→checkTableAvailability, get_payment_status→checkPaymentStatus,
@@ -1735,48 +1891,97 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // get_my_preferences) parse — injecting `customerId` would make them throw.
   // BKL-107 — a session that cannot resolve an owner-scoped order owns nothing to
   // report: a GUEST/unauthenticated turn (no ctx.customerId — a guest owns no
-  // order) OR an authenticated owner whose call carries no orderId. Both would
-  // otherwise THROW inside checkOrderStatus (the schema parse rejects a missing
-  // orderId; the auth check rejects the guest) and the one-hop read-loop feeds that
-  // thrown message back as an "(indisponível: …)" error blob the planner fabricates
-  // around. Return a TYPED empty fact instead so the enrichment carries an honest
-  // "no orders for this session" (mirrors get_cart's null-with-marker shape). The
-  // AUTHENTICATED-owner + orderId path is UNTOUCHED → real status byte-identical,
-  // and checkOrderStatus's assertOrderOwnership IDOR guard still runs there; a guest
-  // with a model-forged orderId is short-circuited to empty here, so it can never
-  // reach a foreign order.
-  check_order_status: (input, state) => {
+  // order) owns nothing to report — a TYPED empty fact, never a thrown auth error
+  // the one-hop read-loop would turn into an "(indisponível: …)" blob the planner
+  // fabricates around (mirrors get_cart's null-with-marker shape).
+  //
+  // FE-T13 — `orderId` is now Identity-class and FORBIDDEN from this tool's
+  // model-facing schema (read-tool-schemas.ts: CHECK_ORDER_STATUS_READ_SCHEMA's
+  // one field is `orderReference`, a display-number NL reference — never the
+  // internal id), so an authenticated owner's call structurally never carries
+  // a raw orderId anymore. Rather than dead-ending to the empty fact (the
+  // pre-FE-T13 behavior for "no orderId"), resolve via
+  // `resolveCustomerOrderReference` (resolve-and-assemble.ts): an explicit
+  // display-number reference wins (IDOR-checked against this customer) else
+  // auto-resolve the most-recent order — the SAME "most recent order" fallback
+  // `order.amend.*`/`order.cancel` already use on the mutating side, reused
+  // here rather than re-derived (FE-D07 byte-parallel-duplication lesson).
+  // `hasResolvableOrderId`/`stripModelOwner` stay as defense-in-depth against a
+  // model that emits a raw `orderId` anyway (schema guidance is not a hard
+  // wire-level enforcement, though `sanitizeReadToolInput` — ibatexas-planner.ts
+  // — now strips it before this executor ever sees it on the production
+  // dispatch path): an explicit (non-forged) orderId still takes the direct
+  // path; a forged one is stripped first, same as before. checkOrderStatus's
+  // assertOrderOwnership IDOR guard still runs on every path — the resolved id
+  // is looked up scoped to `ctx.customerId` to begin with, so it can never
+  // resolve to a foreign order.
+  check_order_status: async (input, state) => {
     const ctx = agentCtxFromState(state);
     const stripped = stripModelOwner(input);
-    if (!ctx.customerId || !hasResolvableOrderId(stripped)) {
-      return Promise.resolve({ order: null, reason: "no_orders_for_session" });
+    if (!ctx.customerId) {
+      return { order: null, reason: "no_orders_for_session" };
     }
-    return checkOrderStatus(stripped as never, ctx);
+    if (hasResolvableOrderId(stripped)) {
+      return checkOrderStatus(stripped as never, ctx);
+    }
+    const resolved = await resolveCustomerOrderReference(
+      readOrderReference(stripped),
+      ctx.customerId,
+    );
+    // BKL-140 — ≥2 owned orders matched an ambiguous id-less/date reference: return a
+    // disambiguation-shaped fact (never guess one) the renderer/CLARIFY path can voice
+    // with the candidate display numbers, rather than silently resolving the wrong one.
+    if (resolved.ambiguous) {
+      return { order: null, reason: "multiple_orders", candidates: resolved.candidates };
+    }
+    if (!resolved.orderId) {
+      return { order: null, reason: "no_orders_for_session" };
+    }
+    return checkOrderStatus({ orderId: resolved.orderId } as never, ctx);
   },
   // BKL-118 — the billing twin of the BKL-107 check_order_status short-circuit.
   // get_payment_status delegates to checkPaymentStatus, whose handler REQUIRES an
   // authenticated owner (it throws NonRetryableError("Autenticação necessária.")
-  // when !ctx.customerId) and an orderId to key the payment read. A guest ("meu
-  // pagamento caiu?") reaches here with `{}`: pre-fix that threw the auth error, and
-  // the one-hop read-loop fed the thrown message back as an "(indisponível: …)" blob
-  // the planner FABRICATES a payment status around (same class as BKL-003). A session
-  // that cannot resolve an owner-scoped order owns no payment to report — a GUEST/
-  // unauthenticated turn (no ctx.customerId) OR an authenticated owner whose call
-  // carries no orderId — so return a TYPED empty fact instead. `payment: null`
-  // mirrors the sibling `order: null` null-with-marker shape and is an epistemic
-  // "nothing scoped to you", NEVER a world-fact assertion that no payment EXISTS (a
-  // guest may well have one they simply cannot see) — which keeps the read sound. The
-  // AUTHENTICATED-owner + orderId path is UNTOUCHED → real status byte-identical, and
-  // checkPaymentStatus's withOrderOwnership/assertOrderOwnership IDOR guard still runs
-  // there; a guest with a model-forged orderId is short-circuited to empty here, so it
-  // can never reach a foreign order.
-  get_payment_status: (input, state) => {
+  // when !ctx.customerId). A GUEST/unauthenticated turn owns no payment to
+  // report — a TYPED empty fact, never the thrown auth error the one-hop
+  // read-loop would turn into an "(indisponível: …)" blob the planner FABRICATES
+  // a payment status around (same class as BKL-003). `payment: null` mirrors the
+  // sibling `order: null` null-with-marker shape and is an epistemic "nothing
+  // scoped to you", NEVER a world-fact assertion that no payment EXISTS (a guest
+  // may well have one they simply cannot see) — which keeps the read sound.
+  //
+  // FE-T13 — same reference-resolve fix as check_order_status above: `orderId`
+  // is Identity-class and forbidden from this tool's model-facing schema
+  // (GET_PAYMENT_STATUS_READ_SCHEMA's one field is `orderReference`), so an
+  // authenticated owner's call structurally never carries a raw orderId
+  // anymore. Resolve via the SAME `resolveCustomerOrderReference` reuse
+  // (explicit display-number reference wins, IDOR-checked, else auto-resolve
+  // the most-recent order) rather than dead-ending to the empty fact.
+  // checkPaymentStatus's withOrderOwnership/assertOrderOwnership IDOR guard
+  // still runs on every path — the resolved id is looked up scoped to
+  // `ctx.customerId` to begin with, so it can never resolve to a foreign order.
+  get_payment_status: async (input, state) => {
     const ctx = agentCtxFromState(state);
     const stripped = stripModelOwner(input);
-    if (!ctx.customerId || !hasResolvableOrderId(stripped)) {
-      return Promise.resolve({ payment: null, reason: "no_payment_for_session" });
+    if (!ctx.customerId) {
+      return { payment: null, reason: "no_payment_for_session" };
     }
-    return checkPaymentStatus(stripped as never, ctx);
+    if (hasResolvableOrderId(stripped)) {
+      return checkPaymentStatus(stripped as never, ctx);
+    }
+    const resolved = await resolveCustomerOrderReference(
+      readOrderReference(stripped),
+      ctx.customerId,
+    );
+    // BKL-140 — disambiguation-shaped fact for ≥2 ambiguous matches (see
+    // check_order_status above); the billing twin, keyed on the same resolved order.
+    if (resolved.ambiguous) {
+      return { payment: null, reason: "multiple_orders", candidates: resolved.candidates };
+    }
+    if (!resolved.orderId) {
+      return { payment: null, reason: "no_payment_for_session" };
+    }
+    return checkPaymentStatus({ orderId: resolved.orderId } as never, ctx);
   },
   get_order_history: (input, state) => {
     const ctx = agentCtxFromState(state);
@@ -1965,6 +2170,10 @@ function redisSessionStore(): SessionPort {
       userPrompt,
     ) {
       const parkedAt = new Date().toISOString();
+      // FE-D33 — stamp expiresAt for forward-compat (nothing reads it yet; the
+      // FE-D13 freshness partition stays the enforcement point). Ops-plane parks
+      // only — a customer park has no confirm-freshness TTL, so it stays unset.
+      const expiresAt = opsConfirmParkExpiresAt(sessionId, parkedAt);
       await mutateSession(sessionId, (s) => ({
         ...s,
         pendingConfirmations: [
@@ -1972,7 +2181,13 @@ function redisSessionStore(): SessionPort {
           ...s.pendingConfirmations.filter(
             (p) => p.envelope.intentHash !== envelope.intentHash,
           ),
-          { envelope, confirmationToken, userPrompt, parkedAt },
+          {
+            envelope,
+            confirmationToken,
+            userPrompt,
+            parkedAt,
+            ...(expiresAt ? { expiresAt } : {}),
+          },
         ],
       }));
     },
@@ -2446,9 +2661,11 @@ async function resolveGroundingPort(
 
 /**
  * Build the ChannelDriver[] (WhatsApp when TWILIO_* is configured, plus the
- * Web channel). Extracted from bootstrapClaustrum (complexity); unchanged.
+ * Web channel). Extracted from bootstrapClaustrum (complexity). Exported for the
+ * BKL-033 wiring guard test (the web driver MUST be a WebConfirmChannel, not the
+ * bare WebChannel whose matchToParked is null).
  */
-function buildChannelDrivers(): ChannelDriver[] {
+export function buildChannelDrivers(): ChannelDriver[] {
   const channels: ChannelDriver[] = [];
 
   if (
@@ -2477,7 +2694,10 @@ function buildChannelDrivers(): ChannelDriver[] {
   // emitter; the WebChannel.render just hands the response back to the
   // route handler via a sink callback set up per-request. For now, no-op.
   channels.push(
-    new WebChannel({
+    // BKL-033 — WebConfirmChannel = WebChannel + a real customer-plane
+    // matchToParked so a chat "sim" resumes a parked REQUEST_CONFIRMATION
+    // (the bare WebChannel returns null unconditionally). Same config.
+    new WebConfirmChannel({
       // Require a real signing key — no source-committed default. A known key
       // would let anyone mint web-gateway messages the conductor trusts. Fails
       // closed in prod/dev when WEB_GATEWAY_SIGNING_KEY is unset.
@@ -2662,7 +2882,8 @@ export async function bootstrapClaustrum(
   // P0-7: the same gate also probes the composed capability planners under the
   // named contexts (authed-customer / staff) so a planner-advertised kind with
   // no registered tool fails the boot; registered-but-unadvertised kinds are
-  // WARN-only (order.review.submit — web-flow-reached, no chat advertisement).
+  // WARN-only (as of FE-D28 order.review.submit is advertised + resolver-wired,
+  // so there is currently no such kind — the WARN path stays for future ones).
   const toolRegistry = createToolRegistry();
   registerIbatexasToolPacks(toolRegistry);
   const rosterDrift = toolRosterDrift(
@@ -2672,6 +2893,13 @@ export async function bootstrapClaustrum(
       planners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
       onWarn: (message) =>
         logger.warn({ component: "claustrum-bootstrap" }, message),
+      // FE-T22: exempts every kind not meant to be chat-surfaced (surface-
+      // derived from CapabilityDefinition, replacing the retired hand-listed
+      // ADVERTISED_NOT_REGISTERED_WHITELIST) from the advertised-but-
+      // unregistered check.
+      chatSurfacedKinds: new Set(
+        generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS),
+      ),
     },
   );
   if (rosterDrift.length > 0) {
@@ -2703,6 +2931,13 @@ export async function bootstrapClaustrum(
         readRosterDrift.join("\n  "),
     );
   }
+
+  // BKL-034 — embeddings provider/dimension boot gate. A configured provider whose
+  // probe vector length differs from EMBEDDING_DIMENSION would silently poison every
+  // Typesense upsert (dimension-mismatched vectors) — fail LOUD at boot instead. No
+  // provider configured → resolves cleanly (the keyword-only degrade stays legal on a
+  // bare stack), so this gate never blocks a key-less box.
+  await assertEmbeddingProviderDimension();
 
   // The ibx prisma/redis are real clients that legitimately lack the memory
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),
@@ -2817,42 +3052,12 @@ export async function bootstrapClaustrum(
         }
       }
     });
-  // BKL-121 — the per-turn TODAY's-hours source the claim planner derives a STORE_HOURS
-  // candidate's `hoursText` from (the SAME first-party read the investigator records).
-  // Sourced from the Redis read-through schedule cache + env timezone via
-  // `getTodayHoursText`. Returns `undefined` on a schedule-load failure (never a
-  // fabricated hours string, BKL-026) so the derived STORE_HOURS value stays undefined
-  // → the kernel's C6 ABSTAINs → honest UNKNOWN (the investigator separately records the
-  // fail-closed read ERROR, Inv 7). Best-effort: never throws out of the turn.
-  const resolveStoreHours =
-    options.resolveStoreHours ??
-    (async (): Promise<StoreHoursRead | undefined> => {
-      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-      try {
-        const hoursText = getTodayHoursText(await loadSchedule(), tz);
-        return hoursText === null ? undefined : { hoursText };
-      } catch {
-        // Schedule unavailable → no derived value; the claim degrades SAFE to UNKNOWN.
-        return undefined;
-      }
-    });
-  // BKL-138 — the per-turn DAY-SPECIFIC hours source the claim planner derives a
-  // STORE_HOURS_FOR_DATE candidate's `hoursText` from for a QUERIED ISO date (the SAME
-  // first-party read the investigator records under `schedule:store_hours:{date}`).
-  // Redis read-through schedule + env tz via `getHoursTextForDate`. Returns `undefined`
-  // on a schedule-load failure (never a fabricated string, BKL-026) → C6 ABSTAIN →
-  // honest UNKNOWN. Best-effort: never throws out of the turn.
-  const resolveHoursForDate =
-    options.resolveHoursForDate ??
-    (async (isoDate: string): Promise<StoreHoursForDateRead | undefined> => {
-      const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-      try {
-        const hoursText = getHoursTextForDate(await loadSchedule(), tz, isoDate);
-        return hoursText === null ? undefined : { hoursText };
-      } catch {
-        return undefined;
-      }
-    });
+  // BKL-126 — the resolveStoreHours / resolveHoursForDate derive sources were
+  // REMOVED: the schedule-family candidate values now bind at @claustrum/core
+  // claims-validate stage 4b from the investigator's OWN recorded ledger entries
+  // (the reads turn-reads.ts already makes) — one schedule load per turn, no
+  // divergence window. resolveScheduleSignal stays: it feeds ONLY the
+  // closed-hours prompt note (prompt-side, not a C6 value source).
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -2862,10 +3067,6 @@ export async function bootstrapClaustrum(
       promptComposer,
       telemetry,
       resolveScheduleSignal,
-      // BKL-121 — the STORE_HOURS tag-then-derive first-party read source.
-      resolveStoreHours,
-      // BKL-138 — the STORE_HOURS_FOR_DATE per-date tag-then-derive read source.
-      resolveHoursForDate,
       // BKL-027 — activate the one-hop read-tool enrichment loop.
       readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
     });
@@ -2877,6 +3078,19 @@ export async function bootstrapClaustrum(
       promptComposer,
       telemetry,
       resolveScheduleSignal,
+      // BKL-215 — the CUSTOMER-plane deterministic mutation-success render. On a
+      // committed amend EXECUTE the reply states WHAT THE VERB DID from the
+      // executed envelope, never the model (which live-composed a FALSE FAILURE
+      // "houve um erro ao adicionar o item" on a real success). Returns undefined
+      // for every non-amend kind → the grounded model path below is byte-identical
+      // for them. The customer analog of the ops readAnswer.renderAction (BKL-149).
+      readAnswer: {
+        // No deterministic customer READ render here — customer reads flow
+        // through the claims pipeline, not this port (the ops-only read capture).
+        render: (_turnId: string) => undefined,
+        renderAction: (acted: unknown, _turnId: string) =>
+          renderCustomerActionAnswer(acted),
+      },
       // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate, wired ONLY
       // when ENABLE_CLAIMS_PIPELINE is on (the SAME flag buildClaimsSeams reads).
       // Closes the `prose_preserved` hallucination leak on the conversational
@@ -2930,6 +3144,31 @@ export async function bootstrapClaustrum(
     // process's claims-pipeline state is readable from the boot log (a stale-env
     // tsx respawn is otherwise indistinguishable from an enabled boot).
     info: (message) => logger.info({ component: "startup" }, message),
+    // BKL-209 — a medical-emergency §O#9 ESCALATE fires this best-effort sink to
+    // put the emergency on the staff surface (support.handoff_requested → the
+    // handoff-subscriber → Escalações + staff WhatsApp), so "vou avisar nossa
+    // equipe" is TRUE. Session-keyed by turnId so each emergency turn pages once
+    // (no cross-turn dedup — every reported emergency should reach staff). Fully
+    // fire-and-forget: swallow all errors; a publish failure never breaks the
+    // customer's (already-safe) render.
+    onSafetyEmergency: (ctx) => {
+      const sessionId = `safety-emergency:${ctx.turnId ?? "unknown"}`;
+      void publishNatsEvent("support.handoff_requested", {
+        sessionId,
+        reason: "EMERGÊNCIA MÉDICA relatada no chat — atenda imediatamente.",
+      }).then(
+        () =>
+          logger.warn(
+            { component: "safety", turnId: ctx.turnId },
+            "medical-emergency ESCALATE surfaced — support.handoff_requested published (BKL-209)",
+          ),
+        (err: unknown) =>
+          logger.error(
+            { component: "safety", turnId: ctx.turnId, err: String(err) },
+            "medical-emergency surfacing FAILED — escalation is render-only (BKL-209)",
+          ),
+      );
+    },
   });
   // AUT-017 — the ESCALATE PARK deps shared by the customer + ops conductors.
   // On a resumable money-intent ESCALATE the HandoffPort parks the FULL envelope
@@ -3164,6 +3403,9 @@ export async function bootstrapClaustrum(
     composedIntentKinds: composedIntentKinds(),
     readExecutorKeys: Object.keys(opsReadToolExecutors),
     onWarn: (message) => logger.warn({ component: "claustrum-bootstrap" }, message),
+    // FE-T25: repoints the BKL-096 forbidden-verb leg off the hand-authored
+    // FORBIDDEN_OPS_DESTRUCTIVE_KINDS onto the generated projection.
+    forbiddenOpsKinds: generateOpsForbiddenDestructiveKinds(CAPABILITY_DEFINITIONS),
   });
   if (opsDrift.length > 0) {
     throw new Error(
@@ -3175,7 +3417,9 @@ export async function bootstrapClaustrum(
     adjudicator,
     memory,
     grounding,
-    explainer: ibxExplainer,
+    // BKL-145 — staff-voiced refusal overlay (non-SECURITY only); the customer
+    // conductors above/below keep the bare base explainer byte-identical.
+    explainer: opsExplainer(ibxExplainer),
     // AUT-017 — the ops plane is where staff refunds ESCALATE; park the resumable
     // money intent so an OWNER can approve-and-execute it from the escalações UI.
     handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
@@ -3254,21 +3498,14 @@ export async function bootstrapClaustrum(
             status: p.status,
           }));
         },
+        // BKL-090 — fulfillmentStatus is the CURRENT status the kitchen-advance
+        // legality guard reads (projected into pack-orders' ctx.fulfillmentStatus).
+        // FE-T05b: mapped via the SHARED `toOpsResolverOrder` (also used by the
+        // order.status.transition RESUME re-projection below) so the plan-stage
+        // and resume paths can never independently drift on this shape.
         lookupOrder: async (orderId) => {
           const order = await createOrderQueryService().getById(orderId);
-          return order === null
-            ? null
-            : {
-                customerId: order.customerId,
-                paymentMethod:
-                  (order.paymentMethod as string | null) ?? null,
-                paymentStatus: order.paymentStatus,
-                totalInCentavos: order.totalInCentavos,
-                // BKL-090 — the CURRENT status the kitchen-advance legality
-                // guard reads (projected into pack-orders' ctx.fulfillmentStatus).
-                fulfillmentStatus:
-                  (order.fulfillmentStatus as string | null) ?? null,
-              };
+          return order === null ? null : toOpsResolverOrder(order);
         },
         // BKL-085 — the ACTIVE payment for the refunds-by-message path. Reuses the
         // SAME deterministic read the admin refund route relies on

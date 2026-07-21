@@ -16,11 +16,23 @@ import { paymentsPixPack } from "@adjudicate/pack-payments-pix"
 import { reservationsPack } from "@ibatexas/pack-reservations"
 import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds"
+import { withAdjudicate } from "@ibatexas/domain"
+import { runCustomerIntent } from "../../routes/__shared__/customer-intent-gateway.js"
+import {
+  CAPABILITY_DEFINITIONS,
+  generateKnownIntentKinds,
+  GuardRefResolutionError,
+  type CapabilityDefinition,
+} from "@ibatexas/packs-composed/capability-definitions"
 import {
   assertPackCoverage,
   PackCoverageError,
   assertAuditPostgresReady,
   AuditPostgresPreflightError,
+  assertEnvelopeBoundaryGateWired,
+  assertCommandServiceBoundaryGateWired,
+  EnvelopeBoundaryGateNotWiredError,
+  assertCapabilityGuardRefsWired,
 } from "../kernel-bootstrap.js"
 
 // ── Pack coverage ────────────────────────────────────────────────────────────
@@ -110,6 +122,109 @@ describe("assertPackCoverage — real boot roster", () => {
   })
 })
 
+// ── FE-4 CONTRACT (FE-T26) — assertPackCoverage's sole source ────────────────
+//
+// FE-T25 repointed the real boot call (kernel-bootstrap.ts) to walk a
+// GENERATED set (`generateKnownIntentKinds(CAPABILITY_DEFINITIONS, …)`
+// directly) instead of the then-hand-authored `PACK_REGISTERED_INTENT_
+// KINDS` (derived from `KNOWN_INTENT_KINDS`). This ticket (FE-T26) deletes
+// that old, separately-maintained derivation from kernel-bootstrap.ts
+// entirely — there is now only ONE `PACK_REGISTERED_INTENT_KINDS`, computed
+// the generated way. `KNOWN_INTENT_KINDS` itself (`@ibatexas/intent-kinds`)
+// is NOT deleted — it is now ALSO machine-generated (via its own,
+// independent regen script, `packages/packs-composed/scripts/regenerate-
+// intent-kinds.ts`) — so the first test below still checks something real:
+// that deriving "known kinds minus loyalty" DIRECTLY from `CAPABILITY_
+// DEFINITIONS` agrees with deriving it INDIRECTLY through `KNOWN_INTENT_
+// KINDS`'s own (separately-invoked) codegen path — two independent
+// generation call sites reading the same underlying data, not a hand list
+// vs a generated one. The `declared` side of the gate itself (every
+// installed Pack's real `.intents[]`, inside `assertPackCoverage`'s own
+// body) remains untouched — a genuine runtime materialization.
+
+describe("FE-4 CONTRACT (FE-T26) — assertPackCoverage's sole (generated) source", () => {
+  // Independently reconstructed here (not imported from kernel-bootstrap.ts,
+  // which keeps `PACK_REGISTERED_INTENT_KINDS` module-private) — mirrors
+  // this file's own established pattern of rebuilding the derivation rather
+  // than importing it.
+  const generatedPackRegistered = new Set(
+    [
+      ...generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
+        pixIntentKinds: paymentsPixPack.intents,
+        loyaltyIntentKinds: [...LOYALTY_INTENT_KINDS],
+      }),
+    ].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
+  )
+
+  const viaKnownIntentKinds = new Set(
+    [...KNOWN_INTENT_KINDS].filter((kind) => !LOYALTY_INTENT_KINDS.has(kind)),
+  )
+
+  it("deriving directly from CAPABILITY_DEFINITIONS agrees with deriving indirectly through KNOWN_INTENT_KINDS's own (independent) regen path", () => {
+    expect(generatedPackRegistered).toEqual(viaKnownIntentKinds)
+  })
+
+  it("the real 7-pack boot roster still covers the GENERATED walked set (matches the real boot call's behavior)", () => {
+    const roster = [
+      { pack: ordersPack },
+      { pack: reservationsPack },
+      { pack: whatsappPack },
+      { pack: customerOnboardingPack },
+      { pack: paymentsPack },
+      { pack: opsPack },
+      { pack: paymentsPixPack },
+    ]
+    expect(() => assertPackCoverage(roster, generatedPackRegistered)).not.toThrow()
+  })
+
+  it("REGRESSION PROOF: a REAL runtime/DI mismatch (an incomplete pack roster) still fails closed against the GENERATED set — proving the repoint is load-bearing, not vacuous", () => {
+    // Omit pack-payments — a real DI mismatch (the kind the ratified boot
+    // sequence would refuse to start on), not a synthetic toy fixture.
+    const incompleteRoster = [
+      { pack: ordersPack },
+      { pack: reservationsPack },
+      { pack: whatsappPack },
+      { pack: customerOnboardingPack },
+      { pack: opsPack },
+      { pack: paymentsPixPack },
+    ]
+    let caught: unknown = null
+    try {
+      assertPackCoverage(incompleteRoster, generatedPackRegistered)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(PackCoverageError)
+    // Positive control: every kind pack-payments owns is among the missing
+    // ones (proves this isn't an empty/vacuous failure).
+    const missing = (caught as PackCoverageError).missingKinds
+    expect(missing).toEqual(expect.arrayContaining(["payment.pix.regenerate"]))
+    expect(missing.length).toBeGreaterThan(0)
+  })
+
+  it("REGRESSION PROOF (pix positive control): omitting the installed PIX pack itself still fails closed against the GENERATED set — a full roster-removal is caught even though the repoint made the pix sub-leg same-source (see fe4-drift-gates.md's MINOR-2 note)", () => {
+    const withoutPix = [
+      { pack: ordersPack },
+      { pack: reservationsPack },
+      { pack: whatsappPack },
+      { pack: customerOnboardingPack },
+      { pack: paymentsPack },
+      { pack: opsPack },
+      // paymentsPix omitted.
+    ]
+    let caught: unknown = null
+    try {
+      assertPackCoverage(withoutPix, generatedPackRegistered)
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(PackCoverageError)
+    const missing = (caught as PackCoverageError).missingKinds
+    expect(missing.some((kind) => kind.startsWith("pix.charge."))).toBe(true)
+    expect(missing.length).toBeGreaterThan(0)
+  })
+})
+
 // ── Audit-postgres preflight ─────────────────────────────────────────────────
 
 describe("assertAuditPostgresReady", () => {
@@ -135,4 +250,147 @@ describe("assertAuditPostgresReady", () => {
   // Note: full live-table coverage requires a working Postgres connection and
   // is exercised in the audit-postgres-boot-preflight integration test (P2.4).
   // This unit suite covers the env-var guard and error type contract only.
+})
+
+// ── FE-T04: envelope structural boundary gate self-check ─────────────────────
+//
+// `assertEnvelopeBoundaryGateWired` is dependency-injectable ONLY so these
+// tests can prove it actually detects a broken gate — the default (no-arg)
+// call always exercises the REAL, live `runCustomerIntent`.
+
+describe("assertEnvelopeBoundaryGateWired", () => {
+  it("passes against the REAL runCustomerIntent — proves the structural gate is wired on the live path", async () => {
+    await expect(assertEnvelopeBoundaryGateWired()).resolves.toBeUndefined()
+  })
+
+  it("throws EnvelopeBoundaryGateNotWiredError when the runner skips the structural gate entirely", async () => {
+    // Stand-in for what `runCustomerIntent` would do if the gate call were
+    // deleted: it just runs the executor unconditionally regardless of
+    // envelope shape. Proves the self-check catches that regression rather
+    // than vacuously passing.
+    const gateRemoved = (async (options: Parameters<typeof runCustomerIntent>[0]) => {
+      const result = await options.executor(
+        (options.envelope as { payload?: unknown }).payload,
+      )
+      return {
+        statusCode: 200,
+        body: result,
+        decision: { kind: "EXECUTE", basis: [] },
+      }
+    }) as unknown as typeof runCustomerIntent
+
+    await expect(assertEnvelopeBoundaryGateWired(gateRemoved)).rejects.toThrow(
+      EnvelopeBoundaryGateNotWiredError,
+    )
+  })
+
+  it("throws when the runner rejects with the WRONG code (e.g. only detectForgery ran, not the structural gate)", async () => {
+    const wrongGate = (async () => ({
+      statusCode: 400,
+      body: { error: "Requisição inválida.", code: "forgery_attempt" },
+      decision: {
+        kind: "REFUSE",
+        refusal: { kind: "SECURITY", code: "forgery_attempt", userFacing: "x" },
+        basis: [],
+      },
+    })) as unknown as typeof runCustomerIntent
+
+    await expect(assertEnvelopeBoundaryGateWired(wrongGate)).rejects.toThrow(
+      EnvelopeBoundaryGateNotWiredError,
+    )
+  })
+})
+
+// ── FE-T04: command-service (with-adjudicate) structural boundary gate ───────
+//
+// The OTHER convergence point: `withAdjudicate` (@ibatexas/domain) is the
+// command-service chokepoint every ops/admin/subscriber/job/LLM-tool
+// mutation flows through. Same dependency-injection idiom as
+// `assertEnvelopeBoundaryGateWired` above — the default (no-arg) call always
+// exercises the REAL, live `withAdjudicate`.
+
+describe("assertCommandServiceBoundaryGateWired", () => {
+  it("passes against the REAL withAdjudicate — proves the structural gate is wired on the live path", async () => {
+    await expect(assertCommandServiceBoundaryGateWired()).resolves.toBeUndefined()
+  })
+
+  it("throws EnvelopeBoundaryGateNotWiredError when the runner skips the structural gate entirely", async () => {
+    // Stand-in for what `withAdjudicate` would do if the gate call were
+    // deleted: it just runs the executor unconditionally regardless of
+    // envelope shape.
+    const gateRemoved = (async (
+      envelope: Parameters<typeof withAdjudicate>[0],
+      _state: unknown,
+      _policy: unknown,
+      executor: (payload: unknown) => Promise<unknown>,
+    ) => {
+      const result = await executor((envelope as { payload?: unknown }).payload)
+      return { decision: { kind: "EXECUTE", basis: [] }, result }
+    }) as unknown as typeof withAdjudicate
+
+    await expect(
+      assertCommandServiceBoundaryGateWired(gateRemoved),
+    ).rejects.toThrow(EnvelopeBoundaryGateNotWiredError)
+  })
+
+  it("throws when the runner refuses with the WRONG code (structural gate not what fired)", async () => {
+    const wrongGate = (async () => ({
+      decision: {
+        kind: "REFUSE",
+        refusal: { kind: "SECURITY", code: "some_other_code", userFacing: "x" },
+        basis: [],
+      },
+    })) as unknown as typeof withAdjudicate
+
+    await expect(
+      assertCommandServiceBoundaryGateWired(wrongGate),
+    ).rejects.toThrow(EnvelopeBoundaryGateNotWiredError)
+  })
+
+  it("throws when the runner EXECUTEs the malformed envelope (executor ran)", async () => {
+    const executedAnyway = (async (
+      _envelope: unknown,
+      _state: unknown,
+      _policy: unknown,
+      executor: (payload: unknown) => Promise<unknown>,
+    ) => {
+      const result = await executor(undefined)
+      return { decision: { kind: "EXECUTE", basis: [] }, result }
+    }) as unknown as typeof withAdjudicate
+
+    await expect(
+      assertCommandServiceBoundaryGateWired(executedAnyway),
+    ).rejects.toThrow(EnvelopeBoundaryGateNotWiredError)
+  })
+})
+
+// ── Capability guard-ref boot assertion (FE-T19) ─────────────────────────────
+
+describe("assertCapabilityGuardRefsWired", () => {
+  it("passes against the real, committed CAPABILITY_DEFINITIONS (the default boot call site)", async () => {
+    await expect(assertCapabilityGuardRefsWired()).resolves.toBeUndefined()
+  })
+
+  it("throws GuardRefResolutionError when an injected guard-ref does not resolve — proves the boot call site would actually catch a dangling ref, not just pass vacuously", async () => {
+    const first = CAPABILITY_DEFINITIONS[0]
+    if (first === undefined) {
+      throw new Error("test fixture assumption violated: CAPABILITY_DEFINITIONS is empty")
+    }
+    // FE-T20's discriminated union: `guardRefs` exists only on the
+    // chat-tier variant, so it must be narrowed before being overridden —
+    // spreading the union type directly would be an excess-property error
+    // against the identity-tier member.
+    if (first.tier !== "chat") {
+      throw new Error(`test fixture assumption violated: "${first.kind}" is tier:"${first.tier}", expected "chat"`)
+    }
+    const broken: readonly CapabilityDefinition[] = [
+      {
+        ...first,
+        guardRefs: [{ phase: "business", name: "this_guard_does_not_exist_KB_TEST" }],
+      },
+    ]
+    await expect(assertCapabilityGuardRefsWired(broken)).rejects.toThrow(
+      GuardRefResolutionError,
+    )
+  })
 })

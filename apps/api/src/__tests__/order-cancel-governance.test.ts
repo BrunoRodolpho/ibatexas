@@ -97,6 +97,19 @@ vi.mock("@ibatexas/domain", () => ({
     }
   },
   getEffectivePonr: () => ({ cancelMinutes: 30 }),
+  // FE-T04 — routes/order-actions.js (dynamically imported below) pulls in
+  // customer-intent-gateway.js + claustrum/resolve-and-assemble.js, both of
+  // which now statically import from @ibatexas/domain. isStructurallyMalformed
+  // mirrors real behavior for this file's well-formed envelopes (always
+  // `false`) — the gate's own rejection logic is covered by
+  // test-envelope-ingress.test.ts and with-adjudicate.test.ts, not here.
+  // createReservationService is unexercised by any assertion in this file.
+  isStructurallyMalformed: () => false,
+  STRUCTURAL_REJECTION_CODE: "envelope_malformed",
+  createReservationService: () => ({
+    getById: vi.fn().mockResolvedValue(null),
+    listByCustomer: vi.fn().mockResolvedValue({ reservations: [] }),
+  }),
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -384,16 +397,26 @@ describe("POST /api/orders/:id/cancel — BKL-036 kernel-routed PONR + paid-canc
     expect((res.json() as { code: string }).code).toBe("order.ownership_denied");
   });
 
-  it("PAID cancel → REQUEST_CONFIRMATION → 202 confirmationRequired (executor NOT run)", async () => {
+  it("PAID cancel → REQUEST_CONFIRMATION → parks + 202 {confirmationRequired, confirmationId, ttlSeconds} (executor NOT run) (BKL-146)", async () => {
     const res = await inject("confirmed", {
       kind: "REQUEST_CONFIRMATION",
       prompt: "Esse pedido já foi pago (R$ 50,00). Cancelar implica reembolso — confirma?",
       basis: [],
     });
     expect(res.statusCode).toBe(202);
-    const body = res.json() as { confirmationRequired: boolean; prompt: string };
+    const body = res.json() as {
+      confirmationRequired: boolean;
+      confirmationId: string;
+      prompt: string;
+      ttlSeconds: number;
+    };
     expect(body.confirmationRequired).toBe(true);
     expect(body.prompt).toMatch(/reembolso/);
+    // BKL-146 — the park receipt lets the customer COMPLETE the cancel via
+    // POST /api/orders/:id/cancel/confirm (the 202 now carries the id + TTL).
+    expect(typeof body.confirmationId).toBe("string");
+    expect(body.confirmationId.length).toBeGreaterThan(0);
+    expect(body.ttlSeconds).toBe(600);
     expect(mockTransitionStatus).not.toHaveBeenCalled();
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
   });
@@ -414,5 +437,99 @@ describe("POST /api/orders/:id/cancel — BKL-036 kernel-routed PONR + paid-canc
     const res = await inject("pending", { kind: "EXECUTE", basis: [] });
     expect(res.statusCode).toBe(200);
     expect(mockAdjudicate).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── BKL-103 — the customer paid-cancel ESCALATE is staff-visible ────────────
+// Live-proven hole (w-cal3 2026-07-19): the >=R$1000 paid-cancel ESCALATE was
+// audit-row-only while the 503 told the customer a human would handle it. The
+// route now publishes the BKL-178 support.handoff_requested recipe (synthetic
+// order-keyed sessionId; the handoff-subscriber dedups on it, so retries
+// surface exactly one Escalações record + staff ping).
+describe("POST /api/orders/:id/cancel — BKL-103 ESCALATE surfacing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    redisStorage.clear();
+    mockGetById.mockResolvedValue(makeOrder({ totalInCentavos: 150000 }));
+    mockFindActiveByOrderId.mockResolvedValue(null);
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+  });
+
+  const escalate = {
+    kind: "ESCALATE",
+    reason: "paid_cancel_refund_above_escalate_threshold",
+    basis: [{ category: "business", code: "threshold_exceeded" }],
+  };
+
+  async function injectCancel() {
+    mockAdjudicate.mockReturnValue(escalate);
+    const app = await buildTestServer();
+    try {
+      return await app.inject({
+        method: "POST",
+        url: "/api/orders/order_01/cancel",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { reason: "x" },
+      });
+    } finally {
+      await app.close();
+    }
+  }
+
+  function handoffCalls() {
+    return mockPublishNatsEvent.mock.calls.filter(
+      (c: unknown[]) => c[0] === "support.handoff_requested",
+    );
+  }
+
+  it("kernel ESCALATE → 503 AND exactly one support.handoff_requested with the order-keyed sessionId + pt-BR reason", async () => {
+    const res = await injectCancel();
+    expect(res.statusCode).toBe(503);
+    const calls = handoffCalls();
+    expect(calls).toHaveLength(1);
+    const payload = calls[0]![1] as { sessionId: string; reason: string };
+    expect(payload.sessionId).toBe("order-cancel:order_01");
+    expect(payload.reason).toContain("#42");
+    expect(payload.reason).toContain("R$ 1500,00");
+    expect(payload.reason).toContain("aprovação");
+  });
+
+  it("a customer RETRY publishes with the SAME sessionId (the subscriber dedup key — exactly-once staff record)", async () => {
+    await injectCancel();
+    await injectCancel();
+    const calls = handoffCalls();
+    expect(calls).toHaveLength(2); // two publishes ride NATS…
+    const [a, b] = calls.map((c) => (c[1] as { sessionId: string }).sessionId);
+    expect(a).toBe(b); // …but the stable key means ONE record + ping downstream.
+  });
+
+  it("carries NO customer identifier (PII discipline — displayId + amount only)", async () => {
+    await injectCancel();
+    const payload = handoffCalls()[0]![1] as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(["reason", "sessionId"]);
+    expect(JSON.stringify(payload)).not.toContain("cust_01");
+  });
+
+  it("a publish failure NEVER breaks the customer reply (best-effort, logged)", async () => {
+    mockPublishNatsEvent.mockRejectedValue(new Error("nats down"));
+    const res = await injectCancel();
+    expect(res.statusCode).toBe(503);
+  });
+
+  it("a non-ESCALATE decision publishes NO handoff (<R$1000 path byte-identical)", async () => {
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+    mockGetById.mockResolvedValue(makeOrder({ totalInCentavos: 5000 }));
+    const app = await buildTestServer();
+    try {
+      await app.inject({
+        method: "POST",
+        url: "/api/orders/order_01/cancel",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { reason: "x" },
+      });
+    } finally {
+      await app.close();
+    }
+    expect(handoffCalls()).toHaveLength(0);
   });
 });

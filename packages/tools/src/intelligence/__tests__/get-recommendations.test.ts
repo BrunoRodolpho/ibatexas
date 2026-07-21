@@ -319,4 +319,67 @@ describe("getRecommendations", () => {
     expect(result.products).toHaveLength(0)
     expect(result.message).toContain("cardápio completo")
   })
+
+  // ── BKL-137 — positive dietary-tag filter ───────────────────────────────
+
+  it("authenticated + dietaryTag: appends the tags facet filter and labels the reason", async () => {
+    mockSearch.mockResolvedValue({ hits: [HIT_A] })
+
+    const result = await getRecommendations({ dietaryTag: "vegetariano" }, CTX_AUTH)
+
+    const call = mockSearch.mock.calls[0][0]
+    expect(call.filter_by).toBe(
+      "inStock:=true && status:=published && tags:=[vegetariano]",
+    )
+    expect(result.products[0].reason).toBe("Opções vegetarianas")
+    expect(result.message).toContain("vegetarianas")
+  })
+
+  it("guest + dietaryTag: bypasses the Redis bestseller zset and queries Typesense filtered", async () => {
+    mockSearch.mockResolvedValue({ hits: [HIT_A, HIT_B] })
+
+    const result = await getRecommendations(
+      { dietaryTag: "sem_gluten" },
+      CTX_GUEST as AgentContext,
+    )
+
+    // The bestseller zset carries no tag facets — it must not be consulted.
+    expect(mockZRangeWithScores).not.toHaveBeenCalled()
+    const call = mockSearch.mock.calls[0][0]
+    expect(call.filter_by).toBe(
+      "inStock:=true && status:=published && tags:=[sem_gluten]",
+    )
+    expect(result.products[0].reason).toBe("Opções sem glúten")
+    expect(result.message).toContain("sem glúten")
+  })
+
+  it("dietaryTag with no matches: honest empty + cardápio pointer (never an unfiltered fallback)", async () => {
+    mockSearch.mockResolvedValue({ hits: [] })
+
+    const result = await getRecommendations(
+      { dietaryTag: "vegano" },
+      CTX_GUEST as AgentContext,
+    )
+
+    expect(result.products).toHaveLength(0)
+    expect(result.message).toContain("veganas")
+    expect(result.message).toContain("cardápio completo")
+    // One filtered query only — an empty dietary result must NOT degrade to an
+    // unfiltered list (that would answer "tem opção vegana?" with non-vegan items).
+    expect(mockSearch).toHaveBeenCalledTimes(1)
+  })
+
+  it("an out-of-vocabulary dietaryTag is DROPPED (never forwarded to the facet filter)", async () => {
+    mockZRangeWithScores.mockResolvedValue([])
+    mockSearch.mockResolvedValue({ hits: [] })
+
+    await getRecommendations(
+      { dietaryTag: "sem_carboidrato" },
+      CTX_GUEST as AgentContext,
+    )
+
+    for (const call of mockSearch.mock.calls) {
+      expect(call[0].filter_by).not.toContain("sem_carboidrato")
+    }
+  })
 })

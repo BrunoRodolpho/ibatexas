@@ -1,0 +1,460 @@
+# order.status.transition — the FE-T05 first-tracer capability's extraction
+# corpus (FE-T06/FE-T07, FE-2.1). Grown from the T05 canonical seed to the
+# spec's D5 default denominator (N=20 per capability) — this file is now
+# the permanent eval corpus for cap-1, authored directly (not yet run
+# through the Sonnet paraphrase fan-out driver — FE-2.1/FE-2.3 remains a
+# separate, later ticket for SCALING authorship; these 20 are hand-written).
+#
+# Independent-truth discipline: `expectPayload` below is AUTHORED here, never
+# derived from the model under test (FE-2.1). It pins the FE-T05 contract:
+# the model extracts ONLY `newStatus` (never `orderId` — Identity class,
+# resolver-only); hydration auto-resolves "the most recent active order"
+# (no explicit reference given), tagging it `grounded` (a guess, never
+# `authoritative`) and forcing `confirmationRequired: true`.
+#
+# A structural note on WHY every case below is "implicit" (no case ever
+# names a specific order): `resolveStatusTransitionOrderTarget`
+# (apps/api/src/ops/ops-resolver.ts) tries an AUTHORITATIVE direct/reference
+# lookup first (`resolveOrderTarget`, reading `payload.orderId`) before
+# falling back to "most recent active" — but `order.status.transition`'s
+# extraction schema never gives the model an `orderId` field to populate
+# (Identity class, resolver-only), so `payload.orderId` is ALWAYS empty for
+# this capability and that authoritative path is structurally unreachable
+# today. An "explicit order reference" corpus variant would therefore
+# exercise IDENTICAL HYDRATION behavior to an implicit one (the resolver
+# still falls back to "most recent active" either way) — not a real second
+# axis until a future rollout slice adds an explicit-reference field to
+# this capability's schema. (Extraction itself is a separate claim: the
+# model COULD still emit different raw output for an explicit-reference
+# utterance — e.g. over-extraction attempting to stuff the mentioned id
+# somewhere — even though the schema has no slot for it and hydration
+# ignores it regardless; only the hydration outcome is guaranteed
+# identical, not the extraction attempt.) FE-2.1's "implicit/explicit forms"
+# guidance is honored on the axis that DOES vary today: phrasing register
+# (formal/colloquial/brusque/question/context-embedded/casual) and the
+# target status, across all 6 enum values
+# (confirmed/preparing/ready/in_delivery/delivered/canceled).
+capability: order.status.transition
+source: tickets/language-engine/issues/07-extraction-accuracy-meter-baseline.md
+# FE-T12: explicit plane declaration — this capability is ops-plane
+# (advertised solely via pack-ops's staff allowlist; the model never sees it
+# on a customer turn), so it drives over POST /api/admin/ops/chat.
+plane: ops
+cases:
+  - id: most-recent-order-to-ready
+    utterance: muda o status do meu último pedido para pronto
+    note: >-
+      The ticket's canonical example utterance. No explicit order reference
+      is given, so hydration falls back to the most recent ACTIVE order
+      (ops-order-resolution.ts's resolveMostRecentActiveOrder) — a GUESS,
+      hence grounded + confirmationRequired.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: ready
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: ready
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-confirmed
+    utterance: confirma o pedido mais recente
+    note: >-
+      Direct imperative register, third status target (confirmed).
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: confirmed
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: confirmed
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-preparing
+    utterance: bota o último pedido como em preparo
+    note: >-
+      Colloquial register ("bota" instead of "coloca"/"muda").
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: preparing
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: preparing
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-in-delivery
+    utterance: o pedido já saiu pra entrega, atualiza aí
+    note: >-
+      Context-embedded + colloquial ("atualiza aí") — states the REASON
+      before the instruction, a common staff-chat pattern.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: in_delivery
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: in_delivery
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-delivered
+    utterance: marca como entregue o pedido mais recente
+    note: >-
+      Direct register, "marca como" phrasing (distinct verb from "muda"/"atualiza").
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: delivered
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: delivered
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-canceled
+    utterance: cancela o último pedido
+    note: >-
+      Brusque/short register — the terminal (canceled) target.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: canceled
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: canceled
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-ready-formal
+    utterance: Por favor, atualize o status do pedido mais recente para "pronto".
+    note: >-
+      Formal register (capitalized, "Por favor", quoted status word) —
+      second "ready" variant, proving phrasing formality doesn't change
+      what's extracted.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: ready
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: ready
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-preparing-polite
+    utterance: coloca meu pedido mais recente em preparação, por favor
+    note: >-
+      Polite colloquial register, "em preparação" synonym for "em preparo".
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: preparing
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: preparing
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-confirmed-question
+    utterance: dá pra confirmar o pedido mais recente?
+    note: >-
+      Question-form register ("dá pra...?") — proves a non-imperative
+      surface form still extracts the same directive.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: confirmed
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: confirmed
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-in-delivery-formal
+    utterance: Solicito a atualização do pedido mais recente para "em rota de entrega".
+    note: >-
+      Formal/bureaucratic register ("Solicito a atualização..."), second
+      in_delivery variant with its "em rota de entrega" synonym.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: in_delivery
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: in_delivery
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-delivered-brusque
+    utterance: já entregou, marca como entregue
+    note: >-
+      Brusque/elliptical register — states the fact tersely, then the
+      instruction.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: delivered
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: delivered
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-canceled-polite
+    utterance: poderia cancelar meu pedido mais recente, por gentileza?
+    note: >-
+      Very polite/formal question register ("poderia...", "por
+      gentileza") — second canceled variant.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: canceled
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: canceled
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-ready-colloquial
+    utterance: deixa prontinho o meu último pedido
+    note: >-
+      Colloquial register with the diminutive "prontinho" — third ready
+      variant.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: ready
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: ready
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-preparing-context
+    utterance: esse pedido já pode ir pra cozinha, marca como em preparo
+    note: >-
+      Context-embedded register — gives the operational justification
+      ("já pode ir pra cozinha") before the instruction.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: preparing
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: preparing
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-confirmed-casual
+    utterance: confirma aí o pedido, valeu
+    note: >-
+      Casual/slang register ("confirma aí", "valeu") — third confirmed
+      variant.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: confirmed
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: confirmed
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-in-delivery-context
+    utterance: o entregador já saiu com o pedido, atualiza o status pra em rota
+    note: >-
+      Context-embedded register, third in_delivery variant with the "em
+      rota" shorthand.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: in_delivery
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: in_delivery
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-delivered-casual
+    utterance: pedido entregue, pode fechar
+    note: >-
+      Casual/shorthand register ("pode fechar") — third delivered
+      variant, no explicit verb naming the status transition directly.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: delivered
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: delivered
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-canceled-reason
+    utterance: cancela esse pedido pra mim, o cliente desistiu
+    note: >-
+      Register WITH a stated justification ("o cliente desistiu") —
+      third canceled variant.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: canceled
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: canceled
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-ready-brusque
+    utterance: pedido mais recente pronto, atualiza
+    note: >-
+      Telegraphic/brusque register (fact, then bare instruction) — fourth
+      ready variant.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: ready
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: ready
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true
+
+  - id: most-recent-order-to-preparing-brusque
+    utterance: muda pra preparando o meu último pedido
+    note: >-
+      Direct register with the "preparando" gerund synonym for "em
+      preparo" — fourth preparing variant.
+    expectPayload:
+      extractionIR:
+        payload:
+          newStatus: preparing
+        provenanceTrust:
+          newStatus: untrusted
+      hydratedIntentIR:
+        payload:
+          newStatus: preparing
+        payloadPresent:
+          - orderId
+        provenanceTrust:
+          orderId: grounded
+          newStatus: untrusted
+        confirmationRequired: true

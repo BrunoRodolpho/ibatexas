@@ -5,7 +5,6 @@
 // cachePixDetailsForCustomer envelope build).
 //
 // This file ADDS the uncovered surface:
-//   - POST /api/cart/:id/sync (full handler + per-item REFUSE/error skips)
 //   - GET  /api/cart/pix-details (cache-hit + service-fallback + empty)
 //   - GET  /api/cart/delivery-estimate (success + 400)
 //   - POST /api/coupons/validate (valid/disabled/not-found/error)
@@ -43,6 +42,12 @@ const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
 const mockAdjudicate = vi.hoisted(() => vi.fn());
 const mockAdjudicateAndAudit = vi.hoisted(() => vi.fn());
+// BKL-180 — the checkout sync leg hydrates DECLARED allergens from the catalog
+// (Typesense) before the order.cart.sync adjudication. Default: a declared empty
+// allergens array so the sync-chain checkouts proceed.
+const mockTypesenseSearch = vi.hoisted(() =>
+  vi.fn(async () => ({ hits: [{ document: { allergens: [] as string[] } }] })),
+);
 const mockCreateCheckout = vi.hoisted(() => vi.fn());
 const mockEstimateDelivery = vi.hoisted(() => vi.fn());
 const mockGetMealPeriod = vi.hoisted(() => vi.fn());
@@ -116,6 +121,11 @@ vi.mock("@ibatexas/tools", async () => {
     normalizeCpf: actual.normalizeCpf,
     createOrderAccessToken: actual.createOrderAccessToken,
     verifyOrderAccessToken: actual.verifyOrderAccessToken,
+    // BKL-180 — catalog allergen hydration for the checkout sync leg.
+    COLLECTION: "products",
+    getTypesenseClient: () => ({
+      collections: () => ({ documents: () => ({ search: mockTypesenseSearch }) }),
+    }),
   };
 });
 
@@ -139,6 +149,19 @@ vi.mock("@ibatexas/domain", () => ({
       findFirst: mockFindFirst,
     },
   },
+  // FE-T04 — routes/cart.js (imported below) pulls in
+  // customer-intent-gateway.js + claustrum/resolve-and-assemble.js, both of
+  // which now statically import from @ibatexas/domain. isStructurallyMalformed
+  // mirrors real behavior for this file's well-formed envelopes (always
+  // `false`) — the gate's own rejection logic is covered by
+  // test-envelope-ingress.test.ts and with-adjudicate.test.ts, not here.
+  // createReservationService is unexercised by any assertion in this file.
+  isStructurallyMalformed: () => false,
+  STRUCTURAL_REJECTION_CODE: "envelope_malformed",
+  createReservationService: () => ({
+    getById: vi.fn().mockResolvedValue(null),
+    listByCustomer: vi.fn().mockResolvedValue({ reservations: [] }),
+  }),
 }));
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -224,88 +247,6 @@ beforeEach(() => {
   mockFindFirst.mockResolvedValue(null);
   mockCancelStalePI.mockResolvedValue(undefined);
   mockAddNote.mockResolvedValue({ decision: { kind: "EXECUTE" }, result: undefined });
-});
-
-// ── POST /api/cart/:id/sync ──────────────────────────────────────────────────
-
-describe("POST /api/cart/:id/sync — bulk sync Zustand → Medusa", () => {
-  it("adds each item via medusaAdjudicated then returns the synced cart", async () => {
-    mockMedusaAdjudicated.mockResolvedValue({ ok: true });
-    mockMedusaStore.mockResolvedValue({ cart: { id: "cart_01", items: [{ id: "i1" }] } });
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/cart/cart_01/sync",
-      payload: { items: [{ variantId: "var_A", quantity: 2 }, { variantId: "var_B", quantity: 1 }] },
-    });
-
-    expect(res.statusCode).toBe(200);
-    // The route ends by re-reading the cart via bare medusaStore.
-    expect(mockMedusaStore).toHaveBeenCalledWith("/store/carts/cart_01");
-    expect(res.json().cart.id).toBe("cart_01");
-    // One adjudicated add per item, with the line_items.add intent + payload.
-    expect(mockMedusaAdjudicated).toHaveBeenCalledTimes(2);
-    expect(mockMedusaAdjudicated).toHaveBeenCalledWith(
-      expect.objectContaining({
-        method: "POST",
-        path: "/store/carts/cart_01/line-items",
-        intentKind: "medusa.cart.line_items.add",
-        payload: { variant_id: "var_A", quantity: 2 },
-      }),
-    );
-  });
-
-  it("skips a single REFUSEd item but still returns the cart (200)", async () => {
-    mockMedusaAdjudicated
-      .mockRejectedValueOnce(new MockRefusedError({ code: "blocked", userFacing: "x" }))
-      .mockResolvedValueOnce({ ok: true });
-    mockMedusaStore.mockResolvedValue({ cart: { id: "cart_01", items: [] } });
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/cart/cart_01/sync",
-      payload: { items: [{ variantId: "bad", quantity: 1 }, { variantId: "ok", quantity: 1 }] },
-    });
-
-    // REFUSE on one item does not abort the whole sync.
-    expect(res.statusCode).toBe(200);
-    expect(mockMedusaAdjudicated).toHaveBeenCalledTimes(2);
-  });
-
-  it("swallows a generic transport error on an item and still returns the cart", async () => {
-    mockMedusaAdjudicated.mockRejectedValue(new Error("ECONNRESET"));
-    mockMedusaStore.mockResolvedValue({ cart: { id: "cart_01", items: [] } });
-
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/cart/cart_01/sync",
-      payload: { items: [{ variantId: "x", quantity: 1 }] },
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.json().cart.id).toBe("cart_01");
-  });
-
-  it("returns 403 when the cart belongs to another customer (ownership)", async () => {
-    mockGetRedisClient.mockResolvedValue(
-      createMockRedis({ get: vi.fn().mockResolvedValue("cust_OTHER") }),
-    );
-    const app = await buildTestServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/api/cart/cart_01/sync",
-      payload: { items: [{ variantId: "x", quantity: 1 }] },
-      headers: { "x-customer-id": "cust_ME" },
-    });
-
-    expect(res.statusCode).toBe(403);
-    expect(res.json().message).toBe("Carrinho pertence a outro usuário.");
-    // Ownership refusal short-circuits before any Medusa mutation.
-    expect(mockMedusaAdjudicated).not.toHaveBeenCalled();
-  });
 });
 
 // ── Cart-ownership 403 across mutating routes ────────────────────────────────

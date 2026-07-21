@@ -15,6 +15,9 @@
 
 import type {
   ExecArgs,
+  IApiKeyModuleService,
+  LinkDefinition,
+  RemoteQueryFunction,
   IProductModuleService,
   IPricingModuleService,
   IRegionModuleService,
@@ -59,6 +62,106 @@ async function ensureSalesChannel(
   )
 }
 
+/**
+ * BKL-193 — ensure a PUBLISHABLE API key exists AND is linked to EXACTLY the
+ * seed's sales channel. The Medusa bootstrap creates a "Default Publishable
+ * API Key" linked only to its own "Default Sales Channel", while this seed
+ * links every product to "Loja Online" — disjoint, so `/store/products`
+ * scoped by the key returned 0 products and store-API tooling (the cart
+ * seeders) could not run. The link set is EXACT, not additive: a MULTI-channel
+ * key breaks `/store/carts` ("Please provide a sales channel ID"), which would
+ * regress every cart caller — and the bootstrap's own channel holds no
+ * products, so dismissing it loses nothing. No env var is needed downstream:
+ * `medusaStore` (packages/tools) resolves the key at runtime via the admin API.
+ */
+export async function ensurePublishableKeyForChannel(
+  apiKeyModule: IApiKeyModuleService,
+  query: Omit<RemoteQueryFunction, symbol>,
+  remoteLink: {
+    create: (links: LinkDefinition[]) => Promise<unknown>
+    dismiss: (links: LinkDefinition[]) => Promise<unknown>
+  },
+  salesChannelId: string,
+): Promise<{ keyCreated: boolean; added: boolean; dismissed: number }> {
+  const keys = await apiKeyModule.listApiKeys(
+    { type: "publishable" },
+    { select: ["id", "title", "revoked_at"] },
+  )
+  let key = keys.find((k) => !k.revoked_at)
+  let keyCreated = false
+  if (!key) {
+    ;[key] = await apiKeyModule.createApiKeys([
+      { title: "Default Publishable API Key", type: "publishable", created_by: "seed" },
+    ])
+    keyCreated = true
+  }
+
+  // Read the key's current channel links (create-on-existing throws, and the
+  // exact-set semantics need the full list to compute add/remove).
+  const { data } = await query.graph({
+    entity: "api_key",
+    fields: ["id", "sales_channels.id"],
+    filters: { id: key.id },
+  })
+  const linked = (data[0] as { sales_channels?: Array<{ id: string }> } | undefined)
+    ?.sales_channels ?? []
+  const keyLink = (channelId: string): LinkDefinition => ({
+    [Modules.API_KEY]: { publishable_key_id: key.id },
+    [Modules.SALES_CHANNEL]: { sales_channel_id: channelId },
+  })
+
+  const toDismiss = linked.filter((c) => c.id !== salesChannelId)
+  if (toDismiss.length > 0) {
+    await remoteLink.dismiss(toDismiss.map((c) => keyLink(c.id)))
+  }
+  const added = !linked.some((c) => c.id === salesChannelId)
+  if (added) {
+    await remoteLink.create([keyLink(salesChannelId)])
+  }
+  return { keyCreated, added, dismissed: toDismiss.length }
+}
+
+/**
+ * BKL-193 — heal missing product→sales-channel links. The create loop links
+ * only NEWLY created products; a product seeded before the channel link
+ * existed (or by an interrupted run) was skipped forever and stayed invisible
+ * to the store API. Check-before-create (re-linking throws). Returns how many
+ * links were created.
+ */
+export async function ensureProductChannelLinks(
+  query: Omit<RemoteQueryFunction, symbol>,
+  remoteLink: { create: (links: LinkDefinition[]) => Promise<unknown> },
+  salesChannelId: string,
+  productIds: string[],
+): Promise<number> {
+  if (productIds.length === 0) return 0
+  const { data } = await query.graph({
+    entity: "product",
+    fields: ["id", "sales_channels.id"],
+    filters: { id: productIds },
+  })
+  const missing = (data as Array<{ id: string; sales_channels?: Array<{ id: string }> }>)
+    .filter((p) => !(p.sales_channels ?? []).some((c) => c.id === salesChannelId))
+    .map((p) => p.id)
+  if (missing.length === 0) return 0
+  await remoteLink.create(
+    missing.map((productId) => ({
+      [Modules.PRODUCT]: { product_id: productId },
+      [Modules.SALES_CHANNEL]: { sales_channel_id: salesChannelId },
+    })),
+  )
+  return missing.length
+}
+
+// BKL-136 — the OWNER-ATTESTED store-info metadata the STORE_INFO claim grounds on
+// ("onde fica o restaurante?" / "tem estacionamento?"). Committed seed values for
+// the dev stack (the owner edits them via the Medusa admin in prod); consumed by
+// apps/api's store-info-resolver, which composes the customer-facing pt-BR scalar.
+const STORE_INFO_METADATA = {
+  address: "Rua Santa Cruz, 456 — Centro, Ibaté/SP",
+  parking: "Temos estacionamento próprio gratuito ao lado do restaurante",
+}
+
 async function ensureStore(
   storeModule: IStoreModuleService,
   salesChannelId: string,
@@ -77,11 +180,15 @@ async function ensureStore(
     ? await storeModule.updateStores(existingStore.id, {
         name: storeName,
         default_sales_channel_id: salesChannelId,
+        // Merge-preserve: keep any owner-edited metadata keys, only fill the
+        // store-info fields when absent (the seed must never clobber the owner).
+        metadata: { ...STORE_INFO_METADATA, ...(existingStore.metadata ?? {}) },
       })
     : await storeModule.createStores({
         name: storeName,
         supported_currencies: [{ currency_code: "brl", is_default: true }],
         default_sales_channel_id: salesChannelId,
+        metadata: { ...STORE_INFO_METADATA },
       })
 }
 
@@ -282,6 +389,7 @@ export default async function seed({ container }: ExecArgs) {
     container.resolve<IRegionModuleService>(Modules.REGION)
   const salesChannelModule =
     container.resolve<ISalesChannelModuleService>(Modules.SALES_CHANNEL)
+  const apiKeyModule = container.resolve<IApiKeyModuleService>(Modules.API_KEY)
 
   console.log("🌱 Starting seed...")
 
@@ -303,6 +411,21 @@ export default async function seed({ container }: ExecArgs) {
   await ensureRegion(regionModule, REGION_NAME)
 
   console.log(`  ✓ Store "${store.name}", sales channel & region ready`)
+
+  // BKL-193 — the store API is scoped by publishable-key→channel links; make
+  // sure a key exists and covers THIS seed's channel (additive, idempotent).
+  const query = container.resolve(ContainerRegistrationKeys.QUERY)
+  const keyState = await ensurePublishableKeyForChannel(
+    apiKeyModule,
+    query,
+    remoteLink,
+    salesChannel.id,
+  )
+  console.log(
+    `  ✓ Publishable key ${keyState.keyCreated ? "created" : "reused"}` +
+      `${keyState.added ? ` & linked to "${salesChannel.name}"` : " (channel already linked)"}` +
+      `${keyState.dismissed > 0 ? ` (${keyState.dismissed} stale channel link${keyState.dismissed === 1 ? "" : "s"} dismissed)` : ""}`,
+  )
 
   // ── 1. Categories (idempotent by handle) ──────────────────────────────────
   // Category `handle` is unique (partial index where deleted_at IS NULL) and
@@ -345,8 +468,6 @@ export default async function seed({ container }: ExecArgs) {
   // Track every seeded product id (new + reused) for the post-link reindex pass.
   const allProductIds: string[] = []
   let createdCount = 0
-
-  const query = container.resolve(ContainerRegistrationKeys.QUERY)
 
   // Heal pre-existing products that are missing prices — e.g. a crash-interrupted
   // prior seed left the product row but never linked a price_set. Such a product
@@ -395,8 +516,19 @@ export default async function seed({ container }: ExecArgs) {
     variantPrices.push(...collectNewVariantPrices(createdProduct.variants ?? [], product))
   }
 
+  // BKL-193 — heal missing product→channel links on REUSED products (the loop
+  // above links only newly-created ones; a pre-link-era or interrupted-seed
+  // product would otherwise stay invisible to the store API forever).
+  const healedLinks = await ensureProductChannelLinks(
+    query,
+    remoteLink,
+    salesChannel.id,
+    allProductIds,
+  )
+
   console.log(
-    `  ✓ ${createdCount} products created, ${existingProducts.length} reused & linked to sales channel`
+    `  ✓ ${createdCount} products created, ${existingProducts.length} reused` +
+      `${healedLinks > 0 ? ` (${healedLinks} channel links healed)` : ""} — all linked to sales channel`
   )
 
   // ── 3. Create price sets and link to variants via Remote Link ─────────────

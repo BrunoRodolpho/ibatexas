@@ -10,7 +10,10 @@
  * persona. Neither is EVER a customer/LLM chat verb, so both are deliberately
  * absent from `CHAT_DRIVABLE_TOOL_KINDS` and have no registered chat tool (they
  * show up as advertised-but-unregistered under the `staff` roster-drift probe,
- * which the `ADVERTISED_NOT_REGISTERED_WHITELIST` documents). `product.price.set`
+ * exempted because neither is `tier: "chat"` in `CapabilityDefinition` — see
+ * `apps/api/src/tools/register-ibatexas-tool-packs.ts`'s `chatSurfacedKinds`,
+ * FE-T22's replacement for the retired `ADVERTISED_NOT_REGISTERED_WHITELIST`).
+ * `product.price.set`
  * is REVERSIBLE, so it stays IN the WhatsApp verb scope (NOT in
  * `WA_EXCLUDED_OPS_KINDS`); its UNTRUSTED-taint CONFIRM parks/resumes on both
  * ingresses.
@@ -26,7 +29,8 @@
  * BKL-085 UNTRUSTED-taint CONFIRM overlay). Unlike `product.availability.set`, all
  * three are registered ops tools, so the ops-plane drift gate holds (advertised ⊆
  * registered); on the CHAT roster they are advertised-but-unregistered (no chat
- * tool), documented by `ADVERTISED_NOT_REGISTERED_WHITELIST` entries. See
+ * tool) — exempted via `chatSurfacedKinds` (FE-T22) since none of the three is
+ * `tier: "chat"` in `CapabilityDefinition`. See
  * {@link OPS_FOREIGN_ADVERTISED_KIND}, {@link OPS_FOREIGN_ADVERTISED_TRANSITION_KIND},
  * and {@link OPS_FOREIGN_ADVERTISED_REFUND_KIND}.
  *
@@ -129,10 +133,10 @@ export const OPS_FOREIGN_ADVERTISED_TRANSITION_KIND = "order.status.transition"
  * ref, amount, reason}; the ops tool registry registers a
  * `writeAdjudicatedRefund`-backed executor (the POST-adjudication ledger write +
  * the `payment.status_changed` emission). Like the other two foreign kinds it is a
- * STAFF/OPS-plane verb with NO registered CHAT tool — an
- * `ADVERTISED_NOT_REGISTERED_WHITELIST` entry (`staff:payment.refund.issue`)
- * documents the expected chat-roster gap; the ops-plane drift parity gate
- * (`opsPlaneDriftProblems`) verifies it IS registered on the OPS registry.
+ * STAFF/OPS-plane verb with NO registered CHAT tool — `chatSurfacedKinds`
+ * (FE-T22) exempts `staff:payment.refund.issue` from the chat-roster drift
+ * check (not `tier: "chat"` in `CapabilityDefinition`); the ops-plane drift
+ * parity gate (`opsPlaneDriftProblems`) verifies it IS registered on the OPS registry.
  */
 export const OPS_FOREIGN_ADVERTISED_REFUND_KIND = "payment.refund.issue"
 
@@ -145,8 +149,9 @@ export const OPS_FOREIGN_ADVERTISED_REFUND_KIND = "payment.refund.issue"
  * (`ops.alert.resolve` / `incident.ticket.close`) — the D10 two-layer posture,
  * hence the DISTINCT `*.staff` names (see types.ts header). Both are STAFF/OPS-
  * plane verbs with NO registered CHAT tool, so under the chat "staff" roster
- * probe they are advertised-but-unregistered — `ADVERTISED_NOT_REGISTERED_WHITELIST`
- * documents that (staff:ops.alert.resolve.staff / staff:incident.ticket.close.staff).
+ * probe they are advertised-but-unregistered — `chatSurfacedKinds` (FE-T22)
+ * exempts both (staff:ops.alert.resolve.staff / staff:incident.ticket.close.staff),
+ * neither being `tier: "chat"` in `CapabilityDefinition`.
  */
 export const OPS_ALERT_RESOLVE_STAFF_KIND = "ops.alert.resolve.staff"
 export const OPS_INCIDENT_CLOSE_STAFF_KIND = "incident.ticket.close.staff"
@@ -158,10 +163,10 @@ export const OPS_INCIDENT_CLOSE_STAFF_KIND = "incident.ticket.close.staff"
  * admin schedule route uses (a domain-service verb, like the BKL-088 resolution
  * verbs — NO Medusa egress). REVERSIBLE + non-money, so it stays IN the WhatsApp
  * verb scope (NOT in `WA_EXCLUDED_OPS_KINDS`). Like the other OWNED ops verbs it is
- * a STAFF/OPS-plane verb with NO registered CHAT tool — an
- * `ADVERTISED_NOT_REGISTERED_WHITELIST` entry (`staff:schedule.override.set`)
- * documents that; the ops-plane drift gate verifies it IS registered on the OPS
- * registry.
+ * a STAFF/OPS-plane verb with NO registered CHAT tool — `chatSurfacedKinds`
+ * (FE-T22) exempts `staff:schedule.override.set` (not `tier: "chat"` in
+ * `CapabilityDefinition`); the ops-plane drift gate verifies it IS registered on
+ * the OPS registry.
  */
 export const OPS_SCHEDULE_OVERRIDE_SET_KIND = "schedule.override.set"
 

@@ -223,6 +223,14 @@ export {
   MissingEventVersionError,
 } from "./services/order-command.service.js"
 
+// NEW-014 — fiscal document (NFC-e) record service.
+export {
+  createFiscalDocumentService,
+  type FiscalDocumentService,
+  type FiscalDocumentRecord,
+  type FiscalOutcomeInput,
+} from "./services/fiscal-document.service.js"
+
 // Envelope-typed surface — Task 15 (M3). Payload types for callers
 // building IntentEnvelopes for the OrderCommandService envelope-typed
 // methods. The Pack types (OrderNoteAddPayload, OrderIntentKind, etc.)
@@ -249,6 +257,15 @@ export {
   type AdjudicatedResult,
   type WithAdjudicateOptions,
 } from "./services/__shared__/with-adjudicate.js"
+
+// FE-T04 — canonical isIntentEnvelope structural boundary gate. Reused by
+// `withAdjudicate` above AND by the customer-plane HTTP gateway
+// (apps/api/src/routes/__shared__/customer-intent-gateway.ts), which depends
+// on this package (never the reverse) so this is the single source of truth.
+export {
+  STRUCTURAL_REJECTION_CODE,
+  isStructurallyMalformed,
+} from "./services/__shared__/envelope-structural-gate.js"
 export {
   createOrderQueryService,
   type OrderQueryService,
@@ -288,6 +305,7 @@ export {
   type PaymentMethodSwitchPayload,
   type PaymentRefundIssuePayload,
   type PaymentRegenerationCountIncrementPayload,
+  type PaymentDisputeOpenPayload,
 } from "./services/__shared__/payment-projection-policy.js"
 export {
   createPaymentQueryService,

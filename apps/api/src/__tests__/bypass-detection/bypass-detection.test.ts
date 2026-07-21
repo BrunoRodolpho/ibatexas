@@ -81,8 +81,8 @@ const PRISMA_SCAN_DIRS = [
  *
  * W8-V4 widens MEDUSA_SCAN_DIRS to also cover packages/tools/src/.
  * Legitimate read-only carve-outs are listed in ALLOWED_MEDUSA_DIRECT
- * (e.g. cart/get-cart.ts, catalog/check-inventory.ts, the wrapper
- * itself), so adding the dirs widens detection without false positives.
+ * (e.g. cart/get-cart.ts, the wrapper itself), so adding the dirs widens
+ * detection without false positives.
  *
  * packages/domain/src/services/ is INTENTIONALLY NOT in this list —
  * the *FromEnvelope write paths and `mutate()` helper there are the
@@ -144,8 +144,8 @@ const ALLOWED_MEDUSA_DIRECT = new Set<string>([
   "packages/tools/src/cart/get-cart.ts",
   "packages/tools/src/cart/assert-cart-ownership.ts",
   "packages/tools/src/cart/_shared.ts",
-  "packages/tools/src/catalog/get-nutritional-info.ts",
-  "packages/tools/src/catalog/check-inventory.ts",
+  // BKL-179 — catalog/get-nutritional-info.ts + catalog/check-inventory.ts
+  // were dead ToolDefinitions and have been deleted.
 ])
 
 /**

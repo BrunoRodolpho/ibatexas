@@ -8,14 +8,17 @@
  * for future Pack maintainers; the conformance file targets the
  * cross-outcome / kind matrix.
  *
- * # Coverage map (task spec §"Implementation requirements" item 7)
+ * # Coverage map
  *
- *   - Message inside 24h window → EXECUTE.
- *   - Message outside 24h window → REFUSE (`whatsapp.window.expired`).
- *   - Template outside 24h window → EXECUTE (bypasses window).
- *   - Customer→staff message with adversarial chars → REWRITE.
+ * BKL-177 retired the channel-egress kinds (whatsapp.message.send +
+ * whatsapp.template.send) and their guards (24h-window, template
+ * validation, customer→staff sanitization); live WhatsApp egress runs
+ * through `twilio.message.send`. What remains here:
+ *
+ *   - 1st handover in the window → EXECUTE.
  *   - 2nd handover in 10 min → REQUEST_CONFIRMATION.
  *   - 3rd handover in 10 min → REFUSE (`whatsapp.handoff.rate_limited`).
+ *   - conversation.message.append: TRUSTED EXECUTE / UNTRUSTED + empty-body REFUSE.
  *   - Auth / taint / default-deny invariants.
  */
 
@@ -65,259 +68,6 @@ function baseState(
     },
   }
 }
-
-// ── 24-hour window enforcement ──────────────────────────────────────────
-
-describe("whatsappPolicyBundle — 24h customer-initiated window", () => {
-  it("EXECUTE whatsapp.message.send to customer inside the 24h window", () => {
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511999999999",
-        body: "Olá! Seu pedido está pronto.",
-        senderRole: "system",
-      }),
-      baseState(),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("EXECUTE")
-  })
-
-  it("REFUSE whatsapp.message.send outside the 24h window", () => {
-    // 25 hours since last customer message — strictly outside the
-    // 24h + grace window.
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511999999999",
-        body: "Olá! Atualização tardia.",
-        senderRole: "system",
-      }),
-      baseState({
-        now: new Date("2026-05-22T12:00:00.000Z"),
-        lastCustomerMessageAt: new Date("2026-05-21T10:00:00.000Z"),
-      }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("whatsapp.window.expired")
-  })
-
-  it("REFUSE whatsapp.message.send with no prior customer message", () => {
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511999999999",
-        body: "Cold outreach attempt.",
-        senderRole: "system",
-      }),
-      baseState({ lastCustomerMessageAt: null }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("whatsapp.window.expired")
-  })
-
-  it("EXECUTE whatsapp.message.send with templateName/Variables outside the window", () => {
-    // Templated outbound bypasses the window per Meta/Twilio policy.
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511999999999",
-        body: "Olá {{1}}, seu pedido #{{2}}.",
-        senderRole: "system",
-        templateName: "order_ready_v1",
-        templateVariables: { "1": "Maria", "2": "1234" },
-      }),
-      baseState({
-        lastCustomerMessageAt: new Date("2026-05-20T10:00:00.000Z"),
-      }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("EXECUTE")
-  })
-
-  it("EXECUTE whatsapp.template.send outside the window (SYSTEM-only kind)", () => {
-    const decision = adjudicate(
-      env(
-        "whatsapp.template.send",
-        {
-          to: "+5511999999999",
-          templateName: "order_ready_v1",
-          templateVariables: { "1": "Maria", "2": "1234" },
-        },
-        "TRUSTED",
-      ),
-      baseState({
-        lastCustomerMessageAt: new Date("2026-05-20T10:00:00.000Z"),
-      }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("EXECUTE")
-  })
-})
-
-// ── Customer→staff REWRITE / sanitization ───────────────────────────────
-
-describe("whatsappPolicyBundle — customer→staff sanitization (REWRITE)", () => {
-  it("REWRITE customer→staff whatsapp.message.send with adversarial markdown body", () => {
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511888888888",
-        body: "*urgent* _help_ ~now~",
-        senderRole: "customer",
-      }),
-      baseState({ recipientType: "staff" }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REWRITE")
-    if (decision.kind !== "REWRITE") return
-    // Sanitized body strips markdown chars. Words separated by spaces
-    // remain separated; word-adjacent markdown chars are deleted
-    // without inserting a space (matches `sanitizeCustomerString`
-    // semantics — newlines/line-separators are the ones that become
-    // spaces, all other strip targets are deleted).
-    const newPayload = decision.rewritten.payload as { body: string }
-    expect(newPayload.body).toBe("urgent help now")
-    // Reason is pt-BR.
-    expect(decision.reason).toMatch(/equipe/i)
-  })
-
-  it("REWRITE customer→staff whatsapp.message.send truncates oversized body", () => {
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511888888888",
-        body: "a".repeat(200),
-        senderRole: "customer",
-      }),
-      baseState({ recipientType: "staff" }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REWRITE")
-    if (decision.kind !== "REWRITE") return
-    const newPayload = decision.rewritten.payload as { body: string }
-    expect(newPayload.body.length).toBe(100)
-  })
-
-  it("EXECUTE customer→staff whatsapp.message.send when body has no adversarial chars", () => {
-    // No REWRITE needed — body is already clean, the guard returns null
-    // and the executor producer fires.
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511888888888",
-        body: "preciso de ajuda",
-        senderRole: "customer",
-      }),
-      baseState({ recipientType: "staff" }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("EXECUTE")
-  })
-
-  it("EXECUTE customer→customer whatsapp.message.send (REWRITE guard skips)", () => {
-    // REWRITE guard fires only when recipientType=staff; customer→customer
-    // is a legitimate path that doesn't need sanitization.
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511999999999",
-        body: "*follow-up question*",
-        senderRole: "customer",
-      }),
-      baseState({ recipientType: "customer" }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("EXECUTE")
-  })
-})
-
-// ── P1-G: auth-phase REFUSE when recipientType is unprojected ───────────
-
-describe("whatsappPolicyBundle — P1-G auth-phase guard for missing recipientType", () => {
-  it("[P1-G] REFUSE customer→? whatsapp.message.send when recipientType is missing", () => {
-    // The upstream command service forgot to project recipientType.
-    // Without the W4 P1-G auth guard the REWRITE silently skips and an
-    // unsanitized body could reach a staff phone. With the guard, the
-    // policy refuses outright.
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511888888888",
-        body: "*urgent staff message*",
-        senderRole: "customer",
-      }),
-      baseState({ recipientType: undefined as unknown as null }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("whatsapp.staff.recipient_unknown")
-    expect(decision.refusal.kind).toBe("AUTH")
-    // pt-BR per CLAUDE.md rule #4.
-    expect(decision.refusal.userFacing).toMatch(/recusado/i)
-  })
-
-  it("[P1-G] REFUSE customer→? whatsapp.message.send when recipientType is null", () => {
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511888888888",
-        body: "preciso de ajuda",
-        senderRole: "customer",
-      }),
-      baseState({ recipientType: null }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("whatsapp.staff.recipient_unknown")
-  })
-
-  it("[P1-G] EXECUTE system→? whatsapp.message.send when recipientType is missing (guard only fires for customer sender)", () => {
-    // Only the customer-sourced path is fenced — system-initiated
-    // messages (e.g., cart-intelligence notifications) don't carry
-    // customer-controlled content, so the guard skips.
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511999999999",
-        body: "Olá! Seu pedido está pronto.",
-        senderRole: "system",
-      }),
-      baseState({ recipientType: undefined as unknown as null }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("EXECUTE")
-  })
-
-  it("[P1-G] still REWRITEs customer→staff when recipientType IS projected (legitimate path)", () => {
-    // The legitimate path still flows through the existing REWRITE.
-    // P1-G doesn't break the happy customer→staff flow.
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511888888888",
-        body: "*needs review*",
-        senderRole: "customer",
-      }),
-      baseState({ recipientType: "staff" }),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REWRITE")
-  })
-
-  it("[P1-G] templated outbound bypasses the auth guard (template path is always safe)", () => {
-    // Templated outbounds carry no free-form customer body; they don't
-    // need recipient classification to be safe.
-    const decision = adjudicate(
-      env("whatsapp.message.send", {
-        to: "+5511999999999",
-        body: "",
-        senderRole: "customer",
-        templateName: "order_ready_v1",
-        templateVariables: { "1": "Maria" },
-      }),
-      baseState({ recipientType: undefined as unknown as null }),
-      whatsappPolicyBundle,
-    )
-    // Templated messages bypass the window guard AND the P1-G guard;
-    // they execute on the producer.
-    expect(decision.kind).toBe("EXECUTE")
-  })
-})
 
 // ── Staff-handover rate limit ───────────────────────────────────────────
 
@@ -376,31 +126,11 @@ describe("whatsappPolicyBundle — staff-handover rate limit", () => {
 describe("whatsappPolicyBundle — taint policy for system-only kinds", () => {
   it("system-only kinds require TRUSTED taint", () => {
     expect(
-      whatsappPolicyBundle.taint.minimumFor("whatsapp.template.send"),
-    ).toBe("TRUSTED")
-    expect(
       whatsappPolicyBundle.taint.minimumFor("whatsapp.session.handover"),
     ).toBe("TRUSTED")
     expect(
-      whatsappPolicyBundle.taint.minimumFor("whatsapp.message.send"),
-    ).toBe("UNTRUSTED")
-  })
-
-  it("REFUSE UNTRUSTED whatsapp.template.send (taint gate)", () => {
-    const decision = adjudicate(
-      env(
-        "whatsapp.template.send",
-        {
-          to: "+5511999999999",
-          templateName: "order_ready_v1",
-          templateVariables: { "1": "Maria" },
-        },
-        "UNTRUSTED",
-      ),
-      baseState(),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
+      whatsappPolicyBundle.taint.minimumFor("conversation.message.append"),
+    ).toBe("TRUSTED")
   })
 
   it("REFUSE UNTRUSTED whatsapp.session.handover (taint gate)", () => {
@@ -419,29 +149,6 @@ describe("whatsappPolicyBundle — taint policy for system-only kinds", () => {
       whatsappPolicyBundle,
     )
     expect(decision.kind).toBe("REFUSE")
-  })
-})
-
-// ── Template validation ─────────────────────────────────────────────────
-
-describe("whatsappPolicyBundle — template validation", () => {
-  it("REFUSE whatsapp.template.send with missing templateName", () => {
-    const decision = adjudicate(
-      env(
-        "whatsapp.template.send",
-        {
-          to: "+5511999999999",
-          templateName: "",
-          templateVariables: { "1": "Maria" },
-        },
-        "TRUSTED",
-      ),
-      baseState(),
-      whatsappPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("whatsapp.template.invalid")
   })
 })
 
@@ -540,17 +247,32 @@ describe("whatsappPack — PackV0 shape", () => {
     expect(whatsappPack.signals).toEqual([])
   })
 
-  it("planner exposes zero MUTATING tools to the LLM (handoff wired but not yet advertised — BKL-030)", () => {
+  it("planner advertises ONLY whatsapp.handoff.request, unconditionally (FE-T14/BKL-030-activation)", () => {
     const plan = whatsappPack.planner.plan(baseState(), {
       channel: "whatsapp",
       customerId: "c-1",
       staffId: null,
     })
-    // whatsapp.handoff.request is registered + adjudicable but advertisement is
-    // deferred (see capabilities.ts) until the golden-conversation fixtures can
-    // be regenerated for the new express_intent surface (BKL-030-activation).
+    // whatsapp.handoff.request is registered, adjudicable, AND now advertised
+    // (see capabilities.ts) — the one guest-accessible, always-allowed verb in
+    // the roster. Every other MUTATING kind in this domain stays LLM-invisible.
     expect(plan.visibleReadTools).toEqual([])
-    expect(plan.allowedIntents).toEqual([])
+    expect(plan.allowedIntents).toEqual(["whatsapp.handoff.request"])
+  })
+
+  it("advertises the same single intent regardless of staff/guest/customer state (unconditional activation)", () => {
+    const guestPlan = whatsappPack.planner.plan(baseState(), {
+      channel: "whatsapp",
+      customerId: null,
+      staffId: null,
+    })
+    const staffPlan = whatsappPack.planner.plan(baseState(), {
+      channel: "whatsapp",
+      customerId: null,
+      staffId: "staff-1",
+    })
+    expect(guestPlan.allowedIntents).toEqual(["whatsapp.handoff.request"])
+    expect(staffPlan.allowedIntents).toEqual(["whatsapp.handoff.request"])
   })
 
   it("24h window constant is at least 24h", () => {

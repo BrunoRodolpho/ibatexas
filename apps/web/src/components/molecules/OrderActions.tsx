@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import { Button } from '@ibatexas/ui/atoms'
 import { Modal } from '@ibatexas/ui/molecules'
 import { apiFetch } from '@/lib/api'
+import { submitOrderCancel, submitOrderCancelConfirm } from '@/domains/orders/cancelConfirm'
 import { AmendOrderDialog } from './AmendOrderDialog'
 import { SwitchTypeDialog } from './SwitchTypeDialog'
 
@@ -45,9 +46,13 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
   const [activeAction, setActiveAction] = useState<ActiveAction>(null)
   const [errorMsg, setErrorMsg] = useState('')
   // BKL-036: a PAID order does not cancel synchronously — the kernel PARKS it
-  // (HTTP 202 { confirmationRequired }). This holds the honest "needs
-  // confirmation" notice shown inside the still-open cancel modal.
+  // (HTTP 202 { confirmationRequired }). This holds an honest notice (expiry /
+  // refusal) shown inside the still-open cancel modal.
   const [cancelNotice, setCancelNotice] = useState('')
+  // BKL-146/FE-D19 — the parked cancel's receipt + the KERNEL's prompt. When set,
+  // the modal shows step-2: restate the prompt VERBATIM + a "confirm" button that
+  // COMPLETES the cancel via POST /api/orders/:id/cancel/confirm.
+  const [cancelConfirm, setCancelConfirm] = useState<{ confirmationId: string; prompt: string } | null>(null)
 
   const isBusy = activeAction !== null
 
@@ -84,34 +89,65 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
   }
 
   const handleCancel = useCallback(async () => {
-    // Keep modal open during request — close only on a real (executed) cancel
+    // Keep the modal open during the request — close only on a real (executed)
+    // cancel. A PAID order PARKS (202) → step-2 confirm, NEVER a false success.
     setActiveAction('cancel')
     setErrorMsg('')
     setCancelNotice('')
-    try {
-      const result = await apiFetch<{ confirmationRequired?: boolean }>(`/api/orders/${orderId}/cancel`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      })
-      // BKL-036 — a paid cancel is PARKED, not executed: the route returns
-      // HTTP 202 { confirmationRequired } (a 2xx, so apiFetch does NOT throw).
-      // There is no customer-facing step-2 confirm endpoint yet, so treating
-      // this as success would be a false confirmation (the order is NOT
-      // cancelled). Keep the modal open with an honest notice and skip the
-      // success path (no onMutate, no close). Full web two-phase is a follow-up.
-      if (result?.confirmationRequired) {
-        setCancelNotice(t('cancel_needs_confirmation'))
+    const result = await submitOrderCancel(orderId)
+    setActiveAction(null)
+    switch (result.kind) {
+      case 'executed':
+        setCancelOpen(false)
+        onMutate()
         return
-      }
-      setCancelOpen(false)
-      onMutate()
-    } catch {
-      setErrorMsg(t('cancel_error'))
-    } finally {
-      setActiveAction(null)
+      case 'needs_confirmation':
+        // BKL-146/FE-D19 — the paid cancel PARKED. Advance to step-2: restate
+        // the kernel's prompt and let the customer COMPLETE it. NOT cancelled yet.
+        setCancelConfirm({ confirmationId: result.confirmationId, prompt: result.prompt })
+        onMutate()
+        return
+      case 'not_allowed':
+        setErrorMsg(result.message ?? t('cancel_error'))
+        return
+      default:
+        setErrorMsg(t('cancel_error'))
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId])
+
+  const handleCancelConfirm = useCallback(async () => {
+    if (!cancelConfirm) return
+    // Step-2 — COMPLETE the parked cancel through the kernel's confirmationReceipt.
+    setActiveAction('cancel')
+    setErrorMsg('')
+    setCancelNotice('')
+    const result = await submitOrderCancelConfirm(orderId, cancelConfirm.confirmationId)
+    setActiveAction(null)
+    switch (result.kind) {
+      case 'executed':
+        setCancelConfirm(null)
+        setCancelOpen(false)
+        onMutate()
+        return
+      case 'expired':
+        // Single-use receipt expired / already used — drop step-2 + honest notice.
+        setCancelConfirm(null)
+        setCancelNotice(t('cancel_confirmation_expired'))
+        onMutate()
+        return
+      case 'not_allowed':
+        // The order moved past the cancel window since the park (or an IDOR
+        // refusal) — surface the server's honest message, drop step-2.
+        setCancelConfirm(null)
+        setCancelNotice(result.message ?? t('cancel_error'))
+        onMutate()
+        return
+      default:
+        setErrorMsg(t('cancel_error'))
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderId, cancelConfirm])
 
   const handleRetry = useCallback(async () => {
     await doAction('retry', `/api/orders/${orderId}/payment/retry`, 'POST', tp('retry_error'), {})
@@ -144,8 +180,18 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
   // Available payment method switch targets (exclude current)
   const switchTargets = ['pix', 'card', 'cash'].filter((m) => m !== paymentMethod)
 
-  // Cancel modal footer
-  const cancelFooter = (
+  // Cancel modal footer — two-step: step-1 asks to cancel; step-2 (a PAID order
+  // that PARKED) COMPLETES the kernel-parked cancel via the confirm endpoint.
+  const cancelFooter = cancelConfirm ? (
+    <div className="flex gap-2 justify-end">
+      <Button variant="secondary" size="sm" disabled={activeAction === 'cancel'} onClick={() => { setCancelOpen(false); setCancelConfirm(null); setCancelNotice('') }}>
+        {t('cancel_confirm_no')}
+      </Button>
+      <Button variant="danger" size="sm" isLoading={activeAction === 'cancel'} onClick={handleCancelConfirm}>
+        {t('cancel_confirm_complete')}
+      </Button>
+    </div>
+  ) : (
     <div className="flex gap-2 justify-end">
       <Button variant="secondary" size="sm" disabled={activeAction === 'cancel'} onClick={() => { setCancelOpen(false); setCancelNotice('') }}>
         {t('cancel_confirm_no')}
@@ -217,9 +263,18 @@ export function OrderActions({ orderId, fulfillmentStatus, currentPayment, order
       </div>
 
       {/* Cancel confirmation modal */}
-      <Modal isOpen={cancelOpen} onClose={() => { setCancelOpen(false); setCancelNotice('') }} title={t('cancel_confirm_title')} footer={cancelFooter}>
-        <p className="text-sm text-smoke-600 mb-2">{t('cancel_confirm_body')}</p>
-        <p className="text-xs text-smoke-400">{t('cancel_refund_note')}</p>
+      <Modal isOpen={cancelOpen} onClose={() => { setCancelOpen(false); setCancelConfirm(null); setCancelNotice('') }} title={t('cancel_confirm_title')} footer={cancelFooter}>
+        {cancelConfirm ? (
+          // BKL-146/FE-D19 — step-2: restate the KERNEL's prompt VERBATIM. The
+          // fact of what will happen (paid → refund) comes from the kernel's
+          // parked decision, never app-authored copy.
+          <p className="text-sm text-smoke-600 mb-2" role="status" data-testid="cancel-kernel-prompt">{cancelConfirm.prompt}</p>
+        ) : (
+          <>
+            <p className="text-sm text-smoke-600 mb-2">{t('cancel_confirm_body')}</p>
+            <p className="text-xs text-smoke-400">{t('cancel_refund_note')}</p>
+          </>
+        )}
         {cancelNotice && (
           <p className="text-xs text-accent-red mt-3" role="status">{cancelNotice}</p>
         )}

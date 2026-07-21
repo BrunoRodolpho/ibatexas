@@ -38,9 +38,23 @@ import {
   getTodayHoursText,
   getHoursTextForDate,
   loadSchedule,
+  getRedisClient,
+  rk,
+  medusaStore,
+  reaisToCentavos,
   type ScheduleSignal,
 } from "@ibatexas/tools";
 import type { HolidayEntry, ScheduleOverrideEntry } from "@ibatexas/types";
+// FE-D03 slice C — the pt-BR status label maps for the deterministic ORDER_HISTORY /
+// PAYMENT_HISTORY summary composers (never hardcode a pt-BR status string, Hard Rule 4).
+import {
+  ORDER_STATUS_LABELS_PT,
+  PAYMENT_STATUS_LABELS_PT,
+  RESERVATION_STATUS_LABELS_PT_CUSTOMER,
+} from "@ibatexas/types";
+// (BKL-006 falsifier predicates moved into the domain service's findFirst
+// probes — see findRefundBearingByOrderId/findDisputedByOrderId; no status-enum
+// comparison happens in this file anymore.)
 
 // ── Read value shapes (concrete; the renderer fills 1:1 from validated claims) ─
 
@@ -92,15 +106,24 @@ export type StoreHoursForDateRead = StoreHoursRead;
  */
 export type HolidayRead = HolidayEntry;
 
-/** ORDER_FULFILLMENT_STAGE — the owner-scoped order's current fulfillment stage. */
+/** ORDER_FULFILLMENT_STAGE — the owner-scoped order's current fulfillment stage.
+ *  BKL-189: carries the order's human-facing `displayId` (from the SAME memoized
+ *  owner-scoped projection read — zero extra reads) so the classify-only ambiguity
+ *  branch can label disambiguation candidates "#displayId" synchronously off the
+ *  ledger. Additive: the C6 valueBinding paths are untouched. */
 export interface OrderFulfillmentRead {
   readonly orderId: string;
+  readonly displayId: number;
   readonly fulfillmentStatus: string | null;
 }
 
-/** PAYMENT_STATUS — the owner-scoped order's active-payment status (IDOR-closed). */
+/** PAYMENT_STATUS — the owner-scoped order's active-payment status (IDOR-closed).
+ *  BKL-189: `displayId` for the same reason as {@link OrderFulfillmentRead} — the
+ *  payment ambiguity's subject IS an orderId, and a payment-only turn records no
+ *  fulfillment entries to borrow the label from. */
 export interface PaymentStatusRead {
   readonly orderId: string;
+  readonly displayId: number;
   readonly status: string;
   readonly method: string | null;
 }
@@ -110,6 +133,159 @@ export interface ReservationRead {
   readonly reservationId: string;
   readonly status: string;
   readonly partySize: number;
+  /**
+   * BKL-185 — the DETERMINISTICALLY pre-composed pt-BR status line the
+   * RESERVATION_STATUS template renders (the C6-bound scalar, ORDER_HISTORY's
+   * serialized-scalar idiom): `"confirmada — 19/07 às 18:30, para 2 pessoas"`
+   * when the slot detail is present, or EXACTLY the bare `status` when it is
+   * not — so the detail-absent render is byte-identical to the pre-BKL-185
+   * status-only form. Pure string composition off the DTO (no clock, no tz
+   * math); never model-authored.
+   */
+  readonly statusLine: string;
+}
+
+/**
+ * BKL-185 — compose the reservation status line. Pure. The status word is
+ * LOCALIZED here from the single-source CUSTOMER register (BKL-016 — the same
+ * pt-BR wording the pre-BKL-185 render-time enum localization produced; raw
+ * fallback for an unmapped member, never a crash), because the composed scalar
+ * is the C6-bound value the template renders VERBATIM (the ORDER_HISTORY
+ * pre-composed pt-BR serialized-scalar idiom — enum lookup cannot localize a
+ * composed string). Date arrives as the DTO's ISO `YYYY-MM-DD` (sliced, never
+ * parsed through a clock/tz); `startTime` is the slot's literal `HH:MM`. Any
+ * missing piece degrades to the bare localized status — byte-identical to the
+ * pre-enrichment render.
+ */
+export function composeReservationStatusLine(args: {
+  readonly status: string;
+  readonly partySize: number;
+  readonly isoDate?: string;
+  readonly startTime?: string;
+}): string {
+  const { status, partySize, isoDate, startTime } = args;
+  const localized =
+    (RESERVATION_STATUS_LABELS_PT_CUSTOMER as Readonly<Record<string, string>>)[
+      status
+    ] ?? status;
+  const dateParts = isoDate?.split("-");
+  if (
+    dateParts === undefined ||
+    dateParts.length !== 3 ||
+    startTime === undefined ||
+    startTime.length === 0
+  ) {
+    return localized;
+  }
+  const [, month, day] = dateParts;
+  if (month === undefined || day === undefined) return localized;
+  const pessoas = partySize === 1 ? "1 pessoa" : `${partySize} pessoas`;
+  return `${localized} — ${day}/${month} às ${startTime}, para ${pessoas}`;
+}
+
+// ── BKL-006 owner-scoped FALSIFIER read shapes (refund / chargeback / cancel) ──
+//
+// Each is the per-subject companion of an already-DECLARED registry falsifier
+// (claim-registry.ts): PAYMENT_STATUS's `payment_refund` + `payment_chargeback`,
+// ORDER_FULFILLMENT_STAGE's `order_cancelled`, RESERVATION_STATUS's
+// `reservation_cancelled`. The registry declared them `falsifierComplete` but no
+// investigator read populated them, so the runtime arm was structurally INERT — a
+// refunded/disputed payment could VALIDATE `pago` while the claims flag is ON. These
+// reads make the arm LIVE. The boolean discriminant (`refunded`/`disputed`/
+// `cancelled`) is present-vs-absent for the ledger: the investigator records the
+// value PRESENT only when it is `true`, and leaves the key ABSENT (so the falsifier
+// does NOT fire) when `false` — never a fabricated "no refund" present value (the
+// anti-pattern warned about in ibatexas-investigator.ts). A cross-owner / absent
+// resource resolves to `null` here (the SAME owner-scope idiom as the other reads),
+// which the investigator records as a fail-closed read ERROR (Inv 7), NEVER an
+// absence — an unreadable falsifier cannot be proven not to have fired.
+
+/**
+ * PAYMENT_STATUS falsifier — a refund on the order's payment(s). `refunded` iff any
+ * payment for the order carries a refund signal: `refundedAmountCentavos > 0` OR
+ * status ∈ {`partially_refunded`, `refunded`}. RATIFIED (BKL-006): a PARTIAL refund
+ * DOES fire (`partially_refunded` / a non-zero refunded amount) — demote-only to
+ * UNKNOWN is safe, and a partially-refunded/refunded money state is exactly the
+ * ambiguous case a confident automated `pago` must not assert. A FULL refund makes
+ * the row terminal (`getActiveByOrderId` excludes it) → the BASE `payment_status`
+ * read already errors → UNKNOWN, so this falsifier is the belt for the NON-terminal
+ * refund/partial signal.
+ */
+export interface PaymentRefundRead {
+  readonly orderId: string;
+  readonly refunded: boolean;
+  readonly refundedAmountCentavos: number;
+  /** The refund-bearing payment's status (for audit); "" when none fired. */
+  readonly status: string;
+}
+
+/**
+ * PAYMENT_STATUS falsifier — a chargeback/dispute on the order's payment(s).
+ * `disputed` iff any payment for the order has status `disputed` (the platform's
+ * chargeback signal — a dispute the customer/bank raised; it later resolves to
+ * `paid` if won or `refunded` if lost). A present dispute contradicts a confident
+ * `pago` → demote to UNKNOWN.
+ */
+export interface PaymentChargebackRead {
+  readonly orderId: string;
+  readonly disputed: boolean;
+  /** The disputed payment's status (for audit); "" when none fired. */
+  readonly status: string;
+}
+
+// REVIEW FIX (PRs #275/#277 adversarial review, 2026-07-17): the order_cancelled /
+// reservation_cancelled falsifier READS shipped in #277 were REMOVED as a
+// shared-read tautology — they derived from the SAME memoized row (same instant,
+// same freshness) as the base ORDER_FULFILLMENT_STAGE / RESERVATION_STATUS reads,
+// so they could never catch staleness the base didn't already see, while actively
+// demoting every TRUTHFUL "cancelado/cancelada" render to UNKNOWN. The registry
+// falsifier declarations remain (deliberately unread — see claim-registry.ts);
+// rendering cancellation as a first-class claim is BKL-160. The refund/chargeback
+// falsifiers below are KEPT: they carry value-distinct signals (a refund on a
+// still-'paid' row) the base read does not assert.
+
+/**
+ * CART_CONTENTS (BKL-139 / FE-D03) — the authenticated customer's IN-PROGRESS cart,
+ * as a DETERMINISTICALLY PRE-COMPOSED summary scalar (the STORE_HOURS_FOR_DATE
+ * `hoursText` precedent for a list-shaped read under the single-scalar kernel).
+ *
+ *   - `itemsSummaryText` — the pt-BR summary ("2x Costela, 1x Farofa — total
+ *     R$123,00"). Composed IN CODE from item titles/quantities + the cart total in
+ *     INTEGER CENTAVOS (Hard Rule 2); NEVER model-authored (FE-D04 / BKL-149). Empty
+ *     string when the cart has no active items.
+ *   - `hasItems` — the cart has ≥1 active, non-completed line (present-vs-absent
+ *     discriminant: the investigator records `cart_contents` PRESENT only when `true`,
+ *     else leaves it ABSENT → honest UNKNOWN). A cleared/checked-out cart
+ *     (`completed_at` set) has NO active items ⇒ `hasItems: false`.
+ *
+ * NOTE (cart_cleared falsifier): the registry DECLARES `cart_cleared` (so CART_CONTENTS
+ * escapes the W6 UNKNOWN-only cap), but there is NO `cleared` field here and no wired
+ * read — a same-cart-row "cleared" signal is tautological AND inert (a cleared cart
+ * already yields `hasItems: false` ⇒ `cart_contents` ABSENT ⇒ nothing to demote). This
+ * mirrors the deliberately-unread `order_cancelled` / `reservation_cancelled` falsifiers.
+ */
+export interface CartContentsRead {
+  readonly itemsSummaryText: string;
+  readonly hasItems: boolean;
+}
+
+/**
+ * ORDER_HISTORY / PAYMENT_HISTORY (FE-D03 slice C) — the authenticated customer's
+ * owner-scoped LIST read, as a DETERMINISTICALLY PRE-COMPOSED bounded most-recent-N
+ * summary scalar (the CART_CONTENTS serialized-scalar idiom for a list-shaped read).
+ *
+ *   - `historySummaryText` — the pt-BR summary ("Pedido #1042 (entregue, R$89,00), …
+ *     — mostrando os N mais recentes"). Composed IN CODE from the owner-scoped
+ *     listByCustomer rows: display numbers + INTEGER-CENTAVOS totals (Hard Rule 2) +
+ *     pt-BR status labels; NEVER model-authored. Empty string when the customer has no
+ *     rows.
+ *   - `hasHistory` — the customer has ≥1 row (present-vs-absent discriminant: the
+ *     investigator records the key PRESENT only when `true`, else ABSENT → honest
+ *     UNKNOWN, mirroring the CART_CONTENTS empty-cart path).
+ */
+export interface HistoryRead {
+  readonly historySummaryText: string;
+  readonly hasHistory: boolean;
 }
 
 /**
@@ -176,6 +352,49 @@ export interface TriadReadBackend {
     customerId: string,
   ): Promise<ReservationRead | null>;
   /**
+   * BKL-006 PAYMENT_STATUS falsifier — the owner-scoped refund read (IDOR-closed via
+   * the same order gate as {@link readPaymentStatus}). Returns a
+   * {@link PaymentRefundRead} whose `refunded` boolean says whether a refund fired;
+   * `null` when the order is NOT owned / absent (the caller records that as a
+   * fail-closed read error — never a fabricated "no refund").
+   */
+  readPaymentRefund(
+    orderId: string,
+    customerId: string,
+  ): Promise<PaymentRefundRead | null>;
+  /**
+   * BKL-006 PAYMENT_STATUS falsifier — the owner-scoped chargeback/dispute read
+   * (IDOR-closed via the same order gate). `disputed` says whether a dispute fired;
+   * `null` when not owned / absent.
+   */
+  readPaymentChargeback(
+    orderId: string,
+    customerId: string,
+  ): Promise<PaymentChargebackRead | null>;
+  /**
+   * BKL-139 CART_CONTENTS — the authenticated customer's IN-PROGRESS cart. Resolved
+   * SERVER-SIDE from the session's `conversationId` (never a model cart id →
+   * IDOR-safe by session-scoping). `null` ONLY on an UNAVAILABLE read (Redis/Medusa
+   * error → fail-closed ERROR); an empty/absent cart returns `{ hasItems: false }`.
+   */
+  readCartContents(
+    conversationId: string,
+    customerId: string,
+  ): Promise<CartContentsRead | null>;
+  /**
+   * FE-D03 slice C ORDER_HISTORY — the authenticated customer's owner-scoped order
+   * list (`listByCustomer`, most-recent-first, bounded). `hasHistory: false` when the
+   * customer has no orders. A DB read failure REJECTS (recorded as a fail-closed
+   * ERROR, Inv 7) — there is no cross-owner case (the key is the customerId itself).
+   */
+  readOrderHistory(customerId: string): Promise<HistoryRead>;
+  /**
+   * FE-D03 slice C PAYMENT_HISTORY — the authenticated customer's owner-scoped payment
+   * list (`listByCustomer`, most-recent-first, bounded; billing HISTORY incl. terminal
+   * rows). `hasHistory: false` when none; a DB failure REJECTS → fail-closed ERROR.
+   */
+  readPaymentHistory(customerId: string): Promise<HistoryRead>;
+  /**
    * Enumerate the AUTHENTICATED customer's OWN, RELEVANT (non-terminal) order ids
    * (FIX 2 — owner-scoped subject resolution; the BUG-2 close). OWNER-SCOPED by
    * construction: the underlying `listByCustomer(customerId)` filters on
@@ -186,6 +405,20 @@ export interface TriadReadBackend {
    * active orders.
    */
   listActiveOrderIds(customerId: string): Promise<string[]>;
+  /**
+   * FE-T17b — the RESERVATION mirror of {@link listActiveOrderIds} (live-disproof
+   * follow-up; PR #249's investigator wiring closes the discovery gap that made
+   * RESERVATION_STATUS structurally unreachable — see the investigator's FIX-2
+   * discovery-fallback union for the mechanism). Enumerate the AUTHENTICATED
+   * customer's OWN, RELEVANT (non-terminal) reservation ids. OWNER-SCOPED by
+   * construction: the underlying `listByCustomer(customerId)` filters on
+   * `customerId`, so only the customer's own reservations are ever returned —
+   * never a model/session id. "Relevant" = a non-terminal reservation status (one
+   * the customer would ask the status of — pending/confirmed/seated), so a long
+   * completed/cancelled/no-show history does not force a perpetual CLARIFY.
+   * Returns `[]` for a customer with no active reservations.
+   */
+  listActiveReservationIds(customerId: string): Promise<string[]>;
   /**
    * Count the AUTHENTICATED customer's OWN payments (BKL-079 — the PAYMENT mirror of
    * {@link listActiveOrderIds}; the provable-empty enumeration count). OWNER-SCOPED
@@ -213,7 +446,7 @@ export interface TriadReadBackend {
  * of). `delivered` / `canceled` are TERMINAL and excluded. Mirrors the
  * `OrderFulfillmentStatus` enum (packages/domain/prisma/schema.prisma).
  */
-const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
+export const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
   "pending",
   "confirmed",
   "preparing",
@@ -221,10 +454,142 @@ const ACTIVE_FULFILLMENT_STAGES: ReadonlySet<string> = new Set<string>([
   "in_delivery",
 ]);
 
+/**
+ * FE-T17b — the non-terminal ("active") reservation statuses, the RESERVATION
+ * mirror of {@link ACTIVE_FULFILLMENT_STAGES}. A reservation in one of these is a
+ * RELEVANT owned reservation for the discovery-fallback enumeration (the kind a
+ * customer asks the status of — one that hasn't concluded yet): `pending`
+ * (awaiting confirmation), `confirmed` (upcoming), `seated` (currently dining).
+ * `completed` / `cancelled` / `no_show` are TERMINAL/historical and excluded —
+ * mirroring why orders exclude `delivered` / `canceled`: a customer asking "what
+ * is my reservation" almost always means an upcoming or in-progress one, and
+ * including a long completed/cancelled/no-show history would force ambiguity
+ * (CLARIFY) rather than the honest answer for the one that still matters. Mirrors
+ * the `ReservationStatus` enum (@ibatexas/types · packages/domain/prisma).
+ */
+const ACTIVE_RESERVATION_STATUSES: ReadonlySet<string> = new Set<string>([
+  "pending",
+  "confirmed",
+  "seated",
+]);
+
 /** Today's local date as "YYYY-MM-DD" in `tz` (mirrors schedule-helpers' private
  *  `getLocalDateStr`; en-CA yields YYYY-MM-DD). The override is keyed by date. */
 function localDateStr(tz: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
+}
+
+// ── BKL-139 CART_CONTENTS — the DETERMINISTIC money-summary composer ────────────
+//
+// Composes the cart summary IN CODE from item titles/quantities + the cart total in
+// INTEGER CENTAVOS (Hard Rule 2), so no model-authored digit can ever reach the
+// rendered proposition (FE-D04 10x-slip class / BKL-149). PURE — no float money math
+// (the reais/centavos split is integer-only).
+
+/** A raw Medusa `/store/carts/:id` line the summary reads (title + quantity). */
+interface RawCartLine {
+  readonly title?: string;
+  readonly quantity?: number;
+}
+interface RawCart {
+  readonly items?: ReadonlyArray<RawCartLine>;
+  readonly total?: number;
+  readonly completed_at?: string | null;
+}
+
+/** Format INTEGER centavos as pt-BR "R$123,00" — integer-only (no float money).
+ *  Exported for the BKL-139 composer unit test (no model-authored digit). */
+export function formatCentavosBRL(centavos: number): string {
+  const reais = Math.trunc(centavos / 100);
+  const cents = Math.abs(centavos % 100);
+  return `R$${reais},${String(cents).padStart(2, "0")}`;
+}
+
+/**
+ * Compose the pt-BR cart summary ("2x Costela, 1x Farofa — total R$123,00") from the
+ * raw Medusa cart lines + total. The total is formatted from INTEGER CENTAVOS
+ * (reais→centavos at the boundary); item titles are first-party Medusa data, never
+ * model text. PURE. Exported for the BKL-139 composer unit test.
+ */
+export function composeCartItemsSummary(items: ReadonlyArray<RawCartLine>, totalCentavos: number): string {
+  const parts = items
+    .filter((i) => (i.quantity ?? 0) > 0 && typeof i.title === "string" && i.title.trim() !== "")
+    .map((i) => `${i.quantity}x ${i.title}`);
+  const itemsPart = parts.join(", ");
+  return `${itemsPart} — total ${formatCentavosBRL(totalCentavos)}`;
+}
+
+// ── FE-D03 slice C — the DETERMINISTIC ORDER_HISTORY / PAYMENT_HISTORY composers ─────
+//
+// A list-shaped read rendered as ONE C6 scalar (the CART_CONTENTS idiom): compose a
+// bounded most-recent-N pt-BR summary IN CODE from the owner-scoped listByCustomer rows
+// — display numbers + INTEGER-CENTAVOS money (Hard Rule 2) + the canonical pt-BR status
+// labels — so no model-authored digit or label reaches the rendered proposition. PURE.
+
+/** The bounded most-recent-N window a history summary renders (the listByCustomer
+ *  calls are ALSO bounded — this caps the RENDERED lines). */
+export const HISTORY_SUMMARY_LIMIT = 5;
+
+/** One order row the ORDER_HISTORY summary reads (owner-scoped OrderProjection). */
+interface OrderHistoryRow {
+  readonly displayId: number;
+  readonly fulfillmentStatus: string;
+  readonly totalInCentavos: number;
+}
+/** One payment row the PAYMENT_HISTORY summary reads (owner-scoped Payment). */
+interface PaymentHistoryRow {
+  readonly amountInCentavos: number;
+  readonly method: string;
+  readonly status: string;
+}
+
+/** pt-BR fulfillment label for a status string (canonical map; falls back to the raw
+ *  status rather than inventing one — never a fabricated label). */
+function orderStatusLabel(status: string): string {
+  return (ORDER_STATUS_LABELS_PT as Record<string, string>)[status] ?? status;
+}
+function paymentStatusLabel(status: string): string {
+  return (PAYMENT_STATUS_LABELS_PT as Record<string, string>)[status] ?? status;
+}
+
+/** " — mostrando os N mais recentes" / " — mostrando o mais recente" suffix. */
+function historyTailSuffix(shown: number): string {
+  return shown === 1
+    ? " — mostrando o mais recente"
+    : ` — mostrando os ${shown} mais recentes`;
+}
+
+/**
+ * Compose the pt-BR ORDER history summary ("Pedido #1042 (entregue, R$89,00), Pedido
+ * #1039 (preparando, R$123,00) — mostrando os 2 mais recentes") from the owner-scoped
+ * order rows (already most-recent-first). Bounded to {@link HISTORY_SUMMARY_LIMIT}.
+ * Money from INTEGER CENTAVOS; labels from the canonical map. PURE. Exported for the
+ * composer unit test.
+ */
+export function composeOrderHistorySummary(rows: ReadonlyArray<OrderHistoryRow>): string {
+  const shown = rows.slice(0, HISTORY_SUMMARY_LIMIT);
+  const parts = shown.map(
+    (o) =>
+      `Pedido #${o.displayId} (${orderStatusLabel(o.fulfillmentStatus)}, ${formatCentavosBRL(o.totalInCentavos)})`,
+  );
+  return `${parts.join(", ")}${historyTailSuffix(shown.length)}`;
+}
+
+/**
+ * Compose the pt-BR PAYMENT history summary ("Pagamento de R$89,00 (pix, pago),
+ * Pagamento de R$40,00 (pix, reembolsado) — mostrando os 2 mais recentes") from the
+ * owner-scoped payment rows (already most-recent-first). Bounded, integer-centavos,
+ * canonical labels. PURE. Exported for the composer unit test.
+ */
+export function composePaymentHistorySummary(
+  rows: ReadonlyArray<PaymentHistoryRow>,
+): string {
+  const shown = rows.slice(0, HISTORY_SUMMARY_LIMIT);
+  const parts = shown.map(
+    (p) =>
+      `Pagamento de ${formatCentavosBRL(p.amountInCentavos)} (${p.method}, ${paymentStatusLabel(p.status)})`,
+  );
+  return `${parts.join(", ")}${historyTailSuffix(shown.length)}`;
 }
 
 export interface DomainTriadReadBackendDeps {
@@ -366,6 +731,89 @@ export function createDomainTriadReadBackend(
     return p;
   };
 
+  // BKL-006 — the refund/chargeback falsifier reads are IDOR-gated through the
+  // SAME owner-scoped order memo as the base PAYMENT_STATUS read: a cross-owner /
+  // absent order returns `null` (→ fail-closed read error at the investigator)
+  // and the payment table is NEVER queried. REVIEW FIX (BKL-159, 2026-07-17):
+  // the shared listByOrderId page scan (a $transaction with an unused count,
+  // truncated to the most-recent 20 rows) was replaced by predicate-shaped
+  // findFirst probes in the domain service — complete by construction (a
+  // where-clause sees every row) and cheaper (no transaction, no count).
+
+  // Per-turn memo of the OWNER-SCOPED reservation read. `getById` is
+  // owner-scoped (asserts ownership, throws on a cross-owner id) → caught →
+  // `null` (refused), never another customer's reservation. Caches the
+  // in-flight PROMISE (single-flight under the parallel investigator).
+  const reservationReads = new Map<
+    string,
+    Promise<
+      | Awaited<ReturnType<ReturnType<typeof createReservationService>["getById"]>>
+      | null
+    >
+  >();
+  const readOwnerScopedReservationOnce = (
+    reservationId: string,
+    customerId: string,
+  ) => {
+    const cacheKey = JSON.stringify([customerId, reservationId]);
+    let p = reservationReads.get(cacheKey);
+    if (p === undefined) {
+      p = createReservationService()
+        .getById(reservationId, customerId)
+        .catch(() => null);
+      reservationReads.set(cacheKey, p);
+    }
+    return p;
+  };
+
+  // BKL-139 — per-turn memo of the CART read (single-flight under the parallel
+  // investigator; the cart_contents read + the active_cart marker share it, ONE Medusa
+  // fetch per turn). Caches the in-flight PROMISE. `null` = the read was UNAVAILABLE
+  // (Redis/Medusa error); a resolved value carries the `hasItems` discriminant.
+  const cartReads = new Map<string, Promise<CartContentsRead | null>>();
+  const readCartContentsOnce = (conversationId: string, customerId: string) => {
+    const cacheKey = JSON.stringify([customerId, conversationId]);
+    let p = cartReads.get(cacheKey);
+    if (p === undefined) {
+      p = (async (): Promise<CartContentsRead | null> => {
+        // A2 (IDOR) — resolve the session's OWN active cart id from Redis (the SAME
+        // key resolve-and-assemble / get_cart use), NEVER a model-supplied cart id.
+        // A Redis failure is an UNAVAILABLE read → null → fail-closed ERROR (Inv 7).
+        let cartId: string | null;
+        try {
+          const redis = await getRedisClient();
+          cartId = await redis.get(rk(`cart:active:session:${conversationId}`));
+        } catch {
+          return null;
+        }
+        // No active cart for this session — a genuine ABSENCE (honest UNKNOWN), NOT an
+        // error: the customer simply has no cart right now.
+        if (cartId === null) return { itemsSummaryText: "", hasItems: false };
+        // Fetch ONLY the session-resolved cart. A Medusa failure is UNAVAILABLE → null.
+        let cart: RawCart | null;
+        try {
+          const data = (await medusaStore(`/store/carts/${cartId}`)) as { cart?: RawCart };
+          cart = data.cart ?? null;
+        } catch {
+          return null;
+        }
+        if (cart === null) return { itemsSummaryText: "", hasItems: false };
+        // A cleared/checked-out cart (`completed_at` set) has NO active items — so it
+        // resolves `hasItems: false` (ABSENT → honest UNKNOWN), never a stale summary.
+        const cleared = cart.completed_at != null;
+        const items = cart.items ?? [];
+        const hasItems = !cleared && items.length > 0;
+        const totalCentavos = reaisToCentavos(cart.total ?? 0);
+        return {
+          itemsSummaryText: hasItems ? composeCartItemsSummary(items, totalCentavos) : "",
+          hasItems,
+        };
+      })();
+      cartReads.set(cacheKey, p);
+    }
+    return p;
+  };
+
   return {
     readSchedule,
     readScheduleOverride,
@@ -383,6 +831,7 @@ export function createDomainTriadReadBackend(
       if (order === null || order.customerId !== customerId) return null;
       return {
         orderId,
+        displayId: order.displayId,
         fulfillmentStatus:
           order.fulfillmentStatus === null ? null : String(order.fulfillmentStatus),
       };
@@ -399,6 +848,7 @@ export function createDomainTriadReadBackend(
       if (active === null || active.status === null) return null;
       return {
         orderId,
+        displayId: order.displayId,
         status: String(active.status),
         method: active.method ?? null,
       };
@@ -407,14 +857,100 @@ export function createDomainTriadReadBackend(
     async readReservation(reservationId, customerId) {
       // getById is owner-scoped: it asserts ownership and throws on a cross-owner
       // id — caught → `null` (refused), never another customer's reservation.
-      const r = await createReservationService()
-        .getById(reservationId, customerId)
-        .catch(() => null);
+      // Shares the per-turn reservation memo with the cancellation falsifier.
+      const r = await readOwnerScopedReservationOnce(reservationId, customerId);
       if (r === null) return null;
+      const status = String(r.status);
       return {
         reservationId,
-        status: String(r.status),
+        status,
         partySize: r.partySize,
+        // BKL-185 — the C6-bound enriched scalar (bare `status` when the slot
+        // detail is missing → byte-identical to the pre-enrichment render).
+        statusLine: composeReservationStatusLine({
+          status,
+          partySize: r.partySize,
+          isoDate: r.timeSlot?.date,
+          startTime: r.timeSlot?.startTime,
+        }),
+      };
+    },
+
+    async readPaymentRefund(orderId, customerId) {
+      // BKL-006 — owner-scoped refund falsifier. Same IDOR gate as readPaymentStatus
+      // (the payment scan runs ONLY when the order is owned); `null` = not owned →
+      // the investigator records a fail-closed read error, never a fabricated "no
+      // refund". A refund FIRES iff any payment for the order has a refunded amount or
+      // a refund status. RATIFIED (BKL-006): a PARTIAL refund fires — demote-only to
+      // UNKNOWN is safe (see PaymentRefundRead). A `refunded: false` result leaves the
+      // ledger key ABSENT at the investigator (the falsifier does not fire).
+      const order = await readOwnerScopedOrderOnce(orderId, customerId);
+      if (order === null || order.customerId !== customerId) return null;
+      const refundBearing =
+        await createPaymentQueryService().findRefundBearingByOrderId(orderId);
+      return {
+        orderId,
+        refunded: refundBearing !== null,
+        refundedAmountCentavos: refundBearing?.refundedAmountCentavos ?? 0,
+        status: refundBearing === null ? "" : String(refundBearing.status),
+      };
+    },
+
+    async readPaymentChargeback(orderId, customerId) {
+      // BKL-006 — owner-scoped chargeback falsifier. Same IDOR gate as the refund
+      // read; `null` = not owned → fail-closed read error. FIRES iff any payment
+      // for the order is `disputed` (the platform's chargeback signal).
+      const order = await readOwnerScopedOrderOnce(orderId, customerId);
+      if (order === null || order.customerId !== customerId) return null;
+      const disputed =
+        await createPaymentQueryService().findDisputedByOrderId(orderId);
+      return {
+        orderId,
+        disputed: disputed !== null,
+        status: disputed === null ? "" : String(disputed.status),
+      };
+    },
+
+    async readCartContents(conversationId, customerId) {
+      // BKL-139 — the session-scoped cart read (per-turn memoized). IDOR-safe by
+      // construction: the cart is resolved from the session's conversationId, never a
+      // model id.
+      return readCartContentsOnce(conversationId, customerId);
+    },
+
+    async readOrderHistory(customerId) {
+      // FE-D03 slice C — OWNER-SCOPED order list (listByCustomer filters on customerId,
+      // most-recent-first). The summary is composed deterministically in code. A DB
+      // failure REJECTS → the investigator records a fail-closed ERROR (Inv 7).
+      const { orders } = await createOrderQueryService().listByCustomer(customerId, {
+        limit: HISTORY_SUMMARY_LIMIT,
+      });
+      const rows: OrderHistoryRow[] = orders.map((o) => ({
+        displayId: o.displayId,
+        fulfillmentStatus: String(o.fulfillmentStatus),
+        totalInCentavos: o.totalInCentavos,
+      }));
+      return {
+        hasHistory: rows.length > 0,
+        historySummaryText: rows.length > 0 ? composeOrderHistorySummary(rows) : "",
+      };
+    },
+
+    async readPaymentHistory(customerId) {
+      // FE-D03 slice C — OWNER-SCOPED payment list (listByCustomer joins on
+      // order.customerId, most-recent-first; billing HISTORY incl. terminal rows). A DB
+      // failure REJECTS → fail-closed ERROR.
+      const payments = await createPaymentQueryService().listByCustomer(customerId, {
+        limit: HISTORY_SUMMARY_LIMIT,
+      });
+      const rows: PaymentHistoryRow[] = payments.map((p) => ({
+        amountInCentavos: p.amountInCentavos,
+        method: String(p.method),
+        status: String(p.status),
+      }));
+      return {
+        hasHistory: rows.length > 0,
+        historySummaryText: rows.length > 0 ? composePaymentHistorySummary(rows) : "",
       };
     },
 
@@ -428,6 +964,32 @@ export function createDomainTriadReadBackend(
       return orders
         .filter((o) => ACTIVE_FULFILLMENT_STAGES.has(String(o.fulfillmentStatus)))
         .map((o) => o.id);
+    },
+
+    async listActiveReservationIds(customerId) {
+      // OWNER-SCOPED (FE-T17b): `listByCustomer` filters on `customerId`, so this
+      // only ever returns the AUTHENTICATED customer's own reservations — never a
+      // model/session id, never another owner's reservation.
+      //
+      // REVIEW FIX (pagination-burying) — the status filter MUST be applied
+      // SERVER-SIDE, not only client-side after the fetch. `listByCustomer`
+      // orders `timeSlot.date` DESC (farthest-future FIRST), so with only a
+      // client-side filter, a customer with >20 future-dated NON-active
+      // reservations (e.g. cancelled) sorts ahead of a near-future ACTIVE one —
+      // the active row falls off the `take: 20` page before the client-side
+      // filter ever sees it, producing a silent false abstain. Passing
+      // `status: [...ACTIVE_RESERVATION_STATUSES]` makes the DB apply the status
+      // filter BEFORE `take`, so the limit is spent only on rows that could
+      // actually be relevant. The client-side filter below is kept as
+      // belt-and-braces (defense in depth — never trust a single layer to
+      // enforce "active-only"), not as the primary filtering mechanism.
+      const { reservations } = await createReservationService().listByCustomer(
+        customerId,
+        { limit: 20, status: [...ACTIVE_RESERVATION_STATUSES] },
+      );
+      return reservations
+        .filter((r) => ACTIVE_RESERVATION_STATUSES.has(String(r.status)))
+        .map((r) => r.id);
     },
 
     async countActivePayments(customerId) {

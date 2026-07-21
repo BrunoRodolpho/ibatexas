@@ -132,7 +132,13 @@ function sessionWithParks(parks: ParkedEnvelope[]): Session {
   } as Session;
 }
 
-const SIM: ChannelMessage = { text: "sim, confirma" } as ChannelMessage;
+// `receivedAt` matches the parks' `parkedAt` below, so every park is FRESH under
+// the FE-D13 confirm-TTL and these scope-gating assertions stay independent of it
+// (a real inbound always carries receivedAt; matchToParked reads it for freshness).
+const SIM: ChannelMessage = {
+  text: "sim, confirma",
+  receivedAt: "2026-07-04T12:00:00.000Z",
+} as ChannelMessage;
 
 const opsChannel = new OpsSystemChannel({
   gatewaySigningKey: "test-ops-signing-key-abcdefghijklmnop",

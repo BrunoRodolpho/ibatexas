@@ -498,53 +498,56 @@ async function runConductorTurn(params: {
     server.log.error(err, "[chat] Conductor turn failed");
     const aborted = turnAbort.signal.aborted;
 
-    // F2 — WhatsApp :899 parity. classify/emit/open lived only in the inner try,
-    // so a conductor/handleTurn throw (an explicit no-delivery class, P2-17) used
-    // to push {type:error} and open NO incident. Cover it here:
-    //   - `!turnHandled` ⇒ the throw preceded any conductor result, so the inner
-    //     classify never ran and the customer got only the degraded {type:error}.
-    //     (A post-result throw, e.g. closeCapsule, is already owned by the inner
-    //     path — do NOT double-open.)
-    //   - `!aborted` ⇒ #6: a client-disconnect (or a superseding newer turn) is
-    //     NOT a delivery failure — nobody is waiting for THIS reply — so never open
-    //     an incident (nor a staff ping) for it. Only a throw with the client STILL
-    //     connected reaches the classify below.
-    // Pause (returns before openCapsule) and ESCALATE (a throw carries no
-    // decision) are excluded by construction. Fail-open: openWebDrop never throws
-    // and the degraded {type:error} is pushed strictly AFTER emit+open so a
-    // substitution can never mask emission.
+    // BKL-168 — the LAST-RESORT never-silent backstop. A throw that escaped
+    // handleTurn before ANY conductor result reached the customer (`!turnHandled`),
+    // with the client STILL connected (`!aborted`), means the customer is OWED a
+    // reply and got nothing. Open a governed incident (the no-reply plane must SEE
+    // this class — the `turn_error` escape was previously incident-less) AND deliver
+    // an honest deterministic pt-BR fallback frame — NEVER the bare {type:error}.
+    //   - `!turnHandled` ⇒ the throw preceded delivery (the inner classify never
+    //     ran). A POST-result throw (e.g. closeCapsule/appendMessages AFTER delivery)
+    //     is already owned by the inner path — never double-open or re-deliver.
+    //   - `!aborted` ⇒ #6: a client-disconnect / superseding newer turn is nobody
+    //     waiting — never an incident nor a substituted reply.
     if (!turnHandled && !aborted) {
-      // The client is still connected (not aborted) and no conductor result reached
-      // delivery, so `sendEntered/sendCompleted` are false: classifyCatchError
-      // yields `timeout` (a provider "timed out" throw) or `turn_error` (a
-      // pre/internal throw). `turn_error` is OUTSIDE the frozen taxonomy → NO
-      // incident (WhatsApp M5 parity; the degraded {type:error} below is the web
-      // analog of the canned-apology-only path). `customerImpacted` is false — the
-      // degraded {type:error} reaches the still-connected client (not silence).
+      // Map the escaped throw to a FROZEN incident cause: an explicit provider
+      // "timed out" stays `timeout`; every other pre-send escape (the `turn_error`
+      // class) opens as `send_failed` — the closest frozen "not delivered" cause, so
+      // the no-reply plane records it. `customerImpacted: true` — the customer's real
+      // answer never arrived (the fallback below is an honest apology, not the answer
+      // asked for), mirroring the no-reply plane's empty_completion semantics.
+      // openWebDrop is fail-open (never throws); the fallback is pushed STRICTLY
+      // AFTER it so a substitution can never mask emission.
       const catchCause = classifyCatchError({
         aborted: false,
         message: err instanceof Error ? err.message : String(err),
         sendEntered: false,
         sendCompleted: false,
       });
-      if (catchCause === "timeout" || catchCause === "send_failed") {
-        await openWebDrop({
-          sessionId,
-          messageId,
-          customerId,
-          turnId: undefined,
-          decisionKind: undefined,
-          classification: {
-            cause: catchCause,
-            customerImpacted: false,
-          },
-          log: server.log,
-        });
-      }
-    }
-
-    if (!aborted) {
-      pushChunk(sessionId, { type: "error", message: "Erro interno." });
+      await openWebDrop({
+        sessionId,
+        messageId,
+        customerId,
+        turnId: undefined,
+        decisionKind: undefined,
+        classification: {
+          cause: catchCause === "timeout" ? "timeout" : "send_failed",
+          customerImpacted: true,
+        },
+        log: server.log,
+      });
+      // Honest deterministic pt-BR fallback (text_delta + done), branded — the
+      // customer sees a real reply, never a bare {type:error} void.
+      pushChunk(sessionId, {
+        type: "text_delta",
+        delta: mintFallbackReply(WEB_HOLDING_MESSAGE_PTBR),
+      });
+      pushChunk(sessionId, { type: "done" });
+    } else if (!aborted) {
+      // A POST-result throw (turnHandled): the inner path already served the customer
+      // and owns any incident — terminate the stream honestly rather than push a bare
+      // {type:error} over an already-delivered reply.
+      pushChunk(sessionId, { type: "done" });
     }
   } finally {
     // Retire the registry slot only if it is still ours — a newer turn for

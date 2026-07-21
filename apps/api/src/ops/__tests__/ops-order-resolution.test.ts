@@ -12,7 +12,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   normalizeOrderRef,
+  orderReferenceAppearsInMessage,
   parseDisplayIdRef,
+  resolveMostRecentActiveOrder,
   resolveOrderByReference,
   type OrderCandidate,
   type OrderReferenceReads,
@@ -264,5 +266,86 @@ describe("resolveOrderByReference — fail-closed / guards", () => {
     const out = await resolveOrderByReference("4242", r);
     expect(out.kind).toBe("resolved");
     if (out.kind === "resolved") expect(out.order.id).toBe("order_ok");
+  });
+});
+
+// ── FE-T05 — "meu último pedido" / "the last order" auto-resolution ────────
+
+describe("resolveMostRecentActiveOrder", () => {
+  it("resolves the FIRST active candidate (the read is recency-DESC-ordered)", async () => {
+    const r = reads({
+      recentActive: [
+        order({ id: "order_newest", displayId: 4300, fulfillmentStatus: "preparing" }),
+        order({ id: "order_older", displayId: 4200, fulfillmentStatus: "confirmed" }),
+      ],
+    });
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "resolved", order: expect.objectContaining({ id: "order_newest" }) });
+  });
+
+  it("skips a TERMINAL order at the front — the first ACTIVE one wins", async () => {
+    const r = reads({
+      recentActive: [
+        order({ id: "order_delivered", displayId: 4300, fulfillmentStatus: "delivered" }),
+        order({ id: "order_active", displayId: 4200, fulfillmentStatus: "preparing" }),
+      ],
+    });
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "resolved", order: expect.objectContaining({ id: "order_active" }) });
+  });
+
+  it("no active order at all ⇒ none (fail-closed, never guessed)", async () => {
+    const r = reads({ recentActive: [order({ fulfillmentStatus: "delivered" })] });
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "none" });
+  });
+
+  it("an empty recent-orders window ⇒ none", async () => {
+    const r = reads({ recentActive: [] });
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "none" });
+  });
+
+  it("a read THROW is fail-closed to none (never propagated)", async () => {
+    const r: OrderReferenceReads = {
+      findByDisplayId: vi.fn(async () => []),
+      listRecentActive: vi.fn(async () => {
+        throw new Error("db down");
+      }),
+    };
+    const out = await resolveMostRecentActiveOrder(r);
+    expect(out).toEqual({ kind: "none" });
+  });
+});
+
+describe("orderReferenceAppearsInMessage — BKL-150(a) anti-bleed grounding check", () => {
+  it("a DISPLAY-ID number present in the message (bare / #-prefixed / leading zeros) → true", () => {
+    expect(orderReferenceAppearsInMessage("4242", "avança o pedido 4242")).toBe(true);
+    expect(orderReferenceAppearsInMessage("4242", "avança o #4242 pra pronto")).toBe(true);
+    expect(orderReferenceAppearsInMessage("#4242", "manda o 4242 pra cozinha")).toBe(true);
+    expect(orderReferenceAppearsInMessage("04242", "pedido 4242 pronto")).toBe(true);
+  });
+
+  it("a DISPLAY-ID number ABSENT from the message → false (the bleed case)", () => {
+    expect(orderReferenceAppearsInMessage("4242", "esse pedido pode ser cancelado?")).toBe(false);
+    // Not a digit substring of a larger number.
+    expect(orderReferenceAppearsInMessage("4242", "o pedido 42420 está pronto")).toBe(false);
+    expect(orderReferenceAppearsInMessage("424", "pedido 4242 pronto")).toBe(false);
+  });
+
+  it("a NAME reference: every normalized token must be a whole token of the message", () => {
+    expect(orderReferenceAppearsInMessage("Maria", "anota no pedido da Maria")).toBe(true);
+    // diacritic/case-insensitive.
+    expect(orderReferenceAppearsInMessage("José", "o pedido do jose")).toBe(true);
+    // whole-token, not substring: "ana" ⊄ "banana".
+    expect(orderReferenceAppearsInMessage("ana", "quero uma banana")).toBe(false);
+    // a full-name ref the message only half-names → not honored.
+    expect(orderReferenceAppearsInMessage("Maria Silva", "pedido da Maria")).toBe(false);
+    expect(orderReferenceAppearsInMessage("Maria", "avança esse pedido")).toBe(false);
+  });
+
+  it("empty message or empty reference → false", () => {
+    expect(orderReferenceAppearsInMessage("4242", "")).toBe(false);
+    expect(orderReferenceAppearsInMessage("", "pedido 4242")).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ import {
   DINNER_STARTS,
   SHIPPING_RATES,
   SHIPPING_RATE_DEFAULT,
+  classifyRefundMagnitudeBand,
 } from "../constants.js"
 import { COUPON_REJECTED_CODE } from "../cart.types.js"
 
@@ -74,5 +75,53 @@ describe("Business Constants", () => {
   // mapping on it. Pin the literal so neither side drifts.
   it("COUPON_REJECTED_CODE is the pinned wire literal", () => {
     expect(COUPON_REJECTED_CODE).toBe("COUPON_REJECTED")
+  })
+})
+
+// BKL-166 (FE-D07 residual) — pin the two comparators of the single-sourced
+// refund-band classifier at SYNTHETIC thresholds so the boundary semantics are
+// asserted independently of the real env-backed R$500 / R$1000 values:
+//   - ESCALATE uses `>=` (isAtOrAboveMoneyBand, FE-T03/D2) — inclusive at the edge
+//   - CONFIRM  uses `>`  (isAboveMoneyBand)                 — EXCLUSIVE at the edge
+// This is the unit complement of the cross-bundle parity integration test
+// (apps/api refund-band-channel-parity.test.ts), which drives real bundles.
+describe("classifyRefundMagnitudeBand — comparator boundaries", () => {
+  // Synthetic, deliberately not the real constants: confirm=100, escalate=200.
+  const CONFIRM = 100
+  const ESCALATE = 200
+  const band = (amount: number) =>
+    classifyRefundMagnitudeBand(amount, CONFIRM, ESCALATE)
+
+  it("below the confirm threshold → EXECUTE", () => {
+    expect(band(0)).toBe("EXECUTE")
+    expect(band(50)).toBe("EXECUTE")
+  })
+
+  it("EXACTLY the confirm threshold stays EXECUTE (CONFIRM is strict >)", () => {
+    expect(band(CONFIRM)).toBe("EXECUTE")
+  })
+
+  it("just above the confirm threshold → CONFIRM (first confirm value)", () => {
+    expect(band(CONFIRM + 1)).toBe("CONFIRM")
+  })
+
+  it("between confirm and escalate → CONFIRM; just below escalate stays CONFIRM", () => {
+    expect(band(150)).toBe("CONFIRM")
+    expect(band(ESCALATE - 1)).toBe("CONFIRM")
+  })
+
+  it("EXACTLY the escalate threshold → ESCALATE (escalate is inclusive >=)", () => {
+    expect(band(ESCALATE)).toBe("ESCALATE")
+  })
+
+  it("above the escalate threshold → ESCALATE", () => {
+    expect(band(ESCALATE + 1)).toBe("ESCALATE")
+    expect(band(10_000)).toBe("ESCALATE")
+  })
+
+  it("escalate dominates when thresholds coincide (>= wins over >)", () => {
+    // Degenerate config: confirm == escalate. At the shared edge, ESCALATE's
+    // inclusive `>=` is checked first, so the value escalates rather than confirms.
+    expect(classifyRefundMagnitudeBand(100, 100, 100)).toBe("ESCALATE")
   })
 })

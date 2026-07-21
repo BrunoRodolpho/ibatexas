@@ -16,6 +16,7 @@ import { buildEnvelope, createAuthorityGraphStore, type IntentEnvelope } from "@
 import {
   ordersPack,
   ordersPolicyBundle,
+  type OrderContext,
   type OrderIntentKind,
   type OrderPayload,
   type OrderState,
@@ -246,28 +247,6 @@ describe("ordersPolicyBundle — state guards", () => {
     expect(decision.refusal.code).toBe("order.past_ponr")
   })
 
-  it("ALLOW a SYSTEM order.cancel.system of a preparing order (compensation exempt)", () => {
-    // pix-expiry / stale-order jobs build order.cancel.system (actor.principal=
-    // "system") and must be able to cancel a preparing order as compensation.
-    const sysEnv = buildEnvelope({
-      kind: "order.cancel.system",
-      payload: { orderId: "o-1" } as OrderPayload,
-      actor: { principal: "system", sessionId: "stale-order-checker:evt-1" },
-      taint: "SYSTEM",
-      nonce: "n-sys",
-      createdAt: DET_TIME,
-    })
-    const decision = adjudicate(
-      sysEnv,
-      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
-      ordersPolicyBundle,
-    )
-    // The cancellability guard does NOT block a system cancel of a preparing order.
-    if (decision.kind === "REFUSE") {
-      expect(decision.refusal.code).not.toBe("order.past_ponr")
-    }
-  })
-
   it("REFUSE order.cancel on a canceled fulfillment status as already-cancelled", () => {
     const decision = adjudicate(
       env("order.cancel", { orderId: "o-1" }),
@@ -359,9 +338,14 @@ describe("ordersPolicyBundle — state guards", () => {
 // ── Taint phase ─────────────────────────────────────────────────────────
 
 describe("ordersPolicyBundle — taint policy", () => {
-  it("system-only kind order.cancel.system requires TRUSTED taint", () => {
+  it("system-only kinds require TRUSTED taint; customer kinds tolerate UNTRUSTED", () => {
+    // order.cancel.system was retired (BKL-177); the remaining system-only
+    // kinds still require TRUSTED, and customer kinds still tolerate UNTRUSTED.
     expect(
-      ordersPolicyBundle.taint.minimumFor("order.cancel.system"),
+      ordersPolicyBundle.taint.minimumFor("order.projection.create"),
+    ).toBe("TRUSTED")
+    expect(
+      ordersPolicyBundle.taint.minimumFor("order.status.reconcile"),
     ).toBe("TRUSTED")
     expect(ordersPolicyBundle.taint.minimumFor("order.cancel")).toBe(
       "UNTRUSTED",
@@ -369,32 +353,6 @@ describe("ordersPolicyBundle — taint policy", () => {
     expect(ordersPolicyBundle.taint.minimumFor("order.item.add")).toBe(
       "UNTRUSTED",
     )
-  })
-
-  it("UNTRUSTED-tainted order.cancel.system is REFUSEd by the taint gate", () => {
-    const decision = adjudicate(
-      env(
-        "order.cancel.system",
-        { orderId: "o-1", reason: "stale" },
-        "UNTRUSTED",
-      ),
-      state({ orderId: "o-1" }),
-      ordersPolicyBundle,
-    )
-    expect(decision.kind).toBe("REFUSE")
-  })
-
-  it("TRUSTED-tainted order.cancel.system is accepted by the taint gate", () => {
-    const decision = adjudicate(
-      env(
-        "order.cancel.system",
-        { orderId: "o-1", reason: "stale" },
-        "TRUSTED",
-      ),
-      state({ orderId: "o-1" }),
-      ordersPolicyBundle,
-    )
-    expect(decision.kind).toBe("EXECUTE")
   })
 })
 
@@ -690,24 +648,6 @@ describe("ordersPolicyBundle — BKL-036 paid-state cancel (J015)", () => {
       )
       expect(decision.kind).toBe("EXECUTE")
     }
-  })
-
-  it("gatePaidCancel does NOT touch order.cancel.system (system compensation)", () => {
-    const sysEnv = buildEnvelope({
-      kind: "order.cancel.system",
-      payload: { orderId: "o-1" } as OrderPayload,
-      actor: { principal: "system", sessionId: "stale-order-checker:evt-1" },
-      taint: "SYSTEM",
-      nonce: "n-sys",
-      createdAt: DET_TIME,
-    })
-    const decision = adjudicate(
-      sysEnv,
-      state({ orderId: "o-1", fulfillmentStatus: "confirmed", paymentStatus: "paid", totalInCentavos: 5_000 }),
-      ordersPolicyBundle,
-    )
-    // A paid state must not turn a system auto-cancel into a customer confirm.
-    expect(decision.kind).not.toBe("REQUEST_CONFIRMATION")
   })
 
   it("CONFIRM-RESUME: the identical paid-cancel envelope + confirmationReceipt re-adjudicates to EXECUTE", async () => {
@@ -1109,6 +1049,58 @@ describe("ordersPack — PackV0 shape", () => {
   })
 })
 
+// ── FE-T09 (D-a): amend inversion — the model-visible capability re-route ──
+
+describe("ordersCapabilityPlanner — FE-T09 amend inversion", () => {
+  function authenticatedContext(): OrderContext {
+    return { channel: "web", customerId: "c-1", cartId: "cart-1", orderId: null }
+  }
+
+  it("the grouped order.amend.request has NO reachable model producer (authenticated)", () => {
+    const plan = ordersPack.planner.plan(state(), authenticatedContext())
+    expect(plan.allowedIntents).not.toContain("order.amend.request")
+  })
+
+  it("the three granular amend kinds ARE model-proposable (authenticated)", () => {
+    const plan = ordersPack.planner.plan(state(), authenticatedContext())
+    expect(plan.allowedIntents).toContain("order.amend.add_item")
+    expect(plan.allowedIntents).toContain("order.amend.update_qty")
+    expect(plan.allowedIntents).toContain("order.amend.remove_item")
+  })
+
+  it("no amend kind (grouped or granular) is proposable for an unauthenticated/guest context", () => {
+    const plan = ordersPack.planner.plan(state({ customerId: null }), {
+      channel: "web",
+      customerId: null,
+      cartId: "cart-1",
+      orderId: null,
+    })
+    expect(plan.allowedIntents).not.toContain("order.amend.request")
+    expect(plan.allowedIntents).not.toContain("order.amend.add_item")
+    expect(plan.allowedIntents).not.toContain("order.amend.update_qty")
+    expect(plan.allowedIntents).not.toContain("order.amend.remove_item")
+  })
+
+  it("order.amend.request is STILL in ordersPack.intents[] — kernel-adjudicable, just not model-proposable (the legacy HTTP route still builds it directly)", () => {
+    expect(ordersPack.intents).toContain("order.amend.request")
+  })
+
+  // FE-D28 — review-by-chat activation: order.review.submit joins the
+  // authenticated allowedIntents (the resolver stamps the Identity-class
+  // orderId/productId; the model only emits rating/comment + NL item/orderRef).
+  it("order.review.submit IS model-proposable for an authenticated customer, never for a guest", () => {
+    const authedPlan = ordersPack.planner.plan(state(), authenticatedContext())
+    expect(authedPlan.allowedIntents).toContain("order.review.submit")
+    const guestPlan = ordersPack.planner.plan(state({ customerId: null }), {
+      channel: "web",
+      customerId: null,
+      cartId: "cart-1",
+      orderId: null,
+    })
+    expect(guestPlan.allowedIntents).not.toContain("order.review.submit")
+  })
+})
+
 // ── order.review.submit ─────────────────────────────────────────────────
 
 describe("ordersPolicyBundle — order.review.submit", () => {
@@ -1312,6 +1304,25 @@ describe("ordersPolicyBundle — transition legality (BKL-090)", () => {
     expect(decision.refusal.code).toBe("order.status.unknown")
   })
 
+  it("BKL-150(b): the guard itself does NOT normalize — a RAW en-GB 'cancelled' is an unknown target here; only the ops resolver's normalizeOrderStatusToken maps it to 'canceled' upstream, keeping this guard strict", () => {
+    const decision = adjudicate(
+      transitionEnv("cancelled"),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.status.unknown")
+    // The canonical token IS accepted (preparing → canceled is legal) — proving
+    // the ONLY thing missing for the raw token was the resolver-side spelling fix.
+    const ok = adjudicate(
+      transitionEnv("canceled"),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(ok.kind).not.toBe("REFUSE")
+  })
+
   it("REFUSE an ABSENT current status on the admin: ops plane (fail-closed)", () => {
     const decision = adjudicate(
       transitionEnv("ready"),
@@ -1347,6 +1358,119 @@ describe("ordersPolicyBundle — transition legality (BKL-090)", () => {
   })
 })
 
+// ── FE-T05 — grounded-resolution confirmation forcing (Language Engine) ──
+
+describe("ordersPolicyBundle — requireConfirmationOnGroundedStatusTransition (FE-T05)", () => {
+  it("REQUEST_CONFIRMATION on a GROUNDED (auto-resolved) target, even though the transition is legal — and NAMES the order (MAJOR-2)", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "preparing",
+        orderResolutionTrust: "grounded",
+        displayId: 928379,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toBe(
+      'Não me disseram qual pedido — vou usar o pedido #928379. ' +
+        'Confirma avançar o pedido #928379 para "ready"?',
+    )
+  })
+
+  it("BKL-190: a grounded target the CURRENT message NAMED confirms WITHOUT the false 'não me disseram' frame", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "preparing",
+        orderResolutionTrust: "grounded",
+        displayId: 928379,
+        orderNamedInMessage: true,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toBe('Confirma avançar o pedido #928379 para "ready"?')
+    expect(decision.prompt).not.toContain("Não me disseram")
+  })
+
+  it("BKL-190: orderNamedInMessage false/absent keeps the honest 'não me disseram' frame verbatim", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "preparing",
+        orderResolutionTrust: "grounded",
+        displayId: 928379,
+        orderNamedInMessage: false,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toBe(
+      'Não me disseram qual pedido — vou usar o pedido #928379. ' +
+        'Confirma avançar o pedido #928379 para "ready"?',
+    )
+  })
+
+  it("REQUEST_CONFIRMATION with the generic phrasing when displayId is unavailable (defensive fallback — should not be reachable in practice)", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "preparing",
+        orderResolutionTrust: "grounded",
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toContain("o pedido mais recente em aberto")
+  })
+
+  it("EXECUTE on an AUTHORITATIVE (explicit-reference) target — no re-confirmation", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "preparing",
+        orderResolutionTrust: "authoritative",
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("EXECUTE when orderResolutionTrust is ABSENT — byte-identical to pre-FE-T05 behaviour", () => {
+    const decision = adjudicate(
+      transitionEnv("ready"),
+      state({ orderId: "o-1", fulfillmentStatus: "preparing" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("an ILLEGAL transition still REFUSEs outright even when GROUNDED — legality is checked FIRST", () => {
+    const decision = adjudicate(
+      transitionEnv("delivered"),
+      state({
+        orderId: "o-1",
+        fulfillmentStatus: "confirmed",
+        orderResolutionTrust: "grounded",
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.status.transition_illegal")
+  })
+})
+
 // ── Rehydrator ──────────────────────────────────────────────────────────
 
 describe("rehydrateOrderState", () => {
@@ -1360,5 +1484,58 @@ describe("rehydrateOrderState", () => {
     const s = state()
     const out = ordersPack.rehydrateState?.(s)
     expect(out).toEqual(s)
+  })
+})
+
+// ── BKL-145 — the admin-session actor is an authenticated principal ─────────
+// The `admin:` sessionId namespace is minted only behind the staff JWT and the
+// actor is composition-stamped (NEW-032 slice-A pins), so a staff-plane note on
+// an UNRESOLVED order must fall through to the honest `order.not_found` — never
+// the customer-onboarding `auth.required`. Customer/guest planes byte-identical.
+
+function adminEnv(
+  kind: OrderIntentKind,
+  payload: Record<string, unknown>,
+): IntentEnvelope<OrderIntentKind, OrderPayload> {
+  return buildEnvelope({
+    kind,
+    payload: payload as OrderPayload,
+    actor: { principal: "user", sessionId: "admin:staff-1" },
+    taint: "UNTRUSTED",
+    nonce: "n-test-admin",
+    createdAt: DET_TIME,
+  })
+}
+
+describe("BKL-145 — admin-session note.add auth recognition", () => {
+  it("admin session + UNRESOLVED order → honest order.not_found (NOT auth.required)", () => {
+    const decision = adjudicate(
+      adminEnv("order.note.add", { orderId: "", body: "cliente vai atrasar" }),
+      state({ customerId: null, orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
+  it("admin session + RESOLVED order (customer null) → the note EXECUTEs", () => {
+    const decision = adjudicate(
+      adminEnv("order.note.add", { orderId: "ord-1", body: "cliente vai atrasar" }),
+      state({ customerId: null, orderId: "ord-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("customer plane unchanged: a NON-admin unauthenticated session still gets auth.required", () => {
+    const decision = adjudicate(
+      env("order.note.add", { orderId: "ord-1", body: "oi" }),
+      state({ customerId: null, orderId: "ord-1" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("auth.required")
   })
 })

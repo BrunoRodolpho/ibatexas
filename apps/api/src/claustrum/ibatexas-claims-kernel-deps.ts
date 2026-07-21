@@ -249,6 +249,28 @@ export const OWNER_SCOPED_KEY_PREFIXES = [
   "order_fulfillment_stage:",
   "payment_status:",
   "reservation_status:",
+  // BKL-139 — CART_CONTENTS is owner-scoped, keyed `cart_contents:{customerId}` (the
+  // cart is 1-per-customer, resolved server-side from the session — never a model id).
+  // Listing it here makes the present cart read attribute ownership (the customerId
+  // subject enters `ownedResources` → the kernel's owns predicate passes for the legit
+  // owner) and makes the customerId subject an admissible classify-only subject.
+  "cart_contents:",
+  // BKL-163 — CART_EMPTY is owner-scoped, keyed `cart_empty:{customerId}` (the
+  // provable-empty twin of cart_contents — recorded PRESENT only when the
+  // owner-scoped cart read resolved hasItems:false). Listing it here makes the
+  // present empty-cart read attribute ownership (the customerId subject enters
+  // `ownedResources` → owns passes for the legit owner) and an admissible
+  // classify-only / FIX 2 subject. Its base has NO entry in
+  // OWNER_SCOPED_BASE_TO_RESOURCE_KIND, so an empty cart never fabricates a
+  // positive active-resource ref.
+  "cart_empty:",
+  // FE-D03 slice C — ORDER_HISTORY / PAYMENT_HISTORY are owner-scoped, keyed
+  // `{order,payment}_history:{customerId}` (per-customer list reads). Listing them here
+  // makes the present history read attribute ownership (the customerId subject enters
+  // `ownedResources` → owns passes for the legit owner) and an admissible classify-only
+  // subject, in lockstep with the parameterized registry keys.
+  "order_history:",
+  "payment_history:",
 ] as const;
 
 /**
@@ -280,7 +302,14 @@ export function ownedResourceIdsByBaseKey(
  *  avoids importing the full ledger type here. */
 export interface EvidenceLedgerLike {
   keys(): Iterable<string>;
-  resolve(key: string): { readonly state: string };
+  // `entry` (optional) exposes the concrete PRESENT value the same way the full
+  // `EvidenceResolution` does (only carried on `state === "present"`); read-only
+  // consumers that inspect only `state` are unaffected, and a tiny stub may omit
+  // it. BKL-203 reads `entry.value.displayId` off owner-scoped order reads.
+  resolve(key: string): {
+    readonly state: string;
+    readonly entry?: { readonly value: unknown };
+  };
 }
 
 /**

@@ -72,6 +72,7 @@ import type {
   PaymentCreatePayload,
   PaymentStatusTransitionPayload,
   PaymentStatusReconcilePayload,
+  PaymentDisputeOpenPayload,
 } from "../__shared__/payment-projection-policy.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -426,6 +427,89 @@ describe("PaymentCommandService — envelope-typed entry points", () => {
     })
   })
 
+  // ── BKL-178 — dispute.open (adjudicate-only, always ESCALATE) ──────────
+  describe("disputeOpenFromEnvelope", () => {
+    it("ESCALATE: a chargeback always escalates for human review; the executor never runs", async () => {
+      const svc = createPaymentCommandService()
+      // Real snapshot — the webhook resolves the Payment row (already reconciled
+      // to DISPUTED) before minting the envelope, so `exists` is true.
+      mockPaymentFindUnique.mockResolvedValue(makePaymentRow({ status: "disputed" }))
+
+      const payload: PaymentDisputeOpenPayload = {
+        paymentId: "pay_01",
+        stripeEventId: "evt_dispute_01",
+        disputeAmountCentavos: 8900,
+      }
+      const envelope = buildEnvelope({
+        kind: "payment.dispute.open" as const,
+        payload,
+        nonce: "evt_dispute_01",
+        actor: systemActor(),
+        taint: "SYSTEM",
+      })
+
+      const outcome = await svc.disputeOpenFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("ESCALATE")
+      if (outcome.decision.kind === "ESCALATE") {
+        expect(outcome.decision.reason).toBe("dispute_opened_requires_review")
+      }
+      // Adjudicate-only: no payment-row mutation runs (the executor is unreachable).
+      expect(mockPaymentUpdateMany).not.toHaveBeenCalled()
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+      expect(mockHistoryCreate).not.toHaveBeenCalled()
+    })
+
+    it("REFUSE: UNTRUSTED taint blocks the SYSTEM-only dispute.open", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(makePaymentRow({ status: "disputed" }))
+
+      const envelope = buildEnvelope({
+        kind: "payment.dispute.open" as const,
+        payload: { paymentId: "pay_01", stripeEventId: "evt_dispute_02" },
+        nonce: randomUUID(),
+        actor: systemActor(),
+        taint: "UNTRUSTED",
+      })
+
+      const outcome = await svc.disputeOpenFromEnvelope(envelope)
+      expect(outcome.decision.kind).toBe("REFUSE")
+    })
+
+    it("REFUSE: a dispute on a missing Payment row refuses (never a phantom escalate)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(null)
+
+      const envelope = buildEnvelope({
+        kind: "payment.dispute.open" as const,
+        payload: { paymentId: "pay_missing", stripeEventId: "evt_dispute_03" },
+        nonce: randomUUID(),
+        actor: systemActor(),
+        taint: "SYSTEM",
+      })
+
+      const outcome = await svc.disputeOpenFromEnvelope(envelope)
+      expect(outcome.decision.kind).toBe("REFUSE")
+    })
+
+    it("Idempotency: same Stripe event.id (nonce) + payload → same intentHash", () => {
+      const payload: PaymentDisputeOpenPayload = {
+        paymentId: "pay_01",
+        stripeEventId: "evt_dispute_redelivered",
+        disputeAmountCentavos: 8900,
+      }
+      const build = () =>
+        buildEnvelope({
+          kind: "payment.dispute.open" as const,
+          payload,
+          nonce: "evt_dispute_redelivered",
+          actor: systemActor(),
+          taint: "SYSTEM",
+        })
+      expect(build().intentHash).toBe(build().intentHash)
+    })
+  })
+
   // ── Idempotency ───────────────────────────────────────────────────────
 
   describe("Idempotency: nonce stability", () => {
@@ -572,6 +656,53 @@ describe("PaymentCommandService — envelope-typed entry points", () => {
         expect(outcome.decision.reason).toBe(
           "refund_above_escalate_threshold",
         )
+      }
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
+    // FE-T03/D2 — exact-boundary pins on the DOMAIN (admin-HTTP) path.
+    // This bundle's guard is a byte-parallel duplicate of
+    // @ibatexas/pack-payments' refundMagnitudeGuard (FE-D07 tracks
+    // consolidating them); these three pins prove the admin route now
+    // matches the ops/WhatsApp route's boundary behavior exactly.
+    it("REQUEST_CONFIRMATION: amount = R$ 999,99 (just below escalate threshold)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(99_999)
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("REQUEST_CONFIRMATION")
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
+    it("ESCALATE: amount = R$ 1.000 (boundary inclusive) — FE-T03/D2 flip", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(100_000)
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("ESCALATE")
+      if (outcome.decision.kind === "ESCALATE") {
+        expect(outcome.decision.to).toBe("human")
+        expect(outcome.decision.reason).toBe(
+          "refund_above_escalate_threshold",
+        )
+      }
+      expect(mockPaymentUpdate).not.toHaveBeenCalled()
+    })
+
+    it("ESCALATE: amount = R$ 1.000,01 (just above escalate threshold)", async () => {
+      const svc = createPaymentCommandService()
+      mockPaymentFindUnique.mockResolvedValue(paidRow())
+
+      const envelope = buildRefundEnvelope(100_001)
+      const outcome = await svc.issueRefundFromEnvelope(envelope)
+
+      expect(outcome.decision.kind).toBe("ESCALATE")
+      if (outcome.decision.kind === "ESCALATE") {
+        expect(outcome.decision.to).toBe("human")
       }
       expect(mockPaymentUpdate).not.toHaveBeenCalled()
     })

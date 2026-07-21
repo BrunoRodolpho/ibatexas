@@ -26,6 +26,8 @@ import {
   ORDER_FULFILLMENT_STAGE,
   PAYMENT_STATUS,
   SAFE_TEMPLATES,
+  SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
+  SAFE_ESCALATE_EMERGENCY_TEMPLATE,
   STORE_OPEN_NOW,
   type Template,
 } from "../slot-grammar.js";
@@ -247,12 +249,14 @@ describe("renderer-from-claims — §Q.7 pure template-filler", () => {
 //
 // SDD Inv 6 (render-template purity: UNKNOWN/REFUSED templates assert nothing
 // factual) + §I (the turn terminals RENDER · UNKNOWN · ESCALATE · CLARIFY are
-// DISTINCT, first-class). The prior `terminal === "CLARIFY" ? unknown : escalate`
-// routed UNKNOWN to the escalate copy ("vou encaminhar para um atendente"),
-// conflating "não consegui confirmar" with "estou escalando para um humano".
-// The fix is `terminal === "ESCALATE" ? escalate : unknown`: ESCALATE → handoff;
-// UNKNOWN and CLARIFY → the self-report. These tests are NON-VACUOUS — reverting
-// the ternary turns (a) RED (UNKNOWN would render the handoff copy).
+// DISTINCT, first-class). The routing is now three-way (BKL-148):
+// `ESCALATE → escalate; CLARIFY → clarify; else (UNKNOWN) → unknown`. ESCALATE
+// renders the handoff copy; UNKNOWN the honest-ignorance self-report; and CLARIFY
+// a DISTINCT disambiguation ASK ("tenho mais de um registro possível — pode me
+// dizer o número…?"). Pre-BKL-148, CLARIFY collapsed into the UNKNOWN self-report,
+// answering a disambiguation turn with a bare "não localizei". All three copies are
+// proposition-free. These tests are NON-VACUOUS — collapsing CLARIFY back into
+// UNKNOWN turns (c) RED (the clarify ask would be replaced by "não localizei").
 // ─────────────────────────────────────────────────────────────────────────────
 describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct terminals)", () => {
   const UNKNOWN: TurnTerminal = "UNKNOWN";
@@ -262,6 +266,7 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
   // Distinguishing copy fragments (sourced from slot-grammar's SAFE_TEMPLATES).
   const SELF_REPORT = "Não localizei"; // unique to SAFE_TEMPLATES.unknown
   const HANDOFF = "encaminhar para um atendente"; // unique to SAFE_TEMPLATES.escalate
+  const CLARIFY_ASK = "mais de um registro possível"; // unique to SAFE_TEMPLATES.clarify
 
   // The exact rendered string of a proposition-free safe template = its LITERAL
   // text. Deriving it from SAFE_TEMPLATES ties each assertion to the grammar
@@ -300,27 +305,32 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
     expect(out.text).not.toContain(SELF_REPORT);
   });
 
-  // (c) CLARIFY is unchanged — still the self-report (no distinct clarify copy).
-  it("terminal CLARIFY renders SAFE_TEMPLATES.unknown (self-report, unchanged) (c)", () => {
+  // (c) BKL-148: CLARIFY now renders the DISTINCT disambiguation ask
+  // (SAFE_TEMPLATES.clarify) — NOT the UNKNOWN self-report, and NOT the handoff.
+  it("terminal CLARIFY renders SAFE_TEMPLATES.clarify (disambiguation ask), NOT unknown/handoff (c)", () => {
     const out = renderRenderables(
       [claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "em preparo" })],
       CLARIFY,
     );
     expect(out.terminal).toBe("CLARIFY");
     expect(out.lines[0]?.kind).toBe("TERMINAL");
-    expect(out.text).toBe(literalText(SAFE_TEMPLATES.unknown));
-    expect(out.text).toContain(SELF_REPORT);
+    // It IS the clarify disambiguation ask, byte-for-byte…
+    expect(out.text).toBe(literalText(SAFE_TEMPLATES.clarify));
+    expect(out.text).toContain(CLARIFY_ASK);
+    // …and is explicitly NEITHER the generic UNKNOWN self-report NOR the handoff.
+    expect(out.text).not.toContain(SELF_REPORT);
     expect(out.text).not.toContain(HANDOFF);
   });
 
-  // (d) Inv 6: the chosen UNKNOWN/ESCALATE templates are proposition-free — they
-  // assert nothing factual about an order/payment, even with real claims in hand.
-  it("the UNKNOWN and ESCALATE terminal templates remain proposition-free (d; Inv 6)", () => {
-    // Structural: both safe templates carry ZERO proposition slots.
+  // (d) Inv 6: the chosen UNKNOWN/ESCALATE/CLARIFY templates are proposition-free —
+  // they assert nothing factual about an order/payment, even with real claims in hand.
+  it("the UNKNOWN, ESCALATE and CLARIFY terminal templates remain proposition-free (d; Inv 6)", () => {
+    // Structural: all three safe templates carry ZERO proposition slots.
     expect(isPropositionFree(SAFE_TEMPLATES.unknown)).toBe(true);
     expect(isPropositionFree(SAFE_TEMPLATES.escalate)).toBe(true);
+    expect(isPropositionFree(SAFE_TEMPLATES.clarify)).toBe(true);
     // Behavioural: with real domain claims present, NO order/payment fact leaks.
-    for (const terminal of [UNKNOWN, ESCALATE] as const) {
+    for (const terminal of [UNKNOWN, ESCALATE, CLARIFY] as const) {
       const out = renderRenderables(
         [
           claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "entregue" }),
@@ -338,6 +348,69 @@ describe("renderer-from-claims — R3 terminal routing (Inv 6; §I distinct term
       expect(out.text).not.toContain("etapa");
       expect(out.text).not.toContain("pagamento é");
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-170 — CLARIFY-with-candidates (@claustrum/core 0.8.0 `disambiguationCandidates`
+// carrier). When the adopter threads first-party, owner-scoped candidate labels, a
+// CLARIFY renders the proposition-free ask that VOICES the specific handles,
+// superseding the generic clarify. Absent/empty candidates → the generic clarify
+// (byte-identical to pre-0.8.0). NON-VACUOUS: dropping the candidates branch turns
+// (a) RED (the voiced labels would vanish); passing candidates on a non-CLARIFY
+// terminal must NOT change the output (b).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("renderer-from-claims — BKL-170 CLARIFY-with-candidates (0.8.0 carrier)", () => {
+  const CLARIFY: TurnTerminal = "CLARIFY";
+  const literalText = (t: Template): string =>
+    t.slots.map((s) => (s.kind === "LITERAL" ? s.text : "")).join("");
+  const anyClaim = [
+    claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "em preparo" }),
+  ];
+  const candidates = [
+    { kind: "order", id: "order_01A", label: "#1042" },
+    { kind: "order", id: "order_01B", label: "#1043" },
+  ];
+
+  it("(a) CLARIFY + candidates → voices the specific labels (supersedes generic clarify)", () => {
+    const out = renderRenderables(anyClaim, CLARIFY, [], candidates);
+    expect(out.terminal).toBe("CLARIFY");
+    expect(out.lines).toHaveLength(1);
+    expect(out.lines[0]?.kind).toBe("TERMINAL");
+    // Both first-party labels are voiced, joined pt-BR ("… #1042 ou #1043?").
+    expect(out.text).toContain("#1042");
+    expect(out.text).toContain("#1043");
+    expect(out.text).toContain(" ou ");
+    // It is NOT the generic clarify copy (which asks the customer to TYPE the number).
+    expect(out.text).not.toBe(literalText(SAFE_TEMPLATES.clarify));
+    expect(out.text).not.toContain("pode me dizer o número");
+    // Still proposition-free: it asserts NO domain fact about either order.
+    expect(out.text).not.toContain("em preparo");
+    expect(out.text).not.toContain("etapa");
+  });
+
+  it("(a') three candidates render the pt-BR enumerated join ('a, b ou c')", () => {
+    const three = [
+      { kind: "order", id: "o1", label: "#1" },
+      { kind: "order", id: "o2", label: "#2" },
+      { kind: "order", id: "o3", label: "#3" },
+    ];
+    const out = renderRenderables(anyClaim, CLARIFY, [], three);
+    expect(out.text).toContain("#1, #2 ou #3");
+  });
+
+  it("(b) candidates on a NON-CLARIFY terminal are ignored (byte-identical)", () => {
+    const withCands = renderRenderables(anyClaim, "UNKNOWN", [], candidates);
+    const without = renderRenderables(anyClaim, "UNKNOWN", []);
+    expect(withCands.text).toBe(without.text);
+    expect(withCands.text).toBe(literalText(SAFE_TEMPLATES.unknown));
+  });
+
+  it("(c) BYTE-IDENTICAL-ABSENT: CLARIFY with empty/omitted candidates → the generic clarify", () => {
+    const omitted = renderRenderables(anyClaim, CLARIFY);
+    const empty = renderRenderables(anyClaim, CLARIFY, [], []);
+    expect(omitted.text).toBe(literalText(SAFE_TEMPLATES.clarify));
+    expect(empty.text).toBe(literalText(SAFE_TEMPLATES.clarify));
   });
 });
 
@@ -476,5 +549,76 @@ describe("renderer-from-claims — render() requires a kernel-minted CanonicalCl
     expect(result.renderableCanonical).toHaveLength(1);
     const out = render(result.renderableCanonical, RENDER);
     expect(out.text).toBe("No momento, o período de funcionamento é: jantar.");
+  });
+});
+
+// ── BKL-184 — the allergen-ask UNKNOWN variant (abstain + human-handoff OFFER) ──
+// Gated ONLY by the adapter-computed `allergenAsk` flag AND an UNKNOWN terminal;
+// every other posture/flag combination is byte-identical to the generic templates.
+describe("BKL-184 — allergen-ask UNKNOWN renders the abstain-plus-offer variant", () => {
+  it("UNKNOWN + allergenAsk → the allergen offer copy (proposition-free)", () => {
+    const out = renderRenderables([], "UNKNOWN", [], [], true);
+    expect(out.text).toBe(
+      "Não localizei essa informação de alérgenos confirmada agora — por segurança, prefiro não arriscar uma resposta. Quer que eu peça para um atendente confirmar com a cozinha?",
+    );
+    // The conservative allergen ruling: never a negative assurance.
+    expect(out.text).not.toContain("não contém");
+  });
+
+  it("UNKNOWN without the flag → the generic template, byte-identical", () => {
+    const flagged = renderRenderables([], "UNKNOWN", [], [], false);
+    const bare = renderRenderables([], "UNKNOWN");
+    expect(flagged.text).toBe(bare.text);
+    expect(bare.text).toBe("Não localizei essa informação confirmada agora. Quer que eu verifique?");
+  });
+
+  it("the flag NEVER touches other terminals (ESCALATE/CLARIFY byte-identical)", () => {
+    expect(renderRenderables([], "ESCALATE", [], [], true).text).toBe(
+      renderRenderables([], "ESCALATE").text,
+    );
+    expect(renderRenderables([], "CLARIFY", [], [], true).text).toBe(
+      renderRenderables([], "CLARIFY").text,
+    );
+  });
+
+  it("the variant template is structurally proposition-free (the §O#3 mechanical guarantee)", () => {
+    expect(isPropositionFree(SAFE_UNKNOWN_ALLERGEN_TEMPLATE)).toBe(true);
+  });
+});
+
+
+describe("BKL-209 — medical-emergency ESCALATE renders the emergency safe variant", () => {
+  it("emergencyAsk=true + ESCALATE renders the emergency template (no medical advice, no phone number)", () => {
+    // renderRenderables(claims, terminal, suppressions, candidates, allergenAsk, emergencyAsk)
+    const out = renderRenderables([], "ESCALATE", [], [], false, true);
+    expect(out.terminal).toBe("ESCALATE");
+    expect(out.lines).toHaveLength(1);
+    expect(out.text).toBe(
+      "Isto parece uma emergência médica e eu não posso orientar sobre isso. Se você ou alguém aí está passando mal, procure atendimento médico de emergência imediatamente. Vou avisar nossa equipe para ajudar.",
+    );
+    // The safe, number-free directive + honest limit + staff notice.
+    expect(out.text).toContain("emergência médica");
+    expect(out.text).toContain("atendimento médico de emergência");
+    expect(out.text).toContain("avisar nossa equipe");
+    // NEVER a hallucinated emergency number (the live bug) or medical instruction.
+    expect(out.text).not.toMatch(/\b(1\d\d|samu)\b/i);
+    // Proposition-free by construction.
+    expect(isPropositionFree(SAFE_ESCALATE_EMERGENCY_TEMPLATE)).toBe(true);
+  });
+
+  it("emergencyAsk=false + ESCALATE renders the GENERIC escalate line (byte-identical)", () => {
+    const generic = renderRenderables([], "ESCALATE", [], [], false, false);
+    expect(generic.text).toBe(
+      renderRenderables([], "ESCALATE", []).text,
+    );
+    expect(generic.text).not.toContain("emergência médica");
+  });
+
+  it("emergencyAsk=true but a NON-escalate terminal ignores the emergency variant", () => {
+    // A medical-emergency net firing on a turn that (somehow) resolved UNKNOWN must
+    // not render the escalate template — the terminal governs the template.
+    const unknown = renderRenderables([], "UNKNOWN", [], [], false, true);
+    expect(unknown.terminal).toBe("UNKNOWN");
+    expect(unknown.text).not.toContain("emergência médica");
   });
 });

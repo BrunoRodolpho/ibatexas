@@ -1,0 +1,17 @@
+# FE-D22 runner test fixture — NOT a production corpus (lives under __tests__).
+tool: check_order_status
+source: fe-d22-runner-fixture
+cases:
+  - id: concrete-with-sanitization
+    utterance: "qual o status do pedido 42 por favor"
+    expectArgs:
+      orderReference: "IBX-42"
+    note: "the scripted model emits orderReference + a forbidden orderId + a bogus field; sanitizeReadToolInput must strip all but orderReference"
+  - id: sound-abstain-ok
+    utterance: "e o andamento entao"
+    expectArgs: null
+    note: "no grounding key → a sound extraction abstains (no call) → ok"
+  - id: sound-abstain-violated
+    utterance: "me fala logo isso ai"
+    expectArgs: null
+    note: "NEGATIVE — the scripted model wrongly calls the tool → fail"

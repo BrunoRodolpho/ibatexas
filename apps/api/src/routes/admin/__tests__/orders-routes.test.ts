@@ -75,6 +75,11 @@ const MockInvalidTransitionError = vi.hoisted(
 // ── Module mocks ─────────────────────────────────────────────────────────────
 
 vi.mock("@ibatexas/domain", () => ({
+  // NEW-014 PR2 — the admin detail route consumes this directly (fiscal badge);
+  // default: no fiscal record (fiscal: null on the response).
+  createFiscalDocumentService: () => ({
+    getByOrderId: vi.fn().mockResolvedValue(null),
+  }),
   createOrderQueryService: () => ({
     listAll: mockListAll,
     getById: mockGetById,
@@ -207,8 +212,40 @@ describe("GET /api/admin/orders", () => {
       expect(o.currentPayment).toMatchObject({ id: "pay_01", method: "pix" });
       expect(o.total).toBe(5000);
       expect(o.created_at).toBe("2026-06-01T12:00:00.000Z");
-      // mapProjectionItems derives id from variantId and unit_price from priceInCentavos.
+      // BKL-167 — the fixture item is a LEGACY (pre-FE-D15) row with no stable `id`,
+      // so mapProjectionItems falls back to variantId; unit_price from priceInCentavos.
       expect(o.items[0]).toMatchObject({ id: "var_1", unit_price: 2500 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("BKL-167 — item id prefers the stable line-item id, else variantId, else index", async () => {
+    mockListAll.mockResolvedValue({
+      orders: [
+        projectionRow({
+          itemsJson: [
+            // (1) FE-D15 row — carries the stable Medusa line-item id → PREFERRED.
+            { id: "li_real_1", variantId: "var_a", priceInCentavos: 2500, name: "Costela" },
+            // (2) legacy row, no id → falls back to variantId.
+            { variantId: "var_b", priceInCentavos: 1500, name: "Farofa" },
+            // (3) legacy row, no id AND no variantId → falls back to the index.
+            { priceInCentavos: 500, name: "Guaraná" },
+          ],
+        }),
+      ],
+      count: 1,
+    });
+    mockGetActiveByOrderIds.mockResolvedValue(new Map([["order_01", paymentRow()]]));
+
+    const app = await buildServer();
+    try {
+      const res = await app.inject({ method: "GET", url: "/api/admin/orders" });
+      expect(res.statusCode).toBe(200);
+      const items = res.json().orders[0].items;
+      expect(items[0].id).toBe("li_real_1"); // real id preferred over variantId
+      expect(items[1].id).toBe("var_b"); // legacy → variantId
+      expect(items[2].id).toBe("item-2"); // legacy, no variantId → index fallback
     } finally {
       await app.close();
     }
