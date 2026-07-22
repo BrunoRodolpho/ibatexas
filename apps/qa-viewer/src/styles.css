@@ -556,6 +556,17 @@ code, pre { font-family: var(--mono); font-size: 12px; }
 .pipe__conn { flex: 1 1 auto; min-width: 14px; height: 2px; margin-top: 18px; background: var(--ok); opacity: 0.5; border-radius: 2px; }
 .pipe__conn--dim { background: none; border-top: 2px dashed var(--silent); height: 0; }
 
+/* pipeline drill-down (donut click → stage evidence) */
+.pipe__evidence { border-top: 1px solid var(--line-2); padding: 10px 16px 12px; display: flex; flex-direction: column; gap: 4px; }
+.pipe__evidence-hd { display: flex; align-items: center; gap: 9px; font-size: 11px; color: var(--ink-2); margin-bottom: 3px; }
+.pipe__evidence-hd b { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+.pipe__evidence-hd .hint { margin-left: auto; font-size: 10.5px; color: var(--ink-3); }
+.pipe__evidence-row { font-family: var(--mono); font-size: 11.5px; color: var(--ink); word-break: break-word; }
+
+/* live auto-refresh toolbar */
+.rca__toolbar { display: flex; align-items: center; gap: 9px; }
+.rca__toolbar .hint { font-size: 11px; color: var(--ink-3); }
+
 /* identifiers dock */
 .ids { display: flex; flex-direction: column; }
 .ids__row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line-2); }

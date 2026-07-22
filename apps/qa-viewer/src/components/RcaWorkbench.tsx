@@ -24,6 +24,7 @@ import {
   findMessages,
   mergeTimeline,
   rcaConfigured,
+  stageFacts,
   type RcaConversation,
   type RcaFindHit,
   type RcaStatus,
@@ -112,6 +113,7 @@ interface PersistedState {
   channels?: string[]
   selConv?: string | null
   selTurn?: string | null
+  live?: boolean
 }
 function loadPersisted(): PersistedState {
   try {
@@ -158,12 +160,18 @@ export function RcaWorkbench() {
   const [loading, setLoading] = useState(false)
   const [vlWindow, setVlWindow] = useState<string>("auto")
   const [refreshTick, setRefreshTick] = useState(0)
+  // live auto-refresh — scoped to the current selection (turn > conv > list)
+  const [live, setLive] = useState(saved.live ?? true)
 
   // timeline view controls
   const [laneOff, setLaneOff] = useState<ReadonlySet<TimelineSource>>(new Set())
   const [evFilter, setEvFilter] = useState("")
   const [absTime, setAbsTime] = useState(false)
-  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
+  // Expanded rows key by stable event identity (source|ts|text), NOT index —
+  // a live re-fetch that inserts rows must not shift which rows stay open.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+  // Donut drill-down: the focused pipeline stage (evidence + timeline filter)
+  const [selStage, setSelStage] = useState<string | null>(null)
 
   // preflight store probes (re-run on manual refresh)
   const [status, setStatus] = useState<RcaStatus | null>(null)
@@ -188,13 +196,14 @@ export function RcaWorkbench() {
       channels: [...channelSel],
       selConv,
       selTurn,
+      live,
     }
     try {
       sessionStorage.setItem(STORE_KEY, JSON.stringify(s))
     } catch {
       /* storage full/blocked — persistence is best-effort */
     }
-  }, [q, fromLocal, toLocal, preset, channelSel, selConv, selTurn])
+  }, [q, fromLocal, toLocal, preset, channelSel, selConv, selTurn, live])
 
   // Deep-link plumbing: reflect the selection into the URL (replace — no
   // history spam; replaceState never fires hashchange, so no listener loop),
@@ -258,22 +267,61 @@ export function RcaWorkbench() {
       })
   }, [cfg, selConv])
 
+  // Switching turns resets the view state; a background re-fetch of the SAME
+  // turn must not (rows the investigator opened stay open across live ticks).
+  useEffect(() => {
+    setExpanded(new Set())
+    setSelStage(null)
+  }, [selTurn])
+
   // detail of the selected turn (re-fetched on window change / manual refresh)
   useEffect(() => {
     if (cfg === null || selTurn === null) return
     setLoading(true)
     setDetailErr(null)
     fetchTurn(cfg, selTurn, vlWindow === "auto" ? null : vlWindow)
-      .then((d) => {
-        setDetail(d)
-        setExpanded(new Set())
-      })
+      .then(setDetail)
       .catch((e: unknown) => {
         setDetail(null)
         setDetailErr((e as Error).message)
       })
       .finally(() => setLoading(false))
   }, [cfg, selTurn, vlWindow, refreshTick])
+
+  // Live auto-refresh: a 5s tick scoped to the current selection — with a turn
+  // open it re-reads only that turn (+ its conversation's turn list); with only
+  // a conversation open, only that turn list; with nothing selected, the
+  // conversation list. Silent on transient errors (the manual path surfaces
+  // them), paused while the tab is hidden.
+  useEffect(() => {
+    if (cfg === null || !live) return
+    const tick = () => {
+      if (document.visibilityState !== "visible") return
+      if (selTurn !== null) {
+        fetchTurn(cfg, selTurn, vlWindow === "auto" ? null : vlWindow)
+          .then(setDetail)
+          .catch(() => {})
+        if (selConv !== null) {
+          fetchTurns(cfg, selConv)
+            .then(setTurns)
+            .catch(() => {})
+        }
+      } else if (selConv !== null) {
+        fetchTurns(cfg, selConv)
+          .then(setTurns)
+          .catch(() => {})
+      } else {
+        fetchConversations(cfg, { q, from: fromIso, to: toIso, channels: [...channelSel] })
+          .then((c) => {
+            setConvs(c)
+            setConvErr(null)
+          })
+          .catch(() => {})
+      }
+    }
+    const t = setInterval(tick, 5_000)
+    return () => clearInterval(t)
+  }, [cfg, live, selTurn, selConv, vlWindow, q, fromIso, toIso, channelSel])
 
   // A bare #rca/turn/<id> deep link resolves its conversation from the loaded
   // detail — adopt it so the rail highlights and loads the turn list.
@@ -345,9 +393,18 @@ export function RcaWorkbench() {
   const laneCounts = new Map<TimelineSource, number>()
   for (const e of timeline) laneCounts.set(e.source, (laneCounts.get(e.source) ?? 0) + 1)
   const evNeedle = evFilter.trim().toLowerCase()
+  // Stable row identity (before any filtering, so filters can't shift keys);
+  // duplicate identities disambiguate by occurrence order.
+  const seenKeys = new Map<string, number>()
   const visible = timeline
-    .map((e, i) => ({ e, i }))
+    .map((e) => {
+      const base = `${e.source}|${e.ts}|${e.text}`
+      const n = seenKeys.get(base) ?? 0
+      seenKeys.set(base, n + 1)
+      return { e, k: n === 0 ? base : `${base}#${n}` }
+    })
     .filter(({ e }) => !laneOff.has(e.source))
+    .filter(({ e }) => selStage === null || e.stage === selStage)
     .filter(({ e }) => evNeedle === "" || e.text.toLowerCase().includes(evNeedle))
 
   const channelItems = (() => {
@@ -550,6 +607,25 @@ export function RcaWorkbench() {
   return (
     <Workbench rail={rail}>
       <div className="rca">
+        <div className="rca__toolbar">
+          <button
+            type="button"
+            className={`chip ${live ? "chip--on" : ""}`}
+            onClick={() => setLive((v) => !v)}
+            title="Auto-refresh every 5s, scoped to the selection (turn ▸ conversation ▸ list) — pauses while the tab is hidden"
+          >
+            {live ? "● live 5s" : "live off"}
+          </button>
+          <span className="hint">
+            {live
+              ? selTurn !== null
+                ? "auto-refreshing the selected turn"
+                : selConv !== null
+                  ? "auto-refreshing the selected conversation"
+                  : "auto-refreshing the conversation list"
+              : "manual refresh only"}
+          </span>
+        </div>
         {status !== null && (
           <div className="preflight">
             <span className="preflight__title">preflight</span>
@@ -641,7 +717,7 @@ export function RcaWorkbench() {
             <div className="card">
               <div className="card__hd">
                 <h2>Execution pipeline</h2>
-                <span className="hint">tri-state · derived (absence-is-signal)</span>
+                <span className="hint">tri-state · derived (absence-is-signal) · click a stage for its evidence</span>
               </div>
               <div className="pipe">
                 {pipeline.map((s, i) => (
@@ -653,7 +729,17 @@ export function RcaWorkbench() {
                         }`}
                       />
                     )}
-                    <div className={`pipe__node pipe__node--${s.state}`}>
+                    <div
+                      className={`pipe__node pipe__node--${s.state} ${
+                        selStage === s.key ? "pipe__node--sel" : ""
+                      }`}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={selStage === s.key}
+                      onClick={() => setSelStage((prev) => (prev === s.key ? null : s.key))}
+                      onKeyDown={keyActivate(() => setSelStage((prev) => (prev === s.key ? null : s.key)))}
+                      title={selStage === s.key ? "clear stage focus" : `focus ${s.label}: evidence + filtered timeline`}
+                    >
                       <div className="pipe__badge">{STAGE_GLYPH[s.state]}</div>
                       <div className="pipe__name">{s.label}</div>
                       <div className="pipe__sub">{s.sub}</div>
@@ -661,6 +747,22 @@ export function RcaWorkbench() {
                   </div>
                 ))}
               </div>
+              {selStage !== null && (
+                <div className="pipe__evidence">
+                  <div className="pipe__evidence-hd">
+                    <b>{pipeline.find((s) => s.key === selStage)?.label ?? selStage}</b> — stage evidence
+                    <span className="hint">merged timeline below is filtered to this stage</span>
+                    <button type="button" className="chip chip--mini" onClick={() => setSelStage(null)}>
+                      ✕ clear
+                    </button>
+                  </div>
+                  {stageFacts(detail, selStage).map((f, i) => (
+                    <div key={i} className="pipe__evidence-row">
+                      {f}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* identifiers + deep-links */}
@@ -774,6 +876,16 @@ export function RcaWorkbench() {
                       {lane} {laneCounts.get(lane) ?? 0}
                     </button>
                   ))}
+                  {selStage !== null && (
+                    <button
+                      type="button"
+                      className="chip chip--on"
+                      onClick={() => setSelStage(null)}
+                      title="showing only this stage's rows — click to clear"
+                    >
+                      stage: {selStage} ✕
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={`chip ${absTime ? "chip--on" : ""}`}
@@ -815,8 +927,8 @@ export function RcaWorkbench() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visible.map(({ e, i }) => (
-                    <Fragment key={i}>
+                  {visible.map(({ e, k }) => (
+                    <Fragment key={k}>
                       <tr
                         className={`${e.gap === true ? "trace-row--gap" : ""} ${
                           e.detail !== undefined ? "trace-row--expandable" : ""
@@ -825,8 +937,8 @@ export function RcaWorkbench() {
                           if (e.detail === undefined) return
                           setExpanded((prev) => {
                             const next = new Set(prev)
-                            if (next.has(i)) next.delete(i)
-                            else next.add(i)
+                            if (next.has(k)) next.delete(k)
+                            else next.add(k)
                             return next
                           })
                         }}
@@ -855,11 +967,11 @@ export function RcaWorkbench() {
                             </button>
                           )}
                           {e.detail !== undefined && (
-                            <span className="expand-hint">{expanded.has(i) ? "▾" : "▸"}</span>
+                            <span className="expand-hint">{expanded.has(k) ? "▾" : "▸"}</span>
                           )}
                         </td>
                       </tr>
-                      {expanded.has(i) && e.detail !== undefined && (
+                      {expanded.has(k) && e.detail !== undefined && (
                         <tr className="trace-row--detail">
                           <td colSpan={3}>
                             {e.detail.length > 0 && <pre className="tl-detail">{e.detail}</pre>}

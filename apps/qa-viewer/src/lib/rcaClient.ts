@@ -298,6 +298,19 @@ function hasLegacySend(vl: VlLine[]): boolean {
   return vl.some((l) => (l.msg ?? "").includes("[whatsapp.send]"))
 }
 
+/** Attribute one VL line to a pipeline stage for the donut drill-down —
+ *  mirrors exactly the signals derivePipeline reads per stage; undefined when
+ *  the line belongs to no single donut (generic conductor chatter). */
+function vlStage(l: VlLine): string | undefined {
+  const ev = l.fields?.event ?? ""
+  const msg = l.msg ?? ""
+  if (ev === "reply.sent" || msg.includes("[whatsapp.send]")) return "send"
+  if (l.component === "claims" || l.component === "claim-planner" || ev.startsWith("claim")) return "claims"
+  if (ev === "turn" || msg.includes("incoming")) return "inbound"
+  if (msg.includes("archiver") || msg.includes("archived")) return "archive"
+  return undefined
+}
+
 // ── Derived: merged timeline ────────────────────────────────────────────────
 
 export type TimelineSource = "ADJ" | "LLM" | "VL" | "GAP"
@@ -307,6 +320,10 @@ export interface TimelineEvent {
   ts: string
   source: TimelineSource
   text: string
+  /** Pipeline-stage attribution (derivePipeline keys: inbound / planner /
+   *  claims / kernel / responder / send / archive) — the donut drill-down
+   *  filters the timeline by this; absent when a row maps to no one stage. */
+  stage?: string
   /** Expandable payload: full completion / basis chain / raw structured fields. */
   detail?: string
   empty?: boolean
@@ -338,7 +355,11 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
   const matchedSeqs = new Set<number>()
   for (const c of d.llm) {
     const empty = callEmpty(c)
-    const phase = personaPhase(c.persona) ?? `call ${c.callIndex}`
+    const phase = personaPhase(c.persona)
+    const phaseLabel = phase ?? `call ${c.callIndex}`
+    // The claim-planner call renders under the "Claims" donut; planner and
+    // responder map 1:1 to their stages.
+    const stage = phase === "claim-planner" ? "claims" : phase
     const head = empty ? "<EMPTY>" : (c.completion ?? "").slice(0, 120)
     const promptId = promptIdForPersona(c.persona)
     // Wire Truth: the durable attempts behind THIS call (retries share its
@@ -349,10 +370,11 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
       tMs: ms(c.recordedAt),
       ts: c.recordedAt ?? "",
       source: "LLM",
-      text: `call ${c.callIndex} ${phase} · ${c.persona ?? "?"} · in=${c.inputTokens ?? 0} out=${c.outputTokens ?? 0} · ${c.durationMs ?? "?"}ms :: ${head}${attempts.length > 0 ? ` · wire×${attempts.length}` : ""}`,
+      text: `call ${c.callIndex} ${phaseLabel} · ${c.persona ?? "?"} · in=${c.inputTokens ?? 0} out=${c.outputTokens ?? 0} · ${c.durationMs ?? "?"}ms :: ${head}${attempts.length > 0 ? ` · wire×${attempts.length}` : ""}`,
       // Every LLM row expands (spec story 15): with wire attempts it shows
       // them; without, the expander states the absence explicitly.
       detail: c.completion ?? "",
+      ...(stage !== null ? { stage } : {}),
       ...(empty ? { empty: true } : {}),
       ...(promptId !== null ? { promptId } : {}),
       ...(attempts.length > 0 ? { wire: attempts } : {}),
@@ -381,6 +403,7 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
       tMs: ms(a.recordedAt),
       ts: a.recordedAt ?? "",
       source: "ADJ",
+      stage: a.kind === ARCHIVER_KIND ? "archive" : "kernel",
       text: `${a.kind ?? "?"} → ${a.decisionKind ?? "?"}${a.refusalCode ? ` (${a.refusalCode})` : ""}${a.taint ? ` · taint ${a.taint}` : ""}${a.durationMs != null ? ` · ${a.durationMs}ms` : ""}${scope}${resume}`,
       detail: [
         a.principal != null ? `principal: ${a.principal}` : null,
@@ -400,11 +423,13 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
   for (const l of d.vl) {
     const f = l.fields
     const tag = f?.event !== undefined ? `${f.event} ` : ""
+    const stage = vlStage(l)
     out.push({
       tMs: ms(l.time),
       ts: l.time ?? "",
       source: "VL",
       text: `${l.level ? `L${l.level} ` : ""}${l.component ? `[${l.component}] ` : ""}${tag}${l.msg ?? ""}`,
+      ...(stage !== undefined ? { stage } : {}),
       ...(f !== null && f !== undefined
         ? {
             detail: Object.entries(f)
@@ -430,6 +455,7 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
       tMs: ms(at) || Number.MAX_SAFE_INTEGER,
       ts: at ?? "",
       source: "GAP",
+      stage: "send",
       text: "expected outbound reply.sent here — ABSENT (pre-send failure or ghost). Absence is the signal.",
       gap: true,
     })
@@ -633,6 +659,74 @@ export function derivePipeline(d: RcaTurnDetail): PipelineStage[] {
     send,
     { key: "archive", label: "Archive", state: archived ? "ok" : "off", sub: archived ? "persisted" : "skipped" },
   ]
+}
+
+/** The "most relevant data" behind one donut — compact per-stage evidence for
+ *  the pipeline drill-down, derived entirely from the already-loaded detail
+ *  (no extra fetch). Mirrors the same signals derivePipeline judges by, so the
+ *  facts always explain the donut's state. Returns [] for an unknown key. */
+export function stageFacts(d: RcaTurnDetail, key: string): string[] {
+  const callFacts = (c: LlmCall): string[] => [
+    `persona: ${c.persona ?? "?"}`,
+    `model: ${c.model ?? "?"}${c.temperature !== null ? ` · temp ${c.temperature}` : ""}`,
+    `tokens: in ${c.inputTokens ?? 0} · out ${c.outputTokens ?? 0} · ${c.durationMs ?? "?"}ms`,
+    ...(callEmpty(c) ? ["completion: <EMPTY>"] : []),
+  ]
+  const fieldFacts = (l: VlLine | undefined): string[] =>
+    l?.fields != null
+      ? Object.entries(l.fields)
+          .filter(([k]) => k !== "event")
+          .map(([k, v]) => `${k}: ${v}`)
+      : []
+  switch (key) {
+    case "inbound": {
+      return [
+        `channel: ${d.context.channel ?? "?"}`,
+        `started: ${d.context.startedAt ?? "?"}`,
+        `duration: ${d.context.durationMs ?? "?"}ms`,
+        ...fieldFacts(d.vl.find((l) => l.fields?.event === "turn")),
+      ]
+    }
+    case "planner": {
+      const c = planner(d)
+      return c === undefined ? ["no planner call"] : callFacts(c)
+    }
+    case "claims": {
+      const c = claimPlanner(d)
+      return [
+        ...(c === undefined ? ["no claim-planner call"] : callFacts(c)),
+        ...fieldFacts(d.vl.find((l) => l.fields?.event === "claims.terminal")),
+      ]
+    }
+    case "kernel": {
+      if (d.degraded?.adj === true) return ["ADJ lane degraded — absence is not a signal here"]
+      const rows = d.adj.filter((a) => a.kind !== ARCHIVER_KIND && a.decisionKind !== null)
+      if (rows.length === 0) return ["no envelopes (a read-only turn adjudicates nothing)"]
+      return rows.map(
+        (a) =>
+          `${a.kind ?? "?"} → ${a.decisionKind ?? "?"}${a.refusalCode !== null ? ` (${a.refusalCode})` : ""}${
+            a.taint !== null ? ` · taint ${a.taint}` : ""
+          }${a.supersedes !== null ? ` ↩ resumes ${a.supersedes.reason ?? "?"}` : ""}`,
+      )
+    }
+    case "responder": {
+      const c = responder(d)
+      if (c === undefined) return ["no responder call"]
+      return [...callFacts(c), ...(callEmpty(c) ? [] : [`reply: ${(c.completion ?? "").slice(0, 200)}`])]
+    }
+    case "send": {
+      const ev = d.vl.find((l) => l.fields?.event === "reply.sent")
+      if (ev !== undefined) return fieldFacts(ev)
+      if (hasLegacySend(d.vl)) return ["legacy [whatsapp.send] line present"]
+      return [d.degraded?.vl === true ? "VL lane degraded — absence is not a signal here" : "no send event"]
+    }
+    case "archive": {
+      const n = d.adj.filter((a) => a.kind === ARCHIVER_KIND && a.decisionKind === "EXECUTE").length
+      return n > 0 ? [`archiver ${ARCHIVER_KIND} EXECUTE ×${n}`] : ["no archiver rows"]
+    }
+    default:
+      return []
+  }
 }
 
 // ── Derived: deep-links (env-configured bases) ──────────────────────────────

@@ -15,6 +15,7 @@ import {
   mergeTimeline,
   personaPhase,
   promptIdForPersona,
+  stageFacts,
   type AdjDecision,
   type InvestigationContext,
   type LlmCall,
@@ -259,6 +260,75 @@ describe("mergeTimeline", () => {
     const ev = mergeTimeline(d).find((e) => e.source === "LLM")
     expect(ev?.empty).toBe(true)
     expect(ev?.promptId).toBe("ibatexas/planner.persona")
+  })
+})
+
+// ── stage attribution (the donut drill-down filter) ─────────────────────────
+
+describe("mergeTimeline — stage attribution", () => {
+  it("tags LLM rows by persona phase — claim-planner lands under the claims donut", () => {
+    const d = D({
+      llm: [
+        call({ callIndex: 0, persona: "ibatexas/planner.persona@a" }),
+        call({ callIndex: 1, persona: "ibatexas/claim-planner.persona@b" }),
+        call({ callIndex: 2, persona: "ibatexas/responder.grounded@c" }),
+      ],
+    })
+    const stages = mergeTimeline(d)
+      .filter((e) => e.source === "LLM")
+      .map((e) => e.stage)
+    expect(stages).toEqual(["planner", "claims", "responder"])
+  })
+
+  it("tags ADJ rows kernel vs archive — archiver bookkeeping is not a kernel mutation", () => {
+    const d = D({
+      adj: [adj({ kind: "order.item.add" }), adj({ kind: "conversation.message.append" })],
+      vl: [vl({ fields: { event: "reply.sent", deliveredText: "true" } })],
+    })
+    const byKind = new Map(mergeTimeline(d).filter((e) => e.source === "ADJ").map((e) => [e.text.split(" ")[0], e.stage]))
+    expect(byKind.get("order.item.add")).toBe("kernel")
+    expect(byKind.get("conversation.message.append")).toBe("archive")
+  })
+
+  it("tags reply.sent VL lines and the GAP ghost as the send stage", () => {
+    const sent = D({ llm: [call()], vl: [vl({ fields: { event: "reply.sent", deliveredText: "true" } })] })
+    expect(mergeTimeline(sent).find((e) => e.source === "VL")?.stage).toBe("send")
+    const ghost = D({ llm: [call()] })
+    expect(mergeTimeline(ghost).find((e) => e.source === "GAP")?.stage).toBe("send")
+  })
+})
+
+// ── stageFacts (the donut's evidence panel) ─────────────────────────────────
+
+describe("stageFacts", () => {
+  it("kernel: lists real envelopes with decision + refusal, excludes archiver rows", () => {
+    const d = D({
+      adj: [
+        adj({ kind: "order.cancel", decisionKind: "REQUEST_CONFIRMATION" }),
+        adj({ kind: "conversation.message.append" }),
+      ],
+    })
+    const facts = stageFacts(d, "kernel")
+    expect(facts).toHaveLength(1)
+    expect(facts[0]).toContain("order.cancel → REQUEST_CONFIRMATION")
+  })
+
+  it("kernel: a degraded ADJ lane reads degraded, never 'no envelopes'", () => {
+    const d = D({ degraded: { adj: true, vl: false, wire: false } })
+    expect(stageFacts(d, "kernel")[0]).toContain("degraded")
+  })
+
+  it("responder: carries the reply text; send: surfaces the reply.sent fields", () => {
+    const d = D({
+      llm: [call({ persona: "ibatexas/responder.grounded@c", completion: "olá!" })],
+      vl: [vl({ fields: { event: "reply.sent", disposition: "delivered", deliveredText: "true" } })],
+    })
+    expect(stageFacts(d, "responder").some((f) => f.startsWith("reply: olá!"))).toBe(true)
+    expect(stageFacts(d, "send")).toEqual(["disposition: delivered", "deliveredText: true"])
+  })
+
+  it("returns [] for an unknown stage key — never throws", () => {
+    expect(stageFacts(D(), "nope")).toEqual([])
   })
 })
 
