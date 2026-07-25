@@ -21,11 +21,52 @@
 // `requireReservationModifiable` guards inspect `state.ctx.reservation`.
 // The `refuseModifyOnFullNewSlot` guard inspects `state.ctx.newSlot`. We
 // hydrate them via cheap lookups before the kernel runs.
+//
+// ── BKL-232 — two entry points, so a conductor turn adjudicates ONCE ──────
+//
+// This tool has two callers, and only ONE of them has already adjudicated:
+//
+//   - `modifyReservation` (SELF-ADJUDICATING) — the REST `PATCH
+//     /api/reservations/:id` route (apps/api/src/routes/reservations.ts),
+//     which reaches the tool with no kernel decision behind it. It MUST mint
+//     and adjudicate its own envelope or the mutation would run ungated
+//     (CLAUDE.md rule #9).
+//   - `modifyReservationPreAdjudicated` (BKL-232) — the claustrum tool
+//     registry (apps/api/src/tools/register-ibatexas-tool-packs.ts). The
+//     Conductor has ALREADY adjudicated this exact `reservation.modify`
+//     envelope through the audited kernel AND claimed its execution-ledger
+//     key; re-minting a second envelope here produced a SECOND
+//     `reservation.modify` EXECUTE per single customer confirm.
+//
+// Why the execution ledger could not absorb the duplicate: the ledger dedups
+// on `intentHash` (`ledger:intent:<hash>`, SET NX). The envelope minted below
+// is a DIFFERENT envelope from the Conductor's — fresh `nonce: randomUUID()`,
+// a payload without `customerId`, and `actor.sessionId = customer:<id>` rather
+// than the conversation session — so its hash can never collide with the
+// adjudicated one, and `withAdjudicate` is wired with no ledger at all. The
+// only fix is to not adjudicate the same intent twice.
+//
+// The order-plane amend/cancel tools were never exposed to this: they do not
+// re-mint an envelope of the kind the Conductor decided. Their inner envelopes
+// (`payment.status.transition`, `payment.cancel`, `payment.create`,
+// `order.type.switch`) are genuinely distinct downstream mutations.
+//
+// Write-time invariants are unaffected on the pre-adjudicated path:
+// `reservationService.modify` re-reads the reservation, re-asserts ownership +
+// mutability, and re-checks new-slot capacity under a `FOR UPDATE` lock inside
+// its own transaction (reservation.service.ts) — the pack guards the Conductor
+// already ran are advisory reads, exactly as this file's header has always said.
 
 import { randomUUID } from "node:crypto"
 import { createReservationService, prisma } from "@ibatexas/domain"
 import { getAuditSink } from "@ibatexas/audit-sink"
-import { ModifyReservationInputSchema, type ModifyReservationInput, type ModifyReservationOutput } from "@ibatexas/types"
+import {
+  ModifyReservationInputSchema,
+  type ModifyReservationInput,
+  type ModifyReservationOutput,
+  type ReservationDTO,
+  type SpecialRequest,
+} from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { buildEnvelope } from "@adjudicate/core"
 import type {
@@ -35,11 +76,65 @@ import type {
 import { withReservationOwnership } from "../guards/with-ownership.js"
 import { sendReservationModified } from "./notifications.js"
 
+/**
+ * How the caller reached this tool — i.e. who owns the kernel decision.
+ *
+ * `"self"`      — nobody adjudicated yet; mint + adjudicate an envelope here.
+ * `"conductor"` — the claustrum Conductor already adjudicated this intent and
+ *                 claimed its execution-ledger key; execute, do NOT re-adjudicate
+ *                 (BKL-232).
+ */
+type ModifyAuthority = "self" | "conductor"
+
+/**
+ * The post-write side effects + pt-BR result, shared by both entry points so the
+ * pre-adjudicated path cannot drift from the self-adjudicating one. Notification
+ * and NATS publish stay fire-and-forget (a delivery failure must not fail a
+ * mutation that already committed).
+ */
+function succeed(
+  dto: ReservationDTO,
+  parsed: ModifyReservationInput,
+): ModifyReservationOutput {
+  void sendReservationModified(dto).catch((err) =>
+    console.error("[modify_reservation] Notification error:", (err as Error).message),
+  )
+
+  void publishNatsEvent("reservation.modified", {
+    eventType: "reservation.modified",
+    customerId: parsed.customerId,
+    sessionId: parsed.customerId,
+    channel: "web",
+    timestamp: new Date().toISOString(),
+    metadata: { reservationId: parsed.reservationId },
+  }).catch((err) => console.error("[modify_reservation] NATS publish error:", (err as Error).message))
+
+  return {
+    success: true,
+    reservation: dto,
+    message: `Reserva modificada: ${dto.timeSlot.startTime} em ${dto.timeSlot.date}, ${dto.partySize} pessoa(s).`,
+  }
+}
+
 // SEC-002: Ownership guard wrapper — rejects before any business logic
-export const modifyReservation = withReservationOwnership(modifyReservationImpl)
+export const modifyReservation = withReservationOwnership(
+  (input: ModifyReservationInput) => modifyReservationImpl(input, "self"),
+)
+
+/**
+ * BKL-232 — the entry point the claustrum tool registry dispatches on a kernel
+ * EXECUTE. Identical to {@link modifyReservation} (same ownership guard, same
+ * write, same notification + NATS side effects, same pt-BR result shape) except
+ * that it does NOT re-adjudicate: the Conductor's audited, ledger-claimed
+ * decision is the single authorization for this mutation.
+ */
+export const modifyReservationPreAdjudicated = withReservationOwnership(
+  (input: ModifyReservationInput) => modifyReservationImpl(input, "conductor"),
+)
 
 async function modifyReservationImpl(
   input: ModifyReservationInput,
+  authority: ModifyAuthority,
 ): Promise<ModifyReservationOutput> {
   const parsed = ModifyReservationInputSchema.parse(input)
 
@@ -49,6 +144,26 @@ async function modifyReservationImpl(
   const svc = createReservationService({ auditSink: getAuditSink() })
 
   try {
+    // ── BKL-232 — the Conductor already authorized this intent ─────────
+    // Execute the mutation under its decision. No second envelope, no second
+    // adjudication, no second `reservation.modify` EXECUTE audit row. The
+    // pack-guard state projection below exists only to feed a kernel run, so
+    // it is skipped here too (it was two redundant reads on this path).
+    if (authority === "conductor") {
+      const changes: {
+        newTimeSlotId?: string
+        newPartySize?: number
+        specialRequests?: SpecialRequest[]
+      } = {}
+      if (parsed.newTimeSlotId !== undefined) changes.newTimeSlotId = parsed.newTimeSlotId
+      if (parsed.newPartySize !== undefined) changes.newPartySize = parsed.newPartySize
+      if (parsed.specialRequests !== undefined) {
+        changes.specialRequests = parsed.specialRequests as SpecialRequest[]
+      }
+      const dto = await svc.modify(parsed.reservationId, parsed.customerId, changes)
+      return succeed(dto, parsed)
+    }
+
     // ── Project state for the pack policies ──────────────────────────
     // SEC-002's ownership guard already loaded the reservation, but we
     // need our own projection here (fresh status, current timeSlotId).
@@ -143,27 +258,7 @@ async function modifyReservationImpl(
       }
     }
 
-    const dto = outcome.result!
-
-    // Notify customer of modification (fire-and-forget)
-    void sendReservationModified(dto).catch((err) =>
-      console.error("[modify_reservation] Notification error:", (err as Error).message),
-    )
-
-    void publishNatsEvent("reservation.modified", {
-      eventType: "reservation.modified",
-      customerId: parsed.customerId,
-      sessionId: parsed.customerId,
-      channel: "web",
-      timestamp: new Date().toISOString(),
-      metadata: { reservationId: parsed.reservationId },
-    }).catch((err) => console.error("[modify_reservation] NATS publish error:", (err as Error).message))
-
-    return {
-      success: true,
-      reservation: dto,
-      message: `Reserva modificada: ${dto.timeSlot.startTime} em ${dto.timeSlot.date}, ${dto.partySize} pessoa(s).`,
-    }
+    return succeed(outcome.result!, parsed)
   } catch (err) {
     return {
       success: false,

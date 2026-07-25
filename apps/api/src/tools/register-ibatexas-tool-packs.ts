@@ -42,7 +42,7 @@ import {
   handoffToHuman,
   joinWaitlist,
   medusaAdmin,
-  modifyReservation,
+  modifyReservationPreAdjudicated,
   regeneratePix,
   removeFromCart,
   setPixDetails,
@@ -484,7 +484,12 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "reservation.modify",
     description: "Modificar uma reserva existente.",
     riskLevel: "medium",
-    execute: (input) => modifyReservation(input as never),
+    // BKL-232 — the PRE-ADJUDICATED entry point. Dispatch runs on a kernel
+    // EXECUTE the Conductor already audited and ledger-claimed; the
+    // self-adjudicating `modifyReservation` minted a second `reservation.modify`
+    // envelope here (fresh nonce ⇒ a hash the ledger could never dedup), so one
+    // customer confirm produced TWO EXECUTE rows.
+    execute: (input) => modifyReservationPreAdjudicated(input as never),
   }),
   makeReservationTool({
     id: "ibatexas.reservation.cancel.v1",
