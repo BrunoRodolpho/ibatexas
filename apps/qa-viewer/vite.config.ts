@@ -82,6 +82,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "happy-dom",
+    // BKL-245: match the 60s budget CI already runs with
+    // (ci.yml `turbo test -- --testTimeout=60000`) so local full-suite
+    // runs have the same headroom instead of flaking at the 5s default.
+    testTimeout: 60_000,
     setupFiles: ["src/test/setup.ts"],
   },
 })
