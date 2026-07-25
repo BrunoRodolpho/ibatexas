@@ -42,9 +42,18 @@ import {
   type StaffEnvelopeActor,
 } from "../claustrum/ibatexas-planner.js";
 import { createIbatexasResponder } from "../claustrum/ibatexas-responder.js";
+import {
+  buildClaimsSeams,
+  claimsPipelineEnabled,
+  warnOncePerMessage,
+} from "../claustrum/claims-pipeline.js";
+import { createIbatexasClaimsRenderPrecedence } from "../claustrum/claims-renderer-adapter.js";
+import { createSafeUnknownGate } from "../claustrum/safe-unknown-gate.js";
+import { logger } from "../lib/logger.js";
 import type { IbatexasPromptComposer } from "../claustrum/prompts/ibatexas-prompts.js";
 import type { ScheduleSignal } from "../claustrum/closed-hours.js";
 import {
+  CLAIM_PLANNER_PERSONA,
   OPS_PLANNER_PERSONA,
   OPS_RESPONDER_GROUNDED_PERSONA_PTBR,
   OPS_RESPONDER_PERSONA_PTBR,
@@ -75,6 +84,21 @@ import {
   scopeResumeChannel,
   type OpsVerbScope,
 } from "./ops-verb-scope.js";
+
+/**
+ * LE2 decision 6 — `composeOpsConductor` runs PER STAFF TURN, so it must build the
+ * claims seams per turn too (the claim-planner adapter wraps THAT turn's planner
+ * instance — the Q6b "one planner, two surfaces" contract). `buildClaimsSeams`
+ * emits its kernel-floor warning on every call, and the linked kernel versions do
+ * not change between turns, so those repeats are pure log noise. De-dupe BY MESSAGE
+ * exactly as the managed-agent plane's per-trigger factory does
+ * (`buildClaimsSeamsForPlanner` in claustrum-bootstrap.ts): the closure lives at
+ * MODULE scope so the dedup set spans the process, and every distinct warning still
+ * gets its one line.
+ */
+const warnClaimsFloorOnce = warnOncePerMessage((message: string) =>
+  logger.warn({ component: "ops-conductor" }, message),
+);
 
 /** A per-turn read-tool executor (mirrors the chat planner's map). */
 export type OpsReadToolExecutor = (
@@ -186,6 +210,18 @@ export function composeOpsConductor(
     // Wire Truth — name the injected persona in the trace manifest so ops
     // planner rows stop reading `persona ?` in the workbench.
     systemPromptId: "ops/planner.persona",
+    // LE2 decision 6 — the CLAIM path (`proposeClaims`, Q6b) needs the CLAIM-framed
+    // persona, NOT the staff INTENT persona above: an intent persona suppresses the
+    // `propose_claim` call on a 4B, so inheriting `system` here would make the
+    // converged ops plane propose zero claims and silently fall back to prose. The
+    // persona itself is plane-agnostic — it only maps a question to a registry TYPE
+    // and is forbidden from authoring any value — so the ops plane composes the SAME
+    // one the customer plane uses rather than forking a staff variant (ops-scoped
+    // claim TYPES are ticket 12, not this skeleton).
+    claimPlannerSystem: resolvePrompt(
+      "ibatexas/claim-planner.persona",
+      CLAIM_PLANNER_PERSONA,
+    ),
     telemetry: deps.telemetry,
     ...(deps.promptComposer ? { promptComposer: deps.promptComposer } : {}),
     ...(deps.resolveScheduleSignal
@@ -260,7 +296,39 @@ export function composeOpsConductor(
         }
       },
     },
+    // LE2 decision 6 — the SAFE-UNKNOWN gate is now ACTIVE on the OPS responder.
+    // BKL-078 D5 ("ops NEVER wires safeUnknown") is FORMALLY DISSOLVED by owner
+    // decision: the ops plane's empty-plan branch was the last conversational
+    // surface where a digit-free factual assertion could ship as raw model prose
+    // (`clampUngroundedOpsFact` only demotes ungrounded NUMBERS). D5's premise was
+    // that the deterministic `readAnswer.render` already covered staff reads — it
+    // does, and it still runs FIRST (see ibatexas-responder.ts's REFUSE/empty-plan
+    // branch): this gate is reached ONLY when no read was captured AND no claim
+    // validated, i.e. exactly the prose fall-through. Small talk is untouched — the
+    // discriminator never degrades a non-question (the BKL-110 0/15 bar).
+    // The SAME `createSafeUnknownGate` the customer plane composes, minus the
+    // customer-copy scheduled-pickup offer (see SafeUnknownGateOptions).
+    // Flag-OFF → omitted → byte-identical to the pre-LE2 ops responder.
+    ...(claimsPipelineEnabled()
+      ? { safeUnknown: createSafeUnknownGate({ closedHoursOffer: false }) }
+      : {}),
   });
+
+  // LE2 decision 6 (FULL convergence, no stopgap) — the OPS conductor gains the
+  // SAME claims seams the customer conductor composes: investigator (first-party
+  // turn reads → per-turn Evidence Ledger), claim planner (registry-constrained
+  // candidates off THIS turn's planner), claims kernel (P1 soundness ∘ P2
+  // consistency), and the render-from-claims template renderer. Nothing is forked:
+  // `buildClaimsSeams` is the customer plane's own builder, parameterized only by
+  // the per-request planner. It returns `{}` when ENABLE_CLAIMS_PIPELINE is OFF —
+  // the SAME flag and the SAME reader the customer plane uses — so a flag-off ops
+  // composition is a no-op spread and byte-identical to the pre-LE2 conductor.
+  //
+  // `info` is deliberately OMITTED (the BKL-108 boot marker is a boot-class fact;
+  // this factory runs per turn) and so is `onSafetyEmergency` — both mirror the
+  // managed-agent plane's per-trigger `buildClaimsSeamsForPlanner`. `warn` is the
+  // module-scope de-duped sink (see {@link warnClaimsFloorOnce}).
+  const claimsSeams = buildClaimsSeams({ planner, warn: warnClaimsFloorOnce });
 
   return createConductor({
     adjudicator: deps.adjudicator,
@@ -281,6 +349,24 @@ export function composeOpsConductor(
     tenantResolver: deps.tenantResolver,
     sessionLock: deps.sessionLock,
     resolver: deps.buildResolver(actor.staffId),
+    // LE2 decision 6 — the claims seams. `{}` when the flag is OFF (byte-identical).
+    ...claimsSeams,
+    // The render-vs-draft precedence, RE-BUILT for this plane. Same factory, same
+    // pure lattice, same telemetry — plus the ops-only per-turn signal: a
+    // DETERMINISTIC BKL-100 read render must not be clobbered by a DEGENERATE claims
+    // render (lattice rule 3c). A genuinely VALIDATED claim still supersedes (rule
+    // 3), which is what makes the store-open-now ops render land. `captures` is
+    // turn-scoped by construction — `composeOpsConductor` is recomposed per staff
+    // turn (see `getOpsConductorFactory`), which is the same contract the BKL-100
+    // buffer above already relies on.
+    ...(claimsSeams.claimsRenderPrecedence === undefined
+      ? {}
+      : {
+          claimsRenderPrecedence: createIbatexasClaimsRenderPrecedence({
+            plane: "ops",
+            hasDeterministicReadRender: () => captures.length > 0,
+          }),
+        }),
   });
 }
 

@@ -194,10 +194,11 @@ export interface IbatexasResponderDeps {
     ): string;
   };
   /**
-   * BKL-078 — the customer-plane QUESTION-SHAPE SAFE-UNKNOWN gate. Injected ONLY on
-   * the CUSTOMER conductor when ENABLE_CLAIMS_PIPELINE is on (the ops conductor
-   * NEVER passes it — pinned by a composition test; customer / WhatsApp with the
-   * flag OFF never construct it → BYTE-IDENTICAL, pinned by the personas regression
+   * BKL-078 — the QUESTION-SHAPE SAFE-UNKNOWN gate. Injected on BOTH conversational
+   * conductors when ENABLE_CLAIMS_PIPELINE is on (LE2 Implementation Decision 6
+   * dissolved D5, under which only the CUSTOMER conductor passed it; both planes now
+   * compose the one `createSafeUnknownGate` — pinned by a composition test per plane.
+   * Flag OFF never constructs it → BYTE-IDENTICAL, pinned by the personas regression
    * bar). It closes the `prose_preserved` hallucination leak on the conversational
    * (REFUSE-empty-plan) branch — reached only when NO claim survived to render
    * (runClaimsValidate returned undefined ⟺ empty candidate set; loop §6a therefore
@@ -1204,7 +1205,10 @@ export function createIbatexasResponder(
             if (rendered !== undefined) {
               return { text: rendered };
             }
-            // BKL-078 — the customer-plane QUESTION-SHAPE gate. This branch is the
+            // BKL-078 — the QUESTION-SHAPE gate (BOTH planes since LE2 decision 6;
+            // on the ops plane the deterministic `readAnswer.render` above still runs
+            // FIRST, so this is reached only when NO staff read was captured either).
+            // This branch is the
             // `prose_preserved` seam: it is reached only when NO claim survived to
             // render (runClaimsValidate returned undefined ⟺ empty candidate set, so
             // handle-turn §6a cannot supersede this text — see the PR body's BKL-111
@@ -1215,8 +1219,8 @@ export function createIbatexasResponder(
             // no prose leaks — and emit ONE PII-free `claims.terminal` (posture
             // safe_degraded). SOUNDNESS-MONOTONIC: it only moves a turn
             // prose→SAFE_UNKNOWN, never the reverse, and never touches the render or
-            // claim-proposal paths. Absent dep (ops plane / flag-OFF) → this whole
-            // block is skipped → byte-identical to the model completion below.
+            // claim-proposal paths. Absent dep (flag-OFF) → this whole block is
+            // skipped → byte-identical to the model completion below.
             if (deps.safeUnknown?.gate(userText) === true) {
               logger.info(
                 {
