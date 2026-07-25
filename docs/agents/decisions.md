@@ -204,6 +204,18 @@ coverage, QA viewer build+test, scripted-pipeline suite, full pnpm test — all 
   the SUT's own metadata.medusaOrderId stamp; never adopts a payment carrying a different PI). Worker
   gate re-keyed to prod-parity (NODE_ENV test gating stranded jobs — same class as D-014 item 3).
   Remaining recorded gap: webhook PIX leg passes FORMATTED IBX-#### ids (vs cash flow's raw ids).
+- **EIGHTH SUT bug class — chat-plane PIX checkout, CLOSED (BKL-230)**: `createCheckout`'s PIX branch
+  (create-checkout.ts:598-605) requires `extra.customerName || extra.customerEmail` because Stripe's PIX
+  confirm needs a payer, and the conversational tool-pack executor passed no third argument at all — so
+  every chat/WhatsApp PIX checkout was structurally unsatisfiable ("Nome e email são obrigatórios para
+  pagamento PIX.", no QR, no `metadata.cartId`, hence no `payment_intent.succeeded` and no order), while
+  the HTTP route was unaffected because it resolves its own `pixExtra` and calls `createCheckout`
+  directly. The identity is now wired server-side in the executor from the session's authenticated
+  customerId — precedence per field: explicit saved PIX details (`customer:pix:<customerId>`, incl.
+  taxId) over the `Customer.name/email/cpf` profile fallback — leaving the PII posture untouched: name/
+  email/CPF are still never on the model wire (`order-checkout-create.schema.ts` declares no
+  `pixDetails`, and the payload's is ignored on this plane), a guest still gets the existing honest
+  failure, and identity is resolved only from the session so no argument can select another customer's.
 - **Journeys 010–016 all ACTIVE and live-verified** (010 reservation lifecycle w/ staff-HTTP checkin/
   complete cells — no waiver, per DR-5; 011 reorder-from-history; 012 LGPD export+erasure; 013
   order-note + review-unadvertised negative; 014 executable PIX slice; 015 paid-state flow via the
