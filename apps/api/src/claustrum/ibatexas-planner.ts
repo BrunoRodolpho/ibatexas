@@ -71,14 +71,15 @@ import type {
 } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
 import {
-  CLAIM_REGISTRY,
-  canonicalizeRegistryType,
+  CUSTOMER_CLAIM_SCOPE,
+  canonicalizeScopedClaimType,
   checkCompleteness,
   constrainClaimGeneration,
   deriveCandidateValues,
   hasUnmappedSpan,
   ownerScopedBaseKey,
   routeSafety,
+  type ClaimPlaneScope,
   type ProposedClaim,
   type RequestSpan,
   type SafetyRoutingInput,
@@ -340,6 +341,21 @@ export interface IbatexasPlannerDeps {
    * passes the claim-planner persona here explicitly.
    */
   readonly claimPlannerSystem?: string;
+  /**
+   * LE2-012 — the PLANE's claim-type scope for the CLAIM path (`proposeClaims`,
+   * Q6b): the closed enum advertised on the `propose_claim` tool AND the schema
+   * the deterministic walls parameterize. Defaults to
+   * {@link CUSTOMER_CLAIM_SCOPE}, so every existing composition (customer,
+   * WhatsApp, managed-agent, tests) is BYTE-IDENTICAL.
+   *
+   * The ops conductor passes its own SUPERSET scope (customer types ∪ the
+   * store-level ops types). Because the enum, the constrained-generation wall and
+   * the P4 completeness wall all read the SAME scope, an ops-scoped type is
+   * simultaneously (a) advertised to the ops claim planner and (b) unreachable
+   * from the customer planner — the plane boundary is the wall itself, not a
+   * second mechanism.
+   */
+  readonly claimScope?: ClaimPlaneScope;
   /**
    * Wire Truth — the prompt-catalog id of an injected `system` (the ops plane
    * bypasses the fragment graph with a raw persona string, which used to leave
@@ -1441,6 +1457,12 @@ export function createIbatexasPlanner(
       state: CognitiveState,
       auth?: ClaimAuthContext,
     ): Promise<ClaimPlan> {
+      // LE2-012 — THIS plane's claim-type scope. The enum below, the
+      // constrained-generation wall, the owner-scope subject resolution and the P4
+      // completeness wall all read this ONE object, so a plane can never advertise
+      // a type its walls would then drop (or vice versa). Absent ⟹ the customer
+      // scope ⟹ byte-identical to the pre-LE2-012 planner.
+      const claimScope = deps.claimScope ?? CUSTOMER_CLAIM_SCOPE;
       // PRE-planning wall, part 1 (SDD §H/§P3): the model's `propose_claim` tool
       // exposes `type` as an `enum` over the registry — the model can only
       // SELECT an in-enum type, never type a free string into the schema. The
@@ -1465,7 +1487,7 @@ export function createIbatexasPlanner(
           properties: {
             type: {
               type: "string",
-              enum: [...CLAIM_REGISTRY],
+              enum: [...claimScope.types],
               description: "O tipo de claim do registro a ser proposto.",
             },
             subject: { type: "string", description: "Chave do recurso/assunto." },
@@ -1567,9 +1589,11 @@ export function createIbatexasPlanner(
         // `auth.ownedByBaseKey` (the owner-scoped reads that resolved PRESENT this
         // turn — IDOR-safe). A model-supplied id is honored ONLY if it is itself an
         // OWNED resource; otherwise it is discarded.
-        const canonicalType = canonicalizeRegistryType(input.type);
+        const canonicalType = canonicalizeScopedClaimType(input.type, claimScope);
         const baseKey =
-          canonicalType !== undefined ? ownerScopedBaseKey(canonicalType) : undefined;
+          canonicalType !== undefined
+            ? ownerScopedBaseKey(canonicalType, claimScope)
+            : undefined;
         let subject = input.subject ?? "";
         if (baseKey !== undefined) {
           const owned = auth?.ownedByBaseKey?.get(baseKey) ?? [];
@@ -1662,7 +1686,7 @@ export function createIbatexasPlanner(
 
       // PRE-planning wall, part 2 (SDD §H/§P3 — defense in depth): only in-enum
       // types become typed `CandidateClaim`s; out-of-enum proposals are dropped.
-      const { candidates, dropped } = constrainClaimGeneration(proposals);
+      const { candidates, dropped } = constrainClaimGeneration(proposals, claimScope);
 
       // tag-then-derive (STEP 2 — value derivation, PRE-kernel): OVERWRITE each
       // bound candidate's `value` from the SAME first-party read the investigator
@@ -1762,7 +1786,7 @@ export function createIbatexasPlanner(
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
       // unmapped span is surfaced as CLARIFY, never silently dropped.
-      const completeness = checkCompleteness(spans);
+      const completeness = checkCompleteness(spans, claimScope);
 
       // SAFETY routing (SDD §O#9): an unrecognized — or any — safety marker
       // forces ESCALATE (the generic safe terminal); ESCALATE outranks a P4
