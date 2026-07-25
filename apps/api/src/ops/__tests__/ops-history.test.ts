@@ -44,13 +44,8 @@ import {
   renderOpsHistoryBlock,
   composeOpsPlannerSystem,
   FENCE_CLOSE,
-  FENCE_GUIDANCE,
   FENCE_OPEN,
-  NO_SUMMARY_MARKER,
-  OPS_HISTORY_STATIC_HEAD,
   RECENT_TURNS_SLOT_LABEL,
-  SUMMARY_SLOT_LABEL,
-  TRUNCATION_MARKER,
 } from "../ops-history.js";
 
 const OPS_HISTORY_ENV = [

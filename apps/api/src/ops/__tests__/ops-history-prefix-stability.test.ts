@@ -31,15 +31,6 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AgentMessage } from "@ibatexas/types";
-
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => ({
-    multi: vi.fn(),
-    lRange: vi.fn(async () => [] as string[]),
-  })),
-  rk: vi.fn((key: string) => `test:${key}`),
-}));
-
 import {
   composeOpsPlannerSystem,
   opsHistoryConfig,
@@ -51,6 +42,14 @@ import {
   SUMMARY_SLOT_LABEL,
   TRUNCATION_MARKER,
 } from "../ops-history.js";
+
+vi.mock("@ibatexas/tools", () => ({
+  getRedisClient: vi.fn(async () => ({
+    multi: vi.fn(),
+    lRange: vi.fn(async () => [] as string[]),
+  })),
+  rk: vi.fn((key: string) => `test:${key}`),
+}));
 
 const OPS_HISTORY_ENV = [
   "OPS_HISTORY_TURNS",
