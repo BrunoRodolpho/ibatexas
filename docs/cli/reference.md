@@ -703,6 +703,10 @@ ibx obs payments                   # recent checkout/payment webhook events (--s
 ibx obs payments --pi pi_123       # trace one Stripe payment_intent across all stages
 ibx obs payments -f                # live tail
 ibx obs funnel                     # checkout funnel — stage counts + drop-off / stranded orders (--since)
+ibx obs undelivered                # WhatsApp replies that never landed — Twilio failed/undelivered, or no
+                                   # delivery callback past a threshold (--threshold min, --since, -n).
+                                   # Reads whatsapp_delivery (Postgres); works in prod, unlike the
+                                   # dev-only RCA workbench view of the same rows.
 ```
 
 ### Jobs — `ibx jobs`
