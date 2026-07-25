@@ -3,6 +3,7 @@
   "targets": "terminal-coverage/refusal-terminal-without-chain",
   "ok": false,
   "capabilities": 1,
+  "externalReferences": 0,
   "rulesEmitted": [
     "slot-dataflow/blank-required-slot",
     "terminal-coverage/refusal-terminal-without-chain"
@@ -27,6 +28,11 @@
       "pass": "terminal-coverage",
       "checked": 3,
       "diagnostics": 1
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
     }
   ],
   "diagnostics": [

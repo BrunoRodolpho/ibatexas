@@ -52,7 +52,20 @@
         "refusal-terminal-without-chain",
         "unreachable-guard-phase"
       ]
+    },
+    {
+      "pass": "external-references",
+      "sources": [
+        "passes/external-references.ts"
+      ],
+      "rules": [
+        "external-reference-consumer-dangling",
+        "external-reference-duplicate-id",
+        "external-reference-malformed-key-source",
+        "external-reference-no-consumer",
+        "external-reference-unknown-store"
+      ]
     }
   ],
-  "ruleCount": 21
+  "ruleCount": 26
 }

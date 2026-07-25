@@ -29,6 +29,7 @@
 // Pure: no clock, no RNG, no IO.
 
 import type { CapabilityDefinition } from "../capability-definitions/types.js"
+import type { ExternalReferenceDeclaration } from "../external-references.js"
 
 /** One fixture catalog and the rule it exists to prove. */
 export interface ConformanceFixture {
@@ -58,6 +59,15 @@ export interface ConformanceFixture {
   readonly why: string
   /** The fixture catalog itself. */
   readonly definitions: readonly CapabilityDefinition[]
+  /**
+   * The fixture's external-reference declarations (LE2-018). Omitted means
+   * NONE — never "the real table". `compileCatalog` defaults this argument to
+   * the authored `EXTERNAL_REFERENCES` so a production caller cannot forget
+   * it, but a fixture that inherited real data would change meaning every time
+   * an operator declared a new coupon, which is the opposite of a pinned
+   * contract; the suite therefore always passes a table explicitly.
+   */
+  readonly externalReferences?: readonly ExternalReferenceDeclaration[]
 }
 
 /**
@@ -70,6 +80,18 @@ export function fixtureCatalog(
   ...objects: readonly unknown[]
 ): readonly CapabilityDefinition[] {
   return objects as readonly CapabilityDefinition[]
+}
+
+/**
+ * Widen hand-authored declaration objects into the external-reference table a
+ * pass receives — the same single-cast discipline as {@link fixtureCatalog},
+ * for the same reason: an unknown store or a malformed `keyFrom` is precisely
+ * what the pass exists to reject, and the authored type will not express it.
+ */
+export function fixtureExternalReferences(
+  ...objects: readonly unknown[]
+): readonly ExternalReferenceDeclaration[] {
+  return objects as readonly ExternalReferenceDeclaration[]
 }
 
 /** `<pass>/<rule>` — the suite's stable id for one rejection class. */

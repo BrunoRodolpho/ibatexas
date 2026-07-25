@@ -3,6 +3,7 @@
   "targets": "terminal-coverage/missing-refusal-terminal",
   "ok": false,
   "capabilities": 1,
+  "externalReferences": 0,
   "rulesEmitted": [
     "slot-dataflow/missing-required-slot",
     "terminal-coverage/missing-refusal-terminal"
@@ -27,6 +28,11 @@
       "pass": "terminal-coverage",
       "checked": 4,
       "diagnostics": 1
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
     }
   ],
   "diagnostics": [

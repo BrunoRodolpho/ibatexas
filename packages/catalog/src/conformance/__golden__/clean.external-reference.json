@@ -1,19 +1,19 @@
 {
-  "fixture": "clean.minimal-chat",
+  "fixture": "clean.external-reference",
   "targets": null,
   "ok": true,
   "capabilities": 1,
-  "externalReferences": 0,
+  "externalReferences": 1,
   "rulesEmitted": [],
   "passes": [
     {
       "pass": "referential-integrity",
-      "checked": 3,
+      "checked": 2,
       "diagnostics": 0
     },
     {
       "pass": "slot-dataflow",
-      "checked": 25,
+      "checked": 19,
       "diagnostics": 0
     },
     {
@@ -23,12 +23,12 @@
     },
     {
       "pass": "terminal-coverage",
-      "checked": 4,
+      "checked": 3,
       "diagnostics": 0
     },
     {
       "pass": "external-references",
-      "checked": 0,
+      "checked": 2,
       "diagnostics": 0
     }
   ],

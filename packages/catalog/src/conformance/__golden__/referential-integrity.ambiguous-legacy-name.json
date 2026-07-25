@@ -3,6 +3,7 @@
   "targets": "referential-integrity/ambiguous-legacy-name",
   "ok": false,
   "capabilities": 2,
+  "externalReferences": 0,
   "rulesEmitted": [
     "referential-integrity/ambiguous-legacy-name"
   ],
@@ -25,6 +26,11 @@
     {
       "pass": "terminal-coverage",
       "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
       "diagnostics": 0
     }
   ],

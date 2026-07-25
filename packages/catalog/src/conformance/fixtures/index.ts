@@ -13,6 +13,10 @@
 // failure.
 
 import { CLEAN_FIXTURES } from "./clean.js"
+import {
+  CLEAN_EXTERNAL_REFERENCE_FIXTURE,
+  EXTERNAL_REFERENCES_FIXTURES,
+} from "./external-references.js"
 import { REFERENTIAL_INTEGRITY_FIXTURES } from "./referential-integrity.js"
 import { SAFETY_IMPLICATION_EDGES_FIXTURES } from "./safety-implication-edges.js"
 import { SLOT_DATAFLOW_FIXTURES } from "./slot-dataflow.js"
@@ -29,7 +33,9 @@ export const CONFORMANCE_FIXTURES: readonly ConformanceFixture[] = [
   ...SLOT_DATAFLOW_FIXTURES,
   ...SAFETY_IMPLICATION_EDGES_FIXTURES,
   ...TERMINAL_COVERAGE_FIXTURES,
+  ...EXTERNAL_REFERENCES_FIXTURES,
   ...CLEAN_FIXTURES,
+  CLEAN_EXTERNAL_REFERENCE_FIXTURE,
 ]
 
 /** The fixtures that must FAIL to compile — everything with a target rule. */
