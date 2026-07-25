@@ -172,6 +172,15 @@ vi.mock("../ops/ops-whatsapp-ingress.js", () => ({
 const PHONE = "+5511999999999";
 const HASH = "phonehash-abc";
 
+/**
+ * LE2-030 — every conductor-turn send now carries a THIRD argument: the turn
+ * correlation `{ turnId, conversationId }` the delivery store joins the captured
+ * Twilio SID on. Matched loosely so these assertions stay about the MESSAGE, not
+ * about ids the individual fixtures happen to set. Sends with no conductor turn
+ * (shortcuts, the holding message, the apology) still pass two arguments.
+ */
+const CORR = expect.objectContaining({ conversationId: expect.any(String) });
+
 function createMockRedis(overrides: Record<string, unknown> = {}) {
   return {
     set: vi.fn().mockResolvedValue("OK"),
@@ -499,6 +508,7 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       mintRenderedReply("Olá! Como posso ajudar você hoje?"),
+      CORR,
     );
     expect(mockAppendMessages).toHaveBeenCalledWith(
       "sess-1",
@@ -558,6 +568,7 @@ describe("handleMessageAsync — conductor turn", () => {
       expect(mockSendText).toHaveBeenCalledWith(
         `whatsapp:${PHONE}`,
         mintRenderedReply("Resposta mesmo sem carrinho"),
+        CORR,
       );
     }, { timeout: 4000 });
     expect(mockHandleTurn).toHaveBeenCalledTimes(1);
@@ -592,10 +603,12 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       mintRenderedReply("Pedido confirmado! Aqui está o pagamento."),
+      CORR,
     );
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       textContaining("Código PIX (copia e cola)"),
+      CORR,
     );
     const pixBlock = mockSendText.mock.calls.find((c) =>
       (c[1] as { text: string }).text.includes("Código PIX (copia e cola)"),
@@ -611,6 +624,7 @@ describe("handleMessageAsync — conductor turn", () => {
       // bare string. The brand symbol is shared across minters, so a reply
       // minted here deep-equals the webhook's `mintReceiptReply("QR Code PIX")`.
       mintRenderedReply("QR Code PIX"),
+      CORR,
     );
   }, 15000);
 
@@ -708,6 +722,7 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       textContaining("Seu pedido está confirmado."),
+      CORR,
     );
     // …so NO governed incident and NO no-delivery signal (F2 already-served).
     expect(mockEmitNoDelivery).not.toHaveBeenCalled();
@@ -808,7 +823,11 @@ describe("handleMessageAsync — conductor turn", () => {
 
     // Lock acquired for the main turn AND re-acquired for the retry.
     expect(mockAcquireAgentLock.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Claro, vou adicionar."));
+    expect(mockSendText).toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      mintRenderedReply("Claro, vou adicionar."),
+      CORR,
+    );
   }, 15000);
 
   it("M3: a whitespace-only retry reply is NOT sent, does NOT auto-close, and flags retry_exhausted", async () => {
@@ -833,8 +852,16 @@ describe("handleMessageAsync — conductor turn", () => {
     }, { timeout: 4000 });
 
     // Main deliverable reply WAS sent; the whitespace-only retry reply was NOT.
-    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Perfeito!"));
-    expect(mockSendText).not.toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("  \n "));
+    expect(mockSendText).toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      mintRenderedReply("Perfeito!"),
+      CORR,
+    );
+    expect(mockSendText).not.toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      mintRenderedReply("  \n "),
+      CORR,
+    );
     // The blank retry did NOT auto-resolve an OPEN incident…
     expect(mockCloseIncidentOnDeliveredReply).not.toHaveBeenCalled();
     // …and the now-reachable whitespace_only branch flagged it as retry_exhausted.
@@ -872,11 +899,16 @@ describe("handleMessageAsync — conductor turn", () => {
       expect(mockSendText).toHaveBeenCalledWith(
         `whatsapp:${PHONE}`,
         textContaining("Código PIX (copia e cola)"),
+        CORR,
       );
     }, { timeout: 4000 });
 
     // Whitespace text was NOT sent as a message…
-    expect(mockSendText).not.toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("  \n "));
+    expect(mockSendText).not.toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      mintRenderedReply("  \n "),
+      CORR,
+    );
     // …no empty-completion holding message was pushed…
     expect(mockSendText).not.toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
