@@ -1,0 +1,44 @@
+{
+  "fixture": "terminal-coverage.divergent-pack-guard-chain",
+  "targets": "terminal-coverage/divergent-pack-guard-chain",
+  "ok": false,
+  "capabilities": 2,
+  "rulesEmitted": [
+    "terminal-coverage/divergent-pack-guard-chain"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 6,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 50,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 8,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "terminal-coverage",
+      "rule": "divergent-pack-guard-chain",
+      "severity": "error",
+      "object": "pack:ibatexas/pack-orders",
+      "field": "guardRefs",
+      "message": "capabilities of this Pack declare 2 different guard chains: \"auth:conformanceAuthGuard, business:conformanceBusinessGuard\" (conformance.terminal.chain-b); \"business:conformanceBusinessGuard\" (conformance.terminal.chain-a). types.ts fixes the chain as the owning Pack's FULL stateGuards/authGuards/business list in bundle order — pack-wide by construction, never a per-kind subset — so a divergent chain describes a set of reachable terminals the kernel will not produce."
+    }
+  ],
+  "formatted": [
+    "terminal-coverage/divergent-pack-guard-chain: pack:ibatexas/pack-orders · guardRefs — capabilities of this Pack declare 2 different guard chains: \"auth:conformanceAuthGuard, business:conformanceBusinessGuard\" (conformance.terminal.chain-b); \"business:conformanceBusinessGuard\" (conformance.terminal.chain-a). types.ts fixes the chain as the owning Pack's FULL stateGuards/authGuards/business list in bundle order — pack-wide by construction, never a per-kind subset — so a divergent chain describes a set of reachable terminals the kernel will not produce."
+  ]
+}

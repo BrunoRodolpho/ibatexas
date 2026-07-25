@@ -1,0 +1,54 @@
+{
+  "fixture": "terminal-coverage.refusal-terminal-without-chain",
+  "targets": "terminal-coverage/refusal-terminal-without-chain",
+  "ok": false,
+  "capabilities": 1,
+  "rulesEmitted": [
+    "slot-dataflow/blank-required-slot",
+    "terminal-coverage/refusal-terminal-without-chain"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 25,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "blank-required-slot",
+      "severity": "error",
+      "object": "capability:conformance.terminal.no-chain",
+      "field": "guardRefs",
+      "message": "required slot is declared but empty. An empty required slot is a hole wearing a value's clothes — a consumer cannot tell it from authored data."
+    },
+    {
+      "pass": "terminal-coverage",
+      "rule": "refusal-terminal-without-chain",
+      "severity": "error",
+      "object": "capability:conformance.terminal.no-chain",
+      "field": "guardRefs",
+      "message": "declares the refusal floor \"order.default.deny\" but an empty (or absent) guard chain. With no guards, no EXECUTE / CONFIRM / ESCALATE / DEFER is reachable and REFUSE is the capability's only terminal — that is a dead capability, not a conservative one."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/blank-required-slot: capability:conformance.terminal.no-chain · guardRefs — required slot is declared but empty. An empty required slot is a hole wearing a value's clothes — a consumer cannot tell it from authored data.",
+    "terminal-coverage/refusal-terminal-without-chain: capability:conformance.terminal.no-chain · guardRefs — declares the refusal floor \"order.default.deny\" but an empty (or absent) guard chain. With no guards, no EXECUTE / CONFIRM / ESCALATE / DEFER is reachable and REFUSE is the capability's only terminal — that is a dead capability, not a conservative one."
+  ]
+}

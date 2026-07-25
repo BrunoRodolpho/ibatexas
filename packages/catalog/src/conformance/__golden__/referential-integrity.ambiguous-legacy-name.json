@@ -1,0 +1,55 @@
+{
+  "fixture": "referential-integrity.ambiguous-legacy-name",
+  "targets": "referential-integrity/ambiguous-legacy-name",
+  "ok": false,
+  "capabilities": 2,
+  "rulesEmitted": [
+    "referential-integrity/ambiguous-legacy-name"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 6,
+      "diagnostics": 2
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 40,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "referential-integrity",
+      "rule": "ambiguous-legacy-name",
+      "severity": "error",
+      "object": "capability:conformance.legacy.first",
+      "field": "legacyNames[0]",
+      "message": "the tool name \"conformance_shared_tool\" is claimed by 2 capabilities (conformance.legacy.first, conformance.legacy.second). generate-tool-to-intent-map.ts INVERTS legacyNames into a name -> kind map, so a shared name silently drops all but one claimant. Give the tool one owning capability.",
+      "reference": "conformance_shared_tool"
+    },
+    {
+      "pass": "referential-integrity",
+      "rule": "ambiguous-legacy-name",
+      "severity": "error",
+      "object": "capability:conformance.legacy.second",
+      "field": "legacyNames[0]",
+      "message": "the tool name \"conformance_shared_tool\" is claimed by 2 capabilities (conformance.legacy.first, conformance.legacy.second). generate-tool-to-intent-map.ts INVERTS legacyNames into a name -> kind map, so a shared name silently drops all but one claimant. Give the tool one owning capability.",
+      "reference": "conformance_shared_tool"
+    }
+  ],
+  "formatted": [
+    "referential-integrity/ambiguous-legacy-name: capability:conformance.legacy.first · legacyNames[0] — the tool name \"conformance_shared_tool\" is claimed by 2 capabilities (conformance.legacy.first, conformance.legacy.second). generate-tool-to-intent-map.ts INVERTS legacyNames into a name -> kind map, so a shared name silently drops all but one claimant. Give the tool one owning capability.",
+    "referential-integrity/ambiguous-legacy-name: capability:conformance.legacy.second · legacyNames[0] — the tool name \"conformance_shared_tool\" is claimed by 2 capabilities (conformance.legacy.first, conformance.legacy.second). generate-tool-to-intent-map.ts INVERTS legacyNames into a name -> kind map, so a shared name silently drops all but one claimant. Give the tool one owning capability."
+  ]
+}

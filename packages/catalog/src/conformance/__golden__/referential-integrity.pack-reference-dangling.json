@@ -1,0 +1,45 @@
+{
+  "fixture": "referential-integrity.pack-reference-dangling",
+  "targets": "referential-integrity/pack-reference-dangling",
+  "ok": false,
+  "capabilities": 1,
+  "rulesEmitted": [
+    "referential-integrity/pack-reference-dangling"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 1
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 19,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "referential-integrity",
+      "rule": "pack-reference-dangling",
+      "severity": "error",
+      "object": "capability:conformance.pack.dangling",
+      "field": "pack",
+      "message": "\"ibatexas/pack-ghost\" does not resolve against CAPABILITY_PACK_IDS. A capability must be owned by one of the six first-party Packs (src/capability-definitions/vocabularies.ts).",
+      "reference": "ibatexas/pack-ghost"
+    }
+  ],
+  "formatted": [
+    "referential-integrity/pack-reference-dangling: capability:conformance.pack.dangling · pack — \"ibatexas/pack-ghost\" does not resolve against CAPABILITY_PACK_IDS. A capability must be owned by one of the six first-party Packs (src/capability-definitions/vocabularies.ts)."
+  ]
+}

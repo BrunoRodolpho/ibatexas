@@ -1,0 +1,45 @@
+{
+  "fixture": "terminal-coverage.unreachable-guard-phase",
+  "targets": "terminal-coverage/unreachable-guard-phase",
+  "ok": false,
+  "capabilities": 1,
+  "rulesEmitted": [
+    "terminal-coverage/unreachable-guard-phase"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 25,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 4,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "terminal-coverage",
+      "rule": "unreachable-guard-phase",
+      "severity": "error",
+      "object": "capability:conformance.terminal.taint-phase",
+      "field": "guardRefs[0].phase",
+      "message": "phase \"taint\" names a terminal source that cannot exist: a Pack's taint slot is a single TaintPolicy value, not a Guard[] array, so there is no guard to reference by name. Declare one of state | auth | business.",
+      "reference": "taint"
+    }
+  ],
+  "formatted": [
+    "terminal-coverage/unreachable-guard-phase: capability:conformance.terminal.taint-phase · guardRefs[0].phase — phase \"taint\" names a terminal source that cannot exist: a Pack's taint slot is a single TaintPolicy value, not a Guard[] array, so there is no guard to reference by name. Declare one of state | auth | business."
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "fixture": "referential-integrity.duplicate-capability-kind",
+  "targets": "referential-integrity/duplicate-capability-kind",
+  "ok": false,
+  "capabilities": 2,
+  "rulesEmitted": [
+    "referential-integrity/duplicate-capability-kind"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 2
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 38,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "referential-integrity",
+      "rule": "duplicate-capability-kind",
+      "severity": "error",
+      "object": "capability:conformance.duplicate.kind",
+      "field": "kind",
+      "message": "\"conformance.duplicate.kind\" is declared by 2 capabilities (array positions 0, 1). A kind is the catalog's identity for a capability — every projection (KNOWN_INTENT_KINDS, the pack intent mirrors, the planner allowlists) addresses it by that name, so a duplicate silently resolves to whichever entry a consumer happens to reach first.",
+      "reference": "conformance.duplicate.kind"
+    },
+    {
+      "pass": "referential-integrity",
+      "rule": "duplicate-capability-kind",
+      "severity": "error",
+      "object": "capability:conformance.duplicate.kind",
+      "field": "kind",
+      "message": "\"conformance.duplicate.kind\" is declared by 2 capabilities (array positions 0, 1). A kind is the catalog's identity for a capability — every projection (KNOWN_INTENT_KINDS, the pack intent mirrors, the planner allowlists) addresses it by that name, so a duplicate silently resolves to whichever entry a consumer happens to reach first.",
+      "reference": "conformance.duplicate.kind"
+    }
+  ],
+  "formatted": [
+    "referential-integrity/duplicate-capability-kind: capability:conformance.duplicate.kind · kind — \"conformance.duplicate.kind\" is declared by 2 capabilities (array positions 0, 1). A kind is the catalog's identity for a capability — every projection (KNOWN_INTENT_KINDS, the pack intent mirrors, the planner allowlists) addresses it by that name, so a duplicate silently resolves to whichever entry a consumer happens to reach first.",
+    "referential-integrity/duplicate-capability-kind: capability:conformance.duplicate.kind · kind — \"conformance.duplicate.kind\" is declared by 2 capabilities (array positions 0, 1). A kind is the catalog's identity for a capability — every projection (KNOWN_INTENT_KINDS, the pack intent mirrors, the planner allowlists) addresses it by that name, so a duplicate silently resolves to whichever entry a consumer happens to reach first."
+  ]
+}
