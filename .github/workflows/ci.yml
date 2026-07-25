@@ -82,8 +82,22 @@ jobs:
       # `ibx catalog check` entry point itself works on every commit (the
       # command a human runs locally must be the command CI runs). Pure — no
       # DB, no network, no services. Needs the built CLI → after `pnpm build`.
-      - name: Catalog compiler gate (LE2-016, static passes)
+      - name: Catalog compiler gate (LE2-016/018, static passes)
         run: node packages/cli/dist/index.js catalog check
+      # LE2-018's LIVE half deliberately does NOT run here, and the honest
+      # reason is that it cannot: `ibx catalog check --live` reconciles declared
+      # external references against Medusa and the domain database, and a
+      # GitHub-hosted runner has neither (no commerce container, no
+      # DATABASE_URL, no admin credentials). A step that "ran" it here would
+      # either be skipped-but-green or would fail every build — both are worse
+      # than not claiming the check.
+      #
+      # It runs in the deploy pipeline instead, against the environment about to
+      # be deployed: the `catalog-live` job in deploy-staging.yml, gated BEFORE
+      # `deploy`. See docs/setup/deployment.md ("Pre-deploy gate"). That is the
+      # mitigation LE2 Implementation Decision 16 names for the strict boot
+      # gate — a dangling reference surfaces at deploy time rather than as an
+      # api that refuses to start.
       # Pack governance gates (F11/F12). The Tier-3 planner-coherence checks
       # already ride `pnpm test` (per-pack conformance suites); these add the
       # AI-BOM drift gate (EU AI Act Art. 11 / NIST AI RMF) and the Tier-1
