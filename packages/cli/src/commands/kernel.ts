@@ -111,13 +111,25 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   // authoritative. The legacy `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE`
   // env-var surface and the `getKillSwitchState()` operator handle were
   // removed — there is no shadow / enforce / kill-switch state to query.
-  // NEW-P1-ENV: parseBoolEnv accepts the canonical truthy lexicon
-  // (true/1/yes/on, any case) and defaults to false for unset/typo
-  // inputs. The CLI agrees with the runtime sites that read these same
-  // env vars (kernel-bootstrap, intent-audit-wiring, intent-ledger).
-  const ledgerEnabled = parseBoolEnv(process.env.IBX_LEDGER_ENABLED, false)
-  const ledgerEnforce = parseBoolEnv(process.env.IBX_LEDGER_ENFORCE, false)
-  const ledgerFailOpen = parseBoolEnv(process.env.IBX_LEDGER_FAIL_OPEN, false)
+  //
+  // BKL-244: the same is true of the execution ledger, and this command
+  // used to deny it. It read IBX_LEDGER_ENABLED / IBX_LEDGER_ENFORCE /
+  // IBX_LEDGER_FAIL_OPEN — three vars that exist nowhere else in the repo
+  // (not in .env.example, not at any runtime site) and all defaulted to
+  // false, so `ibx kernel status` reported "enabled: não" on a healthy
+  // deployment whose ledger was in fact running. The ledger is ALWAYS-ON
+  // and FAIL-CLOSED per CLAUDE.md Hard Rule #9, wired unconditionally in
+  // apps/api/src/claustrum-bootstrap.ts (createRedisLedger, no env gate).
+  // The reads are gone; these constants are the runtime contract.
+  //
+  // Reported statically, without a Redis probe: `status` is a local,
+  // always-executable command, and the header comment on the
+  // @ibatexas/tools import documents how a real client.connect() on a CI
+  // runner hangs the hermetic tests. Ledger REACHABILITY is an api-side
+  // runtime concern — an outage surfaces as a `policy_not_ready` refusal
+  // (see docs/ops/runbooks/kernel-operations.md), not as CLI state.
+  const LEDGER_ALWAYS_ON = true
+  const LEDGER_FAIL_CLOSED = true
   // audit-2026-05-25 (I13): the IBX_AUDIT_POSTGRES_ENABLED env var was
   // deleted in the H2 cutover (audit-postgres is unconditionally part
   // of the sink fan-out per CLAUDE.md rule #9). The CLI's pre-cutover
@@ -138,9 +150,9 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
         kinds: [...KNOWN_INTENT_KINDS].sort((a, b) => a.localeCompare(b)),
       },
       ledger: {
-        enabled: ledgerEnabled,
-        enforce: ledgerEnforce,
-        failOpen: ledgerFailOpen,
+        alwaysOn: LEDGER_ALWAYS_ON,
+        failClosed: LEDGER_FAIL_CLOSED,
+        backend: "redis",
       },
       audit: {
         postgresEnabled,
@@ -173,9 +185,15 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   console.log()
 
   console.log(chalk.bold("── Execution Ledger ─────────────────────────────"))
-  console.log(`  enabled    : ${ledgerEnabled ? chalk.green("sim") : chalk.dim("não")}`)
-  console.log(`  enforce    : ${ledgerEnforce ? chalk.green("sim") : chalk.dim("não")}`)
-  console.log(`  fail-open  : ${ledgerFailOpen ? chalk.yellow("sim") : chalk.dim("não")}`)
+  console.log(`  estado     : ${chalk.green("sempre ativo")}  ${chalk.dim("(Hard Rule #9 — sem env-var, sem kill switch)")}`)
+  console.log(`  falha      : ${chalk.green("fail-closed")}  ${chalk.dim("(Redis indisponível ⇒ recusa, nunca bypass de dedup)")}`)
+  console.log(`  backend    : ${chalk.cyan("redis")}`)
+  console.log(
+    chalk.dim("  Conectividade não é checada aqui — uma queda do Redis aparece como"),
+  )
+  console.log(
+    chalk.dim("  recusa `policy_not_ready` na api (docs/ops/runbooks/kernel-operations.md)."),
+  )
   console.log()
 
   console.log(chalk.bold("── Audit sink ───────────────────────────────────"))
