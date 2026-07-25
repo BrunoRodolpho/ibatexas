@@ -47,6 +47,12 @@ import {
   composeMenuContentsText,
 } from "./menu-item-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
+import {
+  DELIVERY_COVERAGE_KEY,
+  DELIVERY_NEEDS_CEP_MARKER_KEY,
+  DELIVERY_NO_COVERAGE_KEY,
+  resolveDeliveryCoverage,
+} from "./delivery-coverage-resolver.js";
 import { classifyRequestSpans } from "./required-claim-decomposer.js";
 
 /**
@@ -546,6 +552,70 @@ export function createFirstPartyTurnReads(
           read: async () => ({ infoText }),
         });
       }
+    }
+
+    // LE2-002 / NEW-007 DELIVERY_COVERAGE / DELIVERY_NO_COVERAGE — the delivery
+    // coverage read ("vocês entregam em Ibaté?"), GATED on a DELIVERY_COVERAGE_Q
+    // span. FIXED subject (single keys, like STORE_INFO / MENU_OVERVIEW), PUBLIC
+    // store policy → placed BEFORE the authenticated-customer gate (a coverage
+    // question is the most common GUEST question there is — a first-time customer
+    // asks it before they have any account at all).
+    //
+    // The shared per-turn-memoized resolver goes through the delivery-zones
+    // projection (zone-NAME arm) or the EXISTING estimation tool (CEP arm) — no new
+    // DB path — and returns exactly one of four states. This block is the honesty
+    // wiring for all four, and the ONLY place the complementary pair is recorded:
+    //
+    //   · covered      → `delivery:coverage` PRESENT with the composed scalar.
+    //   · not_covered  → `delivery:no_coverage` PRESENT (a POSITIVE out-of-zone
+    //                    determination is a FACT — a VALIDATED negative render).
+    //   · needs_cep    → NEITHER claim key; the needs-CEP MARKER instead, which
+    //                    forces the CLARIFY-for-CEP ask downstream. Never a
+    //                    nearest-neighbour guess.
+    //   · unknown      → NOTHING recorded at all → both claims resolve ABSENT →
+    //                    honest UNKNOWN. Inv 7: "could not check" is a DISTINCT
+    //                    state from "we don't deliver", and it must never render as
+    //                    the negative.
+    //
+    // Exactly one of the two claim keys can ever be PRESENT, so the pair can never
+    // render a contradiction. The `delivery:zones_changed` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    if (menuSpans.includes("DELIVERY_COVERAGE_Q")) {
+      const coverage = await resolveDeliveryCoverage(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+      );
+      if (coverage.kind === "covered") {
+        const coverageText = coverage.coverageText;
+        reads.push({
+          key: DELIVERY_COVERAGE_KEY,
+          source: "delivery.coverage",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ coverageText }),
+        });
+      } else if (coverage.kind === "not_covered") {
+        const noCoverageText = coverage.noCoverageText;
+        reads.push({
+          key: DELIVERY_NO_COVERAGE_KEY,
+          source: "delivery.coverage",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ noCoverageText }),
+        });
+      } else if (coverage.kind === "needs_cep") {
+        reads.push({
+          key: DELIVERY_NEEDS_CEP_MARKER_KEY,
+          source: "delivery.coverage.marker",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ needsCep: true }),
+        });
+      }
+      // `unknown` — deliberately records NOTHING (see the block header).
     }
 
     if (!isAuthenticatedCustomer(customerId)) return reads;

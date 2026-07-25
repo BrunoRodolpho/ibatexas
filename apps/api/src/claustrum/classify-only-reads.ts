@@ -76,6 +76,7 @@ import {
   type RegistryClaimType,
 } from "./claim-registry.js";
 import type { EvidenceLedgerLike } from "./ibatexas-claims-kernel-deps.js";
+import { DELIVERY_NEEDS_CEP_MARKER_KEY } from "./delivery-coverage-resolver.js";
 import type { ClaimAuthContext } from "./ibatexas-planner.js";
 import {
   classifyRequestSpans,
@@ -168,6 +169,20 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // safety marker; an allergen-adjacent one is excluded upstream).
     "MENU_DIETARY",
     "STORE_INFO",
+    // LE2-002 / NEW-007 — the PUBLIC delivery-coverage PAIR joins the eligible set
+    // (the same conscious growth this header documents). Both are FIXED single-key
+    // public types (`delivery:coverage` / `delivery:no_coverage`, ownership
+    // `not_applicable`, no perResourceKey), so the candidate subject is "" and the
+    // spec is never parameterized — exactly the MENU_OVERVIEW / STORE_INFO shape.
+    // They join in LOCKSTEP: the DELIVERY_COVERAGE_Q closure row requires BOTH
+    // (the complementary pair), and `classifyOnlyRequiredTypes` declines WHOLESALE
+    // when any required type is outside this set — omitting one would silently
+    // disable the deterministic path for every coverage question. FE-D12 residual
+    // grows identically (a pure coverage-read turn skips the model's §O#9
+    // self-report); a coverage ask carries no safety marker, and an allergen-
+    // adjacent one is already excluded by the wholesale allergen carve-out.
+    "DELIVERY_COVERAGE",
+    "DELIVERY_NO_COVERAGE",
   ]);
 
 /**
@@ -332,6 +347,26 @@ export function resolveNamedOwnedOrderSubject(
   return matched.length === 1 ? matched[0] : undefined;
 }
 
+/**
+ * LE2-002 — is THIS turn a coverage question that must ASK for the CEP? True iff
+ * the coverage span pulled the delivery pair into the required set AND the
+ * investigator recorded the needs-CEP marker PRESENT. Pure over (data, ledger).
+ *
+ * This is the third branch of spec Implementation Decision 4 expressed at the
+ * planner seam: the resolver refuses to nearest-neighbour an unrecognised place
+ * onto the closest zone, so instead of a claim the turn gets a forced CLARIFY and
+ * the renderer's delivery-CEP ask. It is a CLARIFY, not an UNKNOWN, because the
+ * turn is not ignorant — it knows exactly which one datum would settle the answer.
+ */
+export function deliveryCoverageNeedsCep(
+  required: ReadonlySet<RegistryClaimType>,
+  ledger: EvidenceLedgerLike | undefined,
+): boolean {
+  if (ledger === undefined) return false;
+  if (!required.has("DELIVERY_COVERAGE")) return false;
+  return ledger.resolve(DELIVERY_NEEDS_CEP_MARKER_KEY).state === "present";
+}
+
 export function buildClassifyOnlyCandidates(
   required: ReadonlySet<RegistryClaimType>,
   auth: ClaimAuthContext,
@@ -417,7 +452,14 @@ export function buildClassifyOnlyCandidates(
     // always yields a candidate — the guard is defense-in-depth.
     if (candidate !== undefined) candidates.push(candidate);
   }
-  const forcedClarify = ambiguousOwnedSets.length > 0 || publicAmbiguity;
+  // LE2-002 / NEW-007 — the needs-CEP CLARIFY. Structurally the SAME "we will not
+  // guess" disposition as the ≥2-owned / ≥2-public ambiguities above: the candidate
+  // claims stay in the batch (they resolve honest UNKNOWN off their absent keys) and
+  // the turn is FORCED to CLARIFY, so the renderer asks for the CEP instead of
+  // picking a nearby zone. Additive: on every non-coverage turn the marker is absent
+  // and this is byte-identical to before.
+  const needsCep = deliveryCoverageNeedsCep(required, ledger);
+  const forcedClarify = ambiguousOwnedSets.length > 0 || publicAmbiguity || needsCep;
   return forcedClarify
     ? {
         candidates,

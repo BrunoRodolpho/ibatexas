@@ -159,6 +159,29 @@ export const CLAIM_REGISTRY = [
   // admin — never inferred, never model-authored). Absent/blank metadata → ABSENT
   // evidence → honest UNKNOWN ("can never ground" closes only when data exists).
   "STORE_INFO",
+  // LE2-002 / NEW-007 — the PUBLIC delivery-coverage pair ("vocês entregam em
+  // Ibaté?" / "entregam no CEP 14815000?"). CUSTOMER-scoped by construction: they
+  // live in this enum, so `CUSTOMER_CLAIM_SCOPE` carries them and the ops plane
+  // gets them only via its SUPERSET scope (ops-plane delivery answers are LE2-013's
+  // job — nothing here wires ops). PUBLIC (`not_applicable` ownership, like
+  // STORE_INFO / MENU_OVERVIEW): a delivery ZONE is store policy, owned by nobody.
+  //
+  // A COMPLEMENTARY PAIR on the CART_CONTENTS/CART_EMPTY precedent (BKL-163): the
+  // investigator records `delivery:coverage` PRESENT only when a zone actually
+  // matched, and `delivery:no_coverage` PRESENT only when the estimation tool
+  // proved the CEP falls OUTSIDE every zone — so exactly ONE of the pair can ever
+  // validate in a turn, and the other resolves honest UNKNOWN and is dropped by the
+  // kernel's §D filter (never a rendered contradiction). The NEGATIVE is a
+  // first-class VALIDATED claim, not an UNKNOWN: a definitive "outside every zone"
+  // read off the zone data IS a fact, and answering it with "não localizei essa
+  // informação" would be less honest, not more.
+  //
+  // The third branch — an unrecognised place name with no CEP — is deliberately
+  // CLAIMLESS: neither key is recorded, the classify-only path forces CLARIFY, and
+  // the turn ASKS for the CEP. There is no "probably covered" claim to make, and
+  // nearest-neighbour guessing is exactly what this ticket exists to forbid.
+  "DELIVERY_COVERAGE",
+  "DELIVERY_NO_COVERAGE",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -951,6 +974,82 @@ export const REGISTRY_SPECS = {
     ],
     valueBinding: { key: "store:info", path: ["infoText"] },
   },
+  // LE2-002 / NEW-007 — DELIVERY_COVERAGE: the PUBLIC "we deliver there" read.
+  // FIXED-SUBJECT single-key (the STORE_INFO / MENU_OVERVIEW shape — no
+  // perResourceKey, keys are never `:{subject}`-parameterized): a coverage answer
+  // is about the STORE's delivery policy, so there is one key and no owner.
+  // `must_read_this_turn` (NOT cacheable): the fee/ETA are ADMIN-EDITABLE at any
+  // moment (routes/admin/delivery-zones.ts) and the ticket requires an admin zone
+  // edit to show up in the very next chat answer — a cacheable TTL would license
+  // the kernel to accept a stale entry, which is exactly the staleness this claim
+  // must not have. The `delivery:zones_changed` W6 falsifier is DECLARED (escaping
+  // the W6 UNKNOWN-only cap so the type can VALIDATE) but DELIBERATELY UNREAD —
+  // the same disposition STORE_INFO's `store:info_changed` and CART_CONTENTS's
+  // `cart_cleared` carry, and for the same reason: the only available "changed"
+  // signal derives from the SAME zone row the base read already returned this turn,
+  // so firing it would be a tautology that demotes every truthful answer while
+  // catching zero staleness the base misses. The declaration stays for a future
+  // INDEPENDENT signal (a zone-events stream / the Redis invalidation pub-sub).
+  DELIVERY_COVERAGE: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "delivery:coverage",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "delivery:zones_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered sentence to the read's ACTUAL `coverageText`, the
+    // scalar delivery-coverage-resolver.ts composes IN CODE from the zone row's
+    // INTEGER centavos + minutes (Hard Rule 2). Ledger-sourced, never model-authored.
+    valueBinding: { key: "delivery:coverage", path: ["coverageText"] },
+  },
+  // LE2-002 / NEW-007 — DELIVERY_NO_COVERAGE: the presence-COMPLEMENT of
+  // DELIVERY_COVERAGE (the CART_CONTENTS/CART_EMPTY pairing, BKL-163). The
+  // investigator records `delivery:no_coverage` PRESENT *only* when the estimation
+  // tool positively proved the supplied CEP falls outside every active zone, so
+  // exactly ONE of the pair can ever be present in a turn. A read that ERRORED or
+  // could not resolve records NEITHER key → honest UNKNOWN (Inv 7: "could not
+  // check" is never "we don't deliver").
+  DELIVERY_NO_COVERAGE: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "delivery:no_coverage",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "delivery:zones_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "delivery:no_coverage", path: ["noCoverageText"] },
+  },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
     minSourceIntegrity: "structured",
@@ -1262,6 +1361,16 @@ export interface FirstPartyDerivationReads {
    *  by construction). Absent (blank/unreadable metadata) → value stays undefined →
    *  C6 ABSTAIN → honest UNKNOWN. */
   readonly storeInfo?: { readonly infoText?: unknown };
+  /** LE2-002 / NEW-007 — the delivery-coverage read for THIS turn (fixed subject,
+   *  single-key, like STORE_INFO). The SAME `coverageText` the investigator records
+   *  under `delivery:coverage` (shared per-turn resolver memo keyed on turnId+text),
+   *  so the derived value is byte-equal (C6 passes by construction). Absent (no zone
+   *  matched / an unreadable projection) → value stays undefined → C6 ABSTAIN →
+   *  honest UNKNOWN, never a fabricated fee or ETA. */
+  readonly deliveryCoverage?: { readonly coverageText?: unknown };
+  /** LE2-002 / NEW-007 — the NEGATIVE twin, recorded under `delivery:no_coverage`
+   *  only on a POSITIVE out-of-zone determination (never on a read error). */
+  readonly deliveryNoCoverage?: { readonly noCoverageText?: unknown };
 }
 
 /**
@@ -1335,6 +1444,26 @@ export function deriveBoundValue(
     // address.
     if (reads.storeInfo === undefined) return candidate;
     return { ...candidate, value: { infoText: reads.storeInfo.infoText } };
+  }
+
+  if (candidate.type === "DELIVERY_COVERAGE") {
+    // LE2-002 — FIXED subject (single-key, like STORE_INFO): bind `coverageText`
+    // from the single delivery-coverage read. Absent read (no zone matched, an
+    // unrecognised place, or an unreadable projection) → value stays undefined →
+    // C6 ABSTAINs → honest UNKNOWN, never a fabricated "sim, entregamos".
+    if (reads.deliveryCoverage === undefined) return candidate;
+    return { ...candidate, value: { coverageText: reads.deliveryCoverage.coverageText } };
+  }
+
+  if (candidate.type === "DELIVERY_NO_COVERAGE") {
+    // LE2-002 — the negative twin. Bound ONLY when the resolver positively proved
+    // the CEP is outside every zone; a read error leaves this undefined → C6
+    // ABSTAINs → honest UNKNOWN (never a wrongly-confident "não entregamos").
+    if (reads.deliveryNoCoverage === undefined) return candidate;
+    return {
+      ...candidate,
+      value: { noCoverageText: reads.deliveryNoCoverage.noCoverageText },
+    };
   }
 
   // Owner-scoped per-resource types have no planner-available first-party read

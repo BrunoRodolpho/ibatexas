@@ -103,6 +103,7 @@ import {
 } from "./closed-hours.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
+import { resolveDeliveryCoverage } from "./delivery-coverage-resolver.js";
 import {
   resolveMenuItem,
   resolveMenuOverviewText,
@@ -1776,12 +1777,35 @@ export function createIbatexasPlanner(
         const infoText = await resolveStoreInfoText(state.turnId);
         if (infoText !== undefined) storeInfo = { infoText };
       }
+      // LE2-002 / NEW-007 — DELIVERY_COVERAGE / DELIVERY_NO_COVERAGE derivation
+      // reads (FIXED subject): the SAME scalars the investigator records under
+      // `delivery:coverage` / `delivery:no_coverage`, memoized on turnId+text so
+      // this REUSES the investigator's ONE zone/estimation read → byte-equal value
+      // (C6 passes by construction). The resolver returns at most one of the two, so
+      // at most one is bound here; the other keeps `value: undefined` → C6 ABSTAINs
+      // → honest UNKNOWN, and the §D filter drops it. A needs-CEP or unreadable
+      // resolution binds NEITHER — never a fabricated fee, ETA, or "não entregamos".
+      let deliveryCoverage: { coverageText: string } | undefined;
+      let deliveryNoCoverage: { noCoverageText: string } | undefined;
+      if (
+        menuCandidateTypes.has("DELIVERY_COVERAGE") ||
+        menuCandidateTypes.has("DELIVERY_NO_COVERAGE")
+      ) {
+        const coverage = await resolveDeliveryCoverage(state.turnId, state.perception.text);
+        if (coverage.kind === "covered") {
+          deliveryCoverage = { coverageText: coverage.coverageText };
+        } else if (coverage.kind === "not_covered") {
+          deliveryNoCoverage = { noCoverageText: coverage.noCoverageText };
+        }
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         menuItemPrice,
         menuItemContents,
         ...(Object.keys(menuDietary).length > 0 ? { menuDietary } : {}),
         ...(menuOverview !== undefined ? { menuOverview } : {}),
         ...(storeInfo !== undefined ? { storeInfo } : {}),
+        ...(deliveryCoverage !== undefined ? { deliveryCoverage } : {}),
+        ...(deliveryNoCoverage !== undefined ? { deliveryNoCoverage } : {}),
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
