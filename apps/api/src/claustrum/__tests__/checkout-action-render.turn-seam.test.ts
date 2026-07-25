@@ -13,6 +13,11 @@
 //              claustrum-bootstrap.ts composes for the customer plane
 //              (`renderAction: (acted, _turnId) => renderCustomerActionAnswer(acted)`).
 //              This is the seam that must call the render and return its text.
+//              NOTE: `readAnswer.renderAction` had NO test coverage on EITHER plane
+//              before this file (the BKL-100 tests at
+//              __tests__/ibatexas-responder-personas.test.ts:190-206 cover the READ
+//              sibling `readAnswer.render` only) — so the action short-circuit that
+//              BKL-149 and BKL-215 both depend on was, until now, unpinned.
 //   stage 6a — `decideRenderPrecedence`, the lattice that decides whether the
 //              stage-6 draft SURVIVES. A committed checkout's claims degrade to
 //              UNKNOWN (a mutation turn does no read), so rule 3b (BKL-225,
@@ -205,6 +210,51 @@ async function deliveredText(
     modelCalls: draft.modelCalls,
   };
 }
+
+// ── The readAnswer.renderAction short-circuit itself (first coverage, either plane) ──
+//
+// The property BKL-149/BKL-215/BKL-230 all rest on: when the action render returns a
+// string, the responder returns it VERBATIM and never reaches the model. Pinned here
+// in its own right, separately from the checkout copy, so a regression in the
+// short-circuit is distinguishable from a regression in the rendered text.
+
+describe("responder readAnswer.renderAction short-circuit (BKL-149/215/230 — previously unpinned)", () => {
+  it("a rendered action IS the reply, verbatim, and the model is never called", async () => {
+    const { model, complete } = mockModel();
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      readAnswer: CUSTOMER_READ_ANSWER,
+    });
+    const draft = await responder.respond({
+      cognition: cognition("sim"),
+      decision: EXECUTE,
+      plan: checkoutPlan(),
+      acted: checkoutActed({ success: true, paymentMethod: "pix", orderId: "pi_x" }),
+    } as unknown as Parameters<ReturnType<typeof createIbatexasResponder>["respond"]>[0]);
+    expect(draft.text).toBe(PIX_LINE);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("when the render abstains the model path runs (the dep does not swallow the turn)", async () => {
+    const { model, complete } = mockModel();
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      readAnswer: CUSTOMER_READ_ANSWER,
+    });
+    const draft = await responder.respond({
+      cognition: cognition("sim"),
+      decision: EXECUTE,
+      plan: checkoutPlan(),
+      acted: checkoutActed({ success: false, paymentMethod: "pix" }),
+    } as unknown as Parameters<ReturnType<typeof createIbatexasResponder>["respond"]>[0]);
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(draft.text).toBe(MODEL_PROSE);
+  });
+});
 
 // ── The PIX turn — the one that degraded to UNKNOWN before BKL-230 ──────────────
 
