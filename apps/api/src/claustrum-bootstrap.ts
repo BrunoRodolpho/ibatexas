@@ -241,6 +241,14 @@ import {
   generateChatDrivableToolKinds,
   generateOpsForbiddenDestructiveKinds,
 } from "@ibatexas/packs-composed/capability-definitions";
+// LE2-014 — the catalog version stamped into every turn's trace (see
+// `flushTurnTraces`). Imported from `@ibatexas/catalog` directly rather than
+// through the packs-composed compatibility barrel: the barrel exists to keep
+// PRE-EXISTING import sites working, not to route new ones. The capability
+// imports above stay on the barrel deliberately — moving them would be churn
+// with no behavior change, and the barrel also carries the eager
+// guard-resolution boot assertion this module depends on.
+import { CATALOG_VERSION } from "@ibatexas/catalog";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
@@ -2232,6 +2240,19 @@ function redisSessionStore(): SessionPort {
  * keyed (turnId, callIndex); the writer redacts the completion. The trace
  * write is additive — token accounting stays separate (no double count).
  * Module-local helper extracted from emitTurn to keep its complexity bounded.
+ *
+ * LE2-014 — this is also where the CATALOG VERSION is stamped. It is the
+ * turn's single once-per-turn persistence seam, so it is the only honest place
+ * to record a per-turn fact: `turn_trace` is one row per model call and has no
+ * root row. The value is therefore repeated onto every row the turn writes,
+ * exactly as `conversationId` already is. Reading it back per turn is a
+ * `max(catalog_version)` over the turn's rows (see `routes/qa-rca.ts`).
+ *
+ * Read from the module-level `CATALOG_VERSION` import rather than threaded
+ * through as a parameter: it is a build-time constant of the deployed bundle,
+ * not turn state, and pretending otherwise would invite a future caller to
+ * pass a different one — which would corrupt replay, the exact thing the stamp
+ * exists to enable.
  */
 async function flushTurnTraces(
   record: TurnRecord,
@@ -2270,6 +2291,7 @@ async function flushTurnTraces(
           ...(t.schemaVersion === undefined
             ? {}
             : { schemaVersion: t.schemaVersion }),
+          catalogVersion: CATALOG_VERSION,
         }),
       ),
     );

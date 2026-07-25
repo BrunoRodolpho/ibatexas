@@ -48,6 +48,16 @@ export interface InvestigationContext {
   startedAt: string | null
   endedAt: string | null
   durationMs: number | null
+  // LE2-014 — the @ibatexas/catalog version this turn ran under
+  // (max(turn_trace.catalog_version); the value is identical on every row of
+  // the turn). Together with the prompt manifest this is the replay key: a
+  // historical turn is re-runnable against exactly the catalog it saw.
+  //
+  // OPTIONAL on the wire, and nullable, for two independent reasons: turns
+  // traced before the column existed have no value, and older API builds do
+  // not send the field at all. Displayed as "—" in both cases — never
+  // defaulted to a version number, which would misattribute the turn.
+  catalogVersion?: number | null
 }
 
 export interface LlmCall {

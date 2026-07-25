@@ -691,6 +691,15 @@ export function RcaWorkbench() {
                       duration <b>{detail.context.durationMs}ms</b>
                     </span>
                   )}
+                  {/* LE2-014 — the catalog version this turn ran under. Read-only,
+                      and rendered UNCONDITIONALLY (unlike duration above): when a
+                      turn has no stamp, "catalog —" is itself the finding — either
+                      the turn predates the stamp or the writer never resolved a
+                      catalog. Hiding the chip would make an unreplayable turn look
+                      identical to a replayable one. */}
+                  <span title="@ibatexas/catalog version this turn ran under (turn_trace.catalog_version)">
+                    catalog <b>{detail.context.catalogVersion ?? "—"}</b>
+                  </span>
                   {detail.degraded?.adj === true && <span className="degraded-chip">ADJ lane degraded</span>}
                   {detail.degraded?.vl === true && <span className="degraded-chip">VL lane degraded</span>}
                   {detail.degraded?.wire === true && <span className="degraded-chip">WIRE lane degraded</span>}

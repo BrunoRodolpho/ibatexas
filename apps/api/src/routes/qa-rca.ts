@@ -558,8 +558,14 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       const window = WINDOW_RE.test(request.query.window ?? "") ? (request.query.window as string) : null;
 
       // 1) resolve conversation + span from turn_trace (the only plaintext key).
+      // LE2-014: catalog_version rides along on this same aggregate — it is
+      // stamped identically on every row of the turn (turn_trace has no root
+      // row), so max() reads the turn's single value without a second query.
+      // NULL for turns written before the column existed; surfaced as null, not
+      // guessed.
       const head = await pool().query(
-        `SELECT conversation_id, min(recorded_at) AS started_at, max(recorded_at) AS ended_at
+        `SELECT conversation_id, min(recorded_at) AS started_at, max(recorded_at) AS ended_at,
+                max(catalog_version) AS catalog_version
          FROM turn_trace WHERE turn_id = $1 GROUP BY conversation_id LIMIT 1`,
         [turnId],
       );
@@ -567,6 +573,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       const conv = str(h.conversation_id);
       const startedAt = iso(h.started_at);
       const endedAt = iso(h.ended_at);
+      const catalogVersion = num(h.catalog_version);
 
       const degraded = { adj: false, vl: false, wire: false };
 
@@ -727,6 +734,8 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
             startedAt,
             endedAt,
             durationMs: Number.isFinite(startMs) && Number.isFinite(endMs) ? endMs - startMs : null,
+            // LE2-014 — the catalog this turn ran under (the replay key).
+            catalogVersion,
           },
           llm,
           adj: adj.map((row) => {
