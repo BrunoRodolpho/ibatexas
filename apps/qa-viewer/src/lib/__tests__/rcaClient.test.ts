@@ -13,6 +13,7 @@ import {
   buildWireSections,
   deliveryState,
   derivePipeline,
+  groupsOrFallback,
   mergeTimeline,
   personaPhase,
   promptIdForPersona,
@@ -22,6 +23,8 @@ import {
   type DeliveryRecord,
   type InvestigationContext,
   type LlmCall,
+  type RcaConversation,
+  type RcaConversationGroup,
   type RcaTurnDetail,
   type VlLine,
   type WireExchange,
@@ -467,6 +470,64 @@ describe("stageFacts", () => {
 
   it("returns [] for an unknown stage key — never throws", () => {
     expect(stageFacts(D(), "nope")).toEqual([])
+  })
+})
+
+// ── LE2-031: the rail's grouped shape ───────────────────────────────────────
+// Grouping itself is a SERVER concern (apps/api qa-rca-grouping.ts, pinned
+// there). What the client owns is the degradation: an API build that does not
+// group must not make the rail lie about identity.
+
+describe("groupsOrFallback", () => {
+  const rows: RcaConversation[] = [
+    {
+      sessionId: "sess-1",
+      chatCuid: null,
+      channel: "whatsapp",
+      startedAt: T0,
+      lastAt: T2,
+      lastText: null,
+      lastRole: null,
+      turnCount: 2,
+    },
+  ]
+
+  it("passes the server's groups through untouched when they are present", () => {
+    const groups: RcaConversationGroup[] = [
+      {
+        groupKey: "customer:cus_1",
+        kind: "customer",
+        label: "cus_1",
+        customerId: "cus_1",
+        phoneHash: null,
+        staffId: null,
+        sessionIds: ["sess-1"],
+        channels: ["whatsapp"],
+        sessionCount: 1,
+        turnCount: 2,
+        startedAt: T0,
+        lastAt: T2,
+      },
+    ]
+    expect(groupsOrFallback(rows, groups)).toEqual({ groups, ungrouped: false })
+  })
+
+  it("falls back to one row per session — and NEVER calls them unidentified", () => {
+    const out = groupsOrFallback(rows, undefined)
+    expect(out.ungrouped).toBe(true)
+    expect(out.groups).toHaveLength(1)
+    // "unidentified" is a server finding about the data; "ungrouped" is a fact
+    // about this API build. Conflating them would fabricate a finding.
+    expect(out.groups[0]!.kind).toBe("ungrouped")
+    expect(out.groups[0]!.groupKey).toBe("session:sess-1")
+    expect(out.groups[0]!.sessionIds).toEqual(["sess-1"])
+    expect(out.groups[0]!.customerId).toBeNull()
+  })
+
+  it("keeps the fallback key stable across refreshes (it is the session id)", () => {
+    const a = groupsOrFallback(rows, undefined).groups.map((g) => g.groupKey)
+    const b = groupsOrFallback([{ ...rows[0]!, turnCount: 9 }], undefined).groups.map((g) => g.groupKey)
+    expect(b).toEqual(a)
   })
 })
 
