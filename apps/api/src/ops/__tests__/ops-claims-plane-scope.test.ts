@@ -8,7 +8,8 @@
 // is to trip CI when the real registries drift):
 //
 //   1. REGISTRY   — the customer enum never gains an ops type (and the counts are
-//                   pinned: 17 customer / 3 ops, the CLAUDE.SDD.md registry
+//                   pinned: 19 customer / 3 ops (LE2-002 grew the customer
+//                   side by the delivery-coverage pair), the CLAUDE.SDD.md registry
 //                   discipline, EXTENDED not weakened).
 //   2. PARSE      — the customer `propose_claim` tool advertises no ops type, so a
 //                   customer 4B cannot even SELECT one; the ops planner's does.
@@ -118,13 +119,20 @@ async function proposeClaimEnum(
 // ── 1. REGISTRY ─────────────────────────────────────────────────────────────
 
 describe("LE2-012 registry discipline — the two enums stay disjoint", () => {
-  it("pins the runtime counts: 17 customer types, 3 ops types, 20 in the ops scope", () => {
+  it("pins the runtime counts: 19 customer types, 3 ops types, 22 in the ops scope", () => {
     // CLAUDE.SDD.md registry discipline: the pin is EXTENDED (a second, plane-
     // scoped count) and never weakened. A failure here is a deliberate decision
     // point — a type was added; decide WHICH plane owns it.
-    expect(CLAIM_REGISTRY).toHaveLength(17);
+    // LE2-002 / NEW-007 GREW the CUSTOMER count 17 → 19 (the DELIVERY_COVERAGE /
+    // DELIVERY_NO_COVERAGE complementary pair — a CUSTOMER-plane decision: a
+    // coverage answer is store policy every customer may ask about, and the
+    // ops-plane delivery answers are LE2-013's separate job). The ops count is
+    // UNCHANGED, and the ops-scope total moves in lockstep (19 + 3) because that
+    // scope is customer ∪ ops by construction — this is the pin being EXTENDED,
+    // never weakened.
+    expect(CLAIM_REGISTRY).toHaveLength(19);
     expect(OPS_CLAIM_REGISTRY).toHaveLength(3);
-    expect(OPS_CLAIM_SCOPE.types).toHaveLength(20);
+    expect(OPS_CLAIM_SCOPE.types).toHaveLength(22);
   });
 
   it("no ops type is in the customer registry, and vice versa", () => {
@@ -171,13 +179,13 @@ describe("LE2-012 registry discipline — the two enums stay disjoint", () => {
 describe("LE2-012 plane scoping — the customer planner cannot SELECT an ops type", () => {
   it("the CUSTOMER propose_claim enum advertises no ops type", async () => {
     const advertised = new Set(await proposeClaimEnum());
-    expect(advertised.size).toBe(17);
+    expect(advertised.size).toBe(19);
     for (const type of OPS_TYPES) expect(advertised.has(type)).toBe(false);
   });
 
   it("the OPS propose_claim enum advertises all three (and still the customer ones)", async () => {
     const advertised = new Set(await proposeClaimEnum(OPS_CLAIM_SCOPE));
-    expect(advertised.size).toBe(20);
+    expect(advertised.size).toBe(22);
     for (const type of OPS_TYPES) expect(advertised.has(type)).toBe(true);
     // The ops scope is a SUPERSET — the LE2-011 store-open chain must survive.
     expect(advertised.has("STORE_OPEN_NOW")).toBe(true);
