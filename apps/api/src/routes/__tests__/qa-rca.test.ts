@@ -106,6 +106,155 @@ describe("qa-rca — id validation", () => {
   });
 });
 
+// ── conversations rail: customer grouping (LE2-031) ───────────────────────────
+//
+// The pure identity/ordering rules are pinned in qa-rca-grouping.test.ts; these
+// pin the WIRING — that the route actually feeds the grouper the columns it
+// needs (customer_id from the domain enrichment, the phone hash from the two
+// fail-safe lanes) and that a lane outage degrades identity rather than the
+// whole rail.
+
+const RAIL_SHORTLIST = "count(DISTINCT t.turn_id)";
+
+describe("qa-rca — conversations rail grouping", () => {
+  /** One shortlist row as the turn_trace aggregate produces it. */
+  const shortlist = [
+    { session_id: "admin:staff_7", started_at: "2026-07-24T10:05:00.000Z", last_at: "2026-07-24T10:05:00.000Z", turns: 2 },
+    { session_id: "sess-web", started_at: "2026-07-24T10:04:00.000Z", last_at: "2026-07-24T10:04:00.000Z", turns: 3 },
+    { session_id: "sess-wa", started_at: "2026-07-24T10:03:00.000Z", last_at: "2026-07-24T10:03:00.000Z", turns: 1 },
+    { session_id: "sess-guest", started_at: "2026-07-24T10:02:00.000Z", last_at: "2026-07-24T10:02:00.000Z", turns: 4 },
+    { session_id: "sess-anon", started_at: "2026-07-24T10:01:00.000Z", last_at: "2026-07-24T10:01:00.000Z", turns: 1 },
+  ];
+
+  it("folds sessions onto customers, labels ops, and buckets the unidentifiable", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes(RAIL_SHORTLIST)) return { rows: shortlist };
+      // The phone-hash lanes (order matters: incidents mentions "conversation_"
+      // too, so match the most specific fragment first).
+      if (sql.includes("conversation_incidents")) return { rows: [] };
+      if (sql.includes("FROM whatsapp_delivery")) {
+        return { rows: [{ conversation_id: "sess-guest", phone_hash: "ph_guest" }] };
+      }
+      // Domain enrichment — the top rung of the identity ladder. sess-anon has
+      // no row at all; sess-guest has one with no customer.
+      if (sql.includes("LEFT JOIN LATERAL")) {
+        return {
+          rows: [
+            { session_id: "sess-web", chat_cuid: "chat_w", channel: "web", customer_id: "cus_1", content: "oi", role: "user" },
+            { session_id: "sess-wa", chat_cuid: "chat_a", channel: "whatsapp", customer_id: "cus_1", content: null, role: null },
+            { session_id: "sess-guest", chat_cuid: "chat_g", channel: "whatsapp", customer_id: null, content: null, role: null },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/conversations", headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const groups = res.json().groups as Array<Record<string, unknown>>;
+
+    // Most-recent-first, one row per identity — never one row per session.
+    expect(groups.map((g) => g.groupKey)).toEqual([
+      "ops:staff_7",
+      "customer:cus_1",
+      "phone:ph_guest",
+      "unidentified",
+    ]);
+
+    // The customer's web + whatsapp sessions became sub-rows of ONE row.
+    const customer = groups.find((g) => g.groupKey === "customer:cus_1")!;
+    expect(customer.kind).toBe("customer");
+    expect(customer.sessionIds).toEqual(["sess-web", "sess-wa"]);
+    expect(customer.channels).toEqual(["web", "whatsapp"]);
+    expect(customer.turnCount).toBe(4);
+
+    // The ops thread is labeled as ops — never as a customer, never as unknown.
+    const ops = groups.find((g) => g.groupKey === "ops:staff_7")!;
+    expect(ops.kind).toBe("ops");
+    expect(ops.staffId).toBe("staff_7");
+    expect(ops.label).toContain("ops");
+
+    // The guest folds on the salted hash; the truly unattributable session
+    // lands in the explicit bucket instead of vanishing.
+    expect(groups.find((g) => g.groupKey === "phone:ph_guest")!.sessionIds).toEqual(["sess-guest"]);
+    const bucket = groups.find((g) => g.groupKey === "unidentified")!;
+    expect(bucket.kind).toBe("unidentified");
+    expect(bucket.sessionIds).toEqual(["sess-anon"]);
+
+    // Conservation: grouping never drops a served conversation.
+    const conversations = res.json().conversations as Array<Record<string, unknown>>;
+    expect(groups.flatMap((g) => g.sessionIds as string[]).sort()).toEqual(
+      conversations.map((c) => c.sessionId as string).sort(),
+    );
+    await app.close();
+  });
+
+  it("keeps the flat conversation rows on the wire, now carrying the identity columns", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes(RAIL_SHORTLIST)) return { rows: [shortlist[1]] };
+      if (sql.includes("conversation_incidents")) return { rows: [] };
+      if (sql.includes("FROM whatsapp_delivery")) return { rows: [] };
+      if (sql.includes("LEFT JOIN LATERAL")) {
+        return {
+          rows: [
+            { session_id: "sess-web", chat_cuid: "chat_w", channel: "web", customer_id: "cus_1", content: "oi", role: "user" },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/conversations", headers: AUTH });
+    expect(res.json().conversations).toEqual([
+      {
+        sessionId: "sess-web",
+        chatCuid: "chat_w",
+        channel: "web",
+        startedAt: "2026-07-24T10:04:00.000Z",
+        lastAt: "2026-07-24T10:04:00.000Z",
+        lastText: "oi",
+        lastRole: "user",
+        turnCount: 3,
+        customerId: "cus_1",
+        phoneHash: null,
+      },
+    ]);
+    await app.close();
+  });
+
+  it("takes the phone hash from the incident lane when no reply was ever delivered", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes(RAIL_SHORTLIST)) return { rows: [shortlist[3]] };
+      if (sql.includes("conversation_incidents")) {
+        return { rows: [{ conversation_id: "sess-guest", phone_hash: "ph_incident" }] };
+      }
+      if (sql.includes("FROM whatsapp_delivery")) return { rows: [] };
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/conversations", headers: AUTH });
+    expect(res.json().groups[0].groupKey).toBe("phone:ph_incident");
+    await app.close();
+  });
+
+  it("degrades identity — not the rail — when the domain schema is unreachable", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes(RAIL_SHORTLIST)) return { rows: shortlist };
+      throw new Error("ibx_domain unavailable");
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/conversations", headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const groups = res.json().groups as Array<Record<string, unknown>>;
+    // No enrichment and no hash lane: the ops thread is still identifiable from
+    // its session id alone, everything else honestly reads unidentified.
+    expect(groups.map((g) => g.groupKey).sort()).toEqual(["ops:staff_7", "unidentified"]);
+    expect(groups.find((g) => g.groupKey === "unidentified")!.sessionCount).toBe(4);
+    await app.close();
+  });
+});
+
 // ── merged turn view ──────────────────────────────────────────────────────────
 
 describe("qa-rca — merged turn view", () => {
