@@ -13,9 +13,10 @@
     }
   },
   "scripts": {
-    "build": "tsc --outDir dist && tsx scripts/check-claim-references.ts",
+    "build": "tsc --outDir dist && tsx scripts/check-catalog.ts",
     "lint": "tsc --noEmit",
     "test": "vitest run",
+    "check": "tsx scripts/check-catalog.ts",
     "check:claim-refs": "tsx scripts/check-claim-references.ts"
   },
   "dependencies": {
