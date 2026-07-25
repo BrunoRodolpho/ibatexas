@@ -29,6 +29,7 @@ constrains claim generation, the installed Packs own their guards, and
 | `src/capability-definitions/` | The authored capability data (58 capabilities — 20 chat-tier, 38 identity-tier) and its twelve pure projection generators |
 | `src/claim-references.ts` | The claim **name spaces** a definition may point at |
 | `src/compiler/` | The **catalog compiler** — four fail-closed static passes, wired into `build`, CI, and `ibx catalog check` |
+| `src/conformance/` | The compiler's **conformance suite** — a fixture catalog per rejection class, golden-pinned ([README](src/conformance/README.md)) |
 | `src/build-gates/check-claim-references.ts` | Cross-reference check v0 — now a thin adapter over the compiler's referential edge table (same API) |
 
 ## The catalog compiler (LE2-016)
@@ -80,6 +81,30 @@ marker list.
 Unrecognized safety-bearing names route **conservatively to deny**: markers are
 matched as stems, so a reference nobody anticipated (`menu-item-allergens-v2`)
 is refused by construction rather than assumed harmless.
+
+### The conformance suite is the compiler's compatibility contract (LE2-017)
+
+`src/conformance/` holds one committed fixture catalog per **rule id** — 21
+today across the four passes, plus three clean controls — each with its
+compiler output pinned byte-for-byte in `src/conformance/__golden__/`. The
+passes' unit tests assert pass *logic*; the conformance corpus pins the
+*diagnostic contract*: the exact diagnostics, in the exact order, with the
+exact object / field / rule / message / reference, and each pass's `checked`
+count.
+
+**No new rejection class lands without a conformance fixture** — and that is a
+mechanism, not a convention. The meta-gate parses `src/compiler/` for the
+registered passes and the rule ids they can emit, and fails naming the gap when
+the corpus misses one. It runs inside the package's ordinary `test`; there is
+no separate CI step to keep in sync.
+
+```bash
+pnpm --filter @ibatexas/catalog test               # the suite rides the normal test gate
+pnpm --filter @ibatexas/catalog run conformance:regen   # regenerate goldens deliberately
+```
+
+See [`src/conformance/README.md`](src/conformance/README.md) for how to add a
+fixture and how to read a golden diff.
 
 ### Not here, by design
 
