@@ -126,7 +126,7 @@ async function proposeClaimEnum(
 // ── 1. REGISTRY ─────────────────────────────────────────────────────────────
 
 describe("LE2-012 registry discipline — the two enums stay disjoint", () => {
-  it("pins the runtime counts: 19 customer types, 3 ops types, 22 in the ops scope", () => {
+  it("pins the runtime counts: 21 customer types, 3 ops types, 24 in the ops scope", () => {
     // CLAUDE.SDD.md registry discipline: the pin is EXTENDED (a second, plane-
     // scoped count) and never weakened. A failure here is a deliberate decision
     // point — a type was added; decide WHICH plane owns it.
@@ -137,9 +137,14 @@ describe("LE2-012 registry discipline — the two enums stay disjoint", () => {
     // UNCHANGED, and the ops-scope total moves in lockstep (19 + 3) because that
     // scope is customer ∪ ops by construction — this is the pin being EXTENDED,
     // never weakened.
-    expect(CLAIM_REGISTRY).toHaveLength(19);
+    // LE2-019 GREW the CUSTOMER count 19 → 21 (the COUPON_VALID / COUPON_INVALID
+    // complementary pair — again a CUSTOMER-plane decision: whether a coupon code
+    // works is a customer question, and the ops plane reaches it only through its
+    // SUPERSET scope, with no OPS_COUPON_* twin and no ops phrasing override). The
+    // ops count is UNCHANGED and the ops-scope total moves in lockstep (21 + 3).
+    expect(CLAIM_REGISTRY).toHaveLength(21);
     expect(OPS_CLAIM_REGISTRY).toHaveLength(3);
-    expect(OPS_CLAIM_SCOPE.types).toHaveLength(22);
+    expect(OPS_CLAIM_SCOPE.types).toHaveLength(24);
   });
 
   it("no ops type is in the customer registry, and vice versa", () => {
@@ -186,13 +191,13 @@ describe("LE2-012 registry discipline — the two enums stay disjoint", () => {
 describe("LE2-012 plane scoping — the customer planner cannot SELECT an ops type", () => {
   it("the CUSTOMER propose_claim enum advertises no ops type", async () => {
     const advertised = new Set(await proposeClaimEnum());
-    expect(advertised.size).toBe(19);
+    expect(advertised.size).toBe(21);
     for (const type of OPS_TYPES) expect(advertised.has(type)).toBe(false);
   });
 
   it("the OPS propose_claim enum advertises all three (and still the customer ones)", async () => {
     const advertised = new Set(await proposeClaimEnum(OPS_CLAIM_SCOPE));
-    expect(advertised.size).toBe(22);
+    expect(advertised.size).toBe(24);
     for (const type of OPS_TYPES) expect(advertised.has(type)).toBe(true);
     // The ops scope is a SUPERSET — the LE2-011 store-open chain must survive.
     expect(advertised.has("STORE_OPEN_NOW")).toBe(true);

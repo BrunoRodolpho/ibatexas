@@ -157,6 +157,13 @@ const NON_TRIAD_RENDERABLE = [
   // neither joins KNOWN_CUSTOMER_UNRENDERABLE_TYPES.
   "DELIVERY_COVERAGE",
   "DELIVERY_NO_COVERAGE",
+  // LE2-019 — the coupon-validity PAIR, on exactly the same footing: a validated
+  // pre-composed-scalar template each, `not_applicable` ownership (a promotion is
+  // store policy, owned by nobody — the SAME code is valid or not regardless of who
+  // asks), so intentionally OUT of TRIAD_SCOPED_TYPES. The gap pin (PROPOSABLE \
+  // RENDERABLE) is UNCHANGED: both ship WITH their templates.
+  "COUPON_VALID",
+  "COUPON_INVALID",
 ] as const;
 
 describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ the deliberate non-Triad public reads", () => {

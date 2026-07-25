@@ -182,6 +182,44 @@ export const CLAIM_REGISTRY = [
   // nearest-neighbour guessing is exactly what this ticket exists to forbid.
   "DELIVERY_COVERAGE",
   "DELIVERY_NO_COVERAGE",
+  // LE2-019 / spec Decision 18 — the COUPON-VALIDITY pair ("o cupom X1234
+  // vale?"). CUSTOMER-scoped by construction: they live in this enum, so
+  // `CUSTOMER_CLAIM_SCOPE` carries them; the ops plane reaches them only through
+  // its SUPERSET scope (nothing here wires ops, and no ops phrasing override is
+  // minted — a coupon question is a customer question). PUBLIC
+  // (`not_applicable` ownership, like STORE_INFO / DELIVERY_COVERAGE): a
+  // promotion is store policy, owned by nobody — the SAME code is valid or not
+  // regardless of who asks, so this is deliberately NOT owner-scoped and a guest
+  // gets the same honest answer as an authenticated customer.
+  //
+  // A COMPLEMENTARY PAIR on the DELIVERY_COVERAGE / CART_CONTENTS precedent: the
+  // investigator records `coupon:valid` PRESENT only when a SUCCESSFUL promotion
+  // lookup found a usable record, and `coupon:invalid` PRESENT only when a
+  // SUCCESSFUL lookup positively determined the code is not usable — so exactly
+  // ONE of the pair can ever validate in a turn, and the other resolves honest
+  // UNKNOWN and is dropped by the kernel's §D filter (never a rendered
+  // contradiction). Both are registered in PRESENCE_COMPLEMENT_PAIRS
+  // (required-claim-decomposer.ts); omitting that registration is the LE2-002
+  // latent defect this ticket refuses to reproduce.
+  //
+  // WHY A PAIR AND NOT ONE TYPE WITH A VALIDITY FIELD: the two answers carry
+  // genuinely DIFFERENT static frames (the positive ends with how to use the
+  // code at checkout; the negative ends with an offer to check another one), and
+  // under the frozen single-C6-field kernel a single type would have to hide the
+  // whole difference inside its one scalar, leaving a template frame that can
+  // say nothing true in both branches. That is the same argument the delivery
+  // pair made, and it holds identically here.
+  //
+  // The third branch — coupon phrasing with NO extractable code — is
+  // deliberately CLAIMLESS: neither key is recorded, the classify-only path
+  // forces CLARIFY, and the turn ASKS for the code. There is no "probably valid"
+  // claim to make.
+  //
+  // DECISION 14 NEGATIVE SPACE: both are `read_claim`s. No coupon APPLY /
+  // price-adjustment claim exists, here or anywhere — validity is discoverable
+  // WITHOUT attempting an apply, which is the whole point of Decision 18.
+  "COUPON_VALID",
+  "COUPON_INVALID",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -1050,6 +1088,82 @@ export const REGISTRY_SPECS = {
     ],
     valueBinding: { key: "delivery:no_coverage", path: ["noCoverageText"] },
   },
+  // LE2-019 — COUPON_VALID: the PUBLIC "this code is good" read. FIXED-SUBJECT
+  // single-key (the STORE_INFO / DELIVERY_COVERAGE shape — no perResourceKey,
+  // keys are never `:{subject}`-parameterized): the answer is about the STORE's
+  // promotion, so there is one key and no owner. `must_read_this_turn` (NOT
+  // cacheable): a promotion's status, campaign window and budget move on their own
+  // (a budget exhausts on someone ELSE's checkout), so a cacheable TTL would
+  // license the kernel to accept a stale entry — exactly the staleness a "vale?"
+  // answer must not have. The `coupon:promotions_changed` W6 falsifier is DECLARED
+  // (escaping the W6 UNKNOWN-only cap so the type can VALIDATE) but DELIBERATELY
+  // UNREAD — the same disposition STORE_INFO's `store:info_changed` and
+  // DELIVERY_COVERAGE's `delivery:zones_changed` carry, and for the same reason:
+  // the only available "changed" signal derives from the SAME promotion row the
+  // base read already returned this turn, so firing it would be a tautology that
+  // demotes every truthful answer while catching zero staleness. The declaration
+  // stays for a future INDEPENDENT signal (a promotion-events stream).
+  COUPON_VALID: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "coupon:valid",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "coupon:promotions_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered sentence to the read's ACTUAL `validityText`, the
+    // scalar coupon-validity-resolver.ts composes IN CODE from the promotion
+    // record's own code + `application_method` (Hard Rule 2 for a fixed amount).
+    // Ledger-sourced, never model-authored — the model cannot invent a discount.
+    valueBinding: { key: "coupon:valid", path: ["validityText"] },
+  },
+  // LE2-019 — COUPON_INVALID: the presence-COMPLEMENT of COUPON_VALID (the
+  // DELIVERY_COVERAGE / CART_CONTENTS pairing). The investigator records
+  // `coupon:invalid` PRESENT *only* when a SUCCESSFUL promotion lookup positively
+  // determined the code is not usable (absent / draft / inactive / outside its
+  // campaign window / budget-exhausted), so exactly ONE of the pair can ever be
+  // present in a turn. A lookup that ERRORED records NEITHER key → honest UNKNOWN
+  // (Inv 7: "could not check" is never "your coupon is invalid").
+  COUPON_INVALID: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "coupon:invalid",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "coupon:promotions_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "coupon:invalid", path: ["invalidityText"] },
+  },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
     minSourceIntegrity: "structured",
@@ -1371,6 +1485,17 @@ export interface FirstPartyDerivationReads {
   /** LE2-002 / NEW-007 — the NEGATIVE twin, recorded under `delivery:no_coverage`
    *  only on a POSITIVE out-of-zone determination (never on a read error). */
   readonly deliveryNoCoverage?: { readonly noCoverageText?: unknown };
+  /** LE2-019 — the coupon-validity read for THIS turn (fixed subject, single-key,
+   *  like DELIVERY_COVERAGE). The SAME `validityText` the investigator records
+   *  under `coupon:valid` (shared per-turn resolver memo keyed on turnId+text), so
+   *  the derived value is byte-equal (C6 passes by construction). Absent (no code
+   *  supplied / an unreadable promotion lookup / unreadable terms) → value stays
+   *  undefined → C6 ABSTAIN → honest UNKNOWN, never a fabricated discount. */
+  readonly couponValid?: { readonly validityText?: unknown };
+  /** LE2-019 — the NEGATIVE twin, recorded under `coupon:invalid` only on a
+   *  POSITIVE not-usable determination off a SUCCESSFUL lookup (never on an
+   *  error). */
+  readonly couponInvalid?: { readonly invalidityText?: unknown };
 }
 
 /**
@@ -1463,6 +1588,26 @@ export function deriveBoundValue(
     return {
       ...candidate,
       value: { noCoverageText: reads.deliveryNoCoverage.noCoverageText },
+    };
+  }
+
+  if (candidate.type === "COUPON_VALID") {
+    // LE2-019 — FIXED subject (single-key, like DELIVERY_COVERAGE): bind
+    // `validityText` from the single coupon read. Absent read (no code supplied,
+    // an unreadable promotion lookup, or terms we could not state) → value stays
+    // undefined → C6 ABSTAINs → honest UNKNOWN, never a fabricated "está válido".
+    if (reads.couponValid === undefined) return candidate;
+    return { ...candidate, value: { validityText: reads.couponValid.validityText } };
+  }
+
+  if (candidate.type === "COUPON_INVALID") {
+    // LE2-019 — the negative twin. Bound ONLY when a SUCCESSFUL lookup positively
+    // proved the code is not usable; a read error leaves this undefined → C6
+    // ABSTAINs → honest UNKNOWN (never a wrongly-confident "não está válido").
+    if (reads.couponInvalid === undefined) return candidate;
+    return {
+      ...candidate,
+      value: { invalidityText: reads.couponInvalid.invalidityText },
     };
   }
 

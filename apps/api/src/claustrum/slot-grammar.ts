@@ -180,6 +180,9 @@ export const STORE_INFO = "STORE_INFO";
 /** LE2-002 / NEW-007 — the PUBLIC delivery-coverage pair (zone-grounded scalars). */
 export const DELIVERY_COVERAGE = "DELIVERY_COVERAGE";
 export const DELIVERY_NO_COVERAGE = "DELIVERY_NO_COVERAGE";
+/** LE2-019 — the PUBLIC coupon-validity pair (promotion-record-grounded scalars). */
+export const COUPON_VALID = "COUPON_VALID";
+export const COUPON_INVALID = "COUPON_INVALID";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -411,6 +414,42 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
       lit(" — mas você pode retirar aqui no restaurante, se preferir."),
     ],
   },
+  // LE2-019 — the GROUNDED-YES coupon template. ONE proposition slot bound 1:1 to
+  // the C6 valueBinding FIELD (`validityText`, claim-registry.ts): the
+  // deterministic pt-BR scalar coupon-validity-resolver.ts composes from the
+  // PROMOTION RECORD's own code + `application_method` — never model-authored, and
+  // never reachable without a VALIDATED promotion lookup behind it.
+  //
+  // The application hint is STATIC LITERAL text, not part of the proposition, and
+  // that split is deliberate on TWO counts. First, the DELIVERY_COVERAGE reason:
+  // "é só informar o código no checkout" asserts nothing about the world — it
+  // describes what the CUSTOMER does next — so it belongs in the frame, not in the
+  // ledger-bound value. Second, Decision 14: the sentence describes the customer
+  // entering a code at checkout; it never says the SYSTEM will apply anything,
+  // because no apply / price-adjustment capability exists to promise.
+  [COUPON_VALID]: {
+    claimType: COUPON_VALID,
+    posture: "validated",
+    slots: [
+      prop(COUPON_VALID, "validityText"),
+      lit(". É só informar o código no checkout."),
+    ],
+  },
+  // LE2-019 — the HONEST-NO template. Also a VALIDATED assertion (a definitive
+  // not-usable determination off a SUCCESSFUL promotion lookup IS a fact, not an
+  // absence of one), with its own static frame: the negative carries an offer to
+  // check ANOTHER code where the positive carries the checkout hint. Bound 1:1 to
+  // the C6 `invalidityText`. It states no REASON — why a campaign is exhausted or
+  // a promotion is still in draft is store-internal, and voicing it would assert
+  // facts the customer cannot verify and the claim never validated.
+  [COUPON_INVALID]: {
+    claimType: COUPON_INVALID,
+    posture: "validated",
+    slots: [
+      prop(COUPON_INVALID, "invalidityText"),
+      lit(" — se você tiver outro código, me manda que eu confiro."),
+    ],
+  },
   // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
   // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO
   // registered ClaimDefinition — it is absent from CLAIM_REGISTRY/REGISTRY_SPECS
@@ -560,6 +599,33 @@ export const SAFE_CLARIFY_DELIVERY_CEP_TEMPLATE: Template = {
   slots: [
     lit(
       "Para confirmar a entrega eu preciso do CEP — me manda o CEP do endereço que eu verifico a taxa e o prazo certinhos.",
+    ),
+  ],
+};
+
+/**
+ * LE2-019 — the COUPON-VALIDITY CLARIFY variant. Selected ONLY when the request
+ * carries coupon phrasing (required-claim-decomposer.ts `isCouponValidityAsk` —
+ * the SAME net the span classifier uses to route the question to the coupon
+ * claims) AND the terminal is CLARIFY; every other CLARIFY renders the generic
+ * {@link SAFE_TEMPLATES}.clarify, byte-identical.
+ *
+ * This is what the resolver's refusal to GUESS renders as. Coupon phrasing with
+ * no extractable code — or with TWO, which we will not pick between — must NOT be
+ * answered about some code the customer did not name, so the turn asks for the
+ * one datum that settles it.
+ *
+ * PROPOSITION-FREE BY CONSTRUCTION (Inv 6 / §O#5): it asserts NO validity fact in
+ * either direction — it never says a coupon is probably good, never says it is
+ * not, and never names a promotion. It reports only the SYSTEM's own state and
+ * asks. Standalone const (SAFE_TEMPLATES is closed over the posture union).
+ */
+export const SAFE_CLARIFY_COUPON_CODE_TEMPLATE: Template = {
+  claimType: "__SAFE_CLARIFY_COUPON_CODE__",
+  posture: "clarify",
+  slots: [
+    lit(
+      "Para conferir o cupom eu preciso do código — me manda o código certinho que eu verifico se está valendo.",
     ),
   ],
 };

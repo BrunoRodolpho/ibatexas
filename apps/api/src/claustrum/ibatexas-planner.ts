@@ -104,6 +104,7 @@ import {
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
 import { resolveDeliveryCoverage } from "./delivery-coverage-resolver.js";
+import { resolveCouponValidity } from "./coupon-validity-resolver.js";
 import {
   resolveMenuItem,
   resolveMenuOverviewText,
@@ -1798,6 +1799,28 @@ export function createIbatexasPlanner(
           deliveryNoCoverage = { noCoverageText: coverage.noCoverageText };
         }
       }
+      // LE2-019 — COUPON_VALID / COUPON_INVALID derivation reads (FIXED subject):
+      // the SAME scalars the investigator records under `coupon:valid` /
+      // `coupon:invalid`, memoized on turnId+text so this REUSES the investigator's
+      // ONE promotion lookup → byte-equal value (C6 passes by construction) AND the
+      // SAME clock reading for the campaign window. The resolver returns at most one
+      // of the two, so at most one is bound here; the other keeps `value: undefined`
+      // → C6 ABSTAINs → honest UNKNOWN, and the §D filter drops it. A needs-code or
+      // unreadable resolution binds NEITHER — never a fabricated discount, and never
+      // a wrongly-confident "não está válido".
+      let couponValid: { validityText: string } | undefined;
+      let couponInvalid: { invalidityText: string } | undefined;
+      if (
+        menuCandidateTypes.has("COUPON_VALID") ||
+        menuCandidateTypes.has("COUPON_INVALID")
+      ) {
+        const coupon = await resolveCouponValidity(state.turnId, state.perception.text);
+        if (coupon.kind === "valid") {
+          couponValid = { validityText: coupon.validityText };
+        } else if (coupon.kind === "invalid") {
+          couponInvalid = { invalidityText: coupon.invalidityText };
+        }
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         menuItemPrice,
         menuItemContents,
@@ -1806,6 +1829,8 @@ export function createIbatexasPlanner(
         ...(storeInfo !== undefined ? { storeInfo } : {}),
         ...(deliveryCoverage !== undefined ? { deliveryCoverage } : {}),
         ...(deliveryNoCoverage !== undefined ? { deliveryNoCoverage } : {}),
+        ...(couponValid !== undefined ? { couponValid } : {}),
+        ...(couponInvalid !== undefined ? { couponInvalid } : {}),
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
