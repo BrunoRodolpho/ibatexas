@@ -123,6 +123,26 @@ export interface WireExchange {
   recordedAt: string | null
 }
 
+/** LE2-030 — Twilio delivery confirmation for ONE outbound reply part
+ *  (`whatsapp_delivery`, keyed by the message SID captured at send time).
+ *
+ *  `status === null` means no delivery callback has arrived yet — the honest
+ *  "pending" state, NOT an error. Every other value is Twilio's own
+ *  `MessageStatus` verbatim (sent / delivered / read / failed / undelivered …). */
+export interface DeliveryRecord {
+  messageSid: string | null
+  partIndex: number
+  status: string | null
+  sentAt: string | null
+  statusAt: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  /** How many callbacks Twilio has posted for this SID (0 = pure silence). */
+  callbackCount: number
+  /** Call-site tag: "send" (text part) | "sendMedia". */
+  source: string | null
+}
+
 export interface RcaTurnDetail {
   context: InvestigationContext
   llm: LlmCall[]
@@ -131,10 +151,14 @@ export interface RcaTurnDetail {
   /** Wire Truth lane — absent on pre-capture turns (degraded.wire then says
    *  whether the store was unreachable vs the turn predating capture). */
   wire: WireExchange[]
+  /** LE2-030 delivery lane — one row per outbound reply part whose SID was
+   *  captured at send. OPTIONAL on the wire: an older API build sends no field
+   *  at all, and a turn that predates SID capture legitimately has no rows. */
+  delivery?: DeliveryRecord[]
   /** Fail-safe lanes flag their outages — an empty degraded lane means "the
    *  store was unreachable", NOT "nothing happened" (absence-is-signal only
    *  holds when the lane actually answered). */
-  degraded: { adj: boolean; vl: boolean; wire: boolean }
+  degraded: { adj: boolean; vl: boolean; wire: boolean; delivery?: boolean }
 }
 
 // ── Fetchers ────────────────────────────────────────────────────────────────
@@ -306,6 +330,58 @@ function deliveryVerdict(vl: VlLine[]): DeliveryVerdict | null {
  *  only appears if the emitter gains them; kept as a cheap extra signal). */
 function hasLegacySend(vl: VlLine[]): boolean {
   return vl.some((l) => (l.msg ?? "").includes("[whatsapp.send]"))
+}
+
+// ── Derived: Twilio delivery confirmation (LE2-030) ─────────────────────────
+//
+// `reply.sent` proves only that our process handed the message to Twilio. The
+// delivery lane carries what Twilio's own status callbacks reported, so it
+// outranks the local verdict wherever it has rows.
+
+export type DeliveryState = "delivered" | "failed" | "pending"
+
+/** Twilio statuses that mean the message reached the handset. */
+const DELIVERED_STATUSES = new Set(["delivered", "read"])
+/** Twilio statuses that mean it did not, and never will. */
+const FAILED_STATUSES = new Set(["failed", "undelivered", "canceled"])
+
+/** Classify ONE part's latest status. `null` (no callback yet) and the
+ *  in-flight statuses (queued/sending/sent) are both "pending" — Twilio has
+ *  accepted the message but not yet confirmed the hop. Pending is never an
+ *  error: it is the normal state of a reply sent seconds ago. */
+export function deliveryState(status: string | null): DeliveryState {
+  if (status === null) return "pending"
+  if (DELIVERED_STATUSES.has(status)) return "delivered"
+  if (FAILED_STATUSES.has(status)) return "failed"
+  return "pending"
+}
+
+export interface DeliveryRollup {
+  total: number
+  delivered: number
+  failed: number
+  pending: number
+  /** Worst state across the parts: one failed part fails the whole reply, and
+   *  an unconfirmed part keeps it pending. Only all-delivered is delivered. */
+  state: DeliveryState
+}
+
+/** Roll the per-part rows up to one verdict for the turn. `null` when the turn
+ *  has no delivery rows at all (a pre-capture turn, a web turn, or a turn that
+ *  genuinely sent nothing) — the caller then falls back to the VL verdict. */
+export function rollupDelivery(rows: ReadonlyArray<DeliveryRecord>): DeliveryRollup | null {
+  if (rows.length === 0) return null
+  let delivered = 0
+  let failed = 0
+  let pending = 0
+  for (const r of rows) {
+    const s = deliveryState(r.status)
+    if (s === "delivered") delivered++
+    else if (s === "failed") failed++
+    else pending++
+  }
+  const state: DeliveryState = failed > 0 ? "failed" : pending > 0 ? "pending" : "delivered"
+  return { total: rows.length, delivered, failed, pending, state }
 }
 
 /** Attribute one VL line to a pipeline stage for the donut drill-down —
@@ -622,14 +698,43 @@ export function derivePipeline(d: RcaTurnDetail): PipelineStage[] {
     return { key: "claims", label: "Claims", state: "ok" as StageState, sub: "engaged" }
   })()
 
-  // Send: the reply.sent delivery verdict beats any substring heuristic.
+  // Send: the reply.sent delivery verdict beats any substring heuristic — and
+  // LE2-030's Twilio confirmation beats reply.sent, which only ever proved that
+  // the Twilio API ACCEPTED the message.
   const verdict = deliveryVerdict(d.vl)
+  const rollup = rollupDelivery(d.delivery ?? [])
   const send: PipelineStage = (() => {
     const label = isWhatsapp ? "WhatsApp" : "Send"
-    if (verdict !== null) {
-      if (verdict.disposition === "suppressed_paused") {
-        return { key: "send", label, state: "ok" as StageState, sub: "paused · designed silence" }
+    // A paused turn deliberately sends nothing, so it has no SIDs to confirm —
+    // designed silence is judged before the delivery lane.
+    if (verdict?.disposition === "suppressed_paused") {
+      return { key: "send", label, state: "ok" as StageState, sub: "paused · designed silence" }
+    }
+    if (rollup !== null) {
+      const parts = rollup.total > 1 ? ` (${rollup.total} parts)` : ""
+      if (rollup.state === "failed") {
+        return {
+          key: "send",
+          label,
+          state: "fail" as StageState,
+          sub: `failed · ${rollup.failed}/${rollup.total} not delivered`,
+        }
       }
+      if (rollup.state === "delivered") {
+        return { key: "send", label, state: "ok" as StageState, sub: `delivered${parts}` }
+      }
+      // Pending: Twilio accepted it, no confirmation yet. Absence of a callback
+      // is NOT a failure — the normal state of a reply sent moments ago.
+      return {
+        key: "send",
+        label,
+        state: "silent" as StageState,
+        sub: `pending · ${rollup.pending}/${rollup.total} unconfirmed`,
+      }
+    }
+    // No delivery rows: a web turn, or a whatsapp turn from before SID capture
+    // existed. Fall back to the pre-LE2-030 verdict, unchanged.
+    if (verdict !== null) {
       if (verdict.delivered) return { key: "send", label, state: "ok" as StageState, sub: "delivered" }
       return { key: "send", label, state: "fail" as StageState, sub: `not delivered (${verdict.disposition ?? "?"})` }
     }
@@ -725,9 +830,35 @@ export function stageFacts(d: RcaTurnDetail, key: string): string[] {
       return [...callFacts(c), ...(callEmpty(c) ? [] : [`reply: ${(c.completion ?? "").slice(0, 200)}`])]
     }
     case "send": {
+      // LE2-030 — Twilio's per-part delivery confirmation leads the evidence:
+      // it is the only fact here that speaks about the HANDSET rather than
+      // about our own process. reply.sent follows as the local view.
+      const rows = d.delivery ?? []
+      const deliveryFacts: string[] = []
+      if (rows.length > 0) {
+        const r = rollupDelivery(rows)!
+        deliveryFacts.push(
+          `delivery: ${r.delivered} delivered · ${r.failed} failed · ${r.pending} pending (${r.total} parts)`,
+          ...rows.map((row) => {
+            const state = deliveryState(row.status)
+            const err =
+              row.errorCode !== null || row.errorMessage !== null
+                ? ` — ${row.errorCode ?? "?"}${row.errorMessage !== null ? `: ${row.errorMessage}` : ""}`
+                : ""
+            const at = row.statusAt ?? row.sentAt ?? "?"
+            return `part ${row.partIndex} [${row.source ?? "send"}] ${row.messageSid ?? "?"}: ${state}${
+              row.status !== null ? ` (${row.status})` : " — no callback yet"
+            } @ ${at}${err}`
+          }),
+        )
+      } else if (d.degraded?.delivery === true) {
+        deliveryFacts.push("delivery lane degraded — absence is not a signal here")
+      }
+
       const ev = d.vl.find((l) => l.fields?.event === "reply.sent")
-      if (ev !== undefined) return fieldFacts(ev)
-      if (hasLegacySend(d.vl)) return ["legacy [whatsapp.send] line present"]
+      if (ev !== undefined) return [...deliveryFacts, ...fieldFacts(ev)]
+      if (hasLegacySend(d.vl)) return [...deliveryFacts, "legacy [whatsapp.send] line present"]
+      if (deliveryFacts.length > 0) return deliveryFacts
       return [d.degraded?.vl === true ? "VL lane degraded — absence is not a signal here" : "no send event"]
     }
     case "archive": {
