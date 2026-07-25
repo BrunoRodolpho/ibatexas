@@ -1234,6 +1234,32 @@ export function createIbatexasResponder(
               );
               return { text: deps.safeUnknown.render(scheduleSignal, userText) };
             }
+            // ── THE SURVIVING RAW-PROSE BRANCH (LE2-013) ────────────────────────
+            // Everything below this line is model-authored text that reaches a user
+            // without passing the three-valued claims gate — which CLAUDE.SDD.md §R
+            // lists as a hard compile error ("any pathway where a plain string
+            // reaches a (mock) user WITHOUT passing the three-valued Claims gate and
+            // the renderer-from-claims"). LE2 Implementation Decision 6 deliberately
+            // KEEPS it, for small talk: "raw prose survives only for small talk"
+            // (and user story 23 — governance must never make the assistant stilted).
+            // The two are in STANDING CONFLICT and this code does not resolve it.
+            //
+            // What LE2-013 did is NARROW it, and the narrowing is the whole ticket:
+            //   · on the OPS plane the gate above is `!isSmalltalkOnly`
+            //     (SafeUnknownGateOptions.retireRawProse), so the ONLY way to reach
+            //     this branch is a message whose every token is in the CLOSED phatic
+            //     lexicon — a set that asserts no world fact by construction;
+            //   · on the CUSTOMER plane the gate is still the positive
+            //     info-question net, so this branch is still reachable by an
+            //     unrecognised info-bearing turn. That residual is NOT this ticket's
+            //     to close (LE2-013 is ops-scoped) and is left visible on purpose.
+            // Reconciling the remainder — does small talk itself become a claims
+            // terminal, or does §R take an explicit smalltalk carve-out? — is the
+            // OWNER's call. Do not silently resolve it here.
+            //
+            // Defense beneath the gate (belt-and-suspenders, retained not promoted):
+            // `clampUngroundedConversational` below still demotes an ungrounded
+            // domain number the model authored even on a smalltalk turn.
             const { system: base, fragmentManifest } = await composeSystem(
               RESPONDER_CONVERSATIONAL_SURFACE,
               RESPONDER_PERSONA_PTBR,
