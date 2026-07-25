@@ -40,7 +40,11 @@ import {
 } from "@adjudicate/core";
 import { adjudicateAndAudit, type PolicyBundle } from "@adjudicate/core/kernel";
 import { buildSupersessionChains } from "@adjudicate/audit";
-import type { ParkedEscalationIntent } from "./escalation-park-store.js";
+import {
+  isEscalationResumableKind,
+  type EscalationResumableKind,
+  type ParkedEscalationIntent,
+} from "./escalation-park-store.js";
 import type { PendingEscalationIntent } from "./escalation-store.js";
 
 /** Audit sink slice `adjudicateAndAudit` needs (structural; AuditSink-compatible). */
@@ -173,8 +177,16 @@ function refusalTextFor(decision: Decision): string {
  * below (fail-closed): adding a resumable money verb
  * (escalation-park-store.ts `ESCALATION_RESUMABLE_KINDS`) is a deliberate
  * governance decision and MUST name its intended marker basis here.
+ *
+ * BKL-113 — this map is now typed EXHAUSTIVE over `EscalationResumableKind`, so
+ * the "MUST name its intended marker basis here" above is a COMPILE error rather
+ * than a runtime fail-closed only. The runtime `undefined` fallback below is
+ * retained as defense-in-depth (the lookup key is a `string` off the parked
+ * record, which a cast could have widened past the type).
  */
-const REQUIRED_ESCALATION_APPROVAL_BASIS: Readonly<Record<string, string>> = {
+const REQUIRED_ESCALATION_APPROVAL_BASIS: Readonly<
+  Record<EscalationResumableKind, string>
+> = {
   "payment.refund.issue": "refund_escalation_approved",
 };
 
@@ -193,7 +205,9 @@ function executeReachedViaEscalationMarker(
   decision: Decision,
   intentKind: string,
 ): boolean {
-  const requiredReason = REQUIRED_ESCALATION_APPROVAL_BASIS[intentKind];
+  const requiredReason = isEscalationResumableKind(intentKind)
+    ? REQUIRED_ESCALATION_APPROVAL_BASIS[intentKind]
+    : undefined;
   if (requiredReason === undefined) return false; // unmapped resumable kind → fail closed
   return decision.basis.some(
     (b) =>
