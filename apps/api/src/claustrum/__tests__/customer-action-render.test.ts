@@ -240,6 +240,176 @@ describe("renderCustomerActionAnswer — BKL-230 checkout success (truthfulness 
   });
 });
 
+// ── BKL-247 — the amend / reservation.modify FAILURE gate ─────────────────────
+//
+// The same false-claim class BKL-230 killed for checkout, on the kinds this module
+// was originally built for. `amendOrder` returns `success:false` WITHOUT throwing
+// (amend-order.ts:261,:320,:361,:369,:389,:439) and `modifyReservation` likewise
+// (modify-reservation.ts:139 kernel REFUSE, :168 catch-all — its body never
+// throws), so both land here as `executed` carrying a FAILED result. Pre-BKL-247
+// an item that was never found still rendered "Pronto! Removi o item do seu
+// pedido." — proven against the built output.
+//
+// The gate polarity here is the INVERSE of checkout's, deliberately: these kinds
+// render `success !== false` (render unless failure was REPORTED), because their
+// render is payload-grounded and the committed BKL-215/BKL-231 fixtures carry NO
+// `success` field — checkout's `=== true` would silently stop rendering them all.
+describe("renderCustomerActionAnswer — BKL-247 amend/modify failure gate", () => {
+  /** [kind, payload, the line it renders on success, a REAL executor failure]. */
+  const AMEND_KINDS: ReadonlyArray<readonly [string, unknown, string, unknown]> = [
+    [
+      "order.amend.add_item",
+      { orderId: "o1", quantity: 2 },
+      "Pronto! Adicionei 2 unidades ao seu pedido.",
+      // amend-order.ts:261
+      { success: false, message: "ID da variante necessário para adicionar item." },
+    ],
+    [
+      "order.amend.update_qty",
+      { orderId: "o1", itemId: "i1", quantity: 3 },
+      "Pronto! Atualizei a quantidade para 3 no seu pedido.",
+      // amend-order.ts:361
+      { success: false, message: "Nome do item e quantidade necessários." },
+    ],
+    [
+      "order.amend.remove_item",
+      { orderId: "o1", itemTitle: "picanha" },
+      "Pronto! Removi o item do seu pedido.",
+      // amend-order.ts:369 — THE reported defect: the item was never found.
+      { success: false, message: 'Item "picanha" não encontrado no pedido.' },
+    ],
+  ];
+
+  it.each(AMEND_KINDS)(
+    "%s with success:false → undefined (the executor's failure is never voiced as a success)",
+    (kind, payload, successLine, failure) => {
+      const text = renderCustomerActionAnswer(executed(kind, payload, failure));
+      expect(text).toBeUndefined();
+      expect(text).not.toBe(successLine);
+    },
+  );
+
+  it.each(AMEND_KINDS)("%s with success:true → renders the grounded line", (kind, payload, successLine) => {
+    expect(renderCustomerActionAnswer(executed(kind, payload, { success: true, message: "ok" }))).toBe(
+      successLine,
+    );
+  });
+
+  // ── PIN PRESERVATION: why the polarity is `!== false`, not `=== true` ──────
+  // Every committed amend fixture BKL-215 pinned (and the BKL-231 modify one)
+  // carries NO `success` field. Under checkout's `=== true` polarity all of them
+  // would stop rendering — reintroducing the false-FAILURE this module exists to
+  // kill. Absence of `success` is NOT a reported failure.
+  it.each(AMEND_KINDS)(
+    "%s with NO success field → STILL renders (pin preservation — absence is not a reported failure)",
+    (kind, payload, successLine) => {
+      expect(renderCustomerActionAnswer(executed(kind, payload, { ok: true }))).toBe(successLine);
+      expect(renderCustomerActionAnswer(executed(kind, payload, {}))).toBe(successLine);
+    },
+  );
+
+  it.each([
+    ["a non-boolean falsy success (success:0)", { success: 0 }],
+    ['the string "false"', { success: "false" }],
+    ["a null result", null],
+    ["a string result", "ok"],
+  ])(
+    "remove_item with %s → still renders (only an explicit boolean false abstains)",
+    (_label, result) => {
+      expect(renderCustomerActionAnswer(executed("order.amend.remove_item", { itemId: "i1" }, result))).toBe(
+        "Pronto! Removi o item do seu pedido.",
+      );
+    },
+  );
+
+  it("reservation.modify with success:false → undefined (modifyReservation returns, never throws)", () => {
+    const text = renderCustomerActionAnswer(
+      executed(
+        "reservation.modify",
+        { reservationId: "r1", newPartySize: 6 },
+        // modify-reservation.ts:139 — a kernel REFUSE, returned not thrown.
+        { success: false, reservation: null, message: "Não foi possível modificar a reserva no momento." },
+      ),
+    );
+    expect(text).toBeUndefined();
+    expect(text).not.toBe("Pronto! Sua reserva foi alterada para 6 pessoas.");
+  });
+
+  it("reservation.modify with NO success field → STILL renders (the BKL-231 pin's shape)", () => {
+    expect(
+      renderCustomerActionAnswer(executed("reservation.modify", { reservationId: "r1", newPartySize: 4 })),
+    ).toBe("Pronto! Sua reserva foi alterada para 4 pessoas.");
+  });
+
+  it("a plan where ONE amend failed renders ONLY the successful ones", () => {
+    // The failed remove must not borrow the add's success, and must not blank
+    // the reply either — the customer still hears what actually happened.
+    const text = renderCustomerActionAnswer({
+      kind: "executed_plan",
+      executions: [
+        {
+          envelope: { kind: "order.amend.add_item", payload: { quantity: 2 } },
+          result: { success: true, message: "ok" },
+        },
+        {
+          envelope: { kind: "order.amend.remove_item", payload: { itemTitle: "picanha" } },
+          result: { success: false, message: 'Item "picanha" não encontrado no pedido.' },
+        },
+        {
+          envelope: { kind: "order.amend.update_qty", payload: { quantity: 5 } },
+          result: { ok: true },
+        },
+      ],
+    });
+    expect(text).toBe(
+      "Pronto! Adicionei 2 unidades ao seu pedido.\n\nPronto! Atualizei a quantidade para 5 no seu pedido.",
+    );
+    expect(text).not.toContain("Removi o item");
+  });
+
+  it("a plan where EVERY amend failed renders nothing at all", () => {
+    expect(
+      renderCustomerActionAnswer({
+        kind: "executed_plan",
+        executions: [
+          {
+            envelope: { kind: "order.amend.add_item", payload: { quantity: 1 } },
+            result: { success: false, message: "ID da variante necessário para adicionar item." },
+          },
+          {
+            envelope: { kind: "order.amend.remove_item", payload: {} },
+            result: { success: false, message: "Nome do item necessário para remover." },
+          },
+        ],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("a rewritten_and_executed FAILED amend abstains too (same committed dispatch family)", () => {
+    expect(
+      renderCustomerActionAnswer({
+        kind: "rewritten_and_executed",
+        envelope: { kind: "order.amend.remove_item", payload: { itemTitle: "picanha" } },
+        result: { success: false, message: 'Item "picanha" não encontrado no pedido.' },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("the failure gate never leaks the executor's message or the item name into a reply", () => {
+    // Abstaining is the whole contract: this module says nothing, the model path
+    // voices the failure. It must not half-render a hedged line here.
+    expect(
+      renderCustomerActionAnswer(
+        executed(
+          "order.amend.remove_item",
+          { itemTitle: "picanha" },
+          { success: false, message: 'Item "picanha" não encontrado no pedido.' },
+        ),
+      ),
+    ).toBeUndefined();
+  });
+});
+
 describe("renderCustomerActionAnswer — byte-identical fall-through (scope guard)", () => {
   it("reservation.cancel → undefined (its model-prose success draft is the working precedent, unchanged)", () => {
     expect(
