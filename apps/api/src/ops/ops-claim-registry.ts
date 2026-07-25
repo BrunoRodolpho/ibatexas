@@ -50,7 +50,13 @@ import {
   validateClaimDefinitionRegistry,
 } from "../claustrum/claim-definition-registry.js";
 import { REQUIRED_CLAIM_CLOSURE } from "../claustrum/required-claim-decomposer.js";
-import { VALIDATED_TEMPLATES, type Template, type TemplateSlot } from "../claustrum/slot-grammar.js";
+import {
+  DELIVERY_COVERAGE,
+  DELIVERY_NO_COVERAGE,
+  VALIDATED_TEMPLATES,
+  type Template,
+  type TemplateSlot,
+} from "../claustrum/slot-grammar.js";
 
 // ── The registry enum ────────────────────────────────────────────────────────
 
@@ -259,6 +265,121 @@ export const OPS_VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   },
 };
 
+// ── LE2-013 — PLANE-SCOPED PHRASING OVERRIDES (customer types, staff voice) ──
+
+/**
+ * Templates for CUSTOMER-registered claim types whose customer COPY is a
+ * non-sequitur when voiced at a staff member. The type, its evidence, its C6
+ * value binding and the PROPOSITION it asserts are IDENTICAL on both planes —
+ * only the static LITERAL frame differs. This is the LE2-012
+ * `SafeUnknownGateOptions.closedHoursOffer` precedent generalized: same fact,
+ * same grounding, plane-appropriate frame.
+ *
+ * ── The delivery pair (ticket 13's demo, tracker NEW-007) ────────────────────
+ * "Vocês entregam em Ibaté?" asked on the OPS thread is the original incident.
+ * The SCOPE DECISION it forces is deliberate, and the mechanism made it explicit
+ * rather than accidental: `DELIVERY_COVERAGE` / `DELIVERY_NO_COVERAGE` are
+ * CUSTOMER-registered types, and {@link OPS_CLAIM_SCOPE} is `customer ∪ ops` by
+ * construction — so the pair is PLANE-SHARED, already selectable, groundable
+ * (the ops gatherer unions `createFirstPartyTurnReads`, whose delivery read sits
+ * BEFORE the authenticated-customer gate) and renderable on ops. We keep it that
+ * way rather than minting `OPS_DELIVERY_COVERAGE` twins: coverage is ONE store
+ * policy read off ONE zones projection, and a second type would be a second
+ * source of truth for the same fact — the exact drift `ops ⊃ customer` exists to
+ * prevent. Nothing moves out of `CLAIM_REGISTRY`, so the customer counts and
+ * every customer pin are untouched; the ops-scope count moves not at all.
+ *
+ * What DOES change is the frame:
+ *   · YES — customer copy appends "Confirmo certinho pelo endereço no checkout."
+ *     That describes what the system does for A CUSTOMER at THEIR checkout; the
+ *     operator asking is the person who RUNS the checkout. Ops ships the bare
+ *     grounded scalar (zone + fee + ETA) and nothing else — exactly the
+ *     `closedHoursOffer: false` posture.
+ *   · NO  — customer copy appends "mas você pode retirar aqui no restaurante".
+ *     Offering pickup to the staff of the restaurant is the same non-sequitur.
+ *     Ops ships the bare validated negative.
+ *
+ * BOUNDED BY CONSTRUCTION: {@link opsTemplateOverrideProblems} fail-CLOSES the ops
+ * claims pipeline unless every override's PROPOSITION slots match the customer
+ * template's exactly (same claimType, same field, same order). An override may
+ * therefore only ever re-frame — it can never change, add or drop an assertion,
+ * so the two planes can never disagree about a FACT, only about phrasing.
+ */
+export const OPS_PLANE_TEMPLATE_OVERRIDES: Readonly<Record<string, Template>> = {
+  [DELIVERY_COVERAGE]: {
+    claimType: DELIVERY_COVERAGE,
+    posture: "validated",
+    slots: [prop(DELIVERY_COVERAGE, "coverageText"), lit(".")],
+  },
+  [DELIVERY_NO_COVERAGE]: {
+    claimType: DELIVERY_NO_COVERAGE,
+    posture: "validated",
+    slots: [prop(DELIVERY_NO_COVERAGE, "noCoverageText"), lit(".")],
+  },
+};
+
+/** The PROPOSITION slots of a template, as comparable `claimType.field` tags. Pure. */
+function propositionSignature(template: Template | undefined): readonly string[] {
+  return (template?.slots ?? [])
+    .filter(
+      (slot): slot is Extract<TemplateSlot, { kind: "PROPOSITION" }> =>
+        slot.kind === "PROPOSITION",
+    )
+    .map((slot) => `${slot.claimType}.${slot.field}`);
+}
+
+/**
+ * FAIL-CLOSED guard over {@link OPS_PLANE_TEMPLATE_OVERRIDES}: an override must
+ * re-frame a CUSTOMER template, never re-assert it. Returns human-readable
+ * problems; empty = healthy. Checks, per override:
+ *
+ *   1. the overridden type IS a customer-registered type with a customer template
+ *      (an override of nothing is drift, not a decision);
+ *   2. it is NOT an ops-only type (those own their template outright — an entry
+ *      here would be a second, shadowing definition);
+ *   3. its PROPOSITION slot signature is IDENTICAL to the customer template's.
+ *
+ * (3) is the load-bearing one: the plane's `ClaimDefinition` (and therefore its
+ * §5-gated `valueProjections`) is assembled from the CUSTOMER template, so an
+ * override that changed a slot's `field` would render a projection the definition
+ * never licensed — an unbacked proposition, inv.18's whole point. Pure.
+ */
+export function opsTemplateOverrideProblems(
+  overrides: Readonly<Record<string, Template>> = OPS_PLANE_TEMPLATE_OVERRIDES,
+): string[] {
+  const problems: string[] = [];
+  for (const [type, override] of Object.entries(overrides)) {
+    const customer = VALIDATED_TEMPLATES[type];
+    if (customer === undefined) {
+      problems.push(
+        `ops template override "${type}" overrides no CUSTOMER template ` +
+          `(slot-grammar.ts VALIDATED_TEMPLATES) — an ops-only type belongs in ` +
+          `OPS_VALIDATED_TEMPLATES, not here.`,
+      );
+      continue;
+    }
+    if (isOpsClaimType(type)) {
+      problems.push(
+        `ops template override "${type}" is an OPS-ONLY type — it already owns its ` +
+          `template in OPS_VALIDATED_TEMPLATES; a second entry here would shadow it.`,
+      );
+      continue;
+    }
+    const want = propositionSignature(customer);
+    const got = propositionSignature(override);
+    if (got.length !== want.length || got.some((sig, i) => sig !== want[i])) {
+      problems.push(
+        `ops template override "${type}" changes what is ASSERTED, not just how it ` +
+          `is framed: proposition slots [${got.join(", ")}] ≠ the customer template's ` +
+          `[${want.join(", ")}]. An override may re-frame (LITERAL slots) ONLY — the ` +
+          `plane's ClaimDefinition is assembled from the CUSTOMER template, so a ` +
+          `different field would render a projection §5 never licensed.`,
+      );
+    }
+  }
+  return problems;
+}
+
 // ── The composed OPS plane scope ─────────────────────────────────────────────
 
 /**
@@ -273,10 +394,17 @@ export const OPS_CLAIM_SCOPE: ClaimPlaneScope = {
   specs: { ...REGISTRY_SPECS, ...OPS_REGISTRY_SPECS },
 };
 
-/** The OPS plane's validated templates: the customer grammar PLUS the ops one. */
+/**
+ * The OPS plane's validated templates: the customer grammar, PLUS the ops-only
+ * one, PLUS the LE2-013 staff-voice re-frames of customer types
+ * ({@link OPS_PLANE_TEMPLATE_OVERRIDES} — last, so they win). The overrides can
+ * only ever change LITERAL frame text; `opsTemplateOverrideProblems` fail-closes
+ * the plane otherwise.
+ */
 export const OPS_PLANE_VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   ...VALIDATED_TEMPLATES,
   ...OPS_VALIDATED_TEMPLATES,
+  ...OPS_PLANE_TEMPLATE_OVERRIDES,
 };
 
 // ── The fail-closed inv.18 assertion for the ops scope ───────────────────────
@@ -319,6 +447,17 @@ const OPS_CLAIM_DEFINITIONS = {
  * serving an unsound render. Idempotent + pure.
  */
 export function assertOpsClaimDefinitionRegistryValid(): void {
+  // LE2-013 — the phrasing-override guard runs FIRST: an override that changed a
+  // PROPOSITION would make every check below reason about the customer template
+  // while the plane rendered a different one.
+  const overrideProblems = opsTemplateOverrideProblems();
+  if (overrideProblems.length > 0) {
+    throw new Error(
+      `[ops-claim-registry] FAIL-CLOSED: an ops plane template override is not a ` +
+        `pure re-frame and must not boot the ops claims pipeline:\n  ` +
+        overrideProblems.join("\n  "),
+    );
+  }
   const result = validateClaimDefinitionRegistry(OPS_CLAIM_DEFINITIONS, {
     templates: OPS_PLANE_VALIDATED_TEMPLATES,
     closures: REQUIRED_CLAIM_CLOSURE,

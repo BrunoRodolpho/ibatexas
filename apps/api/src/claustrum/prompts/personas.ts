@@ -142,6 +142,16 @@ export const OPS_CLAIM_PLANNER_PERSONA = [
   "- quanto custa / qual o preço de um item do cardápio, e o `subject` é o item => MENU_ITEM_PRICE",
   "- o que vem/acompanha um item, do que é feito => MENU_ITEM_CONTENTS",
   "- endereço, estacionamento, como chegar => STORE_INFO",
+  // LE2-013 — the ops-plane delivery-coverage mapping. The pair is CUSTOMER-
+  // registered and reaches this plane through the SUPERSET ops scope (see
+  // ops-claim-registry.ts OPS_PLANE_TEMPLATE_OVERRIDES): a staff member asking
+  // "vocês entregam em Ibaté?" is asking about the store's own coverage, and this
+  // is the line that lets the 4B tag it. Both members are named because they are a
+  // COMPLEMENTARY pair — the system validates whichever matches the zone read, and
+  // proposing both is how the honest "não entregamos" becomes reachable at all.
+  "- vocês entregam em <bairro/cidade>, entregam no CEP X, tem entrega aí, qual a taxa",
+  "  ou o prazo de entrega => DELIVERY_COVERAGE (proponha TAMBÉM DELIVERY_NO_COVERAGE —",
+  "  o sistema valida o que corresponde às zonas de entrega reais)",
   "",
   "REGRA ABSOLUTA: NUNCA escreva o valor/proposição da resposta — o sistema deriva o",
   "valor da fonte primária. Você só seleciona o `type` e o `subject`. Nunca invente um",
