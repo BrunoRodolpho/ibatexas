@@ -275,7 +275,7 @@ source (c) preserves verbatim. Their cases enter the harness like this:
 1. **Preserve the turn.** Every re-drive of a stranding-prone utterance lands
    in `llm_wire` automatically (one row per attempt). Export the parse
    attempts with the recipe above into a new `fixtures/wire-<label>.json`.
-   The N× re-drive of ticket 21 gives several artifacts for one utterance —
+   The N× re-drive of ticket 01 gives several artifacts for one utterance —
    the harness scores them **all**, so the stranding *rate* shows up directly
    as a case that only passes when every capture parsed.
 
@@ -288,7 +288,7 @@ source (c) preserves verbatim. Their cases enter the harness like this:
    refuses to salvage — so it shows up as a `wronglyRefused` false negative
    and a failing case. That is the honest "before" number.
 
-4. **Score after.** Ticket 02's salvage translator becomes a **second,
+4. **Score after.** Ticket 03's salvage translator becomes a **second,
    explicitly-selected reader** in `eval-score.ts` alongside
    `parseWireCompletion`; re-scoring the *same pinned fixtures* with it is the
    ticket's before/after delta. Nothing about the evidence changes — only the
