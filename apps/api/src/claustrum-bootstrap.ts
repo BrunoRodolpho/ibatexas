@@ -132,6 +132,9 @@ import {
   medusaAdjudicated,
   // BKL-034 — boot-time embeddings provider/dimension gate.
   assertEmbeddingProviderDimension,
+  // LE2-018 — boot-time external-reference reconciliation (refuse-to-start).
+  assertExternalReferencesReconcile,
+  type ExternalReferenceProbes,
 } from "@ibatexas/tools";
 import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -623,6 +626,20 @@ export interface ClaustrumBootstrapOptions {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
+  /**
+   * Store probes for the LE2-018 external-reference boot gate. Default: the
+   * real ones (Medusa admin for promotions, the delivery_zones table for
+   * zones).
+   *
+   * Injectable for the same reason `pgPool` and `modelProvider` are — an
+   * in-process suite that composes a real conductor has no live Medusa. Note
+   * what this does NOT do: it does not skip the gate. The reconciliation still
+   * runs over the real declaration table, still resolves every key from
+   * config, and still refuses the boot on a miss; only the "does the store
+   * hold it" question is answered by an injected function. There is no option,
+   * env var or flag anywhere that turns the gate off — see the call site.
+   */
+  readonly externalReferenceProbes?: ExternalReferenceProbes;
   // BKL-126 — resolveStoreHours / resolveHoursForDate options removed (values
   // bind from the investigator ledger at core stage 4b; no fresh re-read).
 }
@@ -2975,6 +2992,36 @@ export async function bootstrapClaustrum(
   // provider configured → resolves cleanly (the keyword-only degrade stays legal on a
   // bare stack), so this gate never blocks a key-less box.
   await assertEmbeddingProviderDimension();
+
+  // LE2-018 — EXTERNAL-REFERENCE RECONCILIATION. Every reference @ibatexas/catalog
+  // declares (src/external-references.ts) must exist in its live store: the welcome
+  // and loyalty coupons in Medusa today, zones in the domain DB when one is declared.
+  // Any miss — the config var unset, the promotion absent, the store unreachable —
+  // REFUSES THE BOOT, naming the reference, its store, the config variable and the
+  // code sites that break. Same posture as toolRosterDrift() above, one gate later.
+  //
+  // Strict on purpose (LE2 Implementation Decision 16, owner-ratified): no flag, no
+  // dev-mode warning, no allowlist. This gate replaced a `// must be created in
+  // Medusa admin before going live` comment, and a bypassable version of it would be
+  // that comment with more steps. The mitigation for the blast radius is that the
+  // SAME check runs standalone — `ibx catalog check --live`, wired into the staging
+  // deploy pipeline — so a dangling reference surfaces when someone changes it
+  // rather than when something restarts.
+  //
+  // Placed after the roster gates and after config load, before the conductor is
+  // composed: nothing has taken traffic yet, so a refusal costs a failed boot rather
+  // than a half-live process handing customers a coupon Medusa will reject.
+  //
+  // `probes` is the SAME kind of seam as `pgPool` and `modelProvider` above: an
+  // in-process suite has no live Medusa, so it answers the store question itself.
+  // The gate still runs — real declaration table, real config resolution, real
+  // refusal on a miss. Omitted in production, where the defaults are the real
+  // clients. Nothing here reads a flag.
+  await assertExternalReferencesReconcile(
+    options.externalReferenceProbes === undefined
+      ? {}
+      : { probes: options.externalReferenceProbes },
+  );
 
   // The ibx prisma/redis are real clients that legitimately lack the memory
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),

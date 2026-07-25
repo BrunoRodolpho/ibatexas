@@ -24,6 +24,7 @@ import {
   RUN_BOOTSTRAP_HARNESS,
   setupClaustrumBootstrapHarness,
   type ClaustrumBootstrapTestHarness,
+  TEST_EXTERNAL_REFERENCE_PROBES,
 } from "./helpers/claustrum-bootstrap-harness.js";
 
 // Spy createIbatexasResponder; keep every other export of the module REAL. The
@@ -73,7 +74,10 @@ async function customerResponderDeps(
   else process.env[CLAIMS_PIPELINE_ENABLED_ENV] = value;
   createIbatexasResponderSpy.mockClear();
   try {
-    await bootstrapClaustrum({ modelProvider: scriptedModelProvider(label) });
+    await bootstrapClaustrum({
+      modelProvider: scriptedModelProvider(label),
+      externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
+    });
     expect(createIbatexasResponderSpy).toHaveBeenCalled();
     return createIbatexasResponderSpy.mock.calls[0]![0] as Record<string, unknown>;
   } finally {
