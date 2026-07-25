@@ -10,10 +10,8 @@
 // be honestly covered — against the real stores by `ibx catalog check --live`.
 // Mocking `fetch` to assert a query string would pin the mock, not Medusa.
 
-import { describe, expect, it, vi } from "vitest"
-
 import type { ExternalReferenceDeclaration } from "@ibatexas/catalog"
-
+import { describe, expect, it, vi } from "vitest"
 import {
   assertExternalReferencesReconcile,
   ExternalReferenceConfigError,
@@ -255,9 +253,13 @@ describe("assertExternalReferencesReconcile — fail-closed", () => {
       declarations: [WELCOME],
       env: {},
       probes: { promotion: present },
-    }).catch((e: unknown) => e as ExternalReferenceReconciliationError)
-    expect(err.message).toContain("TEST_WELCOME_CODE")
-    expect(err.result.misses).toHaveLength(1)
+    }).then(
+      () => null,
+      (e: unknown) => e as ExternalReferenceReconciliationError,
+    )
+    expect(err).toBeInstanceOf(ExternalReferenceReconciliationError)
+    expect(err?.message).toContain("TEST_WELCOME_CODE")
+    expect(err?.result.misses).toHaveLength(1)
   })
 })
 
