@@ -110,7 +110,8 @@ export type MessageRole = (typeof MessageRole)[keyof typeof MessageRole]
 
 
 export const IncidentKind = {
-  no_reply: 'no_reply'
+  no_reply: 'no_reply',
+  security_probe: 'security_probe'
 } as const
 
 export type IncidentKind = (typeof IncidentKind)[keyof typeof IncidentKind]
@@ -122,7 +123,8 @@ export const IncidentCause = {
   send_failed: 'send_failed',
   retry_exhausted: 'retry_exhausted',
   timeout: 'timeout',
-  pause_read_error: 'pause_read_error'
+  pause_read_error: 'pause_read_error',
+  security_probe: 'security_probe'
 } as const
 
 export type IncidentCause = (typeof IncidentCause)[keyof typeof IncidentCause]
