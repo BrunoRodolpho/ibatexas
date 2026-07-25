@@ -826,7 +826,25 @@ export interface RequiredCompletenessResult {
  */
 const PRESENCE_COMPLEMENT_PAIRS: ReadonlyArray<
   readonly [RegistryClaimType, RegistryClaimType]
-> = [["CART_CONTENTS", "CART_EMPTY"]];
+> = [
+  ["CART_CONTENTS", "CART_EMPTY"],
+  // LE2-013 — the DELIVERY pair belongs here and was MISSED by LE2-002, which
+  // built it "on the CART_CONTENTS/CART_EMPTY precedent" (its own commit message)
+  // and gave DELIVERY_COVERAGE_Q a closure row requiring BOTH members, but never
+  // registered the pair. The investigator records `delivery:coverage` only when a
+  // zone matched and `delivery:no_coverage` only on a POSITIVE out-of-zone
+  // determination, so exactly one can ever VALIDATE — which made completeness
+  // STRUCTURALLY unsatisfiable and degraded EVERY coverage turn RENDER→UNKNOWN.
+  // Byte-for-byte the BKL-163 cart bug, reproduced.
+  //
+  // WHY IT SURVIVED CI: LE2-002's turn-seam tests call `renderer-from-claims`
+  // `render(...)` DIRECTLY, which bypasses this gate — the gate lives one layer up
+  // in `claims-renderer-adapter.ts`. The defect only shows through the PRODUCTION
+  // adapter, which is what LE2-013's ops turn-seam suite drives, and is where it
+  // was caught. It is plane-NEUTRAL: the customer plane was equally affected, so
+  // the fix lands here rather than being forked onto ops.
+  ["DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"],
+];
 
 /** Partner lookup for {@link PRESENCE_COMPLEMENT_PAIRS} (symmetric). */
 function presenceComplementPartner(type: RegistryClaimType): RegistryClaimType | undefined {

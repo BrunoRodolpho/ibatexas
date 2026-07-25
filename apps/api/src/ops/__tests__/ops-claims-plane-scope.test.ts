@@ -39,19 +39,26 @@ import {
   PROPOSE_CLAIM_TOOL,
   createIbatexasPlanner,
 } from "../../claustrum/ibatexas-planner.js";
+import { OPS_CLAIM_PLANNER_PERSONA } from "../../claustrum/prompts/personas.js";
 import { renderRenderables } from "../../claustrum/renderer-from-claims.js";
-import { SAFE_TEMPLATES, VALIDATED_TEMPLATES } from "../../claustrum/slot-grammar.js";
+import {
+  SAFE_TEMPLATES,
+  VALIDATED_TEMPLATES,
+  type Template,
+} from "../../claustrum/slot-grammar.js";
 import {
   OPS_CLAIM_REGISTRY,
   OPS_CLAIM_SCOPE,
   OPS_ORDERS_TODAY,
   OPS_ORDERS_TODAY_FIELD,
   OPS_PENDING_ESCALATIONS,
+  OPS_PLANE_TEMPLATE_OVERRIDES,
   OPS_PLANE_VALIDATED_TEMPLATES,
   OPS_REGISTRY_SPECS,
   OPS_RESERVATIONS_TODAY,
   OPS_VALIDATED_TEMPLATES,
   assertOpsClaimDefinitionRegistryValid,
+  opsTemplateOverrideProblems,
 } from "../ops-claim-registry.js";
 import { detectOpsClaimSpans } from "../ops-claim-reads.js";
 
@@ -340,6 +347,123 @@ describe("LE2-012 boot gates — both scopes are advertised-⊆-renderable and i
   });
 
   it("the ops inv.18 registry assertion passes on the REAL ops registry", () => {
+    expect(() => assertOpsClaimDefinitionRegistryValid()).not.toThrow();
+  });
+});
+
+// ── 7. LE2-013 — THE PLANE-SHARED DELIVERY PAIR + the phrasing overrides ────
+//
+// The pins above are EXTENDED here, never weakened: LE2-013's scope decision was
+// to keep DELIVERY_COVERAGE / DELIVERY_NO_COVERAGE CUSTOMER-registered and let the
+// ops plane reach them through the SUPERSET scope — so every count above is
+// unchanged, and what needs pinning is the SHARED-ness itself plus the bounded
+// nature of the ops re-frame.
+
+const DELIVERY_PAIR = ["DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"] as const;
+
+describe("LE2-013 delivery pair — PLANE-SHARED by the superset, not duplicated", () => {
+  it("both members are CUSTOMER-registered and reachable on BOTH planes", () => {
+    for (const type of DELIVERY_PAIR) {
+      // Customer-registered — the ops plane never took ownership of them.
+      expect(CLAIM_REGISTRY as readonly string[]).toContain(type);
+      expect(CUSTOMER_CLAIM_SCOPE.types as readonly string[]).toContain(type);
+      // …and reachable on ops purely because ops ⊃ customer.
+      expect(OPS_CLAIM_SCOPE.types as readonly string[]).toContain(type);
+      // NOT an ops-only type: no OPS_DELIVERY_* twin was minted (a second type
+      // would be a second source of truth for ONE zones projection).
+      expect(OPS_CLAIM_REGISTRY as readonly string[]).not.toContain(type);
+      expect(Object.hasOwn(OPS_VALIDATED_TEMPLATES, type)).toBe(false);
+    }
+  });
+
+  it("the constrained-generation wall ADMITS the pair on BOTH scopes", () => {
+    const proposed = (type: string) => ({
+      type,
+      subject: "",
+      actor: { principal: "staff:owner1", sessionId: "admin:owner1" },
+      value: undefined,
+    });
+    for (const type of DELIVERY_PAIR) {
+      expect(selectCandidateClaim(proposed(type), CUSTOMER_CLAIM_SCOPE)?.type).toBe(type);
+      expect(selectCandidateClaim(proposed(type), OPS_CLAIM_SCOPE)?.type).toBe(type);
+    }
+  });
+
+  it("the OPS claim-planner persona names the mapping (else the 4B has no tag)", async () => {
+    // The enum alone is not enough on a 4B: without a mapping line the model does
+    // not associate "vocês entregam em X?" with the type, and the chain never
+    // starts. This is the ops half of the wiring LE2-002 left for this ticket.
+    const advertised = new Set(await proposeClaimEnum(OPS_CLAIM_SCOPE));
+    for (const type of DELIVERY_PAIR) expect(advertised.has(type)).toBe(true);
+    expect(OPS_CLAIM_PLANNER_PERSONA).toContain("DELIVERY_COVERAGE");
+    expect(OPS_CLAIM_PLANNER_PERSONA).toContain("DELIVERY_NO_COVERAGE");
+  });
+});
+
+describe("LE2-013 phrasing overrides — same FACT, plane-appropriate FRAME", () => {
+  it("the ops table re-frames the pair; the customer grammar is untouched", () => {
+    for (const type of DELIVERY_PAIR) {
+      expect(Object.hasOwn(OPS_PLANE_TEMPLATE_OVERRIDES, type)).toBe(true);
+      // The ops plane resolves to the override, the customer plane to its own.
+      expect(OPS_PLANE_VALIDATED_TEMPLATES[type]).toBe(OPS_PLANE_TEMPLATE_OVERRIDES[type]);
+      expect(VALIDATED_TEMPLATES[type]).not.toBe(OPS_PLANE_TEMPLATE_OVERRIDES[type]);
+    }
+  });
+
+  it("the CUSTOMER-voiced frames are gone from the ops renders", () => {
+    const opsText = (type: string) =>
+      (OPS_PLANE_VALIDATED_TEMPLATES[type]?.slots ?? [])
+        .map((s) => (s.kind === "LITERAL" ? s.text : ""))
+        .join("");
+    // "…pelo endereço no checkout" describes what the system does at THE
+    // CUSTOMER'S checkout; the operator asking is the person who runs it.
+    expect(opsText("DELIVERY_COVERAGE")).not.toContain("checkout");
+    // Offering pickup to the restaurant's own staff is the same non-sequitur.
+    expect(opsText("DELIVERY_NO_COVERAGE")).not.toContain("retirar aqui");
+  });
+
+  it("an override may re-frame ONLY — the proposition signature is identical", () => {
+    // The load-bearing bound: the plane's ClaimDefinition (and its §5-gated
+    // valueProjections) is assembled from the CUSTOMER template, so a changed
+    // field would render a projection §5 never licensed.
+    const propSig = (t: Template | undefined) =>
+      (t?.slots ?? [])
+        .filter(
+          (s): s is Extract<typeof s, { kind: "PROPOSITION" }> => s.kind === "PROPOSITION",
+        )
+        .map((s) => `${s.claimType}.${s.field}`);
+    for (const type of DELIVERY_PAIR) {
+      expect(propSig(OPS_PLANE_TEMPLATE_OVERRIDES[type])).toEqual(
+        propSig(VALIDATED_TEMPLATES[type]),
+      );
+    }
+    expect(opsTemplateOverrideProblems()).toEqual([]);
+  });
+
+  it("NEGATIVE control: an override that changes WHAT IS ASSERTED is rejected", () => {
+    const problems = opsTemplateOverrideProblems({
+      DELIVERY_COVERAGE: {
+        claimType: "DELIVERY_COVERAGE",
+        posture: "validated",
+        slots: [
+          { kind: "PROPOSITION", claimType: "DELIVERY_COVERAGE", field: "somethingElse" },
+        ],
+      },
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("changes what is ASSERTED");
+  });
+
+  it("NEGATIVE control: an override of a NON-customer template is rejected", () => {
+    const problems = opsTemplateOverrideProblems({
+      OPS_ORDERS_TODAY: OPS_VALIDATED_TEMPLATES[OPS_ORDERS_TODAY]!,
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("overrides no CUSTOMER template");
+  });
+
+  it("the fail-closed ops registry assertion runs the override guard", () => {
+    // Same call site as boot: a bad override must refuse to boot the ops pipeline.
     expect(() => assertOpsClaimDefinitionRegistryValid()).not.toThrow();
   });
 });
