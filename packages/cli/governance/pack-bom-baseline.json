@@ -2,9 +2,9 @@
   "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
   "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
   "ibatexas/pack-ops": "6662a9a5147b214173d61fe9924ef53bd57ac827e832a1765a6b7b86372f74f3",
-  "ibatexas/pack-orders": "2cb6205e3be40c4b829603bf508ce568eca77deeb5305acb559ff614537d0aeb",
+  "ibatexas/pack-orders": "165f939ea9ca3ac0ccf9c55d4f65886366648d8ae02941d4181f4b9e30cd4ec7",
   "ibatexas/pack-payments": "04a8422bf2588b5f82e8ae4171c6da320c689935a8fdda51c6f2e3aa2262b018",
-  "ibatexas/pack-reservations": "2ccf7b7f225947006e3b6f02832872f9a735e0389ecdc4a5d8e1bb73b622e8fe",
+  "ibatexas/pack-reservations": "e3f1d4bf4eb6bcd5b1da1beb14dd49c5f5724088aeede098149bc2c959249705",
   "ibatexas/pack-whatsapp": "12888c3e9e6082f4d08b8528c2917979f6666dea5d8502b93aab5e4a2026e6d5",
   "pack-payments-pix": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
 }
