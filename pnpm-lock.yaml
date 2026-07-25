@@ -592,6 +592,28 @@ importers:
         specifier: ^3.2.6
         version: 3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3)
 
+  packages/catalog:
+    dependencies:
+      '@adjudicate/core':
+        specifier: 1.9.0
+        version: 1.9.0
+    devDependencies:
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@vitest/coverage-v8':
+        specifier: ^3.2.6
+        version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.6
+        version: 3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3)
+
   packages/cli:
     dependencies:
       '@adjudicate/analyze':
@@ -1118,6 +1140,9 @@ importers:
       '@adjudicate/core':
         specifier: 1.9.0
         version: 1.9.0
+      '@ibatexas/catalog':
+        specifier: workspace:*
+        version: link:../catalog
       '@ibatexas/pack-customer-onboarding':
         specifier: workspace:*
         version: link:../pack-customer-onboarding
