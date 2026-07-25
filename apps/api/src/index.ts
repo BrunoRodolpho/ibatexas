@@ -13,6 +13,7 @@ import { startIngredientDepletionSubscriber } from "./subscribers/ingredient-dep
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
 import { startIncidentSubscriber } from "./subscribers/incident-subscriber.js";
 import { startIncidentNotificationSubscriber } from "./subscribers/incident-notification-subscriber.js";
+import { startSecurityProbeSubscriber } from "./subscribers/security-probe-subscriber.js";
 import { startConversationArchiver } from "./subscribers/conversation-archiver.js";
 import { startPaymentLifecycleSubscriber } from "./subscribers/payment-lifecycle.js";
 import { startFiscalEmitSubscriber } from "./subscribers/fiscal-emitter.js";
@@ -190,6 +191,11 @@ const start = async (): Promise<void> => {
       // of conversation.incident_opened (storm-digest rate-limited).
       await startIncidentSubscriber(server.log);
       await startIncidentNotificationSubscriber(server.log);
+      // BKL-211 — the SCN-106/109 audit-trail half: a security-boundary REFUSE on a
+      // customer turn opens a reviewable `security_probe` incident. Consumes the
+      // existing audit.intent.decision.v1 fan-out; publishes nothing and changes no
+      // refusal behavior.
+      await startSecurityProbeSubscriber(server.log);
       await startConversationArchiver(server.log);
       await startPaymentLifecycleSubscriber(server.log);
       // NEW-014 — fiscal (NFC-e) emission on order delivery (mock-first).

@@ -1053,8 +1053,13 @@ model ConversationIncident {
   @@map("conversation_incidents")
   @@schema("ibx_domain")
 }
+// Journal discriminator. `no_reply` = the W1 customer-facing delivery-failure
+// journal; `security_probe` = the BKL-211 attack-review journal (opposite
+// lifecycle — a delivered reply must not close it). The per-session open-incident
+// partial unique index is scoped by (session_id, kind) so the two coexist.
 enum IncidentKind {
   no_reply
+  security_probe
 
   @@schema("ibx_domain")
 }
@@ -1066,6 +1071,7 @@ enum IncidentCause {
   retry_exhausted
   timeout
   pause_read_error
+  security_probe
 
   @@schema("ibx_domain")
 }

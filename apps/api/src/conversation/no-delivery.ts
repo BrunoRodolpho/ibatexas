@@ -19,7 +19,13 @@
 // the above, so a substitution bug can never mask emission.
 
 import { publishNatsEvent } from "@ibatexas/nats-client";
-import { createIncidentService, type IncidentCause, type IncidentOpenPayload } from "@ibatexas/domain";
+import {
+  createIncidentService,
+  NO_REPLY_KIND,
+  SECURITY_PROBE_KIND,
+  type IncidentCause,
+  type IncidentOpenPayload,
+} from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 import { getEscalationStore } from "../escalation/escalation-store.js";
@@ -253,6 +259,27 @@ export function noDeliveryExternalId(
 }
 
 /**
+ * BKL-211 — per-journal wiring for {@link openIncidentInline}. The `no_reply`
+ * journal keeps the exact `conversation.no_delivery:` externalId namespace and
+ * source subject it has always used, so every existing call site stays
+ * byte-identical (same envelope, and the same `@@unique(externalId)` collapse
+ * between the inline webhook path and the durable subscriber). The
+ * `security_probe` journal gets its OWN namespace + subject so the two can never
+ * collide on the unique index, and so an audit reader can tell at a glance which
+ * plane minted a row.
+ */
+const JOURNAL_WIRING = {
+  [NO_REPLY_KIND]: {
+    sourceSubject: "conversation.no_delivery",
+    externalIdPrefix: "conversation.no_delivery",
+  },
+  [SECURITY_PROBE_KIND]: {
+    sourceSubject: "audit.intent.decision.v1",
+    externalIdPrefix: "security.probe_refused",
+  },
+} as const;
+
+/**
  * Outcome of {@link openIncidentInline}. Lets a caller (the durable
  * `incident-subscriber`) branch on a governance REFUSE to persist a flagged
  * suspect row, while the webhook caller simply ignores it (fail-open).
@@ -278,16 +305,26 @@ export type InlineOpenResult =
 export async function openIncidentInline(
   signal: NoDeliverySignal,
   log: LogFn,
+  /**
+   * BKL-211 — which journal to open on. Defaults to `no_reply`, so every
+   * pre-existing call site (whatsapp-webhook, chat, incident-subscriber) builds a
+   * byte-identical envelope. `security_probe` routes to the attack-review journal,
+   * which is exempt from delivered-reply auto-close (incident.service.ts
+   * `findOpenBySession`).
+   */
+  journalKind: keyof typeof JOURNAL_WIRING = NO_REPLY_KIND,
 ): Promise<InlineOpenResult> {
   try {
+    const wiring = JOURNAL_WIRING[journalKind];
     const eventId = deriveEventId(signal.sessionId, signal.turnId, signal.messageSid);
-    const externalId = noDeliveryExternalId(signal);
+    const externalId = `${wiring.externalIdPrefix}:${eventId}`;
 
     const svc = createIncidentService({ auditSink: getAuditSink(), log });
 
     const payload: IncidentOpenPayload = {
       sessionId: signal.sessionId,
       cause: signal.cause,
+      kind: journalKind,
       channel: signal.channel,
       externalId,
       customerId: signal.customerId ?? null,
@@ -302,7 +339,7 @@ export async function openIncidentInline(
     const envelope = buildSystemEnvelope({
       kind: "incident.ticket.open" as const,
       payload,
-      sourceSubject: "conversation.no_delivery",
+      sourceSubject: wiring.sourceSubject,
       eventId,
     });
 
@@ -310,6 +347,20 @@ export async function openIncidentInline(
 
     if (outcome.decision.kind === "EXECUTE" && outcome.result) {
       if (outcome.result.opened) {
+        // BKL-211 — the staff WhatsApp ping is DELIBERATELY not fired for the
+        // security_probe journal. `conversation.incident_opened` drives
+        // incident-notification-subscriber.ts, whose pt-BR copy asserts "Uma falha
+        // de resposta automática impediu a entrega ao cliente" — FALSE for a
+        // security probe: the customer WAS answered, with a correct refusal.
+        // Publishing here would send staff a factually wrong outage alert and burn
+        // the shared hourly cap that protects the real ghost-storm digest. The
+        // admin Incidentes inbox + the NON_TERMINAL sidebar badge — which this row
+        // DOES join, both being source of truth — are the review surface an
+        // attack-review item belongs on. A correctly-worded security ping is a
+        // separate, deliberate product decision.
+        if (journalKind === SECURITY_PROBE_KIND) {
+          return { kind: "opened", incidentId: outcome.result.incident.id };
+        }
         // A genuinely NEW incident → ping/badge fan-out. Increments do not.
         try {
           await publishNatsEvent("conversation.incident_opened", {

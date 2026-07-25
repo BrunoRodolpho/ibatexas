@@ -69,6 +69,8 @@ export {
   incidentPolicyBundle,
   incidentTaintPolicy,
   FROZEN_CAUSES,
+  NO_REPLY_KIND,
+  SECURITY_PROBE_KIND,
   INCIDENT_CAUSE_LABELS_PT,
   INCIDENT_SEVERITY_LABELS_PT,
   type IncidentIntentKind,

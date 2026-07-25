@@ -36,6 +36,7 @@ import {
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
 import type {
   IncidentCause,
+  IncidentKind,
   IncidentResolutionType,
   IncidentSeverity,
 } from "../../generated/prisma-client/client.js"
@@ -62,7 +63,37 @@ export const FROZEN_CAUSES = [
   // A bot-pause gate READ-ERROR (Redis unreachable) fails closed and silences the
   // customer — a genuine ghost distinct from an intentional handoff pause (W1).
   "pause_read_error",
+  // BKL-211 — a security boundary REFUSED an LLM-proposed intent on a customer
+  // turn (SCN-106 injection / SCN-109 cross-customer PII probe). NOT a delivery
+  // failure: the customer WAS answered, with a refusal. See SECURITY_PROBE_KIND
+  // for why it rides a distinct journal `kind`.
+  "security_probe",
 ] as const satisfies readonly IncidentCause[]
+
+/**
+ * BKL-211 — the attack-review journal discriminator.
+ *
+ * `conversation_incidents.kind` has carried a single member (`no_reply`) since the
+ * table was created; it exists so a second journal can share the table. A
+ * security-probe incident is emphatically NOT a no-reply incident:
+ *
+ *   no_reply       — the customer got SILENCE. Self-heals: the next delivered
+ *                    reply proves recovery, so it AUTO_RESOLVES.
+ *   security_probe — the customer got a correct REFUSAL, delivered. Nothing
+ *                    "recovers"; a human must review the attempt. It must
+ *                    therefore NEVER auto-close on a delivered reply — the very
+ *                    reply that would fire the close IS the refusal itself.
+ *
+ * The per-session open-incident partial unique index is scoped by
+ * `(session_id, kind)` so one session can hold one open row of EACH journal.
+ * Without that, the never-auto-closing security row would occupy the session's
+ * single slot and silently suppress every later genuine no-reply open — and with
+ * it the staff ping for a real customer-facing outage.
+ */
+export const SECURITY_PROBE_KIND = "security_probe" as const satisfies IncidentKind
+
+/** The no-reply journal — the default `kind` for every W1 delivery-failure open. */
+export const NO_REPLY_KIND = "no_reply" as const satisfies IncidentKind
 
 /**
  * CANONICAL pt-BR labels for the frozen no-reply cause taxonomy — the single
@@ -88,6 +119,7 @@ export const INCIDENT_CAUSE_LABELS_PT: Record<IncidentCause, string> = {
   retry_exhausted: "tentativas esgotadas",
   timeout: "tempo de resposta esgotado",
   pause_read_error: "falha ao ler pausa (Redis) — erro interno",
+  security_probe: "tentativa de acesso indevido (bloqueada)",
 }
 
 /** CANONICAL pt-BR severity labels — exhaustive over `IncidentSeverity`. */
@@ -102,6 +134,13 @@ export interface IncidentOpenPayload {
   readonly sessionId: string
   /** Must be one of `FROZEN_CAUSES` — the guard REFUSEs anything else. */
   readonly cause: IncidentCause
+  /**
+   * Journal discriminator. Omitted ⇒ `no_reply`, so every pre-BKL-211 call site is
+   * byte-identical. `rejectMismatchedJournal` REFUSEs a `security_probe` cause
+   * carrying any other kind, and vice versa — the two must never be split apart,
+   * because `kind` is what exempts the row from delivered-reply auto-close.
+   */
+  readonly kind?: IncidentKind
   /** Plain string channel ("whatsapp" | "web" | …) — NOT an enum (agent plane later). */
   readonly channel: string
   /** `<sourceSubject>:<eventId>` per-event create idempotency backstop (@unique). */
@@ -192,6 +231,43 @@ const rejectFalseIncident: IncidentGuard = (envelope) => {
 }
 
 /**
+ * BKL-211 — the cause⇄journal coupling. `security_probe` is the ONLY cause that
+ * may ride the `security_probe` journal, and it may ride no other. Fail-closed,
+ * because the two carry OPPOSITE lifecycles and a split would fail SILENTLY: a
+ * `security_probe` cause landing in the `no_reply` journal would be auto-closed by
+ * the very refusal reply that opened it (the attack row vanishes inside the same
+ * turn), and a delivery-failure cause landing in the `security_probe` journal
+ * would never self-heal and would suppress the session's real no-reply opens.
+ * Ordered BEFORE `executeAll` so the REFUSE wins (the kernel evaluates business
+ * guards first-match in array order).
+ */
+const rejectMismatchedJournal: IncidentGuard = (envelope) => {
+  if (envelope.kind !== "incident.ticket.open") return null
+  const payload = envelope.payload as IncidentOpenPayload
+  // Absent `kind` means the no_reply default — a mismatch only if the cause is
+  // the security one.
+  const kind = payload.kind ?? NO_REPLY_KIND
+  const causeIsSecurity = payload.cause === "security_probe"
+  const kindIsSecurity = kind === SECURITY_PROBE_KIND
+  if (causeIsSecurity === kindIsSecurity) return null
+  return decisionRefuse(
+    refuse(
+      "BUSINESS_RULE",
+      "incident.journal_mismatch",
+      "Não foi possível registrar o incidente: causa inválida.",
+      `cause '${String(payload.cause)}' cannot ride incident journal kind '${String(kind)}'`,
+    ),
+    [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: "journal_kind_coupling",
+        cause: String(payload.cause),
+        kind: String(kind),
+      }),
+    ],
+  )
+}
+
+/**
  * Single EXECUTE producer for both kinds. Tickets move no money → plain
  * EXECUTE, no threshold bands. The bundle default is REFUSE so any uncovered
  * kind is denied by construction; the SYSTEM taint floor already rejected
@@ -221,6 +297,6 @@ export const incidentPolicyBundle: PolicyBundle<
   stateGuards: [],
   authGuards: [],
   taint: incidentTaintPolicy,
-  business: [rejectFalseIncident, executeAll],
+  business: [rejectFalseIncident, rejectMismatchedJournal, executeAll],
   default: "REFUSE",
 }

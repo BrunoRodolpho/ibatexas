@@ -28,6 +28,7 @@ import {
 import type { AuditSink, IntentEnvelope } from "@adjudicate/core"
 import {
   incidentPolicyBundle,
+  NO_REPLY_KIND,
   type IncidentClosePayload,
   type IncidentOpenPayload,
   type IncidentState,
@@ -296,6 +297,14 @@ export function createIncidentService(options?: IncidentServiceOptions) {
     payload: IncidentOpenPayload,
   ): Promise<OpenIncidentResult> {
     const now = new Date()
+    // BKL-211 — every session-scoped lookup below is scoped to THIS journal.
+    // `conversation_incidents` now carries two journals with opposite lifecycles
+    // (`no_reply` self-heals on a delivered reply; `security_probe` never does),
+    // and the per-session partial unique index is `(session_id, kind)`. Scoping
+    // here keeps the imperative dedup in agreement with that index: repeat drops
+    // still fold into the session's one open row OF THE SAME KIND, while a
+    // security-probe open can never be swallowed by — or swallow — a no-reply row.
+    const kind = payload.kind ?? NO_REPLY_KIND
 
     // (0) Same-event replay guard: if this externalId is already persisted (common
     // at-least-once redelivery while the incident is still OPEN) → return it as-is
@@ -306,18 +315,21 @@ export function createIncidentService(options?: IncidentServiceOptions) {
     })
     if (replayed) return { opened: false, incident: replayed }
 
-    // (1) Already an open incident on this session → increment (per-incident dedup).
+    // (1) Already an open incident on this session IN THIS JOURNAL → increment
+    // (per-incident dedup).
     const existing = await prisma.conversationIncident.findFirst({
-      where: { sessionId: payload.sessionId, status: { in: [...NON_TERMINAL] } },
+      where: { sessionId: payload.sessionId, kind, status: { in: [...NON_TERMINAL] } },
       orderBy: { openedAt: "desc" },
     })
     if (existing) {
       return { opened: false, incident: await incrementDrop(existing, payload, now) }
     }
 
-    // (2) None open → newest terminal row links the re-open chain (priorIncidentId).
+    // (2) None open → newest terminal row IN THIS JOURNAL links the re-open chain
+    // (priorIncidentId). Per-journal so a prior security probe never bumps a
+    // no-reply incident's severity as a "re-open", or vice versa.
     const prior = await prisma.conversationIncident.findFirst({
-      where: { sessionId: payload.sessionId, status: { in: [...TERMINAL] } },
+      where: { sessionId: payload.sessionId, kind, status: { in: [...TERMINAL] } },
       orderBy: { openedAt: "desc" },
       select: { id: true },
     })
@@ -339,6 +351,7 @@ export function createIncidentService(options?: IncidentServiceOptions) {
           customerId: payload.customerId ?? null,
           channel: payload.channel,
           senderRef: payload.senderRef ?? null,
+          kind,
           cause: payload.cause,
           lastCause: payload.cause,
           severity,
@@ -376,8 +389,9 @@ export function createIncidentService(options?: IncidentServiceOptions) {
         }
         // session partial-unique collision = a concurrent drop opened the row
         // first → re-read the open row + increment (this drop still counts).
+        // Scoped to the same journal as the index (session_id, kind).
         const racing = await prisma.conversationIncident.findFirst({
-          where: { sessionId: payload.sessionId, status: { in: [...NON_TERMINAL] } },
+          where: { sessionId: payload.sessionId, kind, status: { in: [...NON_TERMINAL] } },
           orderBy: { openedAt: "desc" },
         })
         if (racing) {
@@ -578,12 +592,24 @@ export function createIncidentService(options?: IncidentServiceOptions) {
      * auto-close / handoff-close seams). Returns `null` on the happy path — the
      * `@@index([sessionId])` makes this fast enough to run on every delivered
      * reply. Severity is NOT recomputed (callers only need the id/status).
+     *
+     * BKL-211 — SCOPED TO THE `no_reply` JOURNAL, and that scoping IS the
+     * auto-close exemption. Every close seam behind this lookup is triggered by a
+     * DELIVERED REPLY (auto self-heal, staff take-over, handoff), and "a reply was
+     * delivered" is recovery proof for a DELIVERY-FAILURE incident only. It proves
+     * nothing about a `security_probe` incident, whose entire content is "someone
+     * probed us and we refused" — indeed the delivered reply that would fire the
+     * close IS that refusal, so an unscoped lookup would AUTO_RESOLVE the attack
+     * row inside the very turn that opened it and staff would never see it. A
+     * security-probe incident is closed only by a human acting on it in the admin
+     * inbox (`/resolver` → resolutionType STAFF, which closes by id, not by
+     * session) — the correct actor for an attack REVIEW item.
      */
     async findOpenBySession(
       sessionId: string,
     ): Promise<ConversationIncident | null> {
       return prisma.conversationIncident.findFirst({
-        where: { sessionId, status: { in: [...NON_TERMINAL] } },
+        where: { sessionId, kind: NO_REPLY_KIND, status: { in: [...NON_TERMINAL] } },
         orderBy: { openedAt: "desc" },
       })
     },

@@ -1,0 +1,33 @@
+-- AlterEnum: add the `security_probe` conversation-incident taxonomy (BKL-211).
+--
+-- SCN-106 (direct prompt injection) and SCN-109 (cross-customer PII probe under a
+-- social-engineering framing) already REFUSE correctly — the safety floor holds —
+-- but the attempt left NO reviewable row, so staff could not see that the system
+-- had been probed. This adds the taxonomy half; the refusal behavior is untouched.
+--
+-- TWO enums are extended, on purpose:
+--
+--   IncidentCause.security_probe — the reviewable cause staff filter and label on.
+--
+--   IncidentKind.security_probe  — the JOURNAL discriminator. `conversation_incidents`
+--     has carried a dormant `kind` column (single member `no_reply`) since
+--     20260628000000 precisely so a second journal could share the table. A
+--     security-probe incident is NOT a no-reply incident: it models an ATTACK REVIEW
+--     item, never a customer-facing delivery failure. Keeping them separate `kind`s
+--     is what lets the companion migration scope the per-session open-incident
+--     partial unique index to (session_id, kind) — without which one session could
+--     hold only ONE of the two, and the never-auto-closing security row would
+--     swallow every later genuine no-reply drop (no fresh open ⇒ no staff ping).
+--
+-- Postgres enum add-value: appended at the end of each taxonomy (the enums are
+-- unordered for filtering; appending keeps the frozen taxonomy stable).
+-- `IF NOT EXISTS` makes both statements idempotent so an `ibx db provision`
+-- re-apply is a no-op. Mirrors the add-value idiom established by
+-- 20260701000000_add_pause_read_error_incident_cause.
+--
+-- The new values are NOT referenced by any statement in this migration (the
+-- companion index migration is deliberately a SEPARATE file): Postgres forbids
+-- using an enum value in the same transaction that added it, and Prisma wraps each
+-- migration file in its own transaction.
+ALTER TYPE "ibx_domain"."IncidentCause" ADD VALUE IF NOT EXISTS 'security_probe';
+ALTER TYPE "ibx_domain"."IncidentKind" ADD VALUE IF NOT EXISTS 'security_probe';

@@ -326,6 +326,7 @@ export const INCIDENT_CAUSE_LABELS: Record<string, string> = {
   retry_exhausted: 'envios esgotados',
   timeout: 'tempo esgotado',
   pause_read_error: 'erro interno (pausa)',
+  security_probe: 'tentativa de acesso indevido',
 }
 
 export const INCIDENT_CAUSE_EXPLANATIONS: Record<string, string> = {
@@ -335,6 +336,7 @@ export const INCIDENT_CAUSE_EXPLANATIONS: Record<string, string> = {
   retry_exhausted: 'Todas as tentativas de envio falharam.',
   timeout: 'A IA não respondeu dentro do tempo limite.',
   pause_read_error: 'Falha ao verificar a pausa do atendimento (Redis indisponível) — o cliente ficou sem resposta.',
+  security_probe: 'Uma barreira de segurança bloqueou uma ação pedida nesta conversa (tentativa de burlar as instruções ou de acessar dados de outro cliente). O cliente recebeu uma recusa e nada foi executado — registre a revisão desta tentativa.',
 }
 
 // Filter chips (id === '' means "all")
