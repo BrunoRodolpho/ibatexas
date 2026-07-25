@@ -323,6 +323,24 @@ export interface IbatexasPlannerDeps {
   /** Override the system prompt (defaults to the pt-BR semantic-parser prompt). */
   readonly system?: string;
   /**
+   * Override the CLAIM-path system prompt ONLY (`proposeClaims`, Q6b), leaving the
+   * intent-path `system` untouched. Defaults to `system`, then to the catalog
+   * `ibatexas/claim-planner.persona` — so every existing composition (customer,
+   * WhatsApp, tests that set `system`) is BYTE-IDENTICAL.
+   *
+   * LE2 decision 6 (ops convergence) is why this exists. The two paths are
+   * DIFFERENT JOBS on the same planner instance: `propose` extracts an intent,
+   * `proposeClaims` selects a registry claim TYPE. The ops conductor injects the
+   * staff PLANNER persona as its whole `system` ("sua única função é
+   * express_intent"-shaped), and that persona demonstrably SUPPRESSES the
+   * `propose_claim` call on a 4B (the exact failure {@link CLAIM_PLANNER_PERSONA}
+   * documents for the customer intent persona). Without a separate claim-path
+   * prompt the converged ops plane would propose ZERO claims and silently fall
+   * back to prose — the opposite of the convergence. The ops composition therefore
+   * passes the claim-planner persona here explicitly.
+   */
+  readonly claimPlannerSystem?: string;
+  /**
    * Wire Truth — the prompt-catalog id of an injected `system` (the ops plane
    * bypasses the fragment graph with a raw persona string, which used to leave
    * the trace's prompt manifest empty — the workbench's `persona ?`). When both
@@ -1478,7 +1496,13 @@ export function createIbatexasPlanner(
       // the intent persona (DEFAULT_SYSTEM_PROMPT) — the intent persona's "sua
       // única função é express_intent" SUPPRESSES the propose_claim call on a 4B
       // (verified live on nemotron-3-nano:4b). `deps.system` still overrides (tests).
-      const system = deps.system ?? resolvePrompt("ibatexas/claim-planner.persona", CLAIM_PLANNER_PERSONA);
+      // LE2 decision 6 — `claimPlannerSystem` overrides the CLAIM path alone (the
+      // ops plane's staff intent persona would otherwise suppress `propose_claim`);
+      // unset ⇒ the pre-existing `deps.system ?? catalog persona` chain, byte-identical.
+      const system =
+        deps.claimPlannerSystem ??
+        deps.system ??
+        resolvePrompt("ibatexas/claim-planner.persona", CLAIM_PLANNER_PERSONA);
       // F2 observability: time the claim-planner completion so its LLMTrace
       // (emitted below) carries a real duration, like the intent `propose` path.
       const claimStartedAt = Date.now();
