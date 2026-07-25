@@ -118,6 +118,7 @@ export {
 
 export {
   refuseAllergensNotExplicit,
+  refuseAmbiguousOrderReference,
   refuseAmountExceedsLimit,
   refuseCartEmpty,
   refuseCheckoutMissingPaymentMethod,
@@ -201,6 +202,10 @@ export const ordersPack = {
     "order.cart.empty",
     "order.cart.missing",
     "order.not_found",
+    // BKL-216 — the amend in-message order-reference ambiguity CLARIFY
+    // (`clarifyAmbiguousOrderReference`): the customer named ≥2 of their OWN
+    // orders, so the resolver bound none and this asks which.
+    "order.ambiguous_reference",
     "order.already_cancelled",
     "order.already_shipped",
     "order.checkout.slots_incomplete",
