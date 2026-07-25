@@ -25,21 +25,20 @@
 // # Why a mirror is safe here
 //
 // A mirror can drift; an unguarded mirror is a lie waiting to happen. Both
-// arrays below are PINNED to their runtime originals by tests that CAN see
-// both sides, in `apps/api`:
+// arrays below are PINNED set-equal to their runtime originals by
+// `apps/api/src/claustrum/__tests__/catalog-claim-references.test.ts` — a test
+// that CAN see both sides, and asserts in BOTH directions (nothing here that
+// the runtime lacks, nothing in the runtime that is missing here).
 //
-//   - `apps/api/src/claustrum/__tests__/capability-definitions.success-claim-
-//     round-trip.test.ts` pins `CLAIM_CLASS_REFERENCES` set-equal to the real
-//     `SUCCESS_CLAIM_CLASSES` ids (and already pinned, before this catalog
-//     existed, that no definition links to an id the responder does not
-//     define — this vocabulary is the build-time restatement of that test).
-//   - `apps/api/src/claustrum/__tests__/catalog-claim-references.test.ts` pins
-//     `REGISTRY_CLAIM_TYPE_REFERENCES` set-equal to the real `CLAIM_REGISTRY`.
+// A related, PRE-EXISTING pin also survives unchanged:
+// `apps/api/src/claustrum/__tests__/capability-definitions.success-claim-
+// round-trip.test.ts` already asserted that no capability links to an id
+// `SUCCESS_CLAIM_CLASSES` does not define. The catalog's build gate is the
+// build-time restatement of exactly that invariant, moved to where the data
+// lives so it fails earlier and without an apps/api test run.
 //
-// So the mirror is checked in BOTH directions by the suite, and the catalog
-// build gate turns the definitions-side half into a build failure rather than
-// a test failure. Adding a claim class or registry type without updating this
-// file fails those tests loudly — that is the intended, cheap coupling.
+// Adding a claim class or a registry type without updating this file fails
+// those tests loudly — that is the intended, cheap coupling.
 //
 // Ordering in both arrays is SOURCE ORDER of the runtime original, so a diff
 // against the original stays readable. Order carries no contract; every

@@ -109,13 +109,12 @@ list of edges, not against one hard-coded field.
 mirrors their **names only**. Both mirrors are pinned to their originals by
 tests that *can* see both sides:
 
+- `apps/api/src/claustrum/__tests__/catalog-claim-references.test.ts` — pins
+  **both** vocabularies set-equal to the real `SUCCESS_CLAIM_CLASSES` ids and
+  `CLAIM_REGISTRY`, in both directions.
 - `apps/api/src/claustrum/__tests__/capability-definitions.success-claim-round-trip.test.ts`
-  — pins `CLAIM_CLASS_REFERENCES` set-equal to the real `SUCCESS_CLAIM_CLASSES`
-  ids (and already pinned the definitions→responder direction before this
-  package existed).
-- `apps/api/src/claustrum/__tests__/catalog-claim-references.test.ts`
-  — pins `REGISTRY_CLAIM_TYPE_REFERENCES` set-equal to the real
-  `CLAIM_REGISTRY`.
+  — the pre-existing pin that no capability links to an id the responder does
+  not define. Unchanged; the build gate is its build-time restatement.
 
 Adding a claim class or registry type without updating this package fails those
 tests loudly. That coupling is intended and cheap.

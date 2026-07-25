@@ -225,6 +225,9 @@ importers:
       '@ibatexas/audit-sink':
         specifier: workspace:*
         version: link:../../packages/audit-sink
+      '@ibatexas/catalog':
+        specifier: workspace:*
+        version: link:../../packages/catalog
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../../packages/domain
