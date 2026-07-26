@@ -199,9 +199,31 @@ export function isRegistryClaimType(value: unknown): value is RegistryClaimType 
 export function canonicalizeRegistryType(
   raw: unknown,
 ): RegistryClaimType | undefined {
+  return canonicalizeScopedClaimType(raw) as RegistryClaimType | undefined;
+}
+
+/**
+ * LE2-012 — the SCOPE-AWARE twin of {@link canonicalizeRegistryType}: the same
+ * casing-robust canonicalization, but resolved against a {@link ClaimPlaneScope}
+ * instead of the hard-wired customer registry. Defaults to
+ * {@link CUSTOMER_CLAIM_SCOPE}, so an unscoped call is byte-identical to the
+ * customer behaviour above (the two share this ONE implementation, so they can
+ * never drift). Returns the CANONICAL UPPER_SNAKE type name when `raw` maps to a
+ * type IN THAT SCOPE, else `undefined` → the proposal is DROPPED by the
+ * constrained-generation wall.
+ *
+ * This is what makes the wall do double duty as the PLANE BOUNDARY: an
+ * ops-scoped type is absent from `CUSTOMER_CLAIM_SCOPE`, so a customer-plane
+ * proposal of it canonicalizes to `undefined` and is dropped exactly like a
+ * hallucinated type. Pure.
+ */
+export function canonicalizeScopedClaimType(
+  raw: unknown,
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
+): string | undefined {
   if (typeof raw !== "string") return undefined;
   const upper = raw.toUpperCase();
-  return REGISTRY_SET.has(upper) ? (upper as RegistryClaimType) : undefined;
+  return Object.hasOwn(scope.specs, upper) ? upper : undefined;
 }
 
 /**
@@ -947,6 +969,44 @@ export const REGISTRY_SPECS = {
 } satisfies Record<RegistryClaimType, RegistryClaimSpec>;
 
 /**
+ * LE2-012 — ONE PLANE's claim-type SCOPE: the closed enum the planner of that
+ * plane may SELECT from (`types`, the `propose_claim` tool's `enum`) plus the
+ * per-type evidence/falsifier/value-binding schema the deterministic walls
+ * parameterize (`specs`). `specs` MUST be exhaustive over `types` — the two are
+ * the SAME closed vocabulary seen from the enum side and the schema side, and a
+ * drift between them is what the plane's registry pin test asserts against.
+ *
+ * WHY a scope and not one flat registry: the ops plane answers STORE-LEVEL
+ * questions ("quantos pedidos hoje?") that the customer-scoped vocabulary cannot
+ * express, and those types must NEVER become customer-plane parseable or
+ * renderable (an operator's store totals are not a customer-facing fact). Rather
+ * than invent a second mechanism, the EXISTING §H/§P3 constrained-generation wall
+ * carries the boundary: each plane's planner advertises only ITS scope's enum,
+ * and `selectCandidateClaim` DROPS an out-of-scope type exactly as it drops a
+ * hallucinated one. The customer scope is unchanged and remains the DEFAULT of
+ * every wall in this module, so nothing that does not explicitly pass a scope
+ * changes by a byte.
+ */
+export interface ClaimPlaneScope {
+  /** The closed claim-TYPE enum this plane's planner may select from. */
+  readonly types: readonly string[];
+  /** The per-type registry schema, exhaustive over {@link types}. */
+  readonly specs: Readonly<Record<string, RegistryClaimSpec>>;
+}
+
+/**
+ * The CUSTOMER plane's scope — the `CLAIM_REGISTRY` enum + `REGISTRY_SPECS`, i.e.
+ * exactly the vocabulary that existed before plane scoping. It is the DEFAULT
+ * argument of every scoped wall below. A plane-scoped type is added by composing a
+ * SUPERSET scope on that plane (see `apps/api/src/ops/ops-claim-registry.ts`);
+ * this constant is never widened, which is what keeps the customer plane closed.
+ */
+export const CUSTOMER_CLAIM_SCOPE: ClaimPlaneScope = {
+  types: CLAIM_REGISTRY,
+  specs: REGISTRY_SPECS,
+};
+
+/**
  * The owner-scoped, per-resource BASE ledger key for a registry type (FIX 2 —
  * owner-scoped subject resolution). It is the `order_fulfillment_stage` /
  * `payment_status` prefix the investigator records the owner-scoped read under,
@@ -960,9 +1020,12 @@ export const REGISTRY_SPECS = {
  * the ONLY admissible subjects — so the subject derives from the authenticated
  * owner-scoped reads, never the 4B's (possibly empty/hallucinated) extraction.
  */
-export function ownerScopedBaseKey(type: RegistryClaimType): string | undefined {
-  const spec: RegistryClaimSpec = REGISTRY_SPECS[type];
-  if (spec.perResourceKey !== true) return undefined;
+export function ownerScopedBaseKey(
+  type: string,
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
+): string | undefined {
+  const spec: RegistryClaimSpec | undefined = scope.specs[type];
+  if (spec === undefined || spec.perResourceKey !== true) return undefined;
   const required = spec.requiredEvidence.find(
     (e) => e.ownershipPolicy === "required",
   );
@@ -1004,6 +1067,7 @@ export interface ProposedClaim {
  */
 export function selectCandidateClaim(
   proposed: ProposedClaim,
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
 ): CandidateClaim | undefined {
   // fix 3 — CASING-ROBUST membership: canonicalize the (possibly miscased) model
   // tag to its UPPER_SNAKE registry form BEFORE the membership test, so a
@@ -1011,7 +1075,11 @@ export function selectCandidateClaim(
   // rather than dropped into the lie-capable prose path. A tag that does not map
   // even after canonicalization → `undefined` → DROPPED by the constrained-
   // generation wall (degrade SAFE; the planner routes UNKNOWN/CLARIFY/ESCALATE).
-  const canonicalType = canonicalizeRegistryType(proposed.type);
+  // LE2-012 — resolved against the PLANE's scope (the customer registry by
+  // default): an out-of-SCOPE type is dropped by the very same wall that drops a
+  // hallucinated one, which is what keeps an ops-scoped type unreachable from the
+  // customer plane.
+  const canonicalType = canonicalizeScopedClaimType(proposed.type, scope);
   if (canonicalType === undefined) {
     return undefined;
   }
@@ -1019,7 +1087,11 @@ export function selectCandidateClaim(
   // fields (falsifierComplete / falsifiers / valueBinding) are readable on every
   // member (a member that omits them is `undefined`, not a missing property).
   // Keyed by the CANONICAL type so a miscased tag selects the right spec.
-  const baseSpec: RegistryClaimSpec = REGISTRY_SPECS[canonicalType];
+  // `canonicalizeScopedClaimType` already proved own-key membership, so the
+  // lookup is total; the `?? undefined` guard is defense in depth for a caller
+  // that hands in a scope whose `types`/`specs` drifted apart.
+  const baseSpec: RegistryClaimSpec | undefined = scope.specs[canonicalType];
+  if (baseSpec === undefined) return undefined;
   // STEP 3 key-alignment: an owner-scoped, per-resource type (perResourceKey) has
   // its evidence/falsifier/value-binding keys parameterized by the candidate
   // `subject` so they match the investigator's `${base}:{id}` ledger keys. A
@@ -1127,11 +1199,12 @@ function parameterizeKeysBySubject(
  */
 export function constrainClaimGeneration(
   proposals: readonly ProposedClaim[],
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
 ): { readonly candidates: CandidateClaim[]; readonly dropped: string[] } {
   const candidates: CandidateClaim[] = [];
   const dropped: string[] = [];
   for (const p of proposals) {
-    const candidate = selectCandidateClaim(p);
+    const candidate = selectCandidateClaim(p, scope);
     if (candidate === undefined) {
       dropped.push(p.type);
     } else {
@@ -1310,6 +1383,11 @@ export interface RequestSpan {
  *   - `"CLARIFY"`  — an UNMAPPED span (SDD §J.8: never a silent drop) OR an
  *                    out-of-enum mapping (defense in depth — an unrecognized
  *                    mapped type is not silently honored).
+ *
+ * LE2-012: on a NON-default {@link ClaimPlaneScope} the mapped-type arm carries
+ * that plane's type NAME (a string outside the customer `RegistryClaimType`
+ * union). The union below documents the customer plane — the default and the
+ * only one whose types this module can name without importing a plane.
  */
 export type SpanDisposition =
   | RegistryClaimType
@@ -1335,6 +1413,7 @@ export interface SpanCompleteness {
  */
 export function checkCompleteness(
   spans: readonly RequestSpan[],
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
 ): SpanCompleteness[] {
   return spans.map((span) => {
     if (span.mappedClaimType === undefined) {
@@ -1345,11 +1424,14 @@ export function checkCompleteness(
     // needlessly forced to CLARIFY (mirrors selectCandidateClaim). A span that
     // does not map even after canonicalization still → CLARIFY (defense in depth:
     // a hallucinated/out-of-enum mapped type is not silently honored as a claim).
-    const canonical = canonicalizeRegistryType(span.mappedClaimType);
+    // LE2-012 — resolved against the PLANE's scope, so an ops-plane span mapped to
+    // an ops-scoped type is NOT force-CLARIFYed (and a customer-plane span mapped
+    // to one still is: out of scope ⟹ not silently honored).
+    const canonical = canonicalizeScopedClaimType(span.mappedClaimType, scope);
     if (canonical === undefined) {
       return { text: span.text, disposition: "CLARIFY" };
     }
-    return { text: span.text, disposition: canonical };
+    return { text: span.text, disposition: canonical as SpanDisposition };
   });
 }
 

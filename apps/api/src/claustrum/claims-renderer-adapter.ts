@@ -48,6 +48,20 @@ import {
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
 import { render } from "./renderer-from-claims.js";
+import { REGISTRY_SPECS } from "./claim-registry.js";
+import type { Template } from "./slot-grammar.js";
+
+/**
+ * LE2-012 — the CUSTOMER-SCOPED registry types, derived from the ONE source of
+ * truth (`REGISTRY_SPECS[type].customerScoped`) so a future customer-scoped type
+ * is covered automatically. Consumed ONLY by the
+ * {@link IbatexasClaimsRendererOptions.customerScopedCompanionsApply} gate below.
+ */
+const CUSTOMER_SCOPED_REQUIRED_TYPES: ReadonlySet<string> = new Set(
+  Object.entries(REGISTRY_SPECS)
+    .filter(([, spec]) => spec.customerScoped)
+    .map(([type]) => type),
+);
 
 /** De-dupe a type-name list, preserving first-seen order (deterministic). */
 function distinctTypes(types: readonly string[]): string[] {
@@ -211,6 +225,35 @@ export interface IbatexasClaimsRendererOptions {
    * (a throw here would break the render); wire it to swallow its own errors.
    */
   readonly onSafetyEmergency?: (ctx: { readonly turnId?: string }) => void;
+  /**
+   * LE2-012 — the PLANE's validated-template table (customer ∪ plane). Defaults to
+   * the customer grammar, so every existing composition is byte-identical.
+   */
+  readonly templates?: Readonly<Record<string, Template>>;
+  /**
+   * LE2-012 — does the §O#15 required-claim gate's CUSTOMER-SCOPED companion set
+   * apply on this plane? Default `true` (the customer plane — byte-identical).
+   *
+   * The OPS plane passes `false`. Its principal is a STAFF actor (`admin:<staffId>`)
+   * who, by construction, owns NO customer order / payment / reservation / cart —
+   * so every `customerScoped` companion the customer span classifier force-requires
+   * is CATEGORICALLY unsatisfiable there. Left applying, the classifier's keyword
+   * nets fire on ordinary STORE-LEVEL staff questions ("quantos pedidos hoje?" trips
+   * ORDER_STATUS_Q; "quais reservas hoje?" trips RESERVATION_STATUS_Q) and the gate
+   * degrades an otherwise-VALIDATED ops render to UNKNOWN for a companion that could
+   * never have resolved.
+   *
+   * SOUNDNESS: this only ever REMOVES a required companion — it adds no claim, sets
+   * no verdict and grants no prose authority. Every rendered proposition still comes
+   * from an independently-VALIDATED claim (Inv 6), and a dropped companion is a
+   * claim about a CUSTOMER's own resource, which is not a half of the staff
+   * question being answered. BOUNDED RESIDUAL, stated openly: a MIXED staff turn
+   * ("quantos pedidos hoje? e o pedido #4242 já saiu?") renders the store-level half
+   * without an honest UNKNOWN for the owner-scoped half — that half is answered on
+   * the ops plane by the deterministic ops read/verb roster, never by a
+   * customer-scoped claim, so no customer-scoped answer is being suppressed.
+   */
+  readonly customerScopedCompanionsApply?: boolean;
 }
 
 export function createIbatexasClaimsRenderer(
@@ -218,6 +261,8 @@ export function createIbatexasClaimsRenderer(
 ): ClaimsRendererPort {
   const renderCarriersActive = opts?.renderCarriersActive === true;
   const onSafetyEmergency = opts?.onSafetyEmergency;
+  const templates = opts?.templates;
+  const customerScopedCompanionsApply = opts?.customerScopedCompanionsApply !== false;
   return {
     render(
       claims: ClaimsKernelResult,
@@ -230,7 +275,7 @@ export function createIbatexasClaimsRenderer(
       // BKL-152-edge: the dateAnchor signal (seam-active + the 0.8.0 clock-resolved
       // resolvedQueryDate) makes the date-anchor STORE_OPEN_NOW suppression exact on
       // weekday==today; seam-inactive falls back to the pure #301 rule.
-      const required = decomposeRequiredClaims(
+      const decomposed = decomposeRequiredClaims(
         classifyRequestSpans(context?.requestText ?? ""),
         ownershipFromActiveResources(context?.activeResources),
         {
@@ -240,6 +285,13 @@ export function createIbatexasClaimsRenderer(
             : { resolvedQueryDate: context.resolvedQueryDate }),
         },
       );
+      // LE2-012 — on a plane whose actor owns no customer resources (ops), drop the
+      // CUSTOMER-SCOPED companions the customer span classifier force-required. See
+      // {@link IbatexasClaimsRendererOptions.customerScopedCompanionsApply}: removal
+      // only, never an addition; the customer plane keeps the set verbatim.
+      const required = customerScopedCompanionsApply
+        ? decomposed
+        : new Set([...decomposed].filter((t) => !CUSTOMER_SCOPED_REQUIRED_TYPES.has(t)));
       // §O#15 completeness reads a per-TYPE verdict map. When one turn resolves
       // MULTIPLE claims of the SAME type (e.g. a multi-order request that binds two
       // ORDER_FULFILLMENT_STAGE instances to distinct owned subjects), a later
@@ -295,6 +347,9 @@ export function createIbatexasClaimsRenderer(
         // emergency safe variant (deterministic net; absent requestText → false →
         // generic escalate, byte-identical).
         emergencyAsk,
+        // LE2-012 — the PLANE's template table (customer ∪ plane). `undefined`
+        // selects `render`'s own default (the customer grammar) — byte-identical.
+        templates,
       );
       // BKL-209 — fire the best-effort SAFETY sink when the turn resolved to a
       // medical-emergency ESCALATE, so staff are notified ("vou avisar nossa

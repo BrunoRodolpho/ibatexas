@@ -53,7 +53,7 @@ import { logger } from "../lib/logger.js";
 import type { IbatexasPromptComposer } from "../claustrum/prompts/ibatexas-prompts.js";
 import type { ScheduleSignal } from "../claustrum/closed-hours.js";
 import {
-  CLAIM_PLANNER_PERSONA,
+  OPS_CLAIM_PLANNER_PERSONA,
   OPS_PLANNER_PERSONA,
   OPS_RESPONDER_GROUNDED_PERSONA_PTBR,
   OPS_RESPONDER_PERSONA_PTBR,
@@ -84,6 +84,12 @@ import {
   scopeResumeChannel,
   type OpsVerbScope,
 } from "./ops-verb-scope.js";
+import {
+  OPS_CLAIM_SCOPE,
+  OPS_PLANE_VALIDATED_TEMPLATES,
+  assertOpsClaimDefinitionRegistryValid,
+} from "./ops-claim-registry.js";
+import { createOpsClaimTurnReads } from "./ops-claim-reads.js";
 
 /**
  * LE2 decision 6 — `composeOpsConductor` runs PER STAFF TURN, so it must build the
@@ -213,15 +219,24 @@ export function composeOpsConductor(
     // LE2 decision 6 — the CLAIM path (`proposeClaims`, Q6b) needs the CLAIM-framed
     // persona, NOT the staff INTENT persona above: an intent persona suppresses the
     // `propose_claim` call on a 4B, so inheriting `system` here would make the
-    // converged ops plane propose zero claims and silently fall back to prose. The
-    // persona itself is plane-agnostic — it only maps a question to a registry TYPE
-    // and is forbidden from authoring any value — so the ops plane composes the SAME
-    // one the customer plane uses rather than forking a staff variant (ops-scoped
-    // claim TYPES are ticket 12, not this skeleton).
+    // converged ops plane propose zero claims and silently fall back to prose.
+    //
+    // LE2-012 — the ops plane now carries its OWN claim-planner persona (the
+    // skeleton composed the customer one and named this ticket as the reason it
+    // would change). The job is identical (map ONE question to ONE registry TYPE,
+    // author no value); the difference is the mapping guide, which must name the
+    // ops-scoped types the ops enum below advertises — a customer persona would
+    // leave the 4B with no tag for "quantos pedidos hoje?".
     claimPlannerSystem: resolvePrompt(
-      "ibatexas/claim-planner.persona",
-      CLAIM_PLANNER_PERSONA,
+      "ops/claim-planner.persona",
+      OPS_CLAIM_PLANNER_PERSONA,
     ),
+    // LE2-012 — the OPS claim-type scope: the customer vocabulary PLUS the
+    // store-level ops types. It is the `propose_claim` enum AND the schema every
+    // deterministic wall parameterizes, so the ops planner can select an ops type
+    // and the customer planner structurally cannot (the constrained-generation wall
+    // IS the plane boundary — see ops-claim-registry.ts).
+    claimScope: OPS_CLAIM_SCOPE,
     telemetry: deps.telemetry,
     ...(deps.promptComposer ? { promptComposer: deps.promptComposer } : {}),
     ...(deps.resolveScheduleSignal
@@ -328,7 +343,31 @@ export function composeOpsConductor(
   // this factory runs per turn) and so is `onSafetyEmergency` — both mirror the
   // managed-agent plane's per-trigger `buildClaimsSeamsForPlanner`. `warn` is the
   // module-scope de-duped sink (see {@link warnClaimsFloorOnce}).
-  const claimsSeams = buildClaimsSeams({ planner, warn: warnClaimsFloorOnce });
+  //
+  // LE2-012 — the `plane` extension carries the ops-scoped claim TYPES the
+  // skeleton deliberately left for this ticket: the scope (enum + schema), the
+  // ops render templates, the ops resolvers, and the plane's own fail-closed
+  // inv.18 registry assertion. Everything else is still `buildClaimsSeams`'s own
+  // customer-plane construction, unforked.
+  //
+  // The resolvers take the RAW `deps.opsReadToolExecutors`, NOT the capture
+  // wrapper above: the capture buffer records what the MODEL asked to read (and
+  // drives lattice rule 3c), so routing the investigator's own deterministic ops
+  // reads through it would make every ops-claim turn look like a BKL-100 read turn
+  // and hand the reply back to the panorama render.
+  const claimsSeams = buildClaimsSeams({
+    planner,
+    warn: warnClaimsFloorOnce,
+    plane: {
+      claimScope: OPS_CLAIM_SCOPE,
+      templates: OPS_PLANE_VALIDATED_TEMPLATES,
+      gatherReads: createOpsClaimTurnReads({ executors: deps.opsReadToolExecutors }),
+      // The §O#15 customer companions do not apply to a STAFF actor who owns no
+      // customer resources — see IbatexasClaimsRendererOptions.
+      customerScopedCompanionsApply: false,
+      assertRegistryValid: assertOpsClaimDefinitionRegistryValid,
+    },
+  });
 
   return createConductor({
     adjudicator: deps.adjudicator,

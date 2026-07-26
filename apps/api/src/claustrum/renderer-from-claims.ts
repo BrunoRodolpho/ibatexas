@@ -258,6 +258,12 @@ export function render(
   // computes it via the deterministic net), an ESCALATE terminal renders the
   // emergency safe template. Default false → byte-identical.
   emergencyAsk: boolean = false,
+  // LE2-012 — the PLANE's validated-template table. Defaults to the customer
+  // grammar (`VALIDATED_TEMPLATES`), so every existing caller is byte-identical;
+  // the ops plane passes customer ∪ ops templates. Purity is unaffected — the
+  // table is static data, and an un-templated VALIDATED type still ABSTAINS to
+  // the proposition-free UNKNOWN (§O#3), never free-authored prose.
+  templates: Readonly<Record<string, Template>> = VALIDATED_TEMPLATES,
 ): RenderResult {
   // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
   // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
@@ -277,6 +283,7 @@ export function render(
     candidates,
     allergenAsk,
     emergencyAsk,
+    templates,
   );
 }
 
@@ -295,6 +302,7 @@ export function renderRenderables(
   candidates: readonly RenderDisambiguationCandidate[] = [],
   allergenAsk: boolean = false,
   emergencyAsk: boolean = false,
+  templates: Readonly<Record<string, Template>> = VALIDATED_TEMPLATES,
 ): RenderResult {
   // ── 1. §O#5 render-half: a non-RENDER terminal emits ONLY the safe template. ──
   if (terminal !== "RENDER") {
@@ -304,7 +312,9 @@ export function renderRenderables(
   // ── 2. RENDER path: index by type for the Inv 6 1:1 proposition lookup, then
   // render each claim — in input order — to its line. ──
   const byType = indexValidatedClaims(renderableClaims);
-  const lines = renderableClaims.map((claim) => renderClaimLine(claim, byType));
+  const lines = renderableClaims.map((claim) =>
+    renderClaimLine(claim, byType, templates),
+  );
   const text = lines.map((l) => l.text).join(" ");
   return { text, terminal, lines };
 }
@@ -406,6 +416,7 @@ function indexValidatedClaims(
 function renderClaimLine(
   claim: RenderableClaim,
   byType: ReadonlyMap<string, RenderableClaim>,
+  templates: Readonly<Record<string, Template>> = VALIDATED_TEMPLATES,
 ): RenderedLine {
   if (claim.verdict !== "VALIDATED") {
     // UNKNOWN / REFUSED → proposition-free safe template (registry §5).
@@ -416,7 +427,7 @@ function renderClaimLine(
       text: renderTemplate(safe, byType) ?? "",
     };
   }
-  const template = VALIDATED_TEMPLATES[claim.type];
+  const template = templates[claim.type];
   if (template === undefined) {
     // Un-modelled VALIDATED type: we have no template, and §O#3 forbids
     // free-authoring one → abstain (UNKNOWN), never invent prose.
