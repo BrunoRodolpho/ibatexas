@@ -39,9 +39,12 @@ function workflow(overrides: Record<string, unknown> = {}): WorkflowDefinition {
     matchers: [{ capability: ANCHOR }],
     selection: { capability: ANCHOR },
     params: [
-      { name: "orderId", source: { from: "claim", claimType: "order-placed", field: "orderId" } },
+      {
+        name: "history",
+        source: { from: "claim", claimType: "ORDER_HISTORY", field: "historySummaryText" },
+      },
     ],
-    activities: [{ id: "step", capability: STEP, payload: { orderId: { param: "orderId" } } }],
+    activities: [{ id: "step", capability: STEP, payload: { summary: { param: "history" } } }],
     confirm: { template: "confirm" },
     templates: [
       { id: "confirm", text: "Confirma?" },
@@ -189,6 +192,53 @@ describe("workflow-shape — params, sequence and identity", () => {
     expect(rules(capabilities(), [workflow(), workflow()])).toEqual([
       "workflow-id-duplicated",
     ])
+  })
+})
+
+describe("workflow-shape — claim-param vocabulary (LE2-021)", () => {
+  it("rejects a claimType from the SUCCESS-CLASS vocabulary", () => {
+    // The exact spelling LE2-020's own fixture shipped. It is silent at run
+    // time — the resolver map-lookup misses and the param stays UNRESOLVED
+    // forever — so the build is the only place it can surface.
+    expect(
+      rules(capabilities(), [
+        workflow({
+          params: [
+            { name: "prev", source: { from: "claim", claimType: "order-placed", field: "orderId" } },
+          ],
+          activities: [{ id: "step", capability: STEP, payload: { orderId: { param: "prev" } } }],
+        }),
+      ]),
+    ).toEqual(["claim-param-type-unknown"])
+  })
+
+  it("ACCEPTS a real registry claim type — the control", () => {
+    // Without this the test above could pass on a rule that rejects EVERY
+    // claim-sourced param, which would be a different (and much worse) gate.
+    expect(
+      rules(capabilities(), [
+        workflow({
+          params: [
+            {
+              name: "prev",
+              source: { from: "claim", claimType: "PAYMENT_STATUS", field: "statusLine" },
+            },
+          ],
+          activities: [{ id: "step", capability: STEP, payload: { s: { param: "prev" } } }],
+        }),
+      ]),
+    ).toEqual([])
+  })
+
+  it("says nothing about a SLOT-sourced param — the other admissible source", () => {
+    expect(
+      rules(capabilities(), [
+        workflow({
+          params: [{ name: "note", source: { from: "slot", slot: "note" } }],
+          activities: [{ id: "step", capability: STEP, payload: { note: { param: "note" } } }],
+        }),
+      ]),
+    ).toEqual([])
   })
 })
 

@@ -151,31 +151,31 @@ describe("the L1 parse cache key (AC 7 — cache the parse, never instance state
 describe("param resolution — two sources, and no third", () => {
   it("resolves a customer-authored slot and a validated claim", () => {
     const { params, unresolved } = resolveWorkflowParams(FIXTURE_LINEAR_WORKFLOW, {
-      claims: new Map([["order-placed", { orderId: "order_123" }]]),
+      claims: new Map([["ORDER_HISTORY", { historySummaryText: "Pedido #1042 (entregue, R$89,00) — mostrando o mais recente" }]]),
       slots: { note: "sem cebola", payment_method: "pix", delivery_type: "pickup" },
     });
     expect(unresolved).toEqual([]);
     expect(params.get("note")).toEqual({ resolved: true, value: "sem cebola" });
-    expect(params.get("previousOrderId")).toEqual({ resolved: true, value: "order_123" });
+    expect(params.get("previousOrderSummary")).toEqual({ resolved: true, value: "Pedido #1042 (entregue, R$89,00) — mostrando o mais recente" });
   });
 
   it("leaves a claim-sourced param UNRESOLVED when no claim validated — never a guess", () => {
     const { params, unresolved } = resolveWorkflowParams(FIXTURE_LINEAR_WORKFLOW, {
       slots: { note: "x", payment_method: "pix", delivery_type: "pickup" },
     });
-    expect(unresolved).toEqual(["previousOrderId"]);
-    expect(params.get("previousOrderId")).toEqual({
+    expect(unresolved).toEqual(["previousOrderSummary"]);
+    expect(params.get("previousOrderSummary")).toEqual({
       resolved: false,
-      reason: 'no VALIDATED claim of type "order-placed" this turn',
+      reason: 'no VALIDATED claim of type "ORDER_HISTORY" this turn',
     });
   });
 
   it("leaves a claim-sourced param UNRESOLVED when the claim carries no such field", () => {
     const { unresolved } = resolveWorkflowParams(FIXTURE_LINEAR_WORKFLOW, {
-      claims: new Map([["order-placed", { somethingElse: "x" }]]),
+      claims: new Map([["ORDER_HISTORY", { somethingElse: "x" }]]),
       slots: {},
     });
-    expect(unresolved).toContain("previousOrderId");
+    expect(unresolved).toContain("previousOrderSummary");
   });
 
   it("refuses to build a payload with a hole in it", () => {
@@ -225,7 +225,7 @@ describe("the instance and its catalog pin", () => {
       dispatchActivity: async () => {
         throw new Error("must never dispatch a non-EXECUTE activity");
       },
-      claimsFor: () => new Map([["order-placed", { orderId: "order_123" }]]),
+      claimsFor: () => new Map([["ORDER_HISTORY", { historySummaryText: "Pedido #1042 (entregue, R$89,00) — mostrando o mais recente" }]]),
     });
     const instance = runtime.select({
       turnId: "t1",

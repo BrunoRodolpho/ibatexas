@@ -32,6 +32,11 @@
 //      (`workflow-scoped-kind-advertised`) — the two say opposite things about
 //      whether the parser may propose it, and the build is where that has to be
 //      settled.
+//   7. CLAIM PARAMS NAME A REAL CLAIM TYPE. A `{from: "claim"}` param's
+//      `claimType` is a member of the registry claim-type vocabulary, not the
+//      responder's success-class vocabulary (`claim-param-type-unknown`) — see
+//      that rule's own doc for why the two are constantly confused and why
+//      getting it wrong is silent rather than loud.
 //
 // ── WHY RULE 6 IS IN THIS PASS ───────────────────────────────────────────────
 //
@@ -52,6 +57,7 @@
 // fixtures are widened, so the static types are a hint here, never a guarantee.
 
 import type { CapabilityDefinition } from "../../capability-definitions/types.js"
+import { isRegistryClaimTypeReference } from "../../claim-references.js"
 import type { WorkflowDefinition } from "../../workflows/types.js"
 import { WORKFLOW_OUTCOMES } from "../../workflows/types.js"
 import {
@@ -261,6 +267,71 @@ function checkActivities(ctx: WorkflowContext): readonly CatalogDiagnostic[] {
   return out
 }
 
+/**
+ * Rule 7 — a claim-sourced param must name the REGISTRY CLAIM TYPE vocabulary.
+ *
+ * ── THE CLASS THIS CLOSES ────────────────────────────────────────────────────
+ *
+ * There are two claim vocabularies in this system and they are NOT the same
+ * set, which SDD §K states as "map, do not equate":
+ *
+ *   REGISTRY CLAIM TYPES  — UPPER_SNAKE (`ORDER_HISTORY`, `PAYMENT_STATUS`).
+ *     The planner's constrained-generation enum; each declares a `valueBinding`
+ *     naming the ONE field its validated value exposes.
+ *   SUCCESS CLAIM CLASSES — lowercase-hyphen (`order-placed`, `payment-settled`).
+ *     The responder's anti-confabulation guard ids. They have no value at all —
+ *     they are predicates over rendered prose.
+ *
+ * LE2-020's own fixture bound `{claimType: "order-placed", field: "orderId"}`,
+ * which is wrong in both halves: it names a success class as if it were a
+ * registry type, and `orderId` is not any registry type's value field. Nothing
+ * caught it, because the runtime resolves a claim param by MAP LOOKUP — an
+ * unknown type is simply absent, so the param lands UNRESOLVED and the run
+ * fails closed. The symptom is a workflow that never works, with no diagnostic
+ * anywhere and a plausible-looking definition. That is the worst shape a
+ * catalog error can take, and it is exactly what a compiler is for.
+ *
+ * ── WHY MEMBERSHIP ONLY, FOR NOW ─────────────────────────────────────────────
+ *
+ * The field half of the check is NOT enforced here. `REGISTRY_CLAIM_TYPE_
+ * REFERENCES` is a NAME mirror — it carries the type names and nothing else, so
+ * the catalog cannot see any type's `valueBinding` path and therefore cannot
+ * prove `field` is the right one. Widening that mirror to carry value fields is
+ * a real change to what the catalog knows about the runtime and is deliberately
+ * not made unilaterally here; the gap is recorded in the PR body. Membership
+ * alone already turns the LE2-020 fixture's spelling into a build error, which
+ * is the half that closes the class.
+ */
+function checkClaimParams(ctx: WorkflowContext): readonly CatalogDiagnostic[] {
+  const out: CatalogDiagnostic[] = []
+  readArray(ctx.record["params"]).forEach((param, index) => {
+    const source = readRecord(readRecord(param)["source"])
+    if (source["from"] !== "claim") return
+    const claimType = source["claimType"]
+    if (!isNonBlank(claimType)) return
+    if (isRegistryClaimTypeReference(claimType)) return
+    out.push(
+      diag(
+        ctx,
+        "claim-param-type-unknown",
+        `params[${index}].source.claimType`,
+        `sources a param from the claim type "${claimType}", which is not a ` +
+          "member of the registry claim-type vocabulary. Two vocabularies exist " +
+          "and they are not interchangeable (SDD §K, \"map, do not equate\"): " +
+          "registry claim TYPES are the planner's UPPER_SNAKE selection enum and " +
+          "are the only things that carry a validated VALUE, while the " +
+          "lowercase-hyphen success claim CLASSES are the responder's guard ids " +
+          "and have no value to read. A param naming the wrong vocabulary does " +
+          "not fail loudly at run time — it resolves by map lookup, misses, and " +
+          "leaves the param UNRESOLVED forever, so the workflow silently never " +
+          "runs.",
+        claimType,
+      ),
+    )
+  })
+  return out
+}
+
 /** Rule 3 — terminal coverage over the confirm point and every outcome. */
 function checkTemplates(ctx: WorkflowContext): readonly CatalogDiagnostic[] {
   const out: CatalogDiagnostic[] = []
@@ -406,6 +477,9 @@ export function runWorkflowShapePass(
 
     checked += readArray(record["activities"]).length
     diagnostics.push(...checkActivities(ctx))
+
+    checked += readArray(record["params"]).length
+    diagnostics.push(...checkClaimParams(ctx))
 
     checked += WORKFLOW_OUTCOMES.length + 1
     diagnostics.push(...checkTemplates(ctx))

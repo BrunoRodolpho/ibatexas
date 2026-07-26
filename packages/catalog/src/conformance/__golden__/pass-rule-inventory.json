@@ -104,6 +104,7 @@
         "activity-param-undeclared",
         "activity-sequence-empty",
         "capability-reference-dangling",
+        "claim-param-type-unknown",
         "confirm-template-missing",
         "outcome-template-missing",
         "workflow-id-duplicated",
@@ -112,5 +113,5 @@
       ]
     }
   ],
-  "ruleCount": 47
+  "ruleCount": 48
 }

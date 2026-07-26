@@ -43,4 +43,14 @@
 // resumes against — and a turn compiled while `order.reorder` was still an
 // ordinary unadvertised kind is not replayable against one compiled after it
 // became workflow-scoped.
-export const CATALOG_VERSION: number = 5
+// v6 (LE2-021) — the workflow corpus's claim-param vocabulary is corrected and
+// the correction is enforced: the fixture workflow's claim param moved from
+// `{claimType: "order-placed", field: "orderId"}` (a success-class id and a
+// field no registry type carries) to `{claimType: "ORDER_HISTORY", field:
+// "historySummaryText"}`, and the new `claim-param-type-unknown` rule in the
+// `workflow-shape` pass makes the old spelling a build error. The README's
+// FIRST trigger does not fire — no capability field changed — but the THIRD
+// does, read at its intent: an instance PINS this serial, and a workflow
+// compiled while `order-placed` was an accepted claim-param type is not
+// replayable against one compiled after it stopped being one.
+export const CATALOG_VERSION: number = 6

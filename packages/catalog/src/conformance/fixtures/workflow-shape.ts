@@ -49,11 +49,18 @@ export function workflowBase(): Record<string, unknown> {
     description: "Fluxo de conformidade (fixture).",
     matchers: [{ capability: FIXTURE_ANCHOR_KIND }],
     selection: { capability: FIXTURE_ANCHOR_KIND },
+    // A REAL registry claim type (`claim-param-type-unknown` targets the wrong
+    // vocabulary deliberately, and only in its own fixture). The base has to be
+    // otherwise-clean or every fixture in this file would carry a second,
+    // unrelated diagnostic and stop isolating the rule it names.
     params: [
-      { name: "orderId", source: { from: "claim", claimType: "order-placed", field: "orderId" } },
+      {
+        name: "history",
+        source: { from: "claim", claimType: "ORDER_HISTORY", field: "historySummaryText" },
+      },
     ],
     activities: [
-      { id: "step", capability: FIXTURE_STEP_KIND, payload: { orderId: { param: "orderId" } } },
+      { id: "step", capability: FIXTURE_STEP_KIND, payload: { summary: { param: "history" } } },
     ],
     confirm: { template: "confirm" },
     templates: [
@@ -83,7 +90,7 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
         {
           id: "step",
           capability: "conformance.workflow.absent",
-          payload: { orderId: { param: "orderId" } },
+          payload: { summary: { param: "history" } },
         },
       ],
     }),
@@ -118,6 +125,28 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
     }),
   },
   {
+    name: "workflow-shape.claim-param-type-unknown",
+    targets: "workflow-shape/claim-param-type-unknown",
+    why:
+      "The param sources from `order-placed`, which is a SUCCESS CLAIM CLASS — one of " +
+      "the responder's anti-confabulation guard ids — and not a member of the registry " +
+      "claim-type vocabulary the planner selects from. The two are constantly confused " +
+      "because both are called 'claims' (SDD §K: map, do not equate), and only the " +
+      "registry types carry a validated VALUE at all. This is not a hypothetical " +
+      "authoring slip: LE2-020's own fixture shipped exactly this spelling. It has to " +
+      "be a BUILD error because at run time it is perfectly silent — the resolver looks " +
+      "the type up in a map, misses, and leaves the param UNRESOLVED forever, so the " +
+      "workflow simply never runs and no diagnostic is emitted anywhere.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows({
+      ...workflowBase(),
+      params: [
+        ...(workflowBase()["params"] as readonly unknown[]),
+        { name: "previous", source: { from: "claim", claimType: "order-placed", field: "orderId" } },
+      ],
+    }),
+  },
+  {
     name: "workflow-shape.activity-sequence-empty",
     targets: "workflow-shape/activity-sequence-empty",
     why:
@@ -141,7 +170,7 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
     workflows: fixtureWorkflows({
       ...workflowBase(),
       activities: [
-        { id: "step", capability: FIXTURE_STEP_KIND, payload: { orderId: { param: "orderId" } } },
+        { id: "step", capability: FIXTURE_STEP_KIND, payload: { summary: { param: "history" } } },
         { id: "step", capability: FIXTURE_STEP_KIND, payload: {} },
       ],
     }),

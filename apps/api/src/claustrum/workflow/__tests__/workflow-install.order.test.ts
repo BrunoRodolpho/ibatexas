@@ -67,7 +67,7 @@ function runtimeWithRecordedActivities(): {
     },
     dispatchActivity: async () => ({ ok: true }),
     claimsFor: () =>
-      new Map([["order-placed", { orderId: "order_prev" }]]) as never,
+      new Map([["ORDER_HISTORY", { historySummaryText: "Pedido #1042" }]]) as never,
   });
   return { runtime, adjudicated };
 }

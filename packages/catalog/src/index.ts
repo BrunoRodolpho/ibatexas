@@ -123,6 +123,7 @@ export {
 
 export {
   FIXTURE_LINEAR_WORKFLOW,
+  FIXTURE_PREVIOUS_ORDER_ID,
   FIXTURE_WORKFLOW_ID,
   FIXTURE_WORKFLOWS,
 } from "./workflows/fixtures.js"

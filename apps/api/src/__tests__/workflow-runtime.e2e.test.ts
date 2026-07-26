@@ -102,9 +102,8 @@ const { createWorkflowRuntime } = await import(
 const { workflowTrace } = await import("../claustrum/workflow/workflow-trace.js");
 const { createParseFunnel, renderL0Reply } = await import("../claustrum/funnel-tier.js");
 const { CUSTOMER_ROUTER } = await import("./customer-e2e-harness.js");
-const { CATALOG_VERSION, FIXTURE_WORKFLOWS, FIXTURE_WORKFLOW_ID } = await import(
-  "@ibatexas/catalog"
-);
+const { CATALOG_VERSION, FIXTURE_PREVIOUS_ORDER_ID, FIXTURE_WORKFLOWS, FIXTURE_WORKFLOW_ID } =
+  await import("@ibatexas/catalog");
 const { adjudicateAndAudit } = await import("@adjudicate/core/kernel");
 const { buildLanguageEngineAuditMetadata } = await import(
   "../claustrum/language-engine/audit-metadata.js"
@@ -113,7 +112,10 @@ const { buildLanguageEngineAuditMetadata } = await import(
 const CUSTOMER = "cus_le2020_owner";
 const CONVERSATION = "conv_le2020";
 const CART_ID = "cart_le2020";
-const PREVIOUS_ORDER = "order_le2020_previous";
+/** The order the fixture's reorder activity targets — an AUTHORED CONSTANT on
+ *  the definition (LE2-021), not a param, so the test reads it from the catalog
+ *  rather than re-spelling it. */
+const PREVIOUS_ORDER = FIXTURE_PREVIOUS_ORDER_ID;
 
 /** The utterance that selects the fixture workflow. */
 const SELECT_UTTERANCE = "quero repetir meu último pedido e finalizar";
@@ -293,9 +295,12 @@ function buildHarness(
   return { harness, sink, session, runtime, medusa };
 }
 
-/** The claims the claims kernel VALIDATED this turn, in the runtime's shape. */
+/** The claims the claims kernel VALIDATED this turn, in the runtime's shape.
+ *  Keyed by REGISTRY CLAIM TYPE (LE2-021) — the vocabulary the fixture's param
+ *  now names, and the only one that carries a validated value. */
+const PREVIOUS_ORDER_SUMMARY = "Pedido #1042 (entregue, R$89,00) — mostrando o mais recente";
 function validatedClaims(): ReadonlyMap<string, Record<string, unknown>> {
-  return new Map([["order-placed", { orderId: PREVIOUS_ORDER }]]);
+  return new Map([["ORDER_HISTORY", { historySummaryText: PREVIOUS_ORDER_SUMMARY }]]);
 }
 
 /** Audit records for a kind, EXECUTE only. */
@@ -340,9 +345,9 @@ describe("LE2-020 turn seam — a catalog-declared workflow, selected, confirmed
     expect(instance?.params.has("orderId")).toBe(false);
     expect(instance?.params.get("note")).toEqual({ resolved: true, value: "sem cebola" });
     // The claim-sourced param came from the VALIDATED claim, not the model.
-    expect(instance?.params.get("previousOrderId")).toEqual({
+    expect(instance?.params.get("previousOrderSummary")).toEqual({
       resolved: true,
-      value: PREVIOUS_ORDER,
+      value: PREVIOUS_ORDER_SUMMARY,
     });
 
     // The whole-workflow confirm QUOTES the kernel's grounded sentence — the
@@ -352,6 +357,8 @@ describe("LE2-020 turn seam — a catalog-declared workflow, selected, confirmed
     const confirm = runtime.renderConfirm(turn1.turnId);
     expect(confirm).toContain("Esse pedido soma R$ 1500,00.");
     expect(confirm).toContain("sem cebola");
+    // …and the CLAIM-sourced summary is quoted back before the customer approves.
+    expect(confirm).toContain(PREVIOUS_ORDER_SUMMARY);
 
     // NOTHING has executed yet — the park is the whole point.
     const parked = session.parksFor(CUSTOMER);
