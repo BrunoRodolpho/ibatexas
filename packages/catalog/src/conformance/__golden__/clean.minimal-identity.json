@@ -3,6 +3,7 @@
   "targets": null,
   "ok": true,
   "capabilities": 1,
+  "externalReferences": 0,
   "rulesEmitted": [],
   "passes": [
     {
@@ -23,6 +24,11 @@
     {
       "pass": "terminal-coverage",
       "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
       "diagnostics": 0
     }
   ],

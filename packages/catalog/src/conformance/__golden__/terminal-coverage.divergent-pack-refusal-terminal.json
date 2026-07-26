@@ -3,6 +3,7 @@
   "targets": "terminal-coverage/divergent-pack-refusal-terminal",
   "ok": false,
   "capabilities": 2,
+  "externalReferences": 0,
   "rulesEmitted": [
     "terminal-coverage/divergent-pack-refusal-terminal"
   ],
@@ -26,6 +27,11 @@
       "pass": "terminal-coverage",
       "checked": 7,
       "diagnostics": 1
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
     }
   ],
   "diagnostics": [

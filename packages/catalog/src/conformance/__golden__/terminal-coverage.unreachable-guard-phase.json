@@ -3,6 +3,7 @@
   "targets": "terminal-coverage/unreachable-guard-phase",
   "ok": false,
   "capabilities": 1,
+  "externalReferences": 0,
   "rulesEmitted": [
     "terminal-coverage/unreachable-guard-phase"
   ],
@@ -26,6 +27,11 @@
       "pass": "terminal-coverage",
       "checked": 4,
       "diagnostics": 1
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
     }
   ],
   "diagnostics": [

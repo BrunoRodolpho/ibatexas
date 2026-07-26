@@ -31,6 +31,7 @@ export const CATALOG_PASS_IDS = [
   "slot-dataflow",
   "safety-implication-edges",
   "terminal-coverage",
+  "external-references",
 ] as const
 
 /** One static pass's stable id. */
@@ -138,4 +139,15 @@ export function capabilityObjectName(kind: unknown, index: number): string {
 /** Name a pack for {@link CatalogDiagnostic.object}. */
 export function packObjectName(pack: string): string {
   return `pack:${pack}`
+}
+
+/**
+ * Name an external-reference declaration for {@link CatalogDiagnostic.object}.
+ * Same fallback discipline as {@link capabilityObjectName}: a declaration whose
+ * own `id` slot is unusable is still findable by its array position.
+ */
+export function externalReferenceObjectName(id: unknown, index: number): string {
+  return typeof id === "string" && id.trim() !== ""
+    ? `external-reference:${id}`
+    : `external-reference:#${index}`
 }

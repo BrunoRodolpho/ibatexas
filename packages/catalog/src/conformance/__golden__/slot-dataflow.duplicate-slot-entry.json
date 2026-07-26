@@ -3,6 +3,7 @@
   "targets": "slot-dataflow/duplicate-slot-entry",
   "ok": false,
   "capabilities": 1,
+  "externalReferences": 0,
   "rulesEmitted": [
     "slot-dataflow/duplicate-slot-entry"
   ],
@@ -25,6 +26,11 @@
     {
       "pass": "terminal-coverage",
       "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
       "diagnostics": 0
     }
   ],
