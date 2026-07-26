@@ -59,6 +59,13 @@ import {
   pruneExpiredOpsParks,
 } from "./ops-system-channel.js";
 import { excludedKindsForScope } from "./ops-verb-scope.js";
+import {
+  OPS_WHATSAPP_CHANNEL,
+  closeOpsIncidentOnDeliveredReply,
+  recordOpsTurnDelivery,
+  recordOpsTurnFailure,
+  type OpsTurnContext,
+} from "./ops-turn-incident.js";
 import type { OpsConductorContext } from "./ops-conductor.js";
 
 type LogFn = {
@@ -199,7 +206,7 @@ async function runOpsTurn(
     readonly log: LogFn;
   },
 ): Promise<void> {
-  const { staffId, actor, command, hash, log } = ctx;
+  const { staffId, actor, command, phone, hash, log } = ctx;
 
   // History (best-effort, both appends): render the PRIOR-turns block BEFORE
   // appending the current message (so the live message is the inbound, not a
@@ -229,14 +236,52 @@ async function runOpsTurn(
   }
 
   const conversationId = `admin:${staffId}`;
+  // BKL-235 — the per-inbound ref doubles as the incident dedup key when no
+  // `capsule.turnId` is in scope (the catch path), mirroring the customer webhook's
+  // use of `body.MessageSid`. Hoisted so both uses read the SAME value.
+  const turnRef = randomUUID();
   const inbound: ChannelMessage = {
     channel: "system",
     customerId: `staff:${staffId}`,
     conversationId,
-    externalId: randomUUID(),
+    externalId: turnRef,
     text: command,
     receivedAt: new Date().toISOString(),
     locale: "pt-BR",
+  };
+
+  // ── BKL-235 incident wiring state ───────────────────────────────────────────
+  // `sendEntered` / `sendCompleted` feed the SHARED `classifyCatchError`, which
+  // needs them to tell a pre-send death (the staffer was ghosted → incident) from a
+  // post-send throw (already served → F2 exclusion, no incident). They MUST be set
+  // around the real send, never by wrapping-and-swallowing it.
+  let sendEntered = false;
+  let sendCompleted = false;
+  let turnId: string | undefined;
+  const incidentCtx = (): OpsTurnContext => ({
+    staffId,
+    channel: OPS_WHATSAPP_CHANNEL,
+    turnId: turnId ?? null,
+    messageRef: turnRef,
+    // Channel-addressable, so a manager can reply to the ghosted staffer from the
+    // admin Incidentes inbox (same shape the customer plane stores).
+    senderRef: `whatsapp:${phone}`,
+    phoneHash: hash,
+    log,
+  });
+
+  /**
+   * BKL-235 — every DELIVERED ops reply is recovery proof, so all four delivery
+   * sites (the three pre-turn notices + the turn reply) route through here and the
+   * delivered-reply auto-close can never be forgotten at one of them. The honest
+   * FALLBACK is deliberately NOT routed here: "não consegui processar" is an error
+   * surface, not a recovery, and must never self-heal an incident.
+   */
+  const sendReplyAndHeal = async (text: string): Promise<void> => {
+    sendEntered = true;
+    await deps.sendReply(text);
+    sendCompleted = true;
+    if (turnId) await closeOpsIncidentOnDeliveredReply(staffId, turnId, log);
   };
 
   try {
@@ -252,6 +297,8 @@ async function runOpsTurn(
       },
       inbound,
     });
+    // BKL-235 — audit correlation for the incident + the auto-close eventId.
+    turnId = capsule.turnId;
     try {
       // FE-D13 — honest stale-resume (with BKL-086 parity). Drop the out-of-scope
       // money verbs FIRST (excludedKindsForScope — the SAME set scopeResumeChannel
@@ -307,7 +354,7 @@ async function runOpsTurn(
         } catch (err) {
           log.warn(err, "[ops-wa] stale-notice history append failed (non-fatal)");
         }
-        await deps.sendReply(staleNotice);
+        await sendReplyAndHeal(staleNotice);
         return;
       }
 
@@ -338,7 +385,7 @@ async function runOpsTurn(
         } catch (err) {
           log.warn(err, "[ops-wa] soft-restate history append failed (non-fatal)");
         }
-        await deps.sendReply(softRestate);
+        await sendReplyAndHeal(softRestate);
         return;
       }
 
@@ -384,7 +431,7 @@ async function runOpsTurn(
           } catch (err) {
             log.warn(err, "[ops-wa] decline-ack history append failed (non-fatal)");
           }
-          await deps.sendReply(OPS_NEGATIVE_DECLINE_ACK_PTBR);
+          await sendReplyAndHeal(OPS_NEGATIVE_DECLINE_ACK_PTBR);
           return;
         }
       }
@@ -399,8 +446,9 @@ async function runOpsTurn(
         log.warn(err, "[ops-wa] assistant-reply history append failed (non-fatal)");
       }
       const replyText = turn.response.text ?? "";
+      let fallbackDelivered = false;
       if (replyText.trim().length > 0) {
-        await deps.sendReply(replyText);
+        await sendReplyAndHeal(replyText);
       } else {
         // The ops responder always produces staff-facing text; a blank completion
         // would ghost the owner — send the honest fallback instead of silence.
@@ -408,15 +456,49 @@ async function runOpsTurn(
           { phone_hash: hash, staff_id: staffId, decision: turn.decision.kind },
           "[ops-wa] empty ops completion — sending fallback",
         );
-        await deps.sendError(OPS_TURN_FAILED_PTBR).catch(() => {});
+        // BKL-235 — track whether the fallback LANDED: a delivered fallback is
+        // degraded (`customerImpacted:false`), a failed one is a full ghost. Still
+        // fully swallowed, so it can never mask the governed open below.
+        try {
+          await deps.sendError(OPS_TURN_FAILED_PTBR);
+          fallbackDelivered = true;
+        } catch {
+          // Twilio down — the staffer got silence.
+        }
       }
+      // BKL-235 — the governed incident, LAST (after the send) so a substitution
+      // bug can never mask emission, exactly as the customer webhook orders it. A
+      // no-op on a delivered reply; opens on an empty/whitespace completion.
+      await recordOpsTurnDelivery({
+        ctx: incidentCtx(),
+        replyText,
+        replyDelivered: sendCompleted,
+        fallbackDelivered,
+        decisionKind: turn.decision.kind,
+      });
     } finally {
       await conductor.closeCapsule(capsule);
     }
   } catch (err) {
     // Never fabricate success: an honest 502-equivalent pt-BR message.
     log.error(err, "[ops-wa] ops conductor turn failed");
-    await deps.sendError(OPS_TURN_FAILED_PTBR).catch(() => {});
+    let fallbackDelivered = false;
+    try {
+      await deps.sendError(OPS_TURN_FAILED_PTBR);
+      fallbackDelivered = true;
+    } catch {
+      // Twilio down — the staffer got silence.
+    }
+    // BKL-235 — a PRE-send death ghosted the staffer → governed incident (the
+    // shared classifier maps it into the frozen `send_failed`/`timeout` taxonomy).
+    // A POST-send throw is excluded: the reply was already delivered.
+    await recordOpsTurnFailure({
+      ctx: incidentCtx(),
+      error: err,
+      sendEntered,
+      sendCompleted,
+      fallbackDelivered,
+    });
   }
 }
 
