@@ -52,6 +52,11 @@ import {
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
 import { getConductor } from "../claustrum-bootstrap.js";
 import {
+  WEB_NEGATIVE_DECLINE_ACK_PTBR,
+  webNegativeDeclineTarget,
+  webSoftAffirmativeRestateNotice,
+} from "../claustrum/web-confirm-channel.js";
+import {
   classifyTurnDelivery,
   classifyCatchError,
   emitNoDelivery,
@@ -302,6 +307,38 @@ async function openWebDrop(params: {
 }
 
 /**
+ * BKL-212 — deliver ONE deterministic, ingress-authored pt-BR reply (a
+ * confirm-resume nicety) on the SSE stream. Mirrors the normal path's frame order
+ * and branding exactly — `text_delta` (branded through the same transitional
+ * minter) → persist → terminal `done` — so the client cannot tell an
+ * ingress-answered turn from a conductor-answered one. Abort-aware like every
+ * other delivery here: a disconnected/superseded consumer gets nothing (and
+ * nothing is persisted for it). The history append is best-effort, matching the
+ * ops precedent — a store failure must never cost the customer the reply.
+ */
+async function deliverIngressReply(params: {
+  server: FastifyInstance;
+  sessionId: string;
+  text: string;
+  customerId: string | undefined;
+  isAuthenticated: boolean;
+  aborted: boolean;
+}): Promise<void> {
+  const { server, sessionId, text, customerId, isAuthenticated, aborted } = params;
+  if (aborted) return;
+  pushChunk(sessionId, { type: "text_delta", delta: wrapLegacyResponderText(text) });
+  try {
+    await appendMessages(sessionId, [{ role: "assistant", content: text }], isAuthenticated, {
+      customerId,
+      channel: "web",
+    });
+  } catch (err) {
+    server.log.warn(err, "[chat] ingress-reply history append failed (non-fatal)");
+  }
+  pushChunk(sessionId, { type: "done" });
+}
+
+/**
  * Delegate one turn to the claustrum Conductor (fire-and-forget). Mirrors dev's
  * hardening: bot-pause gate, single assembled text chunk + terminal done,
  * assistant-message persistence, abort-aware delivery, and finally cleanup.
@@ -394,6 +431,86 @@ async function runConductorTurn(params: {
     });
 
     try {
+      // ── BKL-212: confirm-resume niceties, resolved BEFORE handleTurn ───────
+      // The WEB mirror of the OPS ingresses (ops-whatsapp-ingress.ts:314-390 /
+      // admin/ops-chat.ts:203-285): while a confirmation is parked, two reply
+      // shapes are answered by the ingress itself instead of burning a model turn
+      // that re-plans them. EVERYTHING else — an explicit "sim", a mixed reply,
+      // any ordinary text, or no park at all — falls through to the unchanged path
+      // below. There is no freshness partition (customer parks carry no TTL — see
+      // web-confirm-channel.ts), so these engage on exactly the parks the
+      // WebConfirmChannel matcher itself can still resume.
+      const parked = capsule.loadedSession?.pendingConfirmations;
+
+      // A BARE soft affirmative ("ok"/"pode"/"beleza") is too weak to execute on
+      // web — the matcher deliberately resolves it to null (unlike the WhatsApp
+      // customer channel, which confirms on a bare "ok" by design), so today it
+      // falls through to a full model turn. Restate the parked prompt and ask for
+      // an explicit confirm. NOTHING is unparked and nothing executes: a follow-up
+      // "sim" still resumes the park through the normal adjudicated path. A soft
+      // affirmative that also carries CONTENT ("ok mas muda para 19h") is a new
+      // request, not a bare yes — it stays on the normal loop.
+      const softRestate = webSoftAffirmativeRestateNotice(message, parked);
+      if (softRestate !== undefined) {
+        turnHandled = true;
+        server.log.warn(
+          { event: "chat.soft_affirm_restate", sessionId, pending: parked?.length ?? 0 },
+          "[chat] soft affirmative on a parked confirmation — restating, awaiting an explicit confirm, skipping the turn",
+        );
+        await deliverIngressReply({
+          server,
+          sessionId,
+          text: softRestate,
+          customerId,
+          isAuthenticated,
+          aborted: turnAbort.signal.aborted,
+        });
+        return;
+      }
+
+      // A PURE negative declines the park at the ingress: unpark + acknowledge and
+      // SKIP the turn, so the negative text never reaches the planner (claustrum's
+      // own deny path unparks and THEN re-plans the "no" as a fresh command — the
+      // BKL-191 re-prompt). Unparking BEFORE handleTurn is the ops precedent.
+      // Fail-honest: an unpark failure falls through to the normal loop rather
+      // than acknowledging a cancellation that did not stick.
+      const declineTarget = webNegativeDeclineTarget(message, parked);
+      if (declineTarget !== undefined) {
+        let unparked = false;
+        try {
+          await capsule.session.unpark(
+            capsule.loadedSession.id,
+            declineTarget.envelope.intentHash,
+          );
+          unparked = true;
+        } catch (err) {
+          server.log.warn(
+            err,
+            "[chat] negative-decline unpark failed — falling through to the normal loop (BKL-212)",
+          );
+        }
+        if (unparked) {
+          turnHandled = true;
+          server.log.warn(
+            {
+              event: "chat.negative_declined_park",
+              sessionId,
+              kind: String(declineTarget.envelope.kind),
+            },
+            "[chat] negative reply on a parked confirmation — declined + unparked, skipping the turn (BKL-212)",
+          );
+          await deliverIngressReply({
+            server,
+            sessionId,
+            text: WEB_NEGATIVE_DECLINE_ACK_PTBR,
+            customerId,
+            isAuthenticated,
+            aborted: turnAbort.signal.aborted,
+          });
+          return;
+        }
+      }
+
       const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
       // The conductor produced a result — the inner classify below now owns the
       // no-delivery decision, so a later (post-result) throw must not re-open in

@@ -35,9 +35,19 @@
 // guest), so a "sim" only ever resumes a park on the SAME customer's own
 // session — no cross-session resume hazard.
 
-import type { ChannelMessage, ParkedMatch, Session } from "@claustrum/core";
+import type {
+  ChannelMessage,
+  ParkedEnvelope,
+  ParkedMatch,
+  Session,
+} from "@claustrum/core";
 import { WebChannel } from "@claustrum/channel-web";
-import { matchOpsReplyToParked } from "../ops/ops-system-channel.js";
+import {
+  isPureNegativeReplyText,
+  isSoftAffirmativeOnlyText,
+  matchOpsReplyToParked,
+  pickMostRecentlyParked,
+} from "../ops/ops-system-channel.js";
 
 /**
  * `WebChannel` + a real customer-plane `matchToParked`. One driver per channel
@@ -57,4 +67,69 @@ export class WebConfirmChannel extends WebChannel {
     // park; a bare soft affirmative resolves to null (the fresh loop runs).
     return matchOpsReplyToParked(channelEvent.text, parked);
   }
+}
+
+// ── BKL-212: the customer-web ingress niceties ───────────────────────────────
+// `matchToParked` above resolves a bare soft "ok" and (via the conductor's deny
+// path) a "não" to OUTCOMES the customer never sees crisply: the soft affirmative
+// falls through to a full model turn, and claustrum's deny unparks but then
+// re-plans the "no" text as a fresh command (the BKL-191 re-prompt). The OPS
+// ingresses already close both at the ingress — a pure-negative unparks +
+// acknowledges BEFORE handleTurn, and a bare soft affirmative restates the park —
+// and these are the WEB-plane mirrors of those two surfaces.
+//
+// PARK SELECTION differs from ops by ONE thing, deliberately: there is NO
+// freshness partition. A customer park carries no `expiresAt`
+// (`opsConfirmParkExpiresAt` stamps ops sessions only), so every pending
+// confirmation is live — the same premise `matchToParked` above is built on. Any
+// TTL filter here would silently disable the niceties for older parks that the
+// matcher itself still resumes, which is exactly the divergence to avoid.
+//
+// NEITHER surface can EXECUTE: the decline path only unparks, and the restate
+// path touches no state at all (the park SURVIVES so a follow-up "sim" still runs
+// the normal, fully-adjudicated confirm-resume). The money-safety posture from
+// #352 is untouched — a soft affirmative still never executes on web.
+
+/** pt-BR acknowledgment for a park the customer declined (web mirror of
+ *  `OPS_NEGATIVE_DECLINE_ACK_PTBR`, customer register). */
+export const WEB_NEGATIVE_DECLINE_ACK_PTBR =
+  "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.";
+
+const WEB_SOFT_AFFIRM_RESTATE_PREFIX_PTBR = "Só confirmando — você quer que eu faça ";
+const WEB_SOFT_AFFIRM_RESTATE_SUFFIX_PTBR = '? Responda "sim" para eu seguir.';
+
+/**
+ * The park a PURE-NEGATIVE customer reply declines, or `undefined` when this
+ * branch must not engage (a `#hash`/defer/affirmative reply, a MIXED reply — the
+ * money-safe ambiguous case that keeps the park — or no park at all). The text
+ * test is the shared {@link isPureNegativeReplyText}, so this can never disagree
+ * with `matchToParked`'s deny resolution. PURE — the caller owns the unpark.
+ */
+export function webNegativeDeclineTarget(
+  text: string,
+  pendingConfirmations: ReadonlyArray<ParkedEnvelope> | undefined,
+): ParkedEnvelope | undefined {
+  if (!pendingConfirmations || pendingConfirmations.length === 0) return undefined;
+  if (!isPureNegativeReplyText(text)) return undefined;
+  return pickMostRecentlyParked(pendingConfirmations) ?? undefined;
+}
+
+/**
+ * The pt-BR restatement for a BARE SOFT AFFIRMATIVE ("ok"/"pode"/"beleza") aimed
+ * at a parked confirmation, or `undefined` when this branch must not engage (an
+ * explicit "sim"/`#hash`/negative/defer — all resolved by the normal loop — a
+ * soft affirmative that ALSO carries content ("ok mas muda para 19h" — a new
+ * request the loop must answer), an ordinary utterance, or no park at all).
+ * Restating is the WHOLE effect: nothing executes and the park survives, so a
+ * follow-up "sim" still resumes it through the normal adjudicated path. PURE.
+ */
+export function webSoftAffirmativeRestateNotice(
+  text: string,
+  pendingConfirmations: ReadonlyArray<ParkedEnvelope> | undefined,
+): string | undefined {
+  if (!pendingConfirmations || pendingConfirmations.length === 0) return undefined;
+  if (!isSoftAffirmativeOnlyText(text)) return undefined;
+  const target = pickMostRecentlyParked(pendingConfirmations);
+  if (!target) return undefined;
+  return `${WEB_SOFT_AFFIRM_RESTATE_PREFIX_PTBR}"${target.userPrompt}"${WEB_SOFT_AFFIRM_RESTATE_SUFFIX_PTBR}`;
 }

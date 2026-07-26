@@ -70,8 +70,14 @@ const HASH_PREFIX_RE = /#([a-f0-9]{6,12})/i;
 
 /** Most-recently-parked envelope, skipping malformed timestamps (NaN-sticky-bug
  *  guard, mirroring the whatsapp driver). Falls back to the last element when no
- *  entry has a parseable `parkedAt` so a non-empty list always yields a result. */
-function pickMostRecentlyParked(
+ *  entry has a parseable `parkedAt` so a non-empty list always yields a result.
+ *
+ *  EXPORTED for the CUSTOMER-plane ingresses (BKL-212). Customer parks carry NO
+ *  confirm-freshness TTL (`opsConfirmParkExpiresAt` stamps ops sessions only), so
+ *  the web plane selects its target with this single-slot rule DIRECTLY, without
+ *  the ops freshness partition — exactly as `WebConfirmChannel.matchToParked`
+ *  already does via `matchOpsReplyToParked`. */
+export function pickMostRecentlyParked(
   parked: ReadonlyArray<ParkedEnvelope>,
 ): ParkedEnvelope | null {
   if (parked.length === 0) return null;
@@ -287,6 +293,72 @@ export function isAmbiguousOpsReply(text: string): boolean {
   return hasBroadAffirmative(text) && NEGATIVE_RE.test(text);
 }
 
+// ── Plane-neutral reply SHAPES (BKL-212) ─────────────────────────────────────
+// The two ingress niceties below (BKL-191 decline, FE-D32 soft restate) each
+// decompose into a PURE TEXT question ("what shape is this reply?") and a PARK
+// question ("is there a park to act on?"). The park half differs per plane (ops
+// partitions by the confirm TTL + kind scope; a CUSTOMER park has neither), but
+// the text half is IDENTICAL — same lexicons, same precedence. These two
+// predicates ARE that text half, so the ops helpers and the customer-web ingress
+// share one definition and can never drift. PURE.
+
+/**
+ * Is this reply a PURE NEGATIVE — a refusal and nothing else? True only for a
+ * reply that carries a negative token AND no `#hash`, no defer phrase, and no
+ * affirmative token of either strength. The exclusions mirror
+ * `matchOpsReplyToParked`'s deny resolution exactly: a hash/defer reply is
+ * resolved by the normal loop, and a MIXED affirmative+negative ("não, pode
+ * deixar") is AMBIGUOUS — money-safety keeps the park rather than declining it.
+ */
+export function isPureNegativeReplyText(text: string): boolean {
+  if (typeof text !== "string" || text.length === 0) return false;
+  if (HASH_PREFIX_RE.test(text)) return false;
+  if (DEFER_RE.test(text)) return false;
+  if (!NEGATIVE_RE.test(text)) return false;
+  return !hasBroadAffirmative(text);
+}
+
+/**
+ * Is this reply SOFT-AFFIRMATIVE-shaped — a conversational "pode"/"ok"/"beleza"
+ * and nothing stronger? True only for a reply carrying a soft affirmative token
+ * AND no explicit confirm ("sim"/"confirmo"), no `#hash`, no negative, and no
+ * defer phrase. Such a reply is too weak to EXECUTE a parked action (FE-D32): an
+ * ingress restates the park and asks for an explicit confirm. NOTE this says
+ * nothing about the REST of the message — see {@link isSoftAffirmativeOnlyText}.
+ */
+export function isSoftAffirmativeReplyText(text: string): boolean {
+  if (typeof text !== "string" || text.length === 0) return false;
+  if (EXPLICIT_CONFIRM_RE.test(text)) return false;
+  if (HASH_PREFIX_RE.test(text)) return false;
+  if (NEGATIVE_RE.test(text)) return false;
+  if (DEFER_RE.test(text)) return false;
+  return SOFT_AFFIRMATIVE_RE.test(text);
+}
+
+/** Word-ish tokens (Unicode letters/digits), so accents and punctuation are handled. */
+const WORD_TOKEN_RE = /[\p{L}\p{N}]+/gu;
+
+/**
+ * The STRICTER sibling of {@link isSoftAffirmativeReplyText}: soft-affirmative
+ * shaped AND carrying nothing else — every word token in the message is itself a
+ * soft-affirmative token ("ok", "ok!", "pode", "beleza"). A reply that says yes
+ * AND adds content ("ok mas muda para 19h") is NOT this: the customer issued a
+ * NEW request, and answering it with a bare restatement would drop what they
+ * asked for, so such a reply belongs to the normal cognitive loop.
+ *
+ * This is the CUSTOMER-plane admission test (BKL-212). It is strictly NARROWER
+ * than the ops FE-D32 rule — deliberately: on the ops plane a staff "ok muda o
+ * preço" restating the park is an acceptable prompt for an explicit confirm,
+ * whereas silently restating at a customer reads as not having listened. Narrower
+ * also means every message it rejects keeps today's exact behaviour.
+ */
+export function isSoftAffirmativeOnlyText(text: string): boolean {
+  if (!isSoftAffirmativeReplyText(text)) return false;
+  const tokens = text.match(WORD_TOKEN_RE);
+  if (tokens === null) return false;
+  return tokens.every((token) => SOFT_AFFIRMATIVE_RE.test(token));
+}
+
 // ── FE-D13: honest stale-resume restatement ──────────────────────────────────
 // Once the TTL makes a park invisible to matchToParked (above), a later "sim" (or
 // #hash, or "não") aimed at that park would otherwise silently run the fresh loop —
@@ -406,15 +478,10 @@ export function opsSoftAffirmativeRestateNotice(input: {
   readonly excludedKinds?: ReadonlySet<string>;
   readonly ttlSeconds?: number;
 }): string | undefined {
-  if (typeof input.text !== "string" || input.text.length === 0) return undefined;
   if (!Number.isFinite(Date.parse(input.nowIso))) return undefined;
   // Soft-ONLY: anything the normal loop resolves (explicit confirm / #hash /
   // negative / defer) is deferred to it; a non-soft utterance is an ordinary command.
-  if (EXPLICIT_CONFIRM_RE.test(input.text)) return undefined;
-  if (HASH_PREFIX_RE.test(input.text)) return undefined;
-  if (NEGATIVE_RE.test(input.text)) return undefined;
-  if (DEFER_RE.test(input.text)) return undefined;
-  if (!SOFT_AFFIRMATIVE_RE.test(input.text)) return undefined;
+  if (!isSoftAffirmativeReplyText(input.text)) return undefined;
 
   const excluded = input.excludedKinds ?? EMPTY_EXCLUDED_KINDS;
   const ttlSeconds = input.ttlSeconds ?? getOpsConfirmParkTtlSeconds();
@@ -462,13 +529,10 @@ export function opsNegativeDeclineTarget(input: {
   readonly excludedKinds?: ReadonlySet<string>;
   readonly ttlSeconds?: number;
 }): ParkedEnvelope | undefined {
-  if (typeof input.text !== "string" || input.text.length === 0) return undefined;
   if (!Number.isFinite(Date.parse(input.nowIso))) return undefined;
-  if (HASH_PREFIX_RE.test(input.text)) return undefined;
-  if (DEFER_RE.test(input.text)) return undefined;
-  if (!NEGATIVE_RE.test(input.text)) return undefined;
-  // Mixed affirmative+negative is AMBIGUOUS (the matcher's null) — never decline.
-  if (hasBroadAffirmative(input.text)) return undefined;
+  // Pure-negative ONLY: a hash/defer reply belongs to the normal loop, and a mixed
+  // affirmative+negative is AMBIGUOUS (the matcher's null) — never decline.
+  if (!isPureNegativeReplyText(input.text)) return undefined;
 
   const excluded = input.excludedKinds ?? EMPTY_EXCLUDED_KINDS;
   const ttlSeconds = input.ttlSeconds ?? getOpsConfirmParkTtlSeconds();

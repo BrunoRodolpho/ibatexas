@@ -828,6 +828,177 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
   });
 });
 
+// ── BKL-212: confirm-resume niceties on the customer WEB ingress ────────────
+// The web mirror of the OPS ingress patterns. Both branches act BEFORE
+// handleTurn, so the mocked handleTurn is exactly the right seam: the decisive
+// assertion on the two new paths is that the model turn NEVER runs, and on every
+// other input that it runs exactly as it does today.
+describe("POST /api/chat/messages — BKL-212 parked-confirmation niceties", () => {
+  const PARK_PROMPT = "cancelar o pedido 4242";
+  const INTENT_HASH = "abc123def456";
+  const mockUnpark = vi.fn();
+
+  /** Open the capsule with ONE parked confirmation (the customer-plane shape: no
+   *  `expiresAt` — web parks carry no confirm-freshness TTL). */
+  function withPark(): void {
+    mockOpenCapsule.mockResolvedValue({
+      id: "capsule-1",
+      turnId: "turn-1",
+      loadedSession: {
+        id: "web:guest:session",
+        pendingConfirmations: [
+          {
+            envelope: { kind: "order.cancel", intentHash: INTENT_HASH },
+            confirmationToken: "tok-1",
+            userPrompt: PARK_PROMPT,
+            parkedAt: new Date().toISOString(),
+          },
+        ],
+      },
+      session: { unpark: mockUnpark },
+    });
+  }
+
+  async function postGuest(message: string): Promise<void> {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message, channel: "web" },
+    });
+    expect(res.statusCode).toBe(200);
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+    await app.close();
+  }
+
+  /** The text of the single delivered text_delta frame, or undefined. */
+  function deliveredText(): string | undefined {
+    return mockPushChunk.mock.calls
+      .map(([, c]) => c as { type: string; delta?: { text?: string } })
+      .find((c) => c.type === "text_delta")?.delta?.text;
+  }
+
+  beforeEach(() => {
+    mockUnpark.mockReset();
+    mockUnpark.mockResolvedValue(undefined);
+  });
+
+  it("explicit negative (\"não\") → deterministic decline ACK, park unparked, model NEVER called", async () => {
+    withPark();
+    await postGuest("não");
+
+    // The whole point: no model turn — the negative text never reaches the planner
+    // (claustrum's own deny path would re-plan it as a fresh command, BKL-191).
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Unparked BEFORE the turn, keyed on the parked envelope's intentHash.
+    expect(mockUnpark).toHaveBeenCalledWith("web:guest:session", INTENT_HASH);
+    // pt-BR ACK delivered + persisted + terminal done.
+    expect(deliveredText()).toBe(
+      "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.",
+    );
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+    expect(assistantWasPersisted()).toBe(true);
+    // A deterministic ingress reply is not a drop.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
+  });
+
+  it("bare soft affirmative (\"ok\") → restates the parked prompt, park KEPT, model NEVER called", async () => {
+    withPark();
+    await postGuest("ok");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Money-safety: a soft affirmative must never execute AND must never unpark —
+    // the park survives so a follow-up "sim" still runs the adjudicated resume.
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(deliveredText()).toBe(
+      `Só confirmando — você quer que eu faça "${PARK_PROMPT}"? Responda "sim" para eu seguir.`,
+    );
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+    expect(assistantWasPersisted()).toBe(true);
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+  });
+
+  it.each(["pode", "beleza", "OK!"])(
+    "soft affirmative variant %j also restates without unparking",
+    async (text) => {
+      withPark();
+      await postGuest(text);
+      expect(mockHandleTurn).not.toHaveBeenCalled();
+      expect(mockUnpark).not.toHaveBeenCalled();
+      expect(deliveredText()).toContain("Só confirmando");
+    },
+  );
+
+  it("mixed soft affirmative + content (\"ok mas muda para 19h\") → NORMAL turn, park untouched", async () => {
+    withPark();
+    await postGuest("ok mas muda para 19h");
+
+    // The customer issued a NEW request; restating would drop it. Normal loop.
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(deliveredText()).toBe("Olá! Como posso ajudar?");
+  });
+
+  it("explicit confirm (\"sim\") → NORMAL turn (the adjudicated confirm-resume path is untouched)", async () => {
+    withPark();
+    await postGuest("sim");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled(); // the conductor owns the resume unpark
+    expect(deliveredText()).toBe("Olá! Como posso ajudar?");
+  });
+
+  it("mixed affirmative + negative (\"não, pode deixar\") → NORMAL turn, park KEPT (ambiguity is money-safe)", async () => {
+    withPark();
+    await postGuest("não, pode deixar");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled();
+  });
+
+  it.each(["não", "ok", "sim", "quero uma costela"])(
+    "NO park present: %j takes the normal path byte-identically",
+    async (text) => {
+      // Default capsule — no loadedSession at all (today's shape).
+      await postGuest(text);
+
+      expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+      expect(mockUnpark).not.toHaveBeenCalled();
+      expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+        type: "text_delta",
+        delta: mintRenderedReply("Olá! Como posso ajudar?"),
+      });
+      expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+      expect(assistantWasPersisted()).toBe(true);
+    },
+  );
+
+  it("fail-honest: an unpark failure falls through to the normal loop instead of claiming a cancellation", async () => {
+    withPark();
+    mockUnpark.mockRejectedValue(new Error("redis down"));
+    await postGuest("não");
+
+    // The park did NOT clear, so we must not acknowledge a cancellation — run the
+    // normal loop (claustrum's own deny path still unparks there).
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(deliveredText()).toBe("Olá! Como posso ajudar?");
+  });
+
+  it("the decline ACK is branded on the wire exactly like a conductor reply", async () => {
+    withPark();
+    await postGuest("cancela");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+      type: "text_delta",
+      delta: mintRenderedReply(
+        "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.",
+      ),
+    });
+  });
+});
+
 // ── GET /api/chat/stream/:sessionId (hijacked SSE) ──────────────────────────
 
 describe("GET /api/chat/stream/:sessionId — access guards", () => {
