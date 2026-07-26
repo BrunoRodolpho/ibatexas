@@ -146,6 +146,7 @@ import {
   type ApprovedCancelActivePayment,
   type ApprovedCancelOrder,
 } from "./escalation/approved-cancel-executor.js";
+import { settleApprovedInnerRefund } from "./escalation/approved-inner-refund.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
@@ -3543,8 +3544,53 @@ export async function bootstrapClaustrum(
           ) as Promise<ApprovedCancelActivePayment | null>,
         getPayment: (paymentId) => createPaymentQueryService().getById(paymentId),
         isPaidStatus: (status) => status === PaymentStatus.PAID,
-        settleApprovedRefund: (refundPayload, approverStaffId) =>
-          executeRefund(opsRegistryDeps, refundPayload, approverStaffId),
+        // BKL-103 — the implied refund is settled THROUGH THE AUDITED KERNEL on the
+        // approver's authority (marker + receipt against the COMPOSED router, which
+        // is the only bundle carrying the AUT-017 overlay), and only then persisted
+        // via the same BKL-085 trio the approved-refund executor uses. Never a raw
+        // write: every centavo keeps its own kernel decision + audit row.
+        settleInnerRefund: (args) =>
+          settleApprovedInnerRefund(
+            {
+              projectPaymentState: async (paymentId) => {
+                const p = await createPaymentQueryService().getById(paymentId);
+                return buildOpsRefundResumeState(
+                  p === null
+                    ? null
+                    : {
+                        status: p.status,
+                        amountInCentavos: p.amountInCentavos,
+                        refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
+                        method: p.method,
+                        version: p.version,
+                        orderId: p.orderId,
+                      },
+                  process.env.KERNEL_TENANT_ID ?? "ibatexas",
+                );
+              },
+              policyForRefund: () => {
+                const policy = policyForKind("payment.refund.issue");
+                if (policy === null) {
+                  throw new Error(
+                    "escalation approval: no installed pack owns \"payment.refund.issue\"",
+                  );
+                }
+                return policy;
+              },
+              adjudicate: async ({ envelope, state, policy, receipt }) =>
+                (
+                  await adjudicateAndAudit(envelope, state as never, policy as never, {
+                    sink: { emit: (record) => getAuditSink().emit(record) },
+                    ledger,
+                    confirmationReceipt: receipt,
+                  })
+                ).decision,
+              writeRefund: (refundPayload, approverStaffId) =>
+                executeRefund(opsRegistryDeps, refundPayload, approverStaffId),
+              now: () => new Date().toISOString(),
+            },
+            args,
+          ),
         runCancel: ({ orderId, customerId, reason, order }) =>
           executeOrderCancel({
             orderId,

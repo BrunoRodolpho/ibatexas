@@ -14,7 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { buildEnvelope } from "@adjudicate/core";
+import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import {
   getRedisClient,
   rk,
@@ -40,6 +40,13 @@ import {
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
 import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
+// BKL-103 — the AUT-017 park seam for the HTTP cancel plane (the conductor's
+// HandoffPort covers the conversational plane; runCustomerIntent has no handoff).
+import {
+  buildEscalationParkInput,
+  ESCALATION_RESUMABLE_KINDS,
+  getEscalationParkStore,
+} from "../escalation/escalation-park-store.js";
 import {
   OrderFulfillmentStatus,
   PaymentStatus,
@@ -333,14 +340,72 @@ async function publishPaidCancelEscalation(
   orderId: string,
   order: { readonly displayId: number; readonly totalInCentavos?: number | null },
   log: FastifyInstance["log"],
+  /**
+   * BKL-103 — the ESCALATEd envelope. When supplied AND the kind is resumable, the
+   * FULL envelope is PARKED before the publish so an OWNER can approve-and-execute
+   * it (the AUT-017 loop). Absent on the paths where no envelope is in hand, which
+   * degrade to today's notification-only escalation.
+   */
+  envelope?: IntentEnvelope,
 ): Promise<void> {
   const cents = order.totalInCentavos ?? null;
   // Display-only formatting; the amount stays integer centavos everywhere else.
   const amount = cents === null ? "" : ` de R$ ${(cents / 100).toFixed(2).replace(".", ",")}`;
+  // ── BKL-103 — the SYNTHETIC session id, and why it must be this exact string ──
+  //
+  // The HTTP cancel plane has no conversation, so the escalation is keyed by the
+  // ORDER (the dispute:{id} precedent). This ONE string has to serve three surfaces
+  // that must agree or the Approve button is silently dead:
+  //   1. the NATS event's `sessionId` → the escalation store record staff see;
+  //   2. the PARKED record's own `sessionId`;
+  //   3. the resolve route's FIX-6 binding — `POST /api/admin/escalations/
+  //      :sessionId/intents/:token/resolve` refuses as `missing` (without burning
+  //      the token) unless `parked.sessionId === expectedSessionId`.
+  // `buildEscalationParkInput` derives sessionId from `envelope.actor.sessionId`,
+  // which on this plane is the CUSTOMER id — so it is deliberately OVERRIDDEN here.
+  // Pinned end-to-end by the park→list→resolve test in order-cancel-governance.
+  const sessionId = `order-cancel:${orderId}`;
+  // Park BEFORE the publish so the event can carry the token (fail-soft: a park
+  // failure degrades to a notification-only escalation and never breaks the reply).
+  let park:
+    | { token: string; intentHash: string; summaryPtBr: string }
+    | undefined;
+  if (
+    envelope !== undefined &&
+    ESCALATION_RESUMABLE_KINDS.has(String(envelope.kind))
+  ) {
+    try {
+      const input = buildEscalationParkInput(envelope);
+      const { token } = await getEscalationParkStore().park({
+        ...input,
+        sessionId,
+      });
+      park = {
+        token,
+        intentHash: envelope.intentHash,
+        summaryPtBr: input.summaryPtBr,
+      };
+    } catch (err) {
+      log.error(
+        { orderId, err: (err as Error).message },
+        "paid-cancel ESCALATE park failed — degrading to a notification-only escalation (BKL-103)",
+      );
+    }
+  }
   try {
     await publishNatsEvent("support.handoff_requested", {
-      sessionId: `order-cancel:${orderId}`,
+      sessionId,
       reason: `Cancelamento de pedido pago requer aprovação — pedido #${order.displayId}, reembolso${amount}`,
+      // The payload itself NEVER rides NATS — only the opaque token + hash + kind +
+      // pt-BR summary, so the escalação row is actionable without leaking the intent.
+      ...(park === undefined
+        ? {}
+        : {
+            parkToken: park.token,
+            intentHash: park.intentHash,
+            intentKind: String(envelope!.kind),
+            summaryPtBr: park.summaryPtBr,
+          }),
     });
     log.warn(
       { orderId },
@@ -1102,7 +1167,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         // returns 503 "Operação requer atendimento humano": surface it to staff
         // BEFORE replying, so the promise is true (dedup makes retries safe).
         if (out.decision.kind === "ESCALATE") {
-          await publishPaidCancelEscalation(id, order, server.log);
+          await publishPaidCancelEscalation(id, order, server.log, envelope);
         }
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
@@ -1111,7 +1176,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           // escalate/refuse, e.g. ≥R$1000). The order was NOT canceled and the
           // payment is untouched (state whole); the refund needs human review.
           // BKL-103 — "avisaremos você" must be true: surface to staff first.
-          await publishPaidCancelEscalation(id, order, server.log);
+          await publishPaidCancelEscalation(id, order, server.log, envelope);
           return reply.code(409).send({
             error:
               "O reembolso deste pedido precisa de revisão da equipe. Nada foi alterado; avisaremos você.",
@@ -1252,7 +1317,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
         // returns 503 "Operação requer atendimento humano": surface it to staff
         // BEFORE replying, so the promise is true (dedup makes retries safe).
         if (out.decision.kind === "ESCALATE") {
-          await publishPaidCancelEscalation(id, order, server.log);
+          await publishPaidCancelEscalation(id, order, server.log, envelope);
         }
         return reply.code(out.statusCode).send(out.body);
       } catch (err) {
@@ -1261,7 +1326,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           // escalate/refuse, e.g. ≥R$1000). The order was NOT canceled and the
           // payment is untouched (state whole); the refund needs human review.
           // BKL-103 — "avisaremos você" must be true: surface to staff first.
-          await publishPaidCancelEscalation(id, order, server.log);
+          await publishPaidCancelEscalation(id, order, server.log, envelope);
           return reply.code(409).send({
             error:
               "O reembolso deste pedido precisa de revisão da equipe. Nada foi alterado; avisaremos você.",

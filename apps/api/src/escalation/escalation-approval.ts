@@ -60,6 +60,14 @@ export interface ApprovalAuditSink {
 export type EscalationExecutor = (
   payload: unknown,
   approverStaffId: string,
+  /**
+   * BKL-103 — the approver's ROLE, threaded from the resolve surface. Additive
+   * third parameter: existing executors that ignore it are unaffected. An executor
+   * that composes a further ADJUDICATED step needs it, because the pack overlays
+   * hard-gate on `"OWNER"` and defaulting a role would be inventing authority (the
+   * approved-cancel executor refuses when it is absent).
+   */
+  approverRole: string,
 ) => Promise<void>;
 
 export type EscalationApprovalStatus =
@@ -432,7 +440,7 @@ export function createEscalationApprovalEngine(
         };
       }
       try {
-        await executor(parked.payload, approver.id);
+        await executor(parked.payload, approver.id, approver.role);
       } catch (err) {
         // FIX 4c — bind + log the executor error (was silently discarded).
         deps.log?.error(

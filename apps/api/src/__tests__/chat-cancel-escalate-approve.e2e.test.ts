@@ -38,6 +38,7 @@
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { IntentEnvelope } from "@adjudicate/core";
+import { adjudicateAndAudit } from "@adjudicate/core/kernel";
 
 // ── Client-boundary doubles (hoisted — vitest lifts vi.mock above imports) ─────
 
@@ -201,6 +202,8 @@ import {
 } from "../escalation/escalation-park-store.js";
 import { createEscalationApprovalEngine } from "../escalation/escalation-approval.js";
 import { createApprovedOrderCancelExecutor } from "../escalation/approved-cancel-executor.js";
+import { settleApprovedInnerRefund } from "../escalation/approved-inner-refund.js";
+import { buildOpsRefundResumeState } from "../ops/ops-resolver.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -339,11 +342,47 @@ function buildHarness() {
           ) ?? null,
         getPayment: async (paymentId) => paymentRows.get(paymentId) ?? null,
         isPaidStatus: (status) => status === "paid",
-        settleApprovedRefund: async (payload, approverStaffId) => {
-          spyWriteAdjudicatedRefund({ ...payload, actorId: approverStaffId });
-          const p = paymentRows.get(payload.paymentId)!;
-          paymentRows.set(p.id, { ...p, status: "refunded" });
-        },
+        // The REAL adjudicated inner-refund settlement: the marker + receipt go
+        // through the REAL composed router, so the refund keeps its own kernel
+        // decision and audit row (proven per-branch in approved-inner-refund.test.ts).
+        settleInnerRefund: (args) =>
+          settleApprovedInnerRefund(
+            {
+              projectPaymentState: async (paymentId) => {
+                const p = paymentRows.get(paymentId);
+                return buildOpsRefundResumeState(
+                  p === undefined
+                    ? null
+                    : {
+                        status: p.status,
+                        amountInCentavos: p.amountInCentavos,
+                        refundedAmountCentavos: p.refundedAmountCentavos,
+                        method: p.method,
+                        version: p.version,
+                        orderId: p.orderId,
+                      },
+                  "ibatexas",
+                );
+              },
+              policyForRefund: () => CUSTOMER_ROUTER,
+              adjudicate: async ({ envelope, state, policy, receipt }) =>
+                (
+                  await adjudicateAndAudit(
+                    envelope as never,
+                    state as never,
+                    policy as never,
+                    { sink, confirmationReceipt: receipt } as never,
+                  )
+                ).decision,
+              writeRefund: async (payload, approverStaffId) => {
+                spyWriteAdjudicatedRefund({ ...payload, actorId: approverStaffId });
+                const p = paymentRows.get(payload.paymentId)!;
+                paymentRows.set(p.id, { ...p, status: "refunded" });
+              },
+              now: () => "2026-07-25T13:00:00.000Z",
+            },
+            args,
+          ),
         runCancel: async (args) => {
           spyCancelRan(args);
           const row = orderRows.get(args.orderId)!;
