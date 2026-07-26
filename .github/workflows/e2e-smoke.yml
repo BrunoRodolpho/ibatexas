@@ -46,6 +46,10 @@ on:
       - "scripts/test-stack-down.sh"
       - "scripts/test-stack/**"
       - "scripts/gen-env-test.sh"
+      # BKL-263: the test-plane env CONTRACT, not just its generator. It carries
+      # the declared external references the api refuses to boot without, so a
+      # change here can break this stack without touching a line of app code.
+      - ".env.test.example"
       - ".github/workflows/e2e-smoke.yml"
   workflow_dispatch: {}
 
