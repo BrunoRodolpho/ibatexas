@@ -123,6 +123,32 @@ describe("DailySpecialService.update", () => {
     expect(mockUpdateMany).not.toHaveBeenCalled()
   })
 
+  // BKL-265 — the row VANISHED between mutateOrNull's findUnique and its
+  // updateMany, so the write matched NOTHING. Returning the merged row here would
+  // report a specialId that was never persisted (executeMenuSpecialSet renders
+  // success off a truthy id).
+  it("returns null when the row vanishes between the read and the write (count === 0)", async () => {
+    mockFindUnique.mockResolvedValue({
+      id: "ds_1",
+      medusaProductId: "prod_1",
+      date: "2026-07-04",
+      promoPriceCentavos: 3900,
+      headline: "Antigo",
+      active: true,
+    })
+    mockUpdateMany.mockResolvedValue({ count: 0 })
+
+    const row = await svc.update("ds_1", { headline: "Novo headline" })
+
+    expect(row).toBeNull()
+    // The write WAS attempted — this is the between-reads window, not the
+    // missing-id short circuit above.
+    expect(mockUpdateMany).toHaveBeenCalledWith({
+      where: { id: "ds_1" },
+      data: { headline: "Novo headline" },
+    })
+  })
+
   it("an explicit null CLEARS promoPriceCentavos and headline", async () => {
     mockFindUnique.mockResolvedValue({
       id: "ds_1",
