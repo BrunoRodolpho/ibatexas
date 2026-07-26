@@ -1,0 +1,56 @@
+{
+  "fixture": "conversation-projection.cross-capability-trigger-collision",
+  "targets": "conversation-projection/cross-capability-trigger-collision",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "conversation-projection/cross-capability-trigger-collision"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 6,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 54,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 12,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 7,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "conversation-projection",
+      "rule": "cross-capability-trigger-collision",
+      "severity": "error",
+      "object": "capability:conformance.projection.collision-second",
+      "field": "conversationTriggers[5]",
+      "message": "trigger phrasing \"conformance base gatilho um\" is already claimed by capability:conformance.projection.collision-first (normal form \"conformance base gatilho um\"). Two capabilities may not share a phrasing: the projection's entire purpose is to SEPARATE capabilities in retrieval space, and a shared phrasing teaches the retriever they are the same point. Fix it by adding the disambiguating token the customer actually says — \"do carrinho\" vs \"do pedido que já fiz\" — not by deleting one side.",
+      "reference": "capability:conformance.projection.collision-first"
+    }
+  ],
+  "formatted": [
+    "conversation-projection/cross-capability-trigger-collision: capability:conformance.projection.collision-second · conversationTriggers[5] — trigger phrasing \"conformance base gatilho um\" is already claimed by capability:conformance.projection.collision-first (normal form \"conformance base gatilho um\"). Two capabilities may not share a phrasing: the projection's entire purpose is to SEPARATE capabilities in retrieval space, and a shared phrasing teaches the retriever they are the same point. Fix it by adding the disambiguating token the customer actually says — \"do carrinho\" vs \"do pedido que já fiz\" — not by deleting one side."
+  ]
+}

@@ -39,8 +39,11 @@ import {
   CAPABILITY_DEFINITIONS,
   generateCapabilityDescriptions,
   generateChatDrivableToolKinds,
+  generateConversationTriggers,
   generateMutatingToolNames,
   generateToolToIntentMap,
+  MIN_CONVERSATION_TRIGGERS,
+  normalizeTriggerPhrasing,
 } from "@ibatexas/catalog"
 import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 
@@ -114,6 +117,76 @@ describe("generateCapabilityDescriptions — the registered tool roster's VALUE 
   // (register-ibatexas-tool-packs.ts:400) — lives in apps/api/src/
   // __tests__/chat-drivable-roster-drift.test.ts (extended, not a new
   // file): packages/packs-composed cannot import apps/api.
+})
+
+// ── The conversation projection (LE2-033) ────────────────────────────────
+
+describe("generateConversationTriggers — the registered tool roster's CUSTOMER-register side (LE2-033)", () => {
+  // `generateCapabilityDescriptions` above projects the ADMIN register (what
+  // an operator calls the capability). This projects the CUSTOMER register
+  // (what a person asks for). The two are keyed identically and diverge only
+  // in voice — which is the entire finding LE2-008 measured: recall@5 = 73.8%
+  // against the admin register alone, because customers do not speak it.
+  //
+  // There is no external artifact to pin the VALUES against — unlike every
+  // other generator in this family, the projection is net-new authored data
+  // with no hand-maintained twin to drift from. So the freshness statement
+  // here is about COVERAGE (the key set tracks the chat roster exactly) and
+  // the content invariants live in the catalog compiler's own
+  // `conversation-projection` pass, which is a build gate rather than a test.
+
+  it("projects one phrasing list per chat-tier capability, keyed exactly like the roster", () => {
+    const generated = generateConversationTriggers(CAPABILITY_DEFINITIONS)
+    expect(Object.keys(generated).sort()).toEqual([...CHAT_DRIVABLE_TOOL_KINDS].sort())
+  })
+
+  it("every projected list matches its authored CapabilityDefinition.conversationTriggers exactly", () => {
+    const generated = generateConversationTriggers(CAPABILITY_DEFINITIONS)
+    for (const def of CAPABILITY_DEFINITIONS) {
+      if (def.tier !== "chat") continue
+      expect(generated[def.kind]).toEqual(def.conversationTriggers)
+    }
+  })
+
+  it("clears the compiler's per-capability floor on every capability", () => {
+    const generated = generateConversationTriggers(CAPABILITY_DEFINITIONS)
+    for (const [kind, triggers] of Object.entries(generated)) {
+      expect(triggers.length, `${kind}`).toBeGreaterThanOrEqual(MIN_CONVERSATION_TRIGGERS)
+    }
+  })
+
+  it("no phrasing is claimed by two capabilities — the separation the projection exists for", () => {
+    // The catalog compiler enforces this fail-closed at build time; this is
+    // the same statement asserted from the consuming side, over the REAL
+    // roster, so a regression is visible here too rather than only in a build
+    // log. Compared under the shared normal form, not by bytes.
+    const owner = new Map<string, string>()
+    const collisions: string[] = []
+    for (const [kind, triggers] of Object.entries(
+      generateConversationTriggers(CAPABILITY_DEFINITIONS),
+    )) {
+      for (const phrasing of triggers) {
+        const normal = normalizeTriggerPhrasing(phrasing)
+        const held = owner.get(normal)
+        if (held !== undefined && held !== kind) collisions.push(`"${phrasing}": ${held} vs ${kind}`)
+        else owner.set(normal, kind)
+      }
+    }
+    expect(collisions).toEqual([])
+  })
+
+  it("hand-corrupt one definition's triggers → the coverage projection diverges (the required negative direction)", () => {
+    const corrupted = CAPABILITY_DEFINITIONS.map((def) =>
+      def.kind === "order.item.add" && def.tier === "chat"
+        ? { ...def, conversationTriggers: [] }
+        : def,
+    )
+    const generated = generateConversationTriggers(corrupted)
+    expect(generated["order.item.add"]).toEqual([])
+    expect(generated["order.item.add"]).not.toEqual(
+      generateConversationTriggers(CAPABILITY_DEFINITIONS)["order.item.add"],
+    )
+  })
 })
 
 // ── Per-pack tool→intent maps ────────────────────────────────────────────

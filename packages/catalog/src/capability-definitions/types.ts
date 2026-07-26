@@ -326,6 +326,69 @@ export interface ChatCapabilityDefinition extends CapabilityDefinitionCommon {
    */
   readonly guardRefs: readonly CapabilityGuardRef[]
   /**
+   * LE2-033 — the **conversation projection**: pt-BR phrasings a real
+   * customer plausibly uses to ask for this capability.
+   *
+   * # Why this field exists
+   *
+   * {@link ChatCapabilityDefinition.description} is written for an
+   * ADMIN/prompt-hint audience — terse, imperative, infinitive-headed
+   * (*"Adicionar um item ao carrinho do cliente."*). Customers do not talk
+   * that way (*"me vê uma coquinha"*, *"tira isso do carrinho"*). LE2-008
+   * measured that **register gap** directly: used as a retrieval index, the
+   * descriptions alone reach **recall@5 = 73.8%** over the 248-case authored
+   * extraction corpus, with per-capability recall as low as **10%**
+   * (`order.cart.ensure`). A capability absent from the retrieved top-K can
+   * never be emitted, so that gap is a structural accuracy ceiling, not a
+   * tuning problem.
+   *
+   * This field is the missing surface: the customer-register half of the
+   * capability's identity, authored once, next to the definition it
+   * describes.
+   *
+   * # What it is NOT
+   *
+   * Per FE-4.1/P5 (*"guards IMPLEMENT policy, metadata DESCRIBES
+   * capabilities"*) this is DATA, and inert data at that. It is **not** a
+   * matcher, a rule, a regex, or a routing table — nothing in the catalog
+   * consumes it to decide anything, and a phrasing appearing here confers no
+   * authority whatsoever on the utterance that matches it. Every downstream
+   * consumer stays subject to the same kernel adjudication as before. In
+   * particular a trigger phrasing is NOT evidence of intent: it is a
+   * retrieval *hint*, and the LE2 funnel's scoped-parse tier (LE2-008) is
+   * the only planned consumer.
+   *
+   * # Authoring contract
+   *
+   * - pt-BR only (Hard Rule #4), natural customer register — colloquial
+   *   verbs (*põe / bota / me vê / tira*) are the POINT, not a lapse.
+   * - Trimmed, single-spaced, no control characters, at least
+   *   {@link MIN_CONVERSATION_TRIGGERS} entries per capability, and no two
+   *   capabilities may share a phrasing (compared under
+   *   {@link normalizeTriggerPhrasing}). All four are compiler-enforced by
+   *   the `conversation-projection` pass — an authoring slip is a BUILD
+   *   error, not a silent retrieval regression.
+   * - Where two capabilities are genuinely near-synonymous in customer
+   *   speech (the cart triad `order.item.*` vs the post-checkout amend triad
+   *   `order.amend.*`), phrasings MUST carry the disambiguating token the
+   *   customer actually says — *"do carrinho"* vs *"do pedido que já fiz"*.
+   *   The no-duplicate rule enforces that they cannot collapse into each
+   *   other.
+   * - **Safety boundary (BKL-143 / BKL-123 / BKL-171):** never author an
+   *   allergen or dietary-restriction disclosure as a trigger phrasing.
+   *   Routing *"sou alérgico a camarão"* to a preferences update would turn
+   *   a safety disclosure into a CRUD write; that class of utterance must
+   *   reach the safety taxonomy's ESCALATE path, and the projection must not
+   *   compete for it. `safety-implication-edges` polices claim edges; this
+   *   is the same policy applied to authored phrasings, by hand.
+   *
+   * REQUIRED on the chat tier (see {@link ChatCapabilityDefinition}) —
+   * absent from {@link IdentityCapabilityDefinition} entirely, exactly as
+   * `description` / `guardRefs` are, so an identity-tier literal carrying
+   * one is a compile error rather than dead data.
+   */
+  readonly conversationTriggers: readonly string[]
+  /**
    * The pack-level default-deny basis code this capability falls through
    * to when no guard in its chain reaches a terminal EXECUTE / CONFIRM /
    * ESCALATE / DEFER (each Pack's `PolicyBundle.default: "REFUSE"` +

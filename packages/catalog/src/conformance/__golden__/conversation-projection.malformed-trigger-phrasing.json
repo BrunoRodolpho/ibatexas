@@ -1,0 +1,56 @@
+{
+  "fixture": "conversation-projection.malformed-trigger-phrasing",
+  "targets": "conversation-projection/malformed-trigger-phrasing",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "conversation-projection/malformed-trigger-phrasing"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 27,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 6,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "conversation-projection",
+      "rule": "malformed-trigger-phrasing",
+      "severity": "error",
+      "object": "capability:conformance.projection.malformed",
+      "field": "conversationTriggers[5]",
+      "message": "trigger phrasing \" conformance  gatilho malformado \" is not in normal form: it has leading or trailing whitespace. Phrasings are embedded verbatim downstream, so stray whitespace and control characters become part of the retrieval document.",
+      "reference": " conformance  gatilho malformado "
+    }
+  ],
+  "formatted": [
+    "conversation-projection/malformed-trigger-phrasing: capability:conformance.projection.malformed · conversationTriggers[5] — trigger phrasing \" conformance  gatilho malformado \" is not in normal form: it has leading or trailing whitespace. Phrasings are embedded verbatim downstream, so stray whitespace and control characters become part of the retrieval document."
+  ]
+}

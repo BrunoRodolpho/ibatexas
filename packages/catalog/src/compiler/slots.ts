@@ -110,6 +110,17 @@ export const SLOT_SPECS = [
   { name: "surfaces", kind: "string-array", scope: "chat-only", required: true },
   { name: "auth", kind: "string", scope: "chat-only", required: true },
   { name: "description", kind: "string", scope: "chat-only", required: true },
+  // LE2-033 — the conversation projection. `scope: "chat-only"` + `required`
+  // mirrors `description` exactly, and for the same reason: it is half of a
+  // chat capability's authored identity (the ADMIN register and the CUSTOMER
+  // register), so a chat-tier capability without one is a hole and an
+  // identity-tier capability with one is an orphan. Note `emptyIsMeaningful`
+  // is deliberately ABSENT: unlike `legacyNames`, there is no capability for
+  // which "no customer ever says this" is a true authored statement — if the
+  // planner can emit it, a customer can ask for it. The per-capability FLOOR
+  // (well above 1) lives in the `conversation-projection` pass, which is also
+  // where the content rules this table cannot express are enforced.
+  { name: "conversationTriggers", kind: "string-array", scope: "chat-only", required: true },
   { name: "guardRefs", kind: "object-array", scope: "chat-only", required: true },
   { name: "refusalCode", kind: "string", scope: "chat-only", required: true },
 ] as const satisfies readonly SlotSpec[]

@@ -13,7 +13,7 @@
 // and an uncovered terminal (the coverage contract), and the compiler runs
 // every pass even after one rejects, so both are reported.
 
-import { CHAT_BASE, FIXTURE_PACK } from "./base.js"
+import { CHAT_BASE, conformanceTriggers, FIXTURE_PACK } from "./base.js"
 import { fixtureCatalog, type ConformanceFixture } from "../types.js"
 
 export const TERMINAL_COVERAGE_FIXTURES: readonly ConformanceFixture[] = [
@@ -84,6 +84,10 @@ export const TERMINAL_COVERAGE_FIXTURES: readonly ConformanceFixture[] = [
       {
         ...CHAT_BASE,
         kind: "conformance.terminal.floor-b",
+        // Its own phrasings: two capabilities sharing CHAT_BASE's would
+        // also trip conversation-projection/cross-capability-trigger-collision
+        // (LE2-033), which is not what this fixture is a witness for.
+        conversationTriggers: conformanceTriggers("floor-b"),
         legacyNames: ["conformance_tool_floor_b"],
         refusalCode: "order.default.refuse",
       },
@@ -108,6 +112,10 @@ export const TERMINAL_COVERAGE_FIXTURES: readonly ConformanceFixture[] = [
       {
         ...CHAT_BASE,
         kind: "conformance.terminal.chain-b",
+        // Its own phrasings: two capabilities sharing CHAT_BASE's would
+        // also trip conversation-projection/cross-capability-trigger-collision
+        // (LE2-033), which is not what this fixture is a witness for.
+        conversationTriggers: conformanceTriggers("chain-b"),
         legacyNames: ["conformance_tool_chain_b"],
         guardRefs: [
           { phase: "auth", name: "conformanceAuthGuard" },

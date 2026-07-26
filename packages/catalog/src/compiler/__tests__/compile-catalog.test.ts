@@ -20,8 +20,18 @@ import {
   formatCatalogReport,
 } from "../index.js"
 
-/** A catalog that violates ALL FOUR passes at once. */
-const QUADRUPLY_BROKEN: readonly CapabilityDefinition[] = [
+/**
+ * A catalog that violates EVERY registered pass at once.
+ *
+ * The name is the assertion: the "runs every pass" test below compares the
+ * emitting-pass set to `CATALOG_PASS_IDS` itself, so a pass added without a
+ * corresponding fault here turns that test red rather than letting the new
+ * pass sit unexercised. (`external-references` is tripped without a line of
+ * its own — `compileCatalog` defaults that table to the REAL authored
+ * declarations, whose consumers name capability kinds this one-object catalog
+ * does not contain.)
+ */
+const EVERY_PASS_BROKEN: readonly CapabilityDefinition[] = [
   {
     kind: "order.ghost",
     pack: "ibatexas/pack-orders",
@@ -36,6 +46,8 @@ const QUADRUPLY_BROKEN: readonly CapabilityDefinition[] = [
     successClaimLinks: ["no-such-claim", "MENU_ITEM_ALLERGENS"],
     // slot:        a slot the contract has never heard of
     refusalCodes: "order.default.deny",
+    // conversation-projection: below the per-capability floor (LE2-033)
+    conversationTriggers: ["quero o pedido fantasma"],
     // terminal:    a chain with no floor
     guardRefs: [{ phase: "business", name: "executeW5Kinds" }],
   },
@@ -53,7 +65,7 @@ describe("compileCatalog — registration and reporting", () => {
   })
 
   it("runs EVERY pass even after one rejects — fail-closed is the exit code, not the silence", () => {
-    const result = compileCatalog(QUADRUPLY_BROKEN)
+    const result = compileCatalog(EVERY_PASS_BROKEN)
     expect(result.ok).toBe(false)
     expect(result.passes).toHaveLength(CATALOG_PASS_IDS.length)
     expect(new Set(result.diagnostics.map((d) => d.pass))).toEqual(
@@ -62,8 +74,8 @@ describe("compileCatalog — registration and reporting", () => {
   })
 
   it("emits diagnostics in a STABLE total order (the golden-gate prerequisite)", () => {
-    const once = compileCatalog(QUADRUPLY_BROKEN).diagnostics
-    const twice = compileCatalog([...QUADRUPLY_BROKEN]).diagnostics
+    const once = compileCatalog(EVERY_PASS_BROKEN).diagnostics
+    const twice = compileCatalog([...EVERY_PASS_BROKEN]).diagnostics
     expect(JSON.stringify(twice)).toBe(JSON.stringify(once))
     // Pass order first, then object/field within a pass.
     const passOrder = once.map((d) => CATALOG_PASS_IDS.indexOf(d.pass))
@@ -71,7 +83,7 @@ describe("compileCatalog — registration and reporting", () => {
   })
 
   it("names object, slot and rule in every diagnostic (ticket AC3)", () => {
-    for (const d of compileCatalog(QUADRUPLY_BROKEN).diagnostics) {
+    for (const d of compileCatalog(EVERY_PASS_BROKEN).diagnostics) {
       expect(d.object).not.toBe("")
       expect(d.field).not.toBe("")
       expect(d.rule).not.toBe("")
@@ -82,9 +94,9 @@ describe("compileCatalog — registration and reporting", () => {
 
 describe("assertCatalogCompiles — fail-closed", () => {
   it("throws a CatalogCompileError carrying the full result", () => {
-    expect(() => assertCatalogCompiles(QUADRUPLY_BROKEN)).toThrow(CatalogCompileError)
+    expect(() => assertCatalogCompiles(EVERY_PASS_BROKEN)).toThrow(CatalogCompileError)
     try {
-      assertCatalogCompiles(QUADRUPLY_BROKEN)
+      assertCatalogCompiles(EVERY_PASS_BROKEN)
     } catch (err) {
       expect(err).toBeInstanceOf(CatalogCompileError)
       expect((err as CatalogCompileError).result.ok).toBe(false)

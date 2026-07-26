@@ -220,6 +220,49 @@ const WHATSAPP_GUARD_REFS: readonly CapabilityGuardRef[] = [
   { phase: "business", name: "executeHandoffRequest" },
 ] as const
 
+// ── The conversation projection's provenance legend (LE2-033) ────────────
+//
+// Every `conversationTriggers` entry below carries a one-letter tag naming
+// where the phrasing CAME FROM. The tag is the review surface: an owner
+// reading this file can tell mirrored fact from authored guess at a glance,
+// which matters because the third class is the largest and the only one
+// nobody has validated against real traffic yet.
+//
+//   [S] MIRRORED from the capability's authored extraction-schema
+//       `example.utterance` (apps/api/src/claustrum/language-engine/
+//       *.schema.ts). Verbatim, including case and punctuation — these are
+//       already-reviewed production prompt data, and re-typing them would
+//       silently fork two copies of the same sentence. Exactly one per
+//       capability (each schema authors exactly one example).
+//
+//   [P] A REAL production utterance, read from the `intent_audit` store.
+//       NOT copied mechanically from that store's kind column: the sidecar
+//       utterance is stamped per TURN, so it lands on every envelope the
+//       turn produced and on the bare "sim" that confirmed it. Each row was
+//       re-read and assigned to the capability the SENTENCE expresses,
+//       discarding confirmations, farewells, and turn-level co-stamps.
+//       (Worked example: 6 of the 7 utterances the store files under
+//       `payment.pix.regenerate` are checkout sentences — a checkout
+//       EXECUTE also stands up the PIX QR, so the pairing is real but is
+//       not evidence about how customers ask to REGENERATE a code.)
+//
+//   [A] FREELY AUTHORED colloquial paraphrase. This is the register-gap
+//       fill LE2-008 measured the need for, and it is the class with no
+//       external grounding — authored from the pt-BR a customer plausibly
+//       speaks, not observed. Flagged for owner review as a body.
+//
+// SOURCING BOUNDARY (binding): no phrasing here is drawn from
+// `packages/journeys/extraction-corpus` or the extraction-eval fixtures.
+// That corpus is LE2-008's hard gate; authoring against it would test-fit
+// the gate and destroy the measurement's independence. It was used only as
+// a set of QUERIES to score the finished projection. Convergence between an
+// authored phrasing and a corpus case is possible — "cancela meu pedido" has
+// few natural spellings — but is arrived-at, not copied.
+//
+// SAFETY BOUNDARY: no phrasing is an allergen or dietary-restriction
+// disclosure. See `types.ts`'s `conversationTriggers` doc for why
+// (BKL-143 / BKL-123 / BKL-171).
+
 // ── Capability instances ─────────────────────────────────────────────────
 
 export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
@@ -237,6 +280,20 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["get_or_create_cart"],
     description: "Garantir um carrinho ativo para a sessão do cliente.",
     successClaimLinks: undefined,
+    conversationTriggers: [
+      /* S */ "quero fazer um pedido",
+      /* P */ "oi, quero fazer um pedido",
+      /* P */ "boa tarde, quero fazer um pedido",
+      /* P */ "quero fazer um pedido pra retirada",
+      /* P */ "cria um carrinho",
+      /* A */ "quero pedir",
+      /* A */ "vou querer fazer um pedido",
+      /* A */ "quero começar um pedido",
+      /* A */ "bora fazer um pedido",
+      /* A */ "quero montar meu pedido",
+      /* A */ "abre um carrinho pra mim",
+      /* A */ "quero comprar alguma coisa",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -251,6 +308,21 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["add_to_cart"],
     description: "Adicionar um item ao carrinho do cliente.",
     successClaimLinks: ["cart-item-added"],
+    conversationTriggers: [
+      /* S */ "quero uma coca",
+      /* P */ "me ve uma costela bovina defumada",
+      /* P */ "adiciona uma farofa ao carrinho",
+      /* P */ "adiciona uma linguiça no meu carrinho",
+      /* P */ "adiciona uma picanha ao carrinho por favor",
+      /* P */ "adiciona 2 costelas no carrinho tambem",
+      /* P */ "me vê também uma Farofa de Bacon Defumado e dois Refrigerantes",
+      /* A */ "põe uma coca no carrinho",
+      /* A */ "me vê um combo",
+      /* A */ "quero um refrigerante",
+      /* A */ "coloca duas linguiças no carrinho",
+      /* A */ "bota mais uma porção de farofa no carrinho",
+      /* A */ "adiciona mais uma coquinha",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -265,6 +337,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["update_cart"],
     description: "Atualizar a quantidade de um item no carrinho.",
     successClaimLinks: ["cart-item-added"],
+    conversationTriggers: [
+      /* S */ "muda a quantidade da coca pra 2",
+      /* P */ "muda a costela para 3 unidades",
+      /* A */ "deixa 2 unidades da linguiça no carrinho",
+      /* A */ "aumenta a quantidade da farofa no carrinho",
+      /* A */ "diminui pra uma coca só",
+      /* A */ "quero 3 em vez de 2 no carrinho",
+      /* A */ "troca a quantidade desse item do carrinho",
+      /* A */ "coloca 5 unidades disso no carrinho",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -279,6 +361,18 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["remove_from_cart"],
     description: "Remover um item do carrinho do cliente.",
     successClaimLinks: ["cart-item-added"],
+    conversationTriggers: [
+      /* S */ "tira a coca do carrinho",
+      /* P */ "tira a costela do meu carrinho, por favor",
+      /* P */ "tira a linguiça do meu carrinho",
+      /* P */ "tira o Refrigerante do carrinho",
+      /* A */ "tira isso do carrinho",
+      /* A */ "remove a farofa do carrinho",
+      /* A */ "não quero mais a coca no carrinho",
+      /* A */ "apaga esse item do carrinho",
+      /* A */ "desisti da picanha, tira do carrinho",
+      /* A */ "tira do carrinho por favor",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -296,6 +390,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["apply_coupon"],
     description: "Aplicar um cupom de desconto ao carrinho.",
     successClaimLinks: ["coupon-applied"],
+    conversationTriggers: [
+      /* S */ "aplica o cupom PROMO10",
+      /* P */ "tenho um cupom BEMVINDO10, aplica no meu pedido",
+      /* A */ "quero usar meu cupom de desconto",
+      /* A */ "tenho um cupom de desconto",
+      /* A */ "aplica o desconto no carrinho",
+      /* A */ "dá pra usar um cupom?",
+      /* A */ "coloca o código de desconto",
+      /* A */ "tem cupom promocional?",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -320,6 +424,20 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     // checkout completion) plus "pix-generated" (a PIX checkout also
     // stands up the QR code in the same EXECUTE).
     successClaimLinks: ["order-placed", "purchase-completed", "pix-generated"],
+    conversationTriggers: [
+      /* S */ "quero fechar o pedido, vou pagar no pix, vou retirar no balcão",
+      /* P */ "fecha o pedido pra retirada, pago no pix",
+      /* P */ "pode fechar o pedido, retiro no local e pago em dinheiro",
+      /* P */ "quero finalizar o pedido para retirada, vou pagar com pix",
+      /* P */ "vou retirar aí mesmo, pode fechar, pago em dinheiro",
+      /* P */ "quero fechar a compra agora e pagar com pix",
+      /* P */ "pode finalizar minha compra",
+      /* P */ "quero finalizar o pedido",
+      /* A */ "pode fechar",
+      /* A */ "quero pagar agora",
+      /* A */ "finaliza o pedido",
+      /* A */ "vamos fechar a conta",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -335,6 +453,18 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["cancel_order"],
     description: "Cancelar um pedido do cliente (irreversível).",
     successClaimLinks: ["order-canceled"],
+    conversationTriggers: [
+      /* S */ "cancela meu pedido, por favor, mudei de ideia",
+      /* P */ "cancela meu pedido",
+      /* P */ "quero cancelar meu pedido",
+      /* P */ "cancela o pedido 4 aí que mudei de ideia",
+      /* P */ "quero cancelar o pedido 902436 e receber meu dinheiro de volta",
+      /* A */ "desisti do pedido",
+      /* A */ "não quero mais o pedido",
+      /* A */ "anula meu pedido",
+      /* A */ "quero desfazer a compra",
+      /* A */ "cancela tudo, mudei de ideia",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
     // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS —
@@ -398,6 +528,20 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: [],
     description: "Adicionar um item a um pedido já feito (pós-checkout).",
     successClaimLinks: ["order-amended"],
+    conversationTriggers: [
+      /* S */ "adiciona uma coca no meu pedido",
+      /* P */ "adiciona uma coca no pedido que já fiz",
+      /* P */ "coloca mais uma farofa no pedido que já fiz",
+      /* P */ "põe mais um refrigerante no meu pedido",
+      /* P */ "quero adicionar um refrigerante no pedido que eu já fiz",
+      /* P */ "adiciona uma Mandioca Frita no meu pedido",
+      /* A */ "esqueci de pedir uma coca, adiciona no pedido",
+      /* A */ "dá pra incluir mais um item no pedido que já fiz?",
+      /* A */ "acrescenta no pedido já feito",
+      /* A */ "quero adicionar algo ao pedido que já paguei",
+      /* A */ "dá pra acrescentar mais uma coisa no pedido 12345?",
+      /* A */ "por favor, inclua mais um item no pedido 12345",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -412,6 +556,19 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: [],
     description: "Alterar a quantidade de um item em um pedido já feito (pós-checkout).",
     successClaimLinks: ["order-amended"],
+    conversationTriggers: [
+      /* S */ "muda a quantidade do hambúrguer pra 2",
+      /* A */ "muda a quantidade no pedido que já fiz",
+      /* A */ "aumenta pra 3 no pedido já feito",
+      /* A */ "no pedido que já fiz, deixa 2 unidades",
+      /* A */ "quero mudar a quantidade do pedido já pago",
+      /* A */ "altera a quantidade no pedido que fechei",
+      /* A */ "diminui a quantidade no pedido já realizado",
+      /* A */ "dá pra mudar a quantidade do meu pedido?",
+      /* A */ "por gentileza, altere a quantidade do pedido 12345",
+      /* A */ "sobre o pedido 12345, quero corrigir a quantidade",
+      /* A */ "quero corrigir a quantidade, por favor",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -426,6 +583,19 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: [],
     description: "Remover um item de um pedido já feito (pós-checkout).",
     successClaimLinks: ["order-amended"],
+    conversationTriggers: [
+      /* S */ "tira a coca do meu pedido",
+      /* P */ "tira a Farofa de Bacon Defumado do meu pedido",
+      /* P */ "tira a sobremesa do pedido 902436 que eu acabei de pagar",
+      /* P */ "tira o Refrigerante do pedido",
+      /* P */ "tira a Mandioca Frita do meu pedido",
+      /* A */ "remove um item do pedido que já fiz",
+      /* A */ "tira isso do pedido já feito",
+      /* A */ "não quero mais esse item no pedido que fiz",
+      /* A */ "quero tirar um item do pedido já pago",
+      /* A */ "dá pra tirar um item do meu pedido?",
+      /* A */ "por favor, remova um item do pedido 12345",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -453,6 +623,17 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["add_order_note"],
     description: "Adicionar uma observação a um pedido.",
     successClaimLinks: ["note-added"],
+    conversationTriggers: [
+      /* S */ "adiciona uma observação no meu pedido: sem cebola, por favor",
+      /* P */ "adiciona uma observação no pedido 933869: cliente chega às 20h",
+      /* P */ "anota no meu pedido que o cliente vai atrasar",
+      /* P */ "adiciona outra observação: cliente prefere pagar em dinheiro",
+      /* A */ "anota que é sem cebola",
+      /* A */ "põe uma observação no pedido",
+      /* A */ "avisa a cozinha que é sem pimenta",
+      /* A */ "deixa um recado no pedido",
+      /* A */ "quero deixar uma observação",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
     // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
@@ -478,6 +659,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["submit_review"],
     description: "Enviar uma avaliação de um pedido concluído.",
     successClaimLinks: ["review-received"],
+    conversationTriggers: [
+      /* S */ "dou 5 estrelas pro pedido, chegou rapidinho e quentinho",
+      /* P */ "quero avaliar meu pedido: 5 estrelas, comida excelente",
+      /* P */ "quero avaliar o pedido 902436: 5 estrelas",
+      /* A */ "quero deixar uma avaliação",
+      /* A */ "nota 5 pro pedido",
+      /* A */ "adorei a comida, quero avaliar",
+      /* A */ "quero dar minha opinião sobre o pedido",
+      /* A */ "vou avaliar o atendimento do pedido",
+    ],
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
@@ -511,6 +702,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["create_reservation"],
     description: "Criar uma reserva de mesa.",
     successClaimLinks: ["reservation-confirmed"],
+    conversationTriggers: [
+      /* S */ "quero uma mesa pra 4 pessoas dia 20/03 às 20h",
+      /* P */ "Quero reservar uma mesa para 4 pessoas amanhã às 19h",
+      /* P */ "quero reservar uma mesa para 4 pessoas hoje as 20h, meu nome e Carlos",
+      /* A */ "quero reservar uma mesa",
+      /* A */ "tem mesa pra hoje à noite?",
+      /* A */ "queria marcar uma mesa pra 6 pessoas",
+      /* A */ "dá pra reservar pra sábado?",
+      /* A */ "quero fazer uma reserva",
+    ],
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -525,6 +726,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["modify_reservation"],
     description: "Modificar uma reserva existente.",
     successClaimLinks: ["reservation-confirmed"],
+    conversationTriggers: [
+      /* S */ "muda minha reserva pra sexta, dia 20/03, às 20h",
+      /* P */ "muda minha reserva de hoje pra 20h",
+      /* P */ "muda minha reserva para 6 pessoas",
+      /* P */ "vamos ser 6 em vez de 4 na minha reserva",
+      /* A */ "quero mudar o horário da minha reserva",
+      /* A */ "dá pra adiar minha reserva?",
+      /* A */ "muda a reserva pra mais tarde",
+      /* A */ "quero alterar minha reserva",
+    ],
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -541,6 +752,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     // No "reservation-canceled" class exists in SUCCESS_CLAIM_CLASSES today
     // (only "order-canceled" does) — genuinely undefined, not an omission.
     successClaimLinks: ["reservation-canceled"],
+    conversationTriggers: [
+      /* S */ "cancela minha reserva, surgiu um imprevisto",
+      /* P */ "cancela minha reserva",
+      /* P */ "quero cancelar minha reserva das 18:30",
+      /* P */ "cancela minha reserva de hoje",
+      /* A */ "não vou poder ir, cancela a reserva",
+      /* A */ "desmarca minha reserva",
+      /* A */ "quero desmarcar a mesa",
+      /* A */ "cancela a mesa que reservei",
+    ],
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -577,6 +798,15 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["join_waitlist"],
     description: "Entrar na lista de espera de um horário lotado.",
     successClaimLinks: undefined,
+    conversationTriggers: [
+      /* S */ "coloca eu na lista de espera daquele horário, somos 4",
+      /* A */ "me põe na lista de espera",
+      /* A */ "quero entrar na fila de espera",
+      /* A */ "se vagar uma mesa me avisa",
+      /* A */ "entra na espera pra mim",
+      /* A */ "quero ficar na lista de espera",
+      /* A */ "tá lotado, me coloca na espera",
+    ],
     guardRefs: RESERVATIONS_GUARD_REFS,
     refusalCode: "reservation.default.deny",
   },
@@ -599,6 +829,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["update_preferences"],
     description: "Atualizar as preferências do cliente.",
     successClaimLinks: ["preferences-saved"],
+    conversationTriggers: [
+      /* S */ "sou vegetariano e adoro comida grelhada",
+      /* A */ "sou vegetariano",
+      /* A */ "não como carne vermelha",
+      /* A */ "prefiro comida sem pimenta",
+      /* A */ "gosto de comida bem apimentada",
+      /* A */ "atualiza minhas preferências",
+      /* A */ "quero mudar minhas preferências",
+      /* A */ "minha comida favorita é churrasco",
+    ],
     guardRefs: CUSTOMER_ONBOARDING_GUARD_REFS,
     refusalCode: "customer.default.deny",
   },
@@ -613,6 +853,15 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["save_pix_details"],
     description: "Salvar os dados PIX do cliente para reembolsos.",
     successClaimLinks: undefined,
+    conversationTriggers: [
+      /* S */ "meu nome é João Silva, email joao@example.com, cpf 123.456.789-00",
+      /* A */ "quero salvar meus dados do pix",
+      /* A */ "guarda meus dados pra reembolso",
+      /* A */ "minha chave pix é meu cpf",
+      /* A */ "quero cadastrar minha chave pix",
+      /* A */ "salva meus dados bancários pro estorno",
+      /* A */ "anota meus dados pra devolução do dinheiro",
+    ],
     guardRefs: CUSTOMER_ONBOARDING_GUARD_REFS,
     refusalCode: "customer.default.deny",
   },
@@ -649,6 +898,16 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["regenerate_pix"],
     description: "Gerar um novo código PIX para um pagamento pendente.",
     successClaimLinks: ["pix-generated"],
+    conversationTriggers: [
+      /* S */ "o código pix expirou, gera outro pra mim",
+      /* P */ "o QR code do pix expirou, gera outro pra mim",
+      /* A */ "gera um novo pix",
+      /* A */ "o pix venceu, manda outro",
+      /* A */ "manda o código pix de novo",
+      /* A */ "preciso de outro qr code",
+      /* A */ "o qr code não funciona, gera de novo",
+      /* A */ "quero um pix novo pra pagar",
+    ],
     guardRefs: PAYMENTS_GUARD_REFS,
     refusalCode: "payment.default.deny",
     // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
@@ -742,6 +1001,18 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     description:
       "Transferir o atendimento para um atendente humano quando o cliente pedir para falar com uma pessoa.",
     successClaimLinks: undefined,
+    conversationTriggers: [
+      /* S */ "quero falar com uma pessoa, meu pedido não chegou",
+      /* P */ "me passa pra um humano",
+      /* P */ "quero falar com um atendente",
+      /* P */ "quero falar com um atendente de verdade",
+      /* A */ "quero falar com alguém de verdade",
+      /* A */ "me transfere pra um atendente",
+      /* A */ "chama um humano",
+      /* A */ "não quero falar com robô",
+      /* A */ "quero suporte humano",
+      /* A */ "preciso falar com o gerente",
+    ],
     guardRefs: WHATSAPP_GUARD_REFS,
     refusalCode: "whatsapp.default.deny",
   },

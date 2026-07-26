@@ -26,10 +26,10 @@ constrains claim generation, the installed Packs own their guards, and
 | Module | What it is |
 |---|---|
 | `src/version.ts` | `CATALOG_VERSION` — the monotonic serial (see below) |
-| `src/capability-definitions/` | The authored capability data (58 capabilities — 20 chat-tier, 38 identity-tier) and its twelve pure projection generators |
+| `src/capability-definitions/` | The authored capability data (58 capabilities — 20 chat-tier, 38 identity-tier) and its thirteen pure projection generators |
 | `src/claim-references.ts` | The claim **name spaces** a definition may point at |
 | `src/external-references.ts` | The names the catalog **depends on but does not own** — a promotion in Medusa, a zone row in the domain DB (LE2-018) |
-| `src/compiler/` | The **catalog compiler** — five fail-closed static passes, wired into `build`, CI, and `ibx catalog check` |
+| `src/compiler/` | The **catalog compiler** — six fail-closed static passes, wired into `build`, CI, and `ibx catalog check` |
 | `src/conformance/` | The compiler's **conformance suite** — a fixture catalog per rejection class, golden-pinned ([README](src/conformance/README.md)) |
 | `src/build-gates/check-claim-references.ts` | Cross-reference check v0 — now a thin adapter over the compiler's referential edge table (same API) |
 
@@ -46,6 +46,7 @@ build.**
 | `safety-implication-edges` | No claim edge terminates in an allergen/dietary attribute | a capability linking its success to `MENU_ITEM_ALLERGENS` or to `sem_gluten` |
 | `terminal-coverage` | Declared terminals are complete and pack-coherent | a guard chain with no refusal floor; two capabilities of one Pack declaring different floors |
 | `external-references` | The external-reference table is well-formed and consumer-attributed | a declaration naming an unprobeable store; a `keyFrom` that is not an env-var name; a consumer naming a capability kind that no longer exists |
+| `conversation-projection` | The authored pt-BR trigger phrasings are well-formed and SEPARATE capabilities | two capabilities both claiming `"tira a coca"`; a capability below the six-phrasing floor; a phrasing with a stray double space |
 
 Every diagnostic names **the object, the offending slot/edge, and the violated
 rule**, and the whole list is stable-sorted so a CI log diff is meaningful.
@@ -58,7 +59,7 @@ rule**, and the whole list is stable-sorted so a CI log diff is meaningful.
 Run it:
 
 ```bash
-ibx catalog check            # all five passes, human-readable
+ibx catalog check            # all six passes, human-readable
 ibx catalog check --json     # the full CatalogCompileResult
 ibx catalog check --live     # …plus reconciliation against the live stores (LE2-018)
 pnpm --filter @ibatexas/catalog run check   # the same passes, no CLI build needed
@@ -119,10 +120,56 @@ one entry in `EXTERNAL_REFERENCE_STORES`, one probe in
 `packages/tools/src/external-references/probes.ts`, and the conformance fixture
 the meta-gate will demand.
 
+## The conversation projection (LE2-033)
+
+Every chat-tier capability carries **two** authored pt-BR texts, and they are
+written for different readers:
+
+| Slot | Register | Reader |
+|---|---|---|
+| `description` | admin/imperative — *"Adicionar um item ao carrinho do cliente."* | an operator, and the model's prompt hint |
+| `conversationTriggers` | customer/colloquial — *"me vê uma coquinha"*, *"tira isso do carrinho"* | nobody — it is retrieval surface |
+
+The second exists because the first is not what customers say. LE2-008
+measured the gap: used as a retrieval index, the descriptions alone reach
+**recall@5 = 73.8%** over the 248-case authored extraction corpus, with
+per-capability recall as low as **10%**. A capability missing from the
+retrieved top-K can never be emitted, so that is an accuracy ceiling no
+amount of tuning moves.
+
+`conversationTriggers` is **inert data with no runtime authority**, like
+everything else here. Nothing in this package consumes it; a phrasing
+appearing in it confers no authority on the utterance that matches it, and
+every downstream consumer stays subject to the same kernel adjudication.
+LE2-008's scoped-parse tier is the only planned reader.
+
+**Authoring rules** (all compiler-enforced — see the `conversation-projection`
+pass): pt-BR only, at least six phrasings per capability, normal form
+(trimmed, single-spaced, no control characters), and **no two capabilities may
+share a phrasing**. That last one is the load-bearing rule: the cart triad
+(`order.item.*`) and the post-checkout amend triad (`order.amend.*`) are
+near-synonymous in customer speech, so each side must carry the
+disambiguating token a customer actually says — *"do carrinho"* vs *"do
+pedido que já fiz"*. A collision fails the build; the fix is to disambiguate,
+never to delete one side.
+
+Two boundaries are deliberate and are **not** mechanically enforced, so they
+need a reviewer:
+
+- **No allergen or dietary-restriction phrasings.** Routing *"sou alérgico a
+  camarão"* to a preferences update would turn a safety disclosure into a CRUD
+  write. That utterance class belongs to the safety taxonomy's ESCALATE path
+  and the projection must not compete for it (BKL-143 / BKL-123 / BKL-171 —
+  the same policy `safety-implication-edges` applies to claim edges).
+- **Never author phrasings from `packages/journeys/extraction-corpus`.** That
+  corpus is LE2-008's hard gate; mining it would test-fit the gate and destroy
+  the measurement's independence. It is legitimate to use as a set of
+  *queries* to score the projection, and only that.
+
 ### The conformance suite is the compiler's compatibility contract (LE2-017)
 
-`src/conformance/` holds one committed fixture catalog per **rule id** — 26
-today across the five passes, plus four clean controls — each with its
+`src/conformance/` holds one committed fixture catalog per **rule id** — 30
+today across the six passes, plus four clean controls — each with its
 compiler output pinned byte-for-byte in `src/conformance/__golden__/`. The
 passes' unit tests assert pass *logic*; the conformance corpus pins the
 *diagnostic contract*: the exact diagnostics, in the exact order, with the
@@ -161,7 +208,7 @@ catalog depend on its own dependent and produce a circular turbo build graph.)
 
 ## Version-bump discipline
 
-`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `1`.
+`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `3`.
 
 It is deliberately *not* derived (no content hash, no git sha, no build
 timestamp): a derived version changes on every unrelated edit and cannot be

@@ -1,0 +1,55 @@
+{
+  "fixture": "conversation-projection.insufficient-trigger-coverage",
+  "targets": "conversation-projection/insufficient-trigger-coverage",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "conversation-projection/insufficient-trigger-coverage"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 27,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 5,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "conversation-projection",
+      "rule": "insufficient-trigger-coverage",
+      "severity": "error",
+      "object": "capability:conformance.projection.thin",
+      "field": "conversationTriggers",
+      "message": "declares 5 trigger phrasing(s); a parser-emittable capability needs at least 6. The projection exists to close a REGISTER gap (LE2-008 measured recall@5 = 73.8% on the admin-register descriptions alone), and a handful of phrasings cannot span the imperative, desiderative and interrogative ways a customer asks for this. Add real phrasings — never pad the array to clear the floor."
+    }
+  ],
+  "formatted": [
+    "conversation-projection/insufficient-trigger-coverage: capability:conformance.projection.thin · conversationTriggers — declares 5 trigger phrasing(s); a parser-emittable capability needs at least 6. The projection exists to close a REGISTER gap (LE2-008 measured recall@5 = 73.8% on the admin-register descriptions alone), and a handful of phrasings cannot span the imperative, desiderative and interrogative ways a customer asks for this. Add real phrasings — never pad the array to clear the floor."
+  ]
+}
