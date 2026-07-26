@@ -30,7 +30,16 @@ const PACKS = [
   reservationsPack,
 ] as unknown as GovernancePackLike[]
 
-describe("buildAiBomManifest", () => {
+// BKL-236: every buildAiBomManifest call runs the full runConformance +
+// scorePackHealth + generateAiBom analyzer chain over all three first-party
+// packs — pure CPU, ~250ms per build unloaded. Under a full-workspace run
+// (turbo fans 37 test tasks out, each spawning its own vitest workers) that
+// inflates 7-10x, so the default 5s per-test budget flakes even though the
+// assertions are sound. This is a TIMEOUT budget, not a weakened assertion —
+// the determinism test below still compares two INDEPENDENT builds.
+const AI_BOM_BUILD_TIMEOUT_MS = 30_000
+
+describe("buildAiBomManifest", { timeout: AI_BOM_BUILD_TIMEOUT_MS }, () => {
   it("is deterministic and excludes generatedAt from the serialized digest map", () => {
     const a = buildAiBomManifest({ packs: PACKS })
     const b = buildAiBomManifest({ packs: PACKS, generatedAt: "2030-01-01T00:00:00Z" })
