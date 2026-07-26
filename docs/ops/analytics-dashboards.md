@@ -300,7 +300,7 @@ flowchart TD
 | Event | Trigger | Key Properties |
 |-------|---------|---------------|
 | `first_order_completed` | Customer's first-ever order completes | `customerId`, `orderTotal`, `source` |
-| `welcome_credit_applied` | BEMVINDO15 coupon auto-applied at checkout | `customerId`, `discountAmount` |
+| `welcome_credit_applied` | Welcome-credit coupon auto-applied at checkout (`WELCOME_CREDIT_COUPON_CODE` — the declared external reference `promotion.welcome-credit`) | `customerId`, `discountAmount` |
 | `qr_code_scanned` | Customer opens wa.me link from QR code | `source` (table/bag/flyer) |
 | `whatsapp_cta_clicked` | FirstVisitBanner WhatsApp button clicked | `page` |
 | `utm_source_captured` | Session has UTM params | `utm_source`, `utm_medium`, `utm_campaign` |

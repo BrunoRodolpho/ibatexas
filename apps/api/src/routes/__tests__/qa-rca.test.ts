@@ -106,6 +106,155 @@ describe("qa-rca — id validation", () => {
   });
 });
 
+// ── conversations rail: customer grouping (LE2-031) ───────────────────────────
+//
+// The pure identity/ordering rules are pinned in qa-rca-grouping.test.ts; these
+// pin the WIRING — that the route actually feeds the grouper the columns it
+// needs (customer_id from the domain enrichment, the phone hash from the two
+// fail-safe lanes) and that a lane outage degrades identity rather than the
+// whole rail.
+
+const RAIL_SHORTLIST = "count(DISTINCT t.turn_id)";
+
+describe("qa-rca — conversations rail grouping", () => {
+  /** One shortlist row as the turn_trace aggregate produces it. */
+  const shortlist = [
+    { session_id: "admin:staff_7", started_at: "2026-07-24T10:05:00.000Z", last_at: "2026-07-24T10:05:00.000Z", turns: 2 },
+    { session_id: "sess-web", started_at: "2026-07-24T10:04:00.000Z", last_at: "2026-07-24T10:04:00.000Z", turns: 3 },
+    { session_id: "sess-wa", started_at: "2026-07-24T10:03:00.000Z", last_at: "2026-07-24T10:03:00.000Z", turns: 1 },
+    { session_id: "sess-guest", started_at: "2026-07-24T10:02:00.000Z", last_at: "2026-07-24T10:02:00.000Z", turns: 4 },
+    { session_id: "sess-anon", started_at: "2026-07-24T10:01:00.000Z", last_at: "2026-07-24T10:01:00.000Z", turns: 1 },
+  ];
+
+  it("folds sessions onto customers, labels ops, and buckets the unidentifiable", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes(RAIL_SHORTLIST)) return { rows: shortlist };
+      // The phone-hash lanes (order matters: incidents mentions "conversation_"
+      // too, so match the most specific fragment first).
+      if (sql.includes("conversation_incidents")) return { rows: [] };
+      if (sql.includes("FROM whatsapp_delivery")) {
+        return { rows: [{ conversation_id: "sess-guest", phone_hash: "ph_guest" }] };
+      }
+      // Domain enrichment — the top rung of the identity ladder. sess-anon has
+      // no row at all; sess-guest has one with no customer.
+      if (sql.includes("LEFT JOIN LATERAL")) {
+        return {
+          rows: [
+            { session_id: "sess-web", chat_cuid: "chat_w", channel: "web", customer_id: "cus_1", content: "oi", role: "user" },
+            { session_id: "sess-wa", chat_cuid: "chat_a", channel: "whatsapp", customer_id: "cus_1", content: null, role: null },
+            { session_id: "sess-guest", chat_cuid: "chat_g", channel: "whatsapp", customer_id: null, content: null, role: null },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/conversations", headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const groups = res.json().groups as Array<Record<string, unknown>>;
+
+    // Most-recent-first, one row per identity — never one row per session.
+    expect(groups.map((g) => g.groupKey)).toEqual([
+      "ops:staff_7",
+      "customer:cus_1",
+      "phone:ph_guest",
+      "unidentified",
+    ]);
+
+    // The customer's web + whatsapp sessions became sub-rows of ONE row.
+    const customer = groups.find((g) => g.groupKey === "customer:cus_1")!;
+    expect(customer.kind).toBe("customer");
+    expect(customer.sessionIds).toEqual(["sess-web", "sess-wa"]);
+    expect(customer.channels).toEqual(["web", "whatsapp"]);
+    expect(customer.turnCount).toBe(4);
+
+    // The ops thread is labeled as ops — never as a customer, never as unknown.
+    const ops = groups.find((g) => g.groupKey === "ops:staff_7")!;
+    expect(ops.kind).toBe("ops");
+    expect(ops.staffId).toBe("staff_7");
+    expect(ops.label).toContain("ops");
+
+    // The guest folds on the salted hash; the truly unattributable session
+    // lands in the explicit bucket instead of vanishing.
+    expect(groups.find((g) => g.groupKey === "phone:ph_guest")!.sessionIds).toEqual(["sess-guest"]);
+    const bucket = groups.find((g) => g.groupKey === "unidentified")!;
+    expect(bucket.kind).toBe("unidentified");
+    expect(bucket.sessionIds).toEqual(["sess-anon"]);
+
+    // Conservation: grouping never drops a served conversation.
+    const conversations = res.json().conversations as Array<Record<string, unknown>>;
+    expect(groups.flatMap((g) => g.sessionIds as string[]).sort()).toEqual(
+      conversations.map((c) => c.sessionId as string).sort(),
+    );
+    await app.close();
+  });
+
+  it("keeps the flat conversation rows on the wire, now carrying the identity columns", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes(RAIL_SHORTLIST)) return { rows: [shortlist[1]] };
+      if (sql.includes("conversation_incidents")) return { rows: [] };
+      if (sql.includes("FROM whatsapp_delivery")) return { rows: [] };
+      if (sql.includes("LEFT JOIN LATERAL")) {
+        return {
+          rows: [
+            { session_id: "sess-web", chat_cuid: "chat_w", channel: "web", customer_id: "cus_1", content: "oi", role: "user" },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/conversations", headers: AUTH });
+    expect(res.json().conversations).toEqual([
+      {
+        sessionId: "sess-web",
+        chatCuid: "chat_w",
+        channel: "web",
+        startedAt: "2026-07-24T10:04:00.000Z",
+        lastAt: "2026-07-24T10:04:00.000Z",
+        lastText: "oi",
+        lastRole: "user",
+        turnCount: 3,
+        customerId: "cus_1",
+        phoneHash: null,
+      },
+    ]);
+    await app.close();
+  });
+
+  it("takes the phone hash from the incident lane when no reply was ever delivered", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes(RAIL_SHORTLIST)) return { rows: [shortlist[3]] };
+      if (sql.includes("conversation_incidents")) {
+        return { rows: [{ conversation_id: "sess-guest", phone_hash: "ph_incident" }] };
+      }
+      if (sql.includes("FROM whatsapp_delivery")) return { rows: [] };
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/conversations", headers: AUTH });
+    expect(res.json().groups[0].groupKey).toBe("phone:ph_incident");
+    await app.close();
+  });
+
+  it("degrades identity — not the rail — when the domain schema is unreachable", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes(RAIL_SHORTLIST)) return { rows: shortlist };
+      throw new Error("ibx_domain unavailable");
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/conversations", headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const groups = res.json().groups as Array<Record<string, unknown>>;
+    // No enrichment and no hash lane: the ops thread is still identifiable from
+    // its session id alone, everything else honestly reads unidentified.
+    expect(groups.map((g) => g.groupKey).sort()).toEqual(["ops:staff_7", "unidentified"]);
+    expect(groups.find((g) => g.groupKey === "unidentified")!.sessionCount).toBe(4);
+    await app.close();
+  });
+});
+
 // ── merged turn view ──────────────────────────────────────────────────────────
 
 describe("qa-rca — merged turn view", () => {
@@ -189,7 +338,230 @@ describe("qa-rca — merged turn view", () => {
       },
     ]);
     // VL is stubbed unreachable in tests → the lane degrades AND is flagged.
-    expect(res.json().turn.degraded).toEqual({ adj: false, vl: true });
+    expect(res.json().turn.degraded).toEqual({
+      adj: false,
+      vl: true,
+      wire: false,
+      // LE2-030 — the delivery lane answered (empty = no SIDs captured for this
+      // turn), so its absence IS a signal.
+      delivery: false,
+    });
+    await app.close();
+  });
+
+  it("surfaces the turn's wire exchanges with attempt-level rows (Wire Truth)", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at, max(recorded_at) AS ended_at")) {
+        return {
+          rows: [
+            {
+              conversation_id: "conv-abc",
+              started_at: "2026-07-21T02:35:48.000Z",
+              ended_at: "2026-07-21T02:36:03.000Z",
+            },
+          ],
+        };
+      }
+      if (sql.includes("FROM llm_wire")) {
+        return {
+          rows: [
+            {
+              seq: 0,
+              call_index: 0,
+              model: "nemotron-3-nano:4b",
+              request_jsonb: {
+                model: "nemotron-3-nano:4b",
+                messages: [{ role: "user", content: "oi" }],
+                reasoning_effort: "none",
+              },
+              response_jsonb: { choices: [{ message: { content: "" } }] },
+              request_hash: "a".repeat(64),
+              request_truncated: false,
+              response_truncated: false,
+              recorded_at: "2026-07-21T02:35:50.000Z",
+            },
+            // A retry attempt of the same logical call — same call_index, next seq.
+            {
+              seq: 1,
+              call_index: 0,
+              model: "nemotron-3-nano:4b",
+              request_jsonb: {
+                model: "nemotron-3-nano:4b",
+                messages: [{ role: "user", content: "oi" }],
+                reasoning_effort: "none",
+              },
+              response_jsonb: { choices: [{ message: { content: "Oi! Tudo bem?" } }] },
+              request_hash: "a".repeat(64),
+              request_truncated: false,
+              response_truncated: true,
+              recorded_at: "2026-07-21T02:35:52.000Z",
+            },
+          ],
+        };
+      }
+      if (sql.includes("call_index")) return { rows: [] };
+      return { rows: [] };
+    };
+
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/turns/turn-123",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn.wire).toEqual([
+      {
+        seq: 0,
+        callIndex: 0,
+        model: "nemotron-3-nano:4b",
+        request: {
+          model: "nemotron-3-nano:4b",
+          messages: [{ role: "user", content: "oi" }],
+          reasoning_effort: "none",
+        },
+        response: { choices: [{ message: { content: "" } }] },
+        requestHash: "a".repeat(64),
+        requestTruncated: false,
+        responseTruncated: false,
+        recordedAt: "2026-07-21T02:35:50.000Z",
+      },
+      {
+        seq: 1,
+        callIndex: 0,
+        model: "nemotron-3-nano:4b",
+        request: {
+          model: "nemotron-3-nano:4b",
+          messages: [{ role: "user", content: "oi" }],
+          reasoning_effort: "none",
+        },
+        response: { choices: [{ message: { content: "Oi! Tudo bem?" } }] },
+        requestHash: "a".repeat(64),
+        requestTruncated: false,
+        responseTruncated: true,
+        recordedAt: "2026-07-21T02:35:52.000Z",
+      },
+    ]);
+    expect(res.json().turn.degraded.wire).toBe(false);
+    await app.close();
+  });
+
+  it("degrades to an empty wire lane when the llm_wire table is unavailable (pre-capture turns/DBs)", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at, max(recorded_at) AS ended_at")) {
+        return { rows: [{ conversation_id: "conv-abc", started_at: null, ended_at: null }] };
+      }
+      if (sql.includes("FROM llm_wire")) {
+        throw new Error('relation "llm_wire" does not exist');
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/turns/turn-123",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn.wire).toEqual([]);
+    expect(res.json().turn.degraded.wire).toBe(true);
+    await app.close();
+  });
+
+  // ── LE2-030 delivery lane ───────────────────────────────────────────────────
+
+  it("surfaces the turn's per-part Twilio delivery confirmation", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at, max(recorded_at) AS ended_at")) {
+        return { rows: [{ conversation_id: "conv-abc", started_at: null, ended_at: null }] };
+      }
+      if (sql.includes("FROM whatsapp_delivery")) {
+        return {
+          rows: [
+            {
+              message_sid: "SM_p0",
+              part_index: 0,
+              status: "delivered",
+              sent_at: "2026-07-24T10:00:00.000Z",
+              status_at: "2026-07-24T10:00:04.000Z",
+              error_code: null,
+              error_message: null,
+              callback_count: 2,
+              source: "send",
+            },
+            {
+              message_sid: "SM_p1",
+              part_index: 1,
+              // No callback has arrived yet → pending, NOT an error.
+              status: null,
+              sent_at: "2026-07-24T10:00:01.000Z",
+              status_at: null,
+              error_code: null,
+              error_message: null,
+              callback_count: 0,
+              source: "send",
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/turns/turn-123",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn.delivery).toEqual([
+      {
+        messageSid: "SM_p0",
+        partIndex: 0,
+        status: "delivered",
+        sentAt: "2026-07-24T10:00:00.000Z",
+        statusAt: "2026-07-24T10:00:04.000Z",
+        errorCode: null,
+        errorMessage: null,
+        callbackCount: 2,
+        source: "send",
+      },
+      {
+        messageSid: "SM_p1",
+        partIndex: 1,
+        status: null,
+        sentAt: "2026-07-24T10:00:01.000Z",
+        statusAt: null,
+        errorCode: null,
+        errorMessage: null,
+        callbackCount: 0,
+        source: "send",
+      },
+    ]);
+    expect(res.json().turn.degraded.delivery).toBe(false);
+    await app.close();
+  });
+
+  it("degrades to an empty delivery lane when whatsapp_delivery is unavailable", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at, max(recorded_at) AS ended_at")) {
+        return { rows: [{ conversation_id: "conv-abc", started_at: null, ended_at: null }] };
+      }
+      if (sql.includes("FROM whatsapp_delivery")) {
+        throw new Error('relation "whatsapp_delivery" does not exist');
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/turns/turn-123",
+      headers: AUTH,
+    });
+    // Never a 500 — the lane reports its own outage instead.
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn.delivery).toEqual([]);
+    expect(res.json().turn.degraded.delivery).toBe(true);
     await app.close();
   });
 
@@ -431,6 +803,140 @@ describe("qa-rca — preflight status", () => {
     expect(status.victoriaLogs.ok).toBe(false);
     expect(status.victoriaLogs.error).toContain("no VL in tests");
     expect(status.flags).toEqual({ redactSecretSet: true, claimsPipeline: true });
+    await app.close();
+  });
+});
+
+// ── LE2-030 AC4 — the undelivered query surface ──────────────────────────────
+
+describe("qa-rca — undelivered replies", () => {
+  it("returns failed rows and silent rows, tagged by reason", async () => {
+    let captured: { sql: string; params: unknown[] } | null = null;
+    db.query = async (sql: string, params?: unknown[]) => {
+      if (!sql.includes("FROM whatsapp_delivery")) return { rows: [] };
+      captured = { sql, params: params ?? [] };
+      return {
+        rows: [
+          {
+            message_sid: "SM_failed",
+            turn_id: "turn-1",
+            conversation_id: "conv-1",
+            part_index: 0,
+            phone_hash: "h1",
+            source: "send",
+            sent_at: "2026-07-24T10:00:00.000Z",
+            status: "undelivered",
+            status_at: "2026-07-24T10:00:05.000Z",
+            error_code: "63024",
+            error_message: "Invalid recipient",
+            callback_count: 2,
+            reason: "failed",
+          },
+          {
+            message_sid: "SM_silent",
+            turn_id: null,
+            conversation_id: null,
+            part_index: 0,
+            phone_hash: "h2",
+            source: "sendMedia",
+            sent_at: "2026-07-24T09:00:00.000Z",
+            status: null,
+            status_at: null,
+            error_code: null,
+            error_message: null,
+            callback_count: 0,
+            reason: "no_confirmation",
+          },
+        ],
+      };
+    };
+
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered?thresholdMinutes=30",
+      headers: AUTH,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.degraded).toBe(false);
+    expect(body.thresholdMinutes).toBe(30);
+    expect(
+      body.rows.map((r: { messageSid: string; reason: string }) => [r.messageSid, r.reason]),
+    ).toEqual([
+      ["SM_failed", "failed"],
+      ["SM_silent", "no_confirmation"],
+    ]);
+    expect(body.rows[0]).toMatchObject({
+      turnId: "turn-1",
+      status: "undelivered",
+      errorCode: "63024",
+      errorMessage: "Invalid recipient",
+      callbackCount: 2,
+    });
+
+    // The failure vocabulary is BOUND, not interpolated, and shared with the writer.
+    const q = captured as unknown as { sql: string; params: unknown[] };
+    expect(q.params[0]).toEqual(["failed", "undelivered", "canceled"]);
+    expect(q.params[1]).toBe(30);
+    expect(q.sql).toContain("status IS NULL AND sent_at < now() - make_interval(mins => $2::int)");
+    await app.close();
+  });
+
+  it("defaults the threshold and clamps a hostile one", async () => {
+    const seen: number[] = [];
+    db.query = async (sql: string, params?: unknown[]) => {
+      if (sql.includes("FROM whatsapp_delivery")) seen.push((params ?? [])[1] as number);
+      return { rows: [] };
+    };
+    const app = await build();
+
+    await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered",
+      headers: AUTH,
+    });
+    await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered?thresholdMinutes=-99",
+      headers: AUTH,
+    });
+    await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered?thresholdMinutes=999999999",
+      headers: AUTH,
+    });
+
+    expect(seen).toEqual([15, 0, 7 * 24 * 60]);
+    await app.close();
+  });
+
+  it("degrades to an empty list — never a 500 — when the store is unavailable", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("FROM whatsapp_delivery")) {
+        throw new Error('relation "whatsapp_delivery" does not exist');
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ thresholdMinutes: 15, degraded: true, rows: [] });
+    await app.close();
+  });
+
+  it("requires the bearer like every other RCA route", async () => {
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered",
+    });
+    expect(res.statusCode).toBe(401);
     await app.close();
   });
 });

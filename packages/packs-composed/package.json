@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@adjudicate/core": "^1.6.0",
+    "@ibatexas/catalog": "workspace:*",
     "@ibatexas/pack-customer-onboarding": "workspace:*",
     "@ibatexas/pack-ops": "workspace:*",
     "@ibatexas/pack-orders": "workspace:*",

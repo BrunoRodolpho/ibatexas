@@ -1,0 +1,51 @@
+{
+  "fixture": "external-references.external-reference-malformed-key-source",
+  "targets": "external-references/external-reference-malformed-key-source",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 1,
+  "rulesEmitted": [
+    "external-references/external-reference-malformed-key-source"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 19,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 2,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "external-references",
+      "rule": "external-reference-malformed-key-source",
+      "severity": "error",
+      "object": "external-reference:promotion.conformance",
+      "field": "keyFrom",
+      "message": "\"welcome_credit_coupon_code\" is not an environment-variable name (expected UPPER_SNAKE_CASE). keyFrom names the variable the reference's key is read from at reconciliation time; the catalog never holds the key itself (CLAUDE.md rule 3 — config comes from process.env), so a misspelled variable name is a reference nothing can ever resolve.",
+      "reference": "welcome_credit_coupon_code"
+    }
+  ],
+  "formatted": [
+    "external-references/external-reference-malformed-key-source: external-reference:promotion.conformance · keyFrom — \"welcome_credit_coupon_code\" is not an environment-variable name (expected UPPER_SNAKE_CASE). keyFrom names the variable the reference's key is read from at reconciliation time; the catalog never holds the key itself (CLAUDE.md rule 3 — config comes from process.env), so a misspelled variable name is a reference nothing can ever resolve."
+  ]
+}

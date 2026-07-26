@@ -1,0 +1,62 @@
+{
+  "fixture": "safety-implication-edges.safety-restricted-claim-edge",
+  "targets": "safety-implication-edges/safety-restricted-claim-edge",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "referential-integrity/claim-reference-dangling",
+    "safety-implication-edges/safety-restricted-claim-edge"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 1
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 1,
+      "diagnostics": 1
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "referential-integrity",
+      "rule": "claim-reference-dangling",
+      "severity": "error",
+      "object": "capability:conformance.safety.restricted-edge",
+      "field": "successClaimLinks[0]",
+      "message": "\"MENU_ITEM_ALLERGENS\" does not resolve against CLAIM_CLASS_REFERENCES. Correct the reference, or — if the claim genuinely exists now — add it to src/claim-references.ts AND to the runtime source it mirrors (apps/api/src/claustrum/ibatexas-responder.ts's SUCCESS_CLAIM_CLASSES).",
+      "reference": "MENU_ITEM_ALLERGENS"
+    },
+    {
+      "pass": "safety-implication-edges",
+      "rule": "safety-restricted-claim-edge",
+      "severity": "error",
+      "object": "capability:conformance.safety.restricted-edge",
+      "field": "successClaimLinks[0]",
+      "message": "claim edge terminates in the allergen attribute \"MENU_ITEM_ALLERGENS\" (marker \"allerg\"). Forbidden by BKL-143 (an owner-attested allergens array does NOT license a customer-facing \"não contém X\" render; standing policy = honest self-report + real staff handoff) and BKL-123 (MENU_ITEM_ALLERGENS stays deliberately UNKNOWN-only). A capability may not declare that running it justifies an allergen or dietary-restriction assertion; reopening requires an explicit owner reversal in writing.",
+      "reference": "MENU_ITEM_ALLERGENS"
+    }
+  ],
+  "formatted": [
+    "referential-integrity/claim-reference-dangling: capability:conformance.safety.restricted-edge · successClaimLinks[0] — \"MENU_ITEM_ALLERGENS\" does not resolve against CLAIM_CLASS_REFERENCES. Correct the reference, or — if the claim genuinely exists now — add it to src/claim-references.ts AND to the runtime source it mirrors (apps/api/src/claustrum/ibatexas-responder.ts's SUCCESS_CLAIM_CLASSES).",
+    "safety-implication-edges/safety-restricted-claim-edge: capability:conformance.safety.restricted-edge · successClaimLinks[0] — claim edge terminates in the allergen attribute \"MENU_ITEM_ALLERGENS\" (marker \"allerg\"). Forbidden by BKL-143 (an owner-attested allergens array does NOT license a customer-facing \"não contém X\" render; standing policy = honest self-report + real staff handoff) and BKL-123 (MENU_ITEM_ALLERGENS stays deliberately UNKNOWN-only). A capability may not declare that running it justifies an allergen or dietary-restriction assertion; reopening requires an explicit owner reversal in writing."
+  ]
+}

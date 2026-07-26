@@ -6,7 +6,12 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
-import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
+import {
+  atomicIncr,
+  getRedisClient,
+  requireExternalReferenceKey,
+  rk,
+} from "@ibatexas/tools";
 import { hashPhone } from "../lib/phone-hash.js";
 import { createCustomerService, toE164BR } from "@ibatexas/domain";
 import { Channel, type AgentContext } from "@ibatexas/types";
@@ -433,11 +438,17 @@ export async function markOptedIn(phoneHash: string): Promise<void> {
  * Store a welcome credit coupon code for a new customer.
  * TTL: 30 days — coupon expires if not used.
  *
- * NOTE: The coupon code "BEMVINDO15" must be created in Medusa admin before use.
+ * The code is a DECLARED EXTERNAL REFERENCE (LE2-018): `promotion.welcome-credit`
+ * in `@ibatexas/catalog`'s src/external-references.ts, sourced from
+ * WELCOME_CREDIT_COUPON_CODE. The boot gate in claustrum-bootstrap.ts refuses
+ * to start the process unless that promotion actually exists in Medusa, which
+ * is what retired the "must be created in Medusa admin before use" note that
+ * used to stand here in place of a check.
  */
 export async function setWelcomeCredit(customerId: string): Promise<void> {
   const redis = await getRedisClient();
-  await redis.set(rk(`welcome:credit:${customerId}`), "BEMVINDO15", { EX: 30 * 86400 });
+  const code = requireExternalReferenceKey("promotion.welcome-credit");
+  await redis.set(rk(`welcome:credit:${customerId}`), code, { EX: 30 * 86400 });
 }
 
 /**

@@ -1,0 +1,55 @@
+# refusal-corpus.yaml — LE2-05: the ∅-CLASS corpus.
+#
+# Each case authors an utterance that the parser MUST NOT turn into a
+# capability at all. This is the extraction-plane mirror of the read-tool
+# corpus's `expectArgs: null` sound-abstain mode (packages/journeys/
+# read-tool-corpus/schema.ts): there, "ok IFF the tool was NOT called"; here,
+# "ok IFF NO capability was parsed".
+#
+# INDEPENDENT-TRUTH DISCIPLINE, same as the extraction corpus: these
+# expectations are AUTHORED, never derived from the model under test. Two of
+# the three below are currently satisfied by the pinned wire capture and one
+# is NOT — the corpus is written to state what SHOULD happen, and the harness
+# reports the gap.
+#
+# WHY THESE THREE: they are exactly the utterances the local `llm_wire` store
+# held when this harness landed (see fixtures/wire-ops-2026-07-21.json), so
+# every one of them scores against REAL captured evidence rather than an
+# imagined turn. They are also the three shapes that matter most for LE2's
+# funnel work:
+#   - a bare social greeting (L0's whole reason to exist),
+#   - a store-state question,
+#   - a delivery-coverage question (P0 decision 4's own subject).
+# None of the three asks for a mutation, so a capability envelope for any of
+# them is a false positive the funnel must drive to zero.
+#
+# Reported under the reserved capability key `eval.refusal` (the ∅ class) —
+# see `EVAL_REFUSAL_CAPABILITY` in src/extraction/eval-schema.ts.
+
+source: "LE2-05 (eval harness v1) — the ∅ class"
+
+cases:
+  - id: bare-greeting-oi
+    utterance: "Oi"
+    expectCapability: null
+    note: >-
+      A bare greeting proposes no mutation. Anything the parser emits here is
+      invented from nothing — the purest possible false positive, and the exact
+      case LE2's L0 social tier (decision 8) is meant to answer with zero model
+      calls.
+
+  - id: store-open-question
+    utterance: "Vocês estão abertos?"
+    expectCapability: null
+    note: >-
+      A question about store state is a READ, answered from projections; it is
+      never a mutating capability. Parsing it into one would put an
+      unadjudicated verb behind a purely informational turn.
+
+  - id: delivery-coverage-question
+    utterance: "Vocês entregam em Ibate?"
+    expectCapability: null
+    note: >-
+      A delivery-coverage question is answered by the grounded coverage claim
+      (P0 decision 4), not by a mutating capability. Pinned here so the coverage
+      work cannot regress the parse side while improving the answer side.

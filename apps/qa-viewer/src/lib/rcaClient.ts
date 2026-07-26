@@ -21,6 +21,75 @@ export interface RcaConversation {
   lastText: string | null // last archived message (server-redacted)
   lastRole: string | null
   turnCount: number
+  // LE2-031 identity columns — both opaque (a cuid and a salted hash), null
+  // when the session could not be attributed. OPTIONAL on the wire: an older
+  // API build sends neither.
+  customerId?: string | null
+  phoneHash?: string | null
+}
+
+/** LE2-031 — how a rail group's identity was established. `ungrouped` is the
+ *  CLIENT-side fallback for an API build that does not group at all: it asserts
+ *  nothing about identity (unlike `unidentified`, which is a server finding). */
+export type RcaGroupKind = "customer" | "ops" | "unidentified" | "ungrouped"
+
+/** One top-level rail row: a customer (or a staff operator, or the explicit
+ *  unidentified bucket) with its sessions as sub-rows. Built server-side
+ *  (apps/api/src/routes/qa-rca-grouping.ts) so the identity ladder and the
+ *  ordering are pinned in one place. */
+export interface RcaConversationGroup {
+  /** Stable identity — a pure function of the session's identity fields, so a
+   *  live refresh never re-keys (and therefore never collapses) an open group. */
+  groupKey: string
+  kind: RcaGroupKind
+  label: string
+  customerId: string | null
+  phoneHash: string | null
+  staffId: string | null
+  /** Sessions of this group, most-recent-first — the rail's sub-rows. */
+  sessionIds: string[]
+  channels: string[]
+  sessionCount: number
+  turnCount: number
+  startedAt: string | null
+  lastAt: string | null
+}
+
+/** The rail's payload: the grouped view plus the flat rows it is built from
+ *  (the sub-rows, the channel facet counts and the previews all read those). */
+export interface RcaConversationPage {
+  conversations: RcaConversation[]
+  groups: RcaConversationGroup[]
+  /** true = this API build did not group; `groups` is the one-row-per-session
+   *  fallback below, NOT a claim that every session is unidentifiable. */
+  ungrouped: boolean
+}
+
+/** Server groups when the API sent them; otherwise ONE group per session,
+ *  explicitly marked `ungrouped`. Pure — the rail then has a single code path,
+ *  and a stale API degrades the VIEW without inventing customer identities. */
+export function groupsOrFallback(
+  conversations: ReadonlyArray<RcaConversation>,
+  groups: RcaConversationGroup[] | undefined,
+): { groups: RcaConversationGroup[]; ungrouped: boolean } {
+  if (groups !== undefined) return { groups, ungrouped: false }
+  return {
+    ungrouped: true,
+    groups: conversations.map((c) => ({
+      groupKey: `session:${c.sessionId}`,
+      kind: "ungrouped" as const,
+      label: c.sessionId,
+      customerId: null,
+      phoneHash: null,
+      staffId: null,
+      sessionIds: [c.sessionId],
+      channels: [c.channel],
+      sessionCount: 1,
+      turnCount: c.turnCount,
+      startedAt: c.startedAt,
+      lastAt: c.lastAt,
+    })),
+  }
 }
 
 export interface RcaTurnSummary {
@@ -48,6 +117,16 @@ export interface InvestigationContext {
   startedAt: string | null
   endedAt: string | null
   durationMs: number | null
+  // LE2-014 — the @ibatexas/catalog version this turn ran under
+  // (max(turn_trace.catalog_version); the value is identical on every row of
+  // the turn). Together with the prompt manifest this is the replay key: a
+  // historical turn is re-runnable against exactly the catalog it saw.
+  //
+  // OPTIONAL on the wire, and nullable, for two independent reasons: turns
+  // traced before the column existed have no value, and older API builds do
+  // not send the field at all. Displayed as "—" in both cases — never
+  // defaulted to a version number, which would misattribute the turn.
+  catalogVersion?: number | null
 }
 
 export interface LlmCall {
@@ -98,15 +177,57 @@ export interface VlLine {
   fields: Record<string, string> | null
 }
 
+/** Wire Truth — one durable wire ATTEMPT (llm_wire row): the relay's exact
+ *  outbound request + the raw provider response. Retry attempts share a
+ *  `callIndex` (the LlmCall they render into) across ascending `seq`. */
+export interface WireExchange {
+  seq: number
+  callIndex: number | null
+  model: string | null
+  request: unknown
+  response: unknown
+  requestHash: string | null
+  requestTruncated: boolean
+  responseTruncated: boolean
+  recordedAt: string | null
+}
+
+/** LE2-030 — Twilio delivery confirmation for ONE outbound reply part
+ *  (`whatsapp_delivery`, keyed by the message SID captured at send time).
+ *
+ *  `status === null` means no delivery callback has arrived yet — the honest
+ *  "pending" state, NOT an error. Every other value is Twilio's own
+ *  `MessageStatus` verbatim (sent / delivered / read / failed / undelivered …). */
+export interface DeliveryRecord {
+  messageSid: string | null
+  partIndex: number
+  status: string | null
+  sentAt: string | null
+  statusAt: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  /** How many callbacks Twilio has posted for this SID (0 = pure silence). */
+  callbackCount: number
+  /** Call-site tag: "send" (text part) | "sendMedia". */
+  source: string | null
+}
+
 export interface RcaTurnDetail {
   context: InvestigationContext
   llm: LlmCall[]
   adj: AdjDecision[]
   vl: VlLine[]
+  /** Wire Truth lane — absent on pre-capture turns (degraded.wire then says
+   *  whether the store was unreachable vs the turn predating capture). */
+  wire: WireExchange[]
+  /** LE2-030 delivery lane — one row per outbound reply part whose SID was
+   *  captured at send. OPTIONAL on the wire: an older API build sends no field
+   *  at all, and a turn that predates SID capture legitimately has no rows. */
+  delivery?: DeliveryRecord[]
   /** Fail-safe lanes flag their outages — an empty degraded lane means "the
    *  store was unreachable", NOT "nothing happened" (absence-is-signal only
    *  holds when the lane actually answered). */
-  degraded: { adj: boolean; vl: boolean }
+  degraded: { adj: boolean; vl: boolean; wire: boolean; delivery?: boolean }
 }
 
 // ── Fetchers ────────────────────────────────────────────────────────────────
@@ -121,17 +242,23 @@ export interface ConversationFilter {
   limit?: number
 }
 
-export const fetchConversations = (cfg: QaConfig, f: ConversationFilter): Promise<RcaConversation[]> => {
+/** The rail read. Returns the grouped view AND the flat rows: grouping is a
+ *  server concern (one identity ladder, one ordering, pinned once), the client
+ *  only renders it. */
+export const fetchConversationPage = (
+  cfg: QaConfig,
+  f: ConversationFilter,
+): Promise<RcaConversationPage> => {
   const p = new URLSearchParams()
   p.set("limit", String(f.limit ?? 40))
   if (f.q) p.set("q", f.q)
   if (f.from) p.set("from", f.from)
   if (f.to) p.set("to", f.to)
   if (f.channels !== undefined && f.channels.length > 0) p.set("channel", f.channels.join(","))
-  return authedGetJson<{ conversations: RcaConversation[] }>(
+  return authedGetJson<{ conversations: RcaConversation[]; groups?: RcaConversationGroup[] }>(
     cfg,
     `/internal/qa/rca/conversations?${p.toString()}`,
-  ).then((r) => r.conversations)
+  ).then((r) => ({ conversations: r.conversations, ...groupsOrFallback(r.conversations, r.groups) }))
 }
 
 export const fetchTurns = (
@@ -280,6 +407,71 @@ function hasLegacySend(vl: VlLine[]): boolean {
   return vl.some((l) => (l.msg ?? "").includes("[whatsapp.send]"))
 }
 
+// ── Derived: Twilio delivery confirmation (LE2-030) ─────────────────────────
+//
+// `reply.sent` proves only that our process handed the message to Twilio. The
+// delivery lane carries what Twilio's own status callbacks reported, so it
+// outranks the local verdict wherever it has rows.
+
+export type DeliveryState = "delivered" | "failed" | "pending"
+
+/** Twilio statuses that mean the message reached the handset. */
+const DELIVERED_STATUSES = new Set(["delivered", "read"])
+/** Twilio statuses that mean it did not, and never will. */
+const FAILED_STATUSES = new Set(["failed", "undelivered", "canceled"])
+
+/** Classify ONE part's latest status. `null` (no callback yet) and the
+ *  in-flight statuses (queued/sending/sent) are both "pending" — Twilio has
+ *  accepted the message but not yet confirmed the hop. Pending is never an
+ *  error: it is the normal state of a reply sent seconds ago. */
+export function deliveryState(status: string | null): DeliveryState {
+  if (status === null) return "pending"
+  if (DELIVERED_STATUSES.has(status)) return "delivered"
+  if (FAILED_STATUSES.has(status)) return "failed"
+  return "pending"
+}
+
+export interface DeliveryRollup {
+  total: number
+  delivered: number
+  failed: number
+  pending: number
+  /** Worst state across the parts: one failed part fails the whole reply, and
+   *  an unconfirmed part keeps it pending. Only all-delivered is delivered. */
+  state: DeliveryState
+}
+
+/** Roll the per-part rows up to one verdict for the turn. `null` when the turn
+ *  has no delivery rows at all (a pre-capture turn, a web turn, or a turn that
+ *  genuinely sent nothing) — the caller then falls back to the VL verdict. */
+export function rollupDelivery(rows: ReadonlyArray<DeliveryRecord>): DeliveryRollup | null {
+  if (rows.length === 0) return null
+  let delivered = 0
+  let failed = 0
+  let pending = 0
+  for (const r of rows) {
+    const s = deliveryState(r.status)
+    if (s === "delivered") delivered++
+    else if (s === "failed") failed++
+    else pending++
+  }
+  const state: DeliveryState = failed > 0 ? "failed" : pending > 0 ? "pending" : "delivered"
+  return { total: rows.length, delivered, failed, pending, state }
+}
+
+/** Attribute one VL line to a pipeline stage for the donut drill-down —
+ *  mirrors exactly the signals derivePipeline reads per stage; undefined when
+ *  the line belongs to no single donut (generic conductor chatter). */
+function vlStage(l: VlLine): string | undefined {
+  const ev = l.fields?.event ?? ""
+  const msg = l.msg ?? ""
+  if (ev === "reply.sent" || msg.includes("[whatsapp.send]")) return "send"
+  if (l.component === "claims" || l.component === "claim-planner" || ev.startsWith("claim")) return "claims"
+  if (ev === "turn" || msg.includes("incoming")) return "inbound"
+  if (msg.includes("archiver") || msg.includes("archived")) return "archive"
+  return undefined
+}
+
 // ── Derived: merged timeline ────────────────────────────────────────────────
 
 export type TimelineSource = "ADJ" | "LLM" | "VL" | "GAP"
@@ -289,6 +481,10 @@ export interface TimelineEvent {
   ts: string
   source: TimelineSource
   text: string
+  /** Pipeline-stage attribution (derivePipeline keys: inbound / planner /
+   *  claims / kernel / responder / send / archive) — the donut drill-down
+   *  filters the timeline by this; absent when a row maps to no one stage. */
+  stage?: string
   /** Expandable payload: full completion / basis chain / raw structured fields. */
   detail?: string
   empty?: boolean
@@ -296,6 +492,9 @@ export interface TimelineEvent {
   /** LLM rows only: the prompt-catalog id of the call's persona — the
    *  cross-tab jump target for the Prompts editor. */
   promptId?: string
+  /** Wire Truth — the durable wire attempts behind this LLM call (retries
+   *  included), rendered as structured sections in the expander. */
+  wire?: WireExchange[]
 }
 
 function ms(iso: string | null): number {
@@ -311,23 +510,49 @@ function ms(iso: string | null): number {
 export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
   const out: TimelineEvent[] = []
   // Tolerate a not-yet-restarted API serving the previous wire shape.
-  const degraded = d.degraded ?? { adj: false, vl: false }
+  const degraded = d.degraded ?? { adj: false, vl: false, wire: false }
+  const wire = d.wire ?? []
 
+  const matchedSeqs = new Set<number>()
   for (const c of d.llm) {
     const empty = callEmpty(c)
-    const phase = personaPhase(c.persona) ?? `call ${c.callIndex}`
+    const phase = personaPhase(c.persona)
+    const phaseLabel = phase ?? `call ${c.callIndex}`
+    // The claim-planner call renders under the "Claims" donut; planner and
+    // responder map 1:1 to their stages.
+    const stage = phase === "claim-planner" ? "claims" : phase
     const head = empty ? "<EMPTY>" : (c.completion ?? "").slice(0, 120)
     const promptId = promptIdForPersona(c.persona)
+    // Wire Truth: the durable attempts behind THIS call (retries share its
+    // callIndex). An LLM row with wire attached always expands.
+    const attempts = wire.filter((x) => x.callIndex === c.callIndex)
+    for (const x of attempts) matchedSeqs.add(x.seq)
     out.push({
       tMs: ms(c.recordedAt),
       ts: c.recordedAt ?? "",
       source: "LLM",
-      text: `call ${c.callIndex} ${phase} · ${c.persona ?? "?"} · in=${c.inputTokens ?? 0} out=${c.outputTokens ?? 0} · ${c.durationMs ?? "?"}ms :: ${head}`,
-      ...(c.completion !== null && c.completion.length > 0
-        ? { detail: c.completion }
-        : {}),
+      text: `call ${c.callIndex} ${phaseLabel} · ${c.persona ?? "?"} · in=${c.inputTokens ?? 0} out=${c.outputTokens ?? 0} · ${c.durationMs ?? "?"}ms :: ${head}${attempts.length > 0 ? ` · wire×${attempts.length}` : ""}`,
+      // Every LLM row expands (spec story 15): with wire attempts it shows
+      // them; without, the expander states the absence explicitly.
+      detail: c.completion ?? "",
+      ...(stage !== null ? { stage } : {}),
       ...(empty ? { empty: true } : {}),
       ...(promptId !== null ? { promptId } : {}),
+      ...(attempts.length > 0 ? { wire: attempts } : {}),
+    })
+  }
+
+  // Wire attempts with no trace row to attach to (a call whose emit guard was
+  // off, or a count mismatch) — surfaced, never silently dropped.
+  for (const x of wire) {
+    if (matchedSeqs.has(x.seq)) continue
+    out.push({
+      tMs: ms(x.recordedAt),
+      ts: x.recordedAt ?? "",
+      source: "LLM",
+      text: `wire seq ${x.seq} (unmatched attempt) · ${x.model ?? "?"}`,
+      detail: "",
+      wire: [x],
     })
   }
 
@@ -339,6 +564,7 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
       tMs: ms(a.recordedAt),
       ts: a.recordedAt ?? "",
       source: "ADJ",
+      stage: a.kind === ARCHIVER_KIND ? "archive" : "kernel",
       text: `${a.kind ?? "?"} → ${a.decisionKind ?? "?"}${a.refusalCode ? ` (${a.refusalCode})` : ""}${a.taint ? ` · taint ${a.taint}` : ""}${a.durationMs != null ? ` · ${a.durationMs}ms` : ""}${scope}${resume}`,
       detail: [
         a.principal != null ? `principal: ${a.principal}` : null,
@@ -358,11 +584,13 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
   for (const l of d.vl) {
     const f = l.fields
     const tag = f?.event !== undefined ? `${f.event} ` : ""
+    const stage = vlStage(l)
     out.push({
       tMs: ms(l.time),
       ts: l.time ?? "",
       source: "VL",
       text: `${l.level ? `L${l.level} ` : ""}${l.component ? `[${l.component}] ` : ""}${tag}${l.msg ?? ""}`,
+      ...(stage !== undefined ? { stage } : {}),
       ...(f !== null && f !== undefined
         ? {
             detail: Object.entries(f)
@@ -388,6 +616,7 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
       tMs: ms(at) || Number.MAX_SAFE_INTEGER,
       ts: at ?? "",
       source: "GAP",
+      stage: "send",
       text: "expected outbound reply.sent here — ABSENT (pre-send failure or ghost). Absence is the signal.",
       gap: true,
     })
@@ -399,6 +628,71 @@ export function mergeTimeline(d: RcaTurnDetail): TimelineEvent[] {
     if (Number.isNaN(y.tMs)) return -1
     return x.tMs - y.tMs
   })
+}
+
+// ── Derived: wire-exchange sections (Wire Truth) ────────────────────────────
+
+export interface WireSection {
+  /** One-line sampling params: model / temp / max_tokens / response_format /
+   *  reasoning_effort — whatever the wire body actually carried. */
+  params: string
+  /** Messages by role, persona (system) first — the component collapses it. */
+  messages: Array<{ role: string; content: string }>
+  /** Tool roster: name + pretty-printed schema per tool. */
+  tools: Array<{ name: string; schema: string }>
+  /** Raw provider response, pretty-printed. */
+  response: string
+  /** Non-OpenAI request bodies (a truncation marker, an unknown shape) land
+   *  here pretty-printed — rendered in a scroll-capped block, never inline in
+   *  the params line. */
+  raw?: string
+  truncated: { request: boolean; response: boolean }
+}
+
+function pretty(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2) ?? "null"
+  } catch {
+    return String(v)
+  }
+}
+
+/** Build the structured expander sections for one wire exchange. Pure —
+ *  tolerates any body shape (a truncation marker, a non-OpenAI body) by
+ *  degrading to raw JSON in `params`/`response`. */
+export function buildWireSections(x: WireExchange): WireSection {
+  const req = (x.request ?? {}) as Record<string, unknown>
+  const paramKeys = ["model", "temperature", "max_tokens", "response_format", "reasoning_effort", "stop"]
+  const params = paramKeys
+    .filter((k) => req[k] !== undefined)
+    .map((k) => `${k}=${typeof req[k] === "object" ? JSON.stringify(req[k]) : String(req[k])}`)
+    .join(" · ")
+  const rawMessages = Array.isArray(req.messages) ? req.messages : []
+  const messages = rawMessages
+    .filter((m): m is Record<string, unknown> => m !== null && typeof m === "object")
+    .map((m) => ({
+      role: typeof m.role === "string" ? m.role : "?",
+      content: typeof m.content === "string" ? m.content : pretty(m.content),
+    }))
+  const rawTools = Array.isArray(req.tools) ? req.tools : []
+  const tools = rawTools
+    .filter((t): t is Record<string, unknown> => t !== null && typeof t === "object")
+    .map((t) => {
+      const fn = (t.function ?? {}) as Record<string, unknown>
+      return {
+        name: typeof fn.name === "string" ? fn.name : "?",
+        schema: pretty(fn.parameters ?? null),
+      }
+    })
+  const standardShape = params.length > 0 || messages.length > 0
+  return {
+    params: standardShape ? params : "(non-standard request body)",
+    messages,
+    tools,
+    response: pretty(x.response),
+    ...(standardShape ? {} : { raw: pretty(x.request) }),
+    truncated: { request: x.requestTruncated, response: x.responseTruncated },
+  }
 }
 
 // ── Derived: tri-state pipeline ─────────────────────────────────────────────
@@ -479,14 +773,43 @@ export function derivePipeline(d: RcaTurnDetail): PipelineStage[] {
     return { key: "claims", label: "Claims", state: "ok" as StageState, sub: "engaged" }
   })()
 
-  // Send: the reply.sent delivery verdict beats any substring heuristic.
+  // Send: the reply.sent delivery verdict beats any substring heuristic — and
+  // LE2-030's Twilio confirmation beats reply.sent, which only ever proved that
+  // the Twilio API ACCEPTED the message.
   const verdict = deliveryVerdict(d.vl)
+  const rollup = rollupDelivery(d.delivery ?? [])
   const send: PipelineStage = (() => {
     const label = isWhatsapp ? "WhatsApp" : "Send"
-    if (verdict !== null) {
-      if (verdict.disposition === "suppressed_paused") {
-        return { key: "send", label, state: "ok" as StageState, sub: "paused · designed silence" }
+    // A paused turn deliberately sends nothing, so it has no SIDs to confirm —
+    // designed silence is judged before the delivery lane.
+    if (verdict?.disposition === "suppressed_paused") {
+      return { key: "send", label, state: "ok" as StageState, sub: "paused · designed silence" }
+    }
+    if (rollup !== null) {
+      const parts = rollup.total > 1 ? ` (${rollup.total} parts)` : ""
+      if (rollup.state === "failed") {
+        return {
+          key: "send",
+          label,
+          state: "fail" as StageState,
+          sub: `failed · ${rollup.failed}/${rollup.total} not delivered`,
+        }
       }
+      if (rollup.state === "delivered") {
+        return { key: "send", label, state: "ok" as StageState, sub: `delivered${parts}` }
+      }
+      // Pending: Twilio accepted it, no confirmation yet. Absence of a callback
+      // is NOT a failure — the normal state of a reply sent moments ago.
+      return {
+        key: "send",
+        label,
+        state: "silent" as StageState,
+        sub: `pending · ${rollup.pending}/${rollup.total} unconfirmed`,
+      }
+    }
+    // No delivery rows: a web turn, or a whatsapp turn from before SID capture
+    // existed. Fall back to the pre-LE2-030 verdict, unchanged.
+    if (verdict !== null) {
       if (verdict.delivered) return { key: "send", label, state: "ok" as StageState, sub: "delivered" }
       return { key: "send", label, state: "fail" as StageState, sub: `not delivered (${verdict.disposition ?? "?"})` }
     }
@@ -526,6 +849,100 @@ export function derivePipeline(d: RcaTurnDetail): PipelineStage[] {
     send,
     { key: "archive", label: "Archive", state: archived ? "ok" : "off", sub: archived ? "persisted" : "skipped" },
   ]
+}
+
+/** The "most relevant data" behind one donut — compact per-stage evidence for
+ *  the pipeline drill-down, derived entirely from the already-loaded detail
+ *  (no extra fetch). Mirrors the same signals derivePipeline judges by, so the
+ *  facts always explain the donut's state. Returns [] for an unknown key. */
+export function stageFacts(d: RcaTurnDetail, key: string): string[] {
+  const callFacts = (c: LlmCall): string[] => [
+    `persona: ${c.persona ?? "?"}`,
+    `model: ${c.model ?? "?"}${c.temperature !== null ? ` · temp ${c.temperature}` : ""}`,
+    `tokens: in ${c.inputTokens ?? 0} · out ${c.outputTokens ?? 0} · ${c.durationMs ?? "?"}ms`,
+    ...(callEmpty(c) ? ["completion: <EMPTY>"] : []),
+  ]
+  const fieldFacts = (l: VlLine | undefined): string[] =>
+    l?.fields != null
+      ? Object.entries(l.fields)
+          .filter(([k]) => k !== "event")
+          .map(([k, v]) => `${k}: ${v}`)
+      : []
+  switch (key) {
+    case "inbound": {
+      return [
+        `channel: ${d.context.channel ?? "?"}`,
+        `started: ${d.context.startedAt ?? "?"}`,
+        `duration: ${d.context.durationMs ?? "?"}ms`,
+        ...fieldFacts(d.vl.find((l) => l.fields?.event === "turn")),
+      ]
+    }
+    case "planner": {
+      const c = planner(d)
+      return c === undefined ? ["no planner call"] : callFacts(c)
+    }
+    case "claims": {
+      const c = claimPlanner(d)
+      return [
+        ...(c === undefined ? ["no claim-planner call"] : callFacts(c)),
+        ...fieldFacts(d.vl.find((l) => l.fields?.event === "claims.terminal")),
+      ]
+    }
+    case "kernel": {
+      if (d.degraded?.adj === true) return ["ADJ lane degraded — absence is not a signal here"]
+      const rows = d.adj.filter((a) => a.kind !== ARCHIVER_KIND && a.decisionKind !== null)
+      if (rows.length === 0) return ["no envelopes (a read-only turn adjudicates nothing)"]
+      return rows.map(
+        (a) =>
+          `${a.kind ?? "?"} → ${a.decisionKind ?? "?"}${a.refusalCode !== null ? ` (${a.refusalCode})` : ""}${
+            a.taint !== null ? ` · taint ${a.taint}` : ""
+          }${a.supersedes !== null ? ` ↩ resumes ${a.supersedes.reason ?? "?"}` : ""}`,
+      )
+    }
+    case "responder": {
+      const c = responder(d)
+      if (c === undefined) return ["no responder call"]
+      return [...callFacts(c), ...(callEmpty(c) ? [] : [`reply: ${(c.completion ?? "").slice(0, 200)}`])]
+    }
+    case "send": {
+      // LE2-030 — Twilio's per-part delivery confirmation leads the evidence:
+      // it is the only fact here that speaks about the HANDSET rather than
+      // about our own process. reply.sent follows as the local view.
+      const rows = d.delivery ?? []
+      const deliveryFacts: string[] = []
+      if (rows.length > 0) {
+        const r = rollupDelivery(rows)!
+        deliveryFacts.push(
+          `delivery: ${r.delivered} delivered · ${r.failed} failed · ${r.pending} pending (${r.total} parts)`,
+          ...rows.map((row) => {
+            const state = deliveryState(row.status)
+            const err =
+              row.errorCode !== null || row.errorMessage !== null
+                ? ` — ${row.errorCode ?? "?"}${row.errorMessage !== null ? `: ${row.errorMessage}` : ""}`
+                : ""
+            const at = row.statusAt ?? row.sentAt ?? "?"
+            return `part ${row.partIndex} [${row.source ?? "send"}] ${row.messageSid ?? "?"}: ${state}${
+              row.status !== null ? ` (${row.status})` : " — no callback yet"
+            } @ ${at}${err}`
+          }),
+        )
+      } else if (d.degraded?.delivery === true) {
+        deliveryFacts.push("delivery lane degraded — absence is not a signal here")
+      }
+
+      const ev = d.vl.find((l) => l.fields?.event === "reply.sent")
+      if (ev !== undefined) return [...deliveryFacts, ...fieldFacts(ev)]
+      if (hasLegacySend(d.vl)) return [...deliveryFacts, "legacy [whatsapp.send] line present"]
+      if (deliveryFacts.length > 0) return deliveryFacts
+      return [d.degraded?.vl === true ? "VL lane degraded — absence is not a signal here" : "no send event"]
+    }
+    case "archive": {
+      const n = d.adj.filter((a) => a.kind === ARCHIVER_KIND && a.decisionKind === "EXECUTE").length
+      return n > 0 ? [`archiver ${ARCHIVER_KIND} EXECUTE ×${n}`] : ["no archiver rows"]
+    }
+    default:
+      return []
+  }
 }
 
 // ── Derived: deep-links (env-configured bases) ──────────────────────────────

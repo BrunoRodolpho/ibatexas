@@ -7,6 +7,7 @@ import { cartRoutes } from "./cart.js";
 import { shippingRoutes } from "./shipping.js";
 import { stripeWebhookRoutes } from "./stripe-webhook.js";
 import { whatsappWebhookRoutes } from "./whatsapp-webhook.js";
+import { whatsappStatusCallbackRoutes } from "./whatsapp-status-callback.js";
 import { adminRoutes } from "./admin/index.js";
 import { reservationRoutes } from "./reservations.js";
 import { analyticsRoutes } from "./analytics.js";
@@ -24,6 +25,10 @@ export async function registerRoutes(server: FastifyInstance): Promise<void> {
   // Webhooks must be registered before JSON body parser middlewares
   await server.register(stripeWebhookRoutes);
   await server.register(whatsappWebhookRoutes);
+  // LE2-030 — Twilio delivery-status callbacks. Its own encapsulated plugin
+  // (own form-urlencoded parser), so it must be registered alongside the other
+  // webhooks, before the JSON body parser middlewares.
+  await server.register(whatsappStatusCallbackRoutes);
 
   await server.register(healthRoutes);
   await server.register(authRoutes);

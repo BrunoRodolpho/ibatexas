@@ -1,0 +1,192 @@
+{
+  "formatVersion": 1,
+  "source": "audit-gold",
+  "id": "audit-gold-dev-2026-07",
+  "synthetic": false,
+  "note": "REAL export from the local dev stack's intent_audit (Postgres :5433), 2026-07-24. Rows carrying metadata_jsonb.languageEngine (the FE-T05 sidecar), joined to their utterance through ibx_domain.conversations/conversation_messages by re-deriving the salted session hash (D-012), then filtered to the rows whose utterance is also an authored extraction-corpus utterance — that intersection IS the scoreable overlap. Deduped on (utterance, kind, extractionIR, hydratedIntentIR, decision) and sorted by (normalized utterance, capability, recordedAt). The [REDACTED:CARD] sentinels inside resolver-stamped order ids are the audit sink's own PII pass, stored exactly as shown. See ../README.md for the full recipe.",
+  "artifacts": [
+    {
+      "utterance": "adiciona uma coca no meu pedido",
+      "capability": "order.amend.add_item",
+      "extractionIR": {
+        "payload": {
+          "item": "coca",
+          "quantity": 1
+        },
+        "provenance": {
+          "item": {
+            "trust": "untrusted",
+            "producer": "model",
+            "confidence": "explicit"
+          },
+          "quantity": {
+            "trust": "untrusted",
+            "producer": "model",
+            "confidence": "explicit"
+          }
+        }
+      },
+      "hydratedIntentIR": {
+        "payload": {
+          "item": "coca",
+          "orderId": "order_ws9_refund_[REDACTED:CARD]bacf3c2",
+          "quantity": 1
+        },
+        "provenance": {
+          "item": {
+            "trust": "untrusted",
+            "producer": "model",
+            "confidence": "explicit"
+          },
+          "orderId": {
+            "trust": "grounded",
+            "producer": "resolver",
+            "confidence": "resolved"
+          },
+          "quantity": {
+            "trust": "untrusted",
+            "producer": "model",
+            "confidence": "explicit"
+          }
+        },
+        "confirmationRequired": true
+      },
+      "decision": "REQUEST_CONFIRMATION",
+      "provenance": {
+        "store": "intent_audit",
+        "sessionId": "hashed:1ac9ee52",
+        "recordedAt": "2026-07-16T16:29:07.391Z"
+      }
+    },
+    {
+      "utterance": "cancela meu pedido",
+      "capability": "order.cancel",
+      "extractionIR": {
+        "payload": {},
+        "provenance": {}
+      },
+      "hydratedIntentIR": {
+        "payload": {
+          "orderId": "order_ws9_refund_[REDACTED:CARD]ecb3de30"
+        },
+        "provenance": {
+          "orderId": {
+            "trust": "grounded",
+            "producer": "resolver",
+            "confidence": "resolved"
+          }
+        },
+        "confirmationRequired": true
+      },
+      "decision": "REQUEST_CONFIRMATION",
+      "provenance": {
+        "store": "intent_audit",
+        "sessionId": "hashed:448edb57",
+        "recordedAt": "2026-07-19T16:02:32.559Z"
+      }
+    },
+    {
+      "utterance": "cancela minha reserva",
+      "capability": "reservation.cancel",
+      "extractionIR": {
+        "payload": {},
+        "provenance": {}
+      },
+      "hydratedIntentIR": {
+        "payload": {},
+        "provenance": {},
+        "confirmationRequired": false
+      },
+      "decision": "REFUSE",
+      "provenance": {
+        "store": "intent_audit",
+        "sessionId": "hashed:a6a998f1",
+        "recordedAt": "2026-07-19T18:18:31.535Z"
+      }
+    },
+    {
+      "utterance": "quero falar com um atendente",
+      "capability": "whatsapp.handoff.request",
+      "extractionIR": {
+        "payload": {},
+        "provenance": {}
+      },
+      "hydratedIntentIR": {
+        "payload": {},
+        "provenance": {},
+        "confirmationRequired": false
+      },
+      "decision": "EXECUTE",
+      "provenance": {
+        "store": "intent_audit",
+        "sessionId": "hashed:890ac859",
+        "recordedAt": "2026-07-17T22:42:38.274Z"
+      }
+    },
+    {
+      "utterance": "quero uma coca",
+      "capability": "order.item.add",
+      "extractionIR": {
+        "payload": {
+          "item": "coca",
+          "quantity": 1
+        },
+        "provenance": {
+          "item": {
+            "trust": "untrusted",
+            "producer": "model",
+            "confidence": "explicit"
+          },
+          "quantity": {
+            "trust": "untrusted",
+            "producer": "model",
+            "confidence": "explicit"
+          }
+        }
+      },
+      "hydratedIntentIR": {
+        "payload": {
+          "item": "coca",
+          "cartId": "cart_01KXX89C9Q2VM4R0XY3C2CCY30",
+          "quantity": 1,
+          "allergens": [],
+          "variantId": "variant_01KV4J637H7TTA2WGZNQ4YNNNF"
+        },
+        "provenance": {
+          "item": {
+            "trust": "untrusted",
+            "producer": "model",
+            "confidence": "explicit"
+          },
+          "cartId": {
+            "trust": "authoritative",
+            "producer": "resolver",
+            "confidence": "resolved"
+          },
+          "quantity": {
+            "trust": "untrusted",
+            "producer": "model",
+            "confidence": "explicit"
+          },
+          "allergens": {
+            "trust": "authoritative",
+            "producer": "resolver",
+            "confidence": "resolved"
+          },
+          "variantId": {
+            "trust": "authoritative",
+            "producer": "resolver",
+            "confidence": "resolved"
+          }
+        },
+        "confirmationRequired": false
+      },
+      "decision": "EXECUTE",
+      "provenance": {
+        "store": "intent_audit",
+        "sessionId": "hashed:39b9c660",
+        "recordedAt": "2026-07-19T13:15:46.723Z"
+      }
+    }
+  ]
+}
