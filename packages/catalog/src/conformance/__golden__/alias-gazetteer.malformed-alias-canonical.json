@@ -1,0 +1,62 @@
+{
+  "fixture": "alias-gazetteer.malformed-alias-canonical",
+  "targets": "alias-gazetteer/malformed-alias-canonical",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 1,
+  "rulesEmitted": [
+    "alias-gazetteer/malformed-alias-canonical"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 2,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "alias-gazetteer",
+      "rule": "malformed-alias-canonical",
+      "severity": "error",
+      "object": "alias:conformance apelido",
+      "field": "canonical",
+      "message": "\"Conformance Entidade Canônica\" is not a canonical entity name (expected a kebab-case ASCII handle like `costela-bovina-defumada`, per CLAUDE.md's naming conventions). The catalog cannot check that a canonical name EXISTS — that is a live-store question it deliberately never asks — so its shape is the only static statement available, and it is what a future reconciliation gate would probe by.",
+      "reference": "Conformance Entidade Canônica"
+    }
+  ],
+  "formatted": [
+    "alias-gazetteer/malformed-alias-canonical: alias:conformance apelido · canonical — \"Conformance Entidade Canônica\" is not a canonical entity name (expected a kebab-case ASCII handle like `costela-bovina-defumada`, per CLAUDE.md's naming conventions). The catalog cannot check that a canonical name EXISTS — that is a live-store question it deliberately never asks — so its shape is the only static statement available, and it is what a future reconciliation gate would probe by."
+  ]
+}

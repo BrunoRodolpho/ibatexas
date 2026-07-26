@@ -4,6 +4,7 @@
   "ok": false,
   "capabilities": 1,
   "externalReferences": 0,
+  "aliases": 0,
   "rulesEmitted": [
     "referential-integrity/claim-reference-dangling",
     "safety-implication-edges/unrecognized-safety-marker-conservatively-denied"
@@ -21,6 +22,11 @@
     },
     {
       "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
       "checked": 0,
       "diagnostics": 0
     },

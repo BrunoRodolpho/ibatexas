@@ -43,6 +43,22 @@
       ]
     },
     {
+      "pass": "alias-gazetteer",
+      "sources": [
+        "passes/alias-gazetteer.ts"
+      ],
+      "rules": [
+        "ambiguous-alias-surface",
+        "colliding-alias-disambiguation",
+        "duplicate-alias-edge",
+        "malformed-alias-canonical",
+        "malformed-alias-surface",
+        "safety-restricted-alias-surface",
+        "safety-restricted-alias-target",
+        "unnecessary-alias-disambiguation"
+      ]
+    },
+    {
       "pass": "safety-implication-edges",
       "sources": [
         "passes/safety-implication-edges.ts"
@@ -79,5 +95,5 @@
       ]
     }
   ],
-  "ruleCount": 30
+  "ruleCount": 38
 }

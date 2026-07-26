@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest"
 
 import { CAPABILITY_DEFINITIONS } from "../../capability-definitions/definitions.js"
+import type { AliasEdge } from "../../alias-gazetteer.js"
 import type { CapabilityDefinition } from "../../capability-definitions/types.js"
 import {
   assertClaimReferencesResolve,
@@ -18,6 +19,7 @@ import {
   CatalogCompileError,
   compileCatalog,
   formatCatalogReport,
+  type CatalogCompileResult,
 } from "../index.js"
 
 /**
@@ -30,6 +32,12 @@ import {
  * its own — `compileCatalog` defaults that table to the REAL authored
  * declarations, whose consumers name capability kinds this one-object catalog
  * does not contain.)
+ *
+ * The alias half lives in {@link BROKEN_ALIASES} rather than here, because the
+ * gazetteer is a separate table and its default is the opposite of the
+ * external-reference one: the REAL gazetteer is clean, and must stay clean, so
+ * a fault has to be supplied explicitly. {@link compileEverythingBroken} is
+ * the pairing.
  */
 const EVERY_PASS_BROKEN: readonly CapabilityDefinition[] = [
   {
@@ -53,6 +61,26 @@ const EVERY_PASS_BROKEN: readonly CapabilityDefinition[] = [
   },
 ] as unknown as readonly CapabilityDefinition[]
 
+/** The alias-gazetteer half of {@link EVERY_PASS_BROKEN} — an allergen edge. */
+const BROKEN_ALIASES = [
+  {
+    surface: "apelido fantasma",
+    canonical: "conformance-sem-gluten",
+    provenance: "authored",
+    why: "fixture.",
+  },
+] as unknown as readonly AliasEdge[]
+
+/** Both halves of the broken catalog, compiled together. */
+function compileEverythingBroken(
+  definitions: readonly CapabilityDefinition[] = EVERY_PASS_BROKEN,
+  aliases: readonly AliasEdge[] = BROKEN_ALIASES,
+): CatalogCompileResult {
+  // `undefined` keeps the REAL external-reference table, which is what trips
+  // that pass — see EVERY_PASS_BROKEN's doc.
+  return compileCatalog(definitions, undefined, aliases)
+}
+
 describe("compileCatalog — registration and reporting", () => {
   it("registers exactly the declared passes, in declared order", () => {
     expect(CATALOG_PASSES.map((p) => p.id)).toEqual([...CATALOG_PASS_IDS])
@@ -65,7 +93,7 @@ describe("compileCatalog — registration and reporting", () => {
   })
 
   it("runs EVERY pass even after one rejects — fail-closed is the exit code, not the silence", () => {
-    const result = compileCatalog(EVERY_PASS_BROKEN)
+    const result = compileEverythingBroken()
     expect(result.ok).toBe(false)
     expect(result.passes).toHaveLength(CATALOG_PASS_IDS.length)
     expect(new Set(result.diagnostics.map((d) => d.pass))).toEqual(
@@ -74,8 +102,11 @@ describe("compileCatalog — registration and reporting", () => {
   })
 
   it("emits diagnostics in a STABLE total order (the golden-gate prerequisite)", () => {
-    const once = compileCatalog(EVERY_PASS_BROKEN).diagnostics
-    const twice = compileCatalog([...EVERY_PASS_BROKEN]).diagnostics
+    const once = compileEverythingBroken().diagnostics
+    const twice = compileEverythingBroken(
+      [...EVERY_PASS_BROKEN],
+      [...BROKEN_ALIASES],
+    ).diagnostics
     expect(JSON.stringify(twice)).toBe(JSON.stringify(once))
     // Pass order first, then object/field within a pass.
     const passOrder = once.map((d) => CATALOG_PASS_IDS.indexOf(d.pass))
@@ -83,7 +114,7 @@ describe("compileCatalog — registration and reporting", () => {
   })
 
   it("names object, slot and rule in every diagnostic (ticket AC3)", () => {
-    for (const d of compileCatalog(EVERY_PASS_BROKEN).diagnostics) {
+    for (const d of compileEverythingBroken().diagnostics) {
       expect(d.object).not.toBe("")
       expect(d.field).not.toBe("")
       expect(d.rule).not.toBe("")

@@ -1,0 +1,62 @@
+{
+  "fixture": "alias-gazetteer.unnecessary-alias-disambiguation",
+  "targets": "alias-gazetteer/unnecessary-alias-disambiguation",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 1,
+  "rulesEmitted": [
+    "alias-gazetteer/unnecessary-alias-disambiguation"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 3,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "alias-gazetteer",
+      "rule": "unnecessary-alias-disambiguation",
+      "severity": "error",
+      "object": "alias:conformance apelido solitario",
+      "field": "disambiguatedBy",
+      "message": "this surface form names exactly one entity (\"conformance-entidade-canonica\"), so there is nothing for \"conformance token\" to select between. A required token on an unambiguous alias is not harmless: it makes the alias stop matching the bare word it was written to catch, and the failure is silent. Drop it, or declare the sibling reading it was meant to be told apart from.",
+      "reference": "conformance token"
+    }
+  ],
+  "formatted": [
+    "alias-gazetteer/unnecessary-alias-disambiguation: alias:conformance apelido solitario · disambiguatedBy — this surface form names exactly one entity (\"conformance-entidade-canonica\"), so there is nothing for \"conformance token\" to select between. A required token on an unambiguous alias is not harmless: it makes the alias stop matching the bare word it was written to catch, and the failure is silent. Drop it, or declare the sibling reading it was meant to be told apart from."
+  ]
+}

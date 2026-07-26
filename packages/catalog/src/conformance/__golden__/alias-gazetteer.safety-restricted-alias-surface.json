@@ -1,0 +1,62 @@
+{
+  "fixture": "alias-gazetteer.safety-restricted-alias-surface",
+  "targets": "alias-gazetteer/safety-restricted-alias-surface",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 1,
+  "rulesEmitted": [
+    "alias-gazetteer/safety-restricted-alias-surface"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 2,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "alias-gazetteer",
+      "rule": "safety-restricted-alias-surface",
+      "severity": "error",
+      "object": "alias:conformance sem lactose",
+      "field": "surface",
+      "message": "the customer-spoken side of this alias carries the dietary-restriction marker \"lactose\". Canonicalization runs BEFORE the parse, so an alias on a safety-bearing phrase rewrites the customer's own words out of the utterance and the closed-taxonomy safety routing (§O#9: an unrecognized health/safety marker ESCALATES) never sees the marker it exists to catch. Forbidden by the ratified BKL-143 / BKL-123 / BKL-171 rulings; an allergen or dietary phrase must reach the parser intact.",
+      "reference": "conformance sem lactose"
+    }
+  ],
+  "formatted": [
+    "alias-gazetteer/safety-restricted-alias-surface: alias:conformance sem lactose · surface — the customer-spoken side of this alias carries the dietary-restriction marker \"lactose\". Canonicalization runs BEFORE the parse, so an alias on a safety-bearing phrase rewrites the customer's own words out of the utterance and the closed-taxonomy safety routing (§O#9: an unrecognized health/safety marker ESCALATES) never sees the marker it exists to catch. Forbidden by the ratified BKL-143 / BKL-123 / BKL-171 rulings; an allergen or dietary phrase must reach the parser intact."
+  ]
+}

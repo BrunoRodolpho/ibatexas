@@ -4,6 +4,7 @@
   "ok": false,
   "capabilities": 1,
   "externalReferences": 0,
+  "aliases": 0,
   "rulesEmitted": [
     "conversation-projection/malformed-trigger-phrasing"
   ],
@@ -22,6 +23,11 @@
       "pass": "conversation-projection",
       "checked": 6,
       "diagnostics": 1
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
     },
     {
       "pass": "safety-implication-edges",

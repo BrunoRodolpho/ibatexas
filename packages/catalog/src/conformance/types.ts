@@ -28,6 +28,7 @@
 //
 // Pure: no clock, no RNG, no IO.
 
+import type { AliasEdge } from "../alias-gazetteer.js"
 import type { CapabilityDefinition } from "../capability-definitions/types.js"
 import type { ExternalReferenceDeclaration } from "../external-references.js"
 
@@ -68,6 +69,13 @@ export interface ConformanceFixture {
    * contract; the suite therefore always passes a table explicitly.
    */
   readonly externalReferences?: readonly ExternalReferenceDeclaration[]
+  /**
+   * The fixture's alias gazetteer (LE2-025a). Omitted means NONE, for exactly
+   * the same reason as {@link ConformanceFixture.externalReferences}: a
+   * fixture that inherited the real gazetteer would change meaning every time
+   * somebody declared a colloquial.
+   */
+  readonly aliases?: readonly AliasEdge[]
 }
 
 /**
@@ -92,6 +100,16 @@ export function fixtureExternalReferences(
   ...objects: readonly unknown[]
 ): readonly ExternalReferenceDeclaration[] {
   return objects as readonly ExternalReferenceDeclaration[]
+}
+
+/**
+ * Widen hand-authored alias objects into the gazetteer a pass receives — the
+ * same single-cast discipline, for the same reason: a canonical name that is
+ * not a handle, or a surface form that is not a string at all, is precisely
+ * what the pass exists to reject and the authored type will not express it.
+ */
+export function fixtureAliases(...objects: readonly unknown[]): readonly AliasEdge[] {
+  return objects as readonly AliasEdge[]
 }
 
 /** `<pass>/<rule>` — the suite's stable id for one rejection class. */
