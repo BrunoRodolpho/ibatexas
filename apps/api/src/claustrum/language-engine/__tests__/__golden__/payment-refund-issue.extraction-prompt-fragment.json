@@ -22,43 +22,7 @@
         "capability",
         "payload"
       ],
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "capability": {
-                "const": "payment.refund.issue"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "payload": {
-                "type": "object",
-                "properties": {
-                  "orderReference": {
-                    "type": "string",
-                    "description": "Referência do pedido a reembolsar — número de exibição ou nome do cliente (o resolver mapeia para o pedido/pagamento real)."
-                  },
-                  "amount": {
-                    "type": "number",
-                    "description": "Valor do reembolso EM REAIS (não em centavos) — ex.: 10.5 para R$ 10,50. Omita se o funcionário não mencionar um valor (reembolso do saldo integral)."
-                  },
-                  "reason": {
-                    "type": "string",
-                    "description": "Motivo do reembolso, se mencionado (ex.: 'cliente desistiu', 'pedido errado'). Omita se não houver motivo explícito."
-                  }
-                },
-                "required": [
-                  "orderReference"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        }
-      ]
+      "additionalProperties": false
     }
   },
   "personaExcerpt": "Em payment.refund.issue, coloque a referência do pedido (número de exibição ou\nnome do cliente) em `orderReference` — NUNCA em `orderId`. Coloque o valor que o\nfuncionário falou em `amount`, SEMPRE EM REAIS (ex.: \"10 reais\" => 10; \"R$ 10,50\"\n=> 10.5) — NUNCA em centavos, o sistema faz a conversão. Se ele não disser um\nvalor, omita o campo — o sistema assume o reembolso total (confirmado antes de\nexecutar). Se houver um motivo mencionado (ex.: \"cliente desistiu\"), coloque-o em\n`reason`; se não houver, omita."

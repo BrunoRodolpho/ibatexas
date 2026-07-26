@@ -527,13 +527,15 @@ describe("createIbatexasPlanner — LLM tool surface", () => {
 // ── FE-T05 review (MINOR-3) — the per-capability wire-schema embed ──────────
 
 describe("createIbatexasPlanner — buildToolSurface per-capability extraction schema (FE-1.1/FE-1.4)", () => {
-  it("embeds the allOf/if-then payload sub-schema when a registered capability is allowed", async () => {
-    // order.note.add, then order.checkout.create, were this test's
-    // successive "no authored schema yet" examples (FE-T05, then T11/T12) —
-    // FE-T14 + T12 authored the entire real drivable surface (25/26 tickets
-    // done, this is the last one), so no REAL capability is unauthored
-    // anymore. Uses a capability name that will never be registered to
-    // preserve the test's original additive-proof intent permanently.
+  // BKL-255a — these three tests used to assert that `buildToolSurface`
+  // EMBEDS an `allOf`/`if-then` clause per authored capability. It no longer
+  // does, and the assertions are inverted, because the engine never decoded
+  // that clause: Ollama parses a tool schema into a closed Go struct that
+  // silently DROPS `allOf` (LE2-004), so the constraint never reached the
+  // model and never errored to say so. What is asserted now is the property
+  // that replaced it — the surface carries NO dead constraint — which is the
+  // regression guard against re-adding one.
+  it("carries NO allOf, even when EVERY allowed capability has an authored schema", async () => {
     const { model } = mockModel([]);
     const planner = createIbatexasPlanner({
       model,
@@ -546,26 +548,46 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
     await planner.propose(mkState("oi"));
     const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
     const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
-    const schema = ei.inputSchema as {
-      allOf?: ReadonlyArray<{
-        if: { properties: { capability: { const: string } } };
-        then: { properties: { payload: unknown } };
-      }>;
-    };
 
-    expect(schema.allOf).toBeDefined();
-    // Exactly one if/then clause — only order.status.transition has an
-    // authored schema; nonexistent.capability.probe (no authored schema)
-    // contributes NOTHING to allOf.
-    expect(schema.allOf).toHaveLength(1);
-    expect(schema.allOf![0]!.if.properties.capability.const).toBe(
-      "order.status.transition",
-    );
-    // The embedded payload sub-schema is EXACTLY the registered wire schema
-    // — proves the wiring, not just that SOME allOf exists.
-    expect(schema.allOf![0]!.then.properties.payload).toEqual(
-      EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.status.transition"),
-    );
+    expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
+    // order.status.transition HAS an authored schema; it contributes nothing
+    // to the wire. The payload stays the generic open object.
+    expect(EXTRACTION_SCHEMAS_BY_CAPABILITY.has("order.status.transition")).toBe(true);
+    expect((ei.inputSchema as { properties: { payload: unknown } }).properties.payload).toEqual({
+      type: "object",
+      description: "Dados da intenção (campos específicos da capability).",
+    });
+  });
+
+  it("is BYTE-IDENTICAL whether or not the allowed capabilities have authored schemas", async () => {
+    // The sharp form of the deadness claim: two intent sets of the same size,
+    // one fully authored and one fully unauthored, produce the same tool
+    // surface modulo the capability enum itself. If anyone re-derives the
+    // wire from the authored schemas, this fails.
+    async function surfaceFor(intents: string[]): Promise<unknown> {
+      const { model } = mockModel([]);
+      const planner = createIbatexasPlanner({
+        model,
+        modelId: "claude-test",
+        capabilityPlanners: [capPlanner([], intents)],
+      });
+      await planner.propose(mkState("oi"));
+      const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
+      const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
+      const schema = JSON.parse(JSON.stringify(ei.inputSchema)) as {
+        properties: { capability: { enum: string[] } };
+      };
+      // Normalize away the ONE thing that legitimately differs.
+      schema.properties.capability.enum = ["<normalized>"];
+      return schema;
+    }
+
+    const authored = ["order.status.transition", "order.cancel"];
+    const unauthored = ["nonexistent.capability.probe.a", "nonexistent.capability.probe.b"];
+    expect(authored.every((k) => EXTRACTION_SCHEMAS_BY_CAPABILITY.has(k))).toBe(true);
+    expect(unauthored.every((k) => !EXTRACTION_SCHEMAS_BY_CAPABILITY.has(k))).toBe(true);
+
+    expect(await surfaceFor(authored)).toEqual(await surfaceFor(unauthored));
   });
 
   it("is byte-identical to the pre-FE-T05 generic shape when NO allowed capability has an authored schema", async () => {
@@ -605,7 +627,7 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
     expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
   });
 
-  it("FE-T14: embeds one allOf/if-then clause per authored order-cart-item kind when ORDER_INTENTS is in play", async () => {
+  it("FE-T14: the full ORDER_INTENTS surface still carries NO allOf, and every kind keeps an authored schema for the parse seam", async () => {
     const { model } = mockModel([]);
     const planner = createIbatexasPlanner({
       model,
@@ -616,67 +638,51 @@ describe("createIbatexasPlanner — buildToolSurface per-capability extraction s
     await planner.propose(mkState("oi"));
     const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
     const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
-    const schema = ei.inputSchema as {
-      allOf?: ReadonlyArray<{
-        if: { properties: { capability: { const: string } } };
-        then: { properties: { payload: unknown } };
-      }>;
-    };
 
-    expect(schema.allOf).toHaveLength(ORDER_INTENTS.length);
-    const clauseCapabilities = schema.allOf!.map((c) => c.if.properties.capability.const);
-    expect(new Set(clauseCapabilities)).toEqual(new Set(ORDER_INTENTS));
+    expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
+    // The authored schemas did not go away with the wire clause — they remain
+    // the source `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY` derives the
+    // plan-time payload filter from, which is what actually bounds the model.
     for (const kind of ORDER_INTENTS) {
-      const clause = schema.allOf!.find((c) => c.if.properties.capability.const === kind)!;
-      expect(clause.then.properties.payload).toEqual(
-        EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind),
-      );
+      expect(EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind)).toBeDefined();
     }
   });
 
-  // FE-T09 (D-a, the amend inversion): the three granular post-checkout
-  // amend kinds each have an authored schema; the grouped order.amend.request
-  // does NOT — proving it contributes no allOf clause is the schema-level
-  // proof that it has no reachable model producer.
-  it("embeds one allOf/if-then clause PER granular amend kind; the grouped order.amend.request contributes NOTHING (FE-T09)", async () => {
+  // FE-T09 (D-a, the amend inversion): the three granular post-checkout amend
+  // kinds each have an authored schema; the grouped order.amend.request does
+  // NOT. That asymmetry used to be observable as "it contributes no allOf
+  // clause"; with the clause gone (BKL-255a) the same asymmetry is asserted
+  // where it now lives — the registry that feeds the parse-seam filter.
+  it("the three granular amend kinds are authored; the grouped order.amend.request is NOT (FE-T09)", async () => {
+    const amendKinds = [
+      "order.amend.request",
+      "order.amend.add_item",
+      "order.amend.update_qty",
+      "order.amend.remove_item",
+    ];
     const { model } = mockModel([]);
     const planner = createIbatexasPlanner({
       model,
       modelId: "claude-test",
-      capabilityPlanners: [
-        capPlanner(
-          [],
-          [
-            "order.amend.request",
-            "order.amend.add_item",
-            "order.amend.update_qty",
-            "order.amend.remove_item",
-          ],
-        ),
-      ],
+      capabilityPlanners: [capPlanner([], amendKinds)],
     });
 
     await planner.propose(mkState("oi"));
     const req = (model.complete as ReturnType<typeof vi.fn>).mock.calls[0]![0] as CompletionRequest;
     const ei = (req.tools ?? []).find((t) => t.name === EXPRESS_INTENT_TOOL)!;
-    const schema = ei.inputSchema as {
-      allOf?: ReadonlyArray<{
-        if: { properties: { capability: { const: string } } };
-        then: { properties: { payload: unknown } };
-      }>;
-    };
 
-    expect(schema.allOf).toHaveLength(3);
-    const discriminatedKinds = schema.allOf!.map((c) => c.if.properties.capability.const);
-    expect(discriminatedKinds.sort()).toEqual(
+    expect((ei.inputSchema as { allOf?: unknown }).allOf).toBeUndefined();
+    // All four are PROPOSABLE (the enum is the live constraint the engine does
+    // decode) …
+    expect((ei.inputSchema as { properties: { capability: { enum: string[] } } }).properties
+      .capability.enum).toEqual(amendKinds);
+    // … but only the three granular kinds are authored, so only they get a
+    // payload filter; the grouped kind still has no reachable model producer.
+    const authored = amendKinds.filter((k) => EXTRACTION_SCHEMAS_BY_CAPABILITY.has(k));
+    expect(authored.sort()).toEqual(
       ["order.amend.add_item", "order.amend.remove_item", "order.amend.update_qty"].sort(),
     );
-    expect(discriminatedKinds).not.toContain("order.amend.request");
-    for (const clause of schema.allOf!) {
-      expect(clause.then.properties.payload).toEqual(
-        EXTRACTION_SCHEMAS_BY_CAPABILITY.get(clause.if.properties.capability.const),
-      );
-    }
+    expect(EXTRACTION_SCHEMAS_BY_CAPABILITY.has("order.amend.request")).toBe(false);
   });
 });
 

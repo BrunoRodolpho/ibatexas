@@ -3,17 +3,17 @@
     {
       "capability": "order.status.transition",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-status-transition.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "c02bcc1b453218de13c535cd90599a596e4e2b6fb4b771bb8d67787bfdd150cc"
+      "goldenFragmentSha256": "135ffe1dc269717c7d2919c87910eff89fb4b6f7f237825fa4b44a47073f8a81"
     },
     {
       "capability": "payment.refund.issue",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-refund-issue.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "0a8b52187be819cff10aa12c2004294da6a84c935e121b5e89beb467e34125b9"
+      "goldenFragmentSha256": "c4e382285c811dba1d15d676c689726d5a08585ff79fc98d7407806cf11bac20"
     },
     {
       "capability": "payment.pix.regenerate",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/payment-pix-regenerate.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "4ed1bebeac183fcdffb108796d2bfcfd27fdb52128eacbf22d09bd5b8bc71531"
+      "goldenFragmentSha256": "e587d6bda5f4e23722ea0968c95eea6ebb5c3c213f71b8d102c679b19ef56b63"
     },
     {
       "capability": "read-tools:12-tool-roster",
@@ -23,37 +23,37 @@
     {
       "capability": "order.checkout.create",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-checkout-create.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "157421097da4ab8b1dc8af16f9828f44933ed38fc640d4f87ed5dfea7e785846"
+      "goldenFragmentSha256": "16f884c22ae5f58539e261b8b475b74f64b6b0646fe9257e66730349ab340cd9"
     },
     {
       "capability": "order.cancel",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-cancel.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "158ec6544ff403a487f33750b3d39328bf15fc1a3d4964cfdf6abb0e7b756809"
+      "goldenFragmentSha256": "4511d8fcce4717c3a4535b7e305fbb43396f27d311e600ca67507ba3b61c8418"
     },
     {
       "capability": "order-amend-granular:3-kind-group",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-amend-granular.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "a94fddd92a852a95638b3c5d037c59be1856db92f8ae70c22f4ed5ea8f61a4a2"
+      "goldenFragmentSha256": "ed3c7af02f54ddba4535ddc7587dabb8a010414912846aabd158e3ddc5452c02"
     },
     {
       "capability": "order-cart-item:5-kind-group",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-cart-item.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "6a62a3d3ae8197791626c54594ff6a7ecbe7548dd1863c5391ec6b056c4c8524"
+      "goldenFragmentSha256": "d53be1075fae9c02ea7370dc9fbaa6fc90765e496ad4013c37a4350006b0ebc7"
     },
     {
       "capability": "order-note-review:2-kind-group",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/order-note-review.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "e98e2b54b1c0d51081b4dc33b15d59af9b590aaea0cf6b230edf52655c18b389"
+      "goldenFragmentSha256": "9d8ad6264c1a2154003442769724fda9315bb2d28e24c96fdfe0a093a491d8c0"
     },
     {
       "capability": "reservation-convenience:4-kind-group",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/reservation-convenience.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "a10643fedb132b6b87db09b814f214e31b989b9cadaa16af6c20941902a9b81f"
+      "goldenFragmentSha256": "73e812e2f4b2f7a28d2395441ed54db6be9e0a270b77abd3a65d1175db2c475c"
     },
     {
       "capability": "customer-whatsapp-convenience:3-kind-group",
       "goldenFragmentPath": "apps/api/src/claustrum/language-engine/__tests__/__golden__/customer-whatsapp-convenience.extraction-prompt-fragment.json",
-      "goldenFragmentSha256": "8a61e00e16e28a03119a8e3677e05f04d763c183cec43a81f920684191fe991d"
+      "goldenFragmentSha256": "6275d1b4602e199f2710c42f6d3dc796a18ff14ce19688a4f7756a797aac0f3f"
     }
   ]
 }
