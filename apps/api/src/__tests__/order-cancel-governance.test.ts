@@ -17,6 +17,7 @@ import {
 } from "fastify-type-provider-zod";
 import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { getEscalationParkStore } from "../escalation/escalation-park-store.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -46,7 +47,12 @@ vi.mock("@ibatexas/tools", () => ({
     expire: mockRedisExpire,
     del: mockRedisDel,
     get: vi.fn(async (k: string) => redisStorage.get(k) ?? null),
-    set: vi.fn(async () => "OK"),
+    // BKL-103 — actually STORE: the escalation park writes through this double and
+    // the park→resolve session-consistency test reads it back.
+    set: vi.fn(async (k: string, v: string) => {
+      redisStorage.set(k, v);
+      return "OK";
+    }),
   })),
   rk: (k: string) => `ibatexas:${k}`,
   withLock: vi.fn(async (_resource: string, fn: () => Promise<unknown>) => fn()),
@@ -503,11 +509,63 @@ describe("POST /api/orders/:id/cancel — BKL-103 ESCALATE surfacing", () => {
     expect(a).toBe(b); // …but the stable key means ONE record + ping downstream.
   });
 
-  it("carries NO customer identifier (PII discipline — displayId + amount only)", async () => {
+  it("carries NO customer identifier (PII discipline) — the BKL-103 park fields are opaque", async () => {
     await injectCancel();
     const payload = handoffCalls()[0]![1] as Record<string, unknown>;
-    expect(Object.keys(payload).sort()).toEqual(["reason", "sessionId"]);
+    // BKL-103 widened this event: `order.cancel` is now a RESUMABLE kind, so the
+    // escalation parks and the event carries the opaque handles staff need to ACT
+    // (token + hash + kind + pt-BR summary). The PII discipline is UNCHANGED and is
+    // still the point of this test — the envelope PAYLOAD never rides NATS, and no
+    // customer identifier appears in any field.
+    expect(Object.keys(payload).sort()).toEqual([
+      "intentHash",
+      "intentKind",
+      "parkToken",
+      "reason",
+      "sessionId",
+      "summaryPtBr",
+    ]);
     expect(JSON.stringify(payload)).not.toContain("cust_01");
+    // No payload/allergen/address leakage — only opaque references.
+    expect(payload).not.toHaveProperty("payload");
+  });
+
+  // ── BKL-103 — the session-string contract: park → staff list → resolve ────────
+  // The HTTP plane has no conversation, so ONE synthetic `order-cancel:{orderId}`
+  // string keys the NATS event, the PARKED record, and the resolve route's FIX-6
+  // `expectedSessionId` binding. A mismatch between any two is a SILENTLY DEAD
+  // Approve button: the resolve surface refuses as `missing` (deliberately not
+  // leaking that the token exists) WITHOUT burning the token, so staff would see an
+  // actionable row that can never be actioned. This pins all three to one string.
+  it("parks under the SAME synthetic sessionId the event advertises AND the resolve route binds on", async () => {
+    await injectCancel();
+    const payload = handoffCalls()[0]![1] as {
+      sessionId: string;
+      parkToken: string;
+      intentHash: string;
+      intentKind: string;
+    };
+    expect(payload.sessionId).toBe("order-cancel:order_01");
+    expect(payload.intentKind).toBe("order.cancel");
+    expect(payload.parkToken).toBeTruthy();
+
+    // Read the PARKED record back through the real store (the redis double stores).
+    const parked = await getEscalationParkStore().get(payload.parkToken);
+    expect(parked).not.toBeNull();
+    // (1) event sessionId === (2) parked sessionId — the resolve route compares
+    // exactly these, so this equality IS the Approve button working.
+    expect(parked!.sessionId).toBe(payload.sessionId);
+    expect(parked!.intentKind).toBe("order.cancel");
+    expect(parked!.intentHash).toBe(payload.intentHash);
+    // The PROPOSER STAMP survived the park — the authenticated customer, not the
+    // synthetic session string.
+    expect(parked!.proposerId).toBe("cust_01");
+    expect((parked!.payload as { actorId?: string }).actorId).toBe("cust_01");
+
+    // (3) the resolve route's FIX-6 binding: the parked sessionId matches the path
+    // the escalations surface nests the token under, and a WRONG session does not.
+    expect(parked!.sessionId === payload.sessionId).toBe(true);
+    expect(parked!.sessionId === "order-cancel:some_other_order").toBe(false);
   });
 
   it("a publish failure NEVER breaks the customer reply (best-effort, logged)", async () => {

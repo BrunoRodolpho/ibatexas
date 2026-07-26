@@ -143,6 +143,25 @@ export interface OrderCheckoutCreatePayload {
 export interface OrderCancelPayload {
   readonly orderId: string
   readonly reason?: string
+  /**
+   * BKL-103 — the PROPOSER stamp: the authenticated id of whoever REQUESTED this
+   * cancel (the customer, on both the HTTP and conversational planes). Identity
+   * class — stamped by the host's authenticated write side, NEVER model-fillable
+   * (`actorId` is in `FORBIDDEN_EXTRACTION_FIELD_NAMES`, so no extraction schema
+   * can expose it), mirroring `OrderStatusTransitionPayload.actorId` and
+   * `PaymentRefundIssuePayload.actorId`.
+   *
+   * It exists because `order.cancel` is a RESUMABLE escalation kind
+   * (`ESCALATION_RESUMABLE_KINDS`, apps/api escalation-park-store.ts): the
+   * escalate-band self-approve overlay in `./policies.ts` compares
+   * `approval.approverId !== payload.actorId`, so WITHOUT this stamp the
+   * comparand is `undefined`, the comparison is trivially true, and the deepest
+   * separation-of-duty gate silently degrades (the BKL-113 hazard). Optional so
+   * a legacy/unstamped caller still type-checks — but an unstamped payload
+   * cannot convert an ESCALATE (the overlay requires a non-empty comparand), so
+   * absence fails SAFE (the escalation simply stays escalated).
+   */
+  readonly actorId?: string
 }
 
 export interface OrderCancelSystemPayload {
@@ -431,6 +450,33 @@ export interface OrderState {
      * (the extraction schema simply has no field for the reference to ride).
      */
     readonly orderNamedInMessage?: boolean
+    /**
+     * BKL-103 / AUT-017 — the ESCALATE→OWNER-approve→executable-resume marker for
+     * the RESUMABLE `order.cancel` escalation. Structural mirror of
+     * `PaymentState.ctx.escalationApproval` (`@ibatexas/pack-payments`).
+     *
+     * Present ONLY on the adopter-side escalation-approval RESUME path (never on
+     * an ordinary turn): `createEscalationApprovalEngine`
+     * (apps/api/src/escalation/escalation-approval.ts) re-projects the FRESH
+     * order state and stamps this marker, so `gatePaidCancel`'s escalate band
+     * converts its OWN ESCALATE into a REQUEST_CONFIRMATION, which the paired
+     * `confirmationReceipt` (same `intentHash`) then flips to EXECUTE via the
+     * kernel's 2a override. The marker rides STATE, never the payload — so
+     * `intentHash` is unchanged and it is unforgeable from the wire.
+     *
+     * Absent ⟹ the escalate band is BYTE-IDENTICAL to its pre-BKL-103 behaviour
+     * (a >=R$1.000 paid cancel ESCALATEs).
+     */
+    readonly escalationApproval?: {
+      /** The parked envelope's `intentHash` — MUST equal `envelope.intentHash`. */
+      readonly intentHash: string
+      /** The approving staff id (raw staffId — NOT the proposer, checked below). */
+      readonly approverId: string
+      /** The approving staff role — the overlay fires ONLY for `"OWNER"`. */
+      readonly approverRole: string
+      /** ISO-8601 wall-clock of the OWNER approval. */
+      readonly at: string
+    }
   }
 }
 

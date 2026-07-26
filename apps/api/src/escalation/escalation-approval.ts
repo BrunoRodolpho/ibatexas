@@ -60,6 +60,14 @@ export interface ApprovalAuditSink {
 export type EscalationExecutor = (
   payload: unknown,
   approverStaffId: string,
+  /**
+   * BKL-103 — the approver's ROLE, threaded from the resolve surface. Additive
+   * third parameter: existing executors that ignore it are unaffected. An executor
+   * that composes a further ADJUDICATED step needs it, because the pack overlays
+   * hard-gate on `"OWNER"` and defaulting a role would be inventing authority (the
+   * approved-cancel executor refuses when it is absent).
+   */
+  approverRole: string,
 ) => Promise<void>;
 
 export type EscalationApprovalStatus =
@@ -188,6 +196,15 @@ const REQUIRED_ESCALATION_APPROVAL_BASIS: Readonly<
   Record<EscalationResumableKind, string>
 > = {
   "payment.refund.issue": "refund_escalation_approved",
+  // BKL-103 — the basis reason `gatePaidCancel`'s escalate-band overlay
+  // (@ibatexas/pack-orders policies.ts) emits when the OWNER-approval marker
+  // converts its OWN ESCALATE. Pins WHICH band was allowed to be the converting
+  // factor: the unconditional resume receipt flips ANY REQUEST_CONFIRMATION for
+  // the matching intentHash to EXECUTE, so a cancel that reached CONFIRM through
+  // any OTHER band (e.g. a lowered escalate threshold routing it through
+  // `paid_cancel_requires_confirmation`, which carries NO owner/self-approve
+  // assertion) must NOT be blessed as an approved escalation.
+  "order.cancel": "paid_cancel_escalation_approved",
 };
 
 /**
@@ -286,6 +303,14 @@ export function createEscalationApprovalEngine(
         },
         taint: parked.taint,
         nonce: parked.nonce,
+        // BKL-103 — `resourceRefs` are part of the intentHash pre-image, and the
+        // CUSTOMER plane's resolver stamps them on every ownership-gated order kind
+        // (034-F1). Restoring them is what lets the rebuilt envelope hash to the
+        // parked `intentHash` and pass the FIX 3 integrity check below; omitted when
+        // absent, so an ops refund rebuild is byte-identical to pre-BKL-103.
+        ...(parked.resourceRefs !== undefined
+          ? { resourceRefs: parked.resourceRefs }
+          : {}),
       }) as IntentEnvelope;
 
       // FIX 3 — ENFORCE the core integrity claim: the rebuilt envelope MUST hash
@@ -415,7 +440,7 @@ export function createEscalationApprovalEngine(
         };
       }
       try {
-        await executor(parked.payload, approver.id);
+        await executor(parked.payload, approver.id, approver.role);
       } catch (err) {
         // FIX 4c — bind + log the executor error (was silently discarded).
         deps.log?.error(
