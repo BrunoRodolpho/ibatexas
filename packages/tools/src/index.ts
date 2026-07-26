@@ -65,6 +65,7 @@ export {
   ExternalReferenceConfigError,
   externalReferenceKey,
   ExternalReferenceReconciliationError,
+  externalReferencesForStore,
   findExternalReference,
   formatExternalReferenceMiss,
   formatExternalReferenceReport,
