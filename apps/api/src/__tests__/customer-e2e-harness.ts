@@ -86,6 +86,7 @@ import {
 import { buildIbatexasPolicyPacks, type ErasedPack } from "../claustrum/compose-policy-packs.js";
 import { composePolicyRouter } from "../claustrum/capability-policy.js";
 import { createIbatexasPlanner } from "../claustrum/ibatexas-planner.js";
+import { buildClaimsSeams } from "../claustrum/claims-pipeline.js";
 import { createIbatexasResolver } from "../claustrum/ibatexas-resolver.js";
 import { WebConfirmChannel } from "../claustrum/web-confirm-channel.js";
 import { buildLanguageEngineAuditMetadata } from "../claustrum/language-engine/audit-metadata.js";
@@ -534,6 +535,20 @@ export interface CustomerConductorDeps {
   readonly model: ModelProvider;
   readonly session: SessionPort;
   readonly adjudicator: Adjudicator;
+  /**
+   * BKL-234 — OPT IN to the customer plane's real claims seams (investigator, claim
+   * planner, claims kernel, render-from-claims renderer + the precedence lattice),
+   * exactly as `claustrum-bootstrap.ts` composes them.
+   *
+   * DEFAULT OFF, deliberately: the PIX/checkout suites this harness was built for
+   * assert on action replies, and a claims render degrade would clobber them (the
+   * reason the file header says claims seams are absent). Omitting the flag leaves
+   * every existing caller byte-identical — the spread is `{}`.
+   *
+   * `buildClaimsSeams` itself also returns `{}` unless ENABLE_CLAIMS_PIPELINE is on,
+   * so an opting-in test must set that env var too.
+   */
+  readonly withClaims?: boolean;
 }
 
 export interface CustomerHarness {
@@ -564,6 +579,11 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     gateway: "customer-e2e-harness",
   });
 
+  // BKL-234 — the REAL customer claims seams, opt-in. Same builder the customer
+  // composition root uses, parameterized only by this harness's planner; `{}` both
+  // when not requested and when ENABLE_CLAIMS_PIPELINE is off.
+  const claimsSeams = deps.withClaims === true ? buildClaimsSeams({ planner }) : {};
+
   const conductor = createConductor({
     adjudicator: deps.adjudicator,
     memory: customerMemory(),
@@ -579,6 +599,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     tenantResolver: singleTenant,
     resolver: createIbatexasResolver(),
     sessionLock: inMemoryLock,
+    ...claimsSeams,
   });
 
   return { conductor, tools };

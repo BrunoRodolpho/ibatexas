@@ -90,13 +90,33 @@ const SCHEDULE_CLUSTER_TYPES = [
  * ── Why COMPATIBLE is the SOUND relation, not a weakening ────────────────────
  * §O#1's default-deny exists because P2 is guaranteed only relative to DECLARED
  * constraints — an UNREVIEWED pair must fail safe. This is that review, and it is
- * discharged by construction rather than by taste: the members are complementary
- * ATTRIBUTE projections of ONE `must_read_this_turn` first-party schedule read, each
- * bound by C6 to its own ledger entry from that read. "The period is closed" and
- * "today's hours are 18h–23h" are both true at 15:00 — there is no assignment of the
- * schedule state that makes two cluster members disagree, so no co-render of them can
- * surface a self-contradiction (SDD §C P2). MUTUAL_EXCLUSION would be false, and
- * IMPLICATION would assert a derivation none of them performs.
+ * discharged MECHANICALLY rather than by taste. The members are complementary
+ * ATTRIBUTE projections of ONE schedule load: `createDomainTriadReadBackend`
+ * (turn-reads.ts) resolves the schedule through a single-flight per-turn memo
+ * (`scheduleP ??= loadSchedule()`), and `readSchedule` (STORE_OPEN_NOW),
+ * `readStoreHours` (STORE_HOURS), `readHoursForDate` (STORE_HOURS_FOR_DATE) and
+ * EVERY falsifier read are pure projections of that one loaded object. "The period is
+ * closed" and "today's hours are 11h–15h / 18h–23h" are both true at 16:00 — there is
+ * no assignment of the schedule state under which two cluster members disagree, so no
+ * co-render of them can surface a self-contradiction (SDD §C P2). MUTUAL_EXCLUSION
+ * would be false, and IMPLICATION would assert a derivation none of them performs.
+ *
+ * THE LOAD-BEARING PRECONDITION (why this is structural, not merely empirical): the
+ * members do NOT share a freshness policy — STORE_OPEN_NOW is `must_read_this_turn`
+ * while STORE_HOURS is `{ kind: "cacheable", ttl: 3_600_000 }` (1 HOUR). Read naively
+ * that is exactly the dangerous "one cached, one live" pairing, in which a stale hours
+ * string could co-render with a fresh open-now signal and contradict it. It cannot
+ * today, for two reasons and only two:
+ *   1. the backend instance — and therefore the memo — is constructed INSIDE the
+ *      per-turn gatherer (`ibatexas-investigator.ts`: "PER-TURN backend … single-
+ *      flight, NO cross-turn cache"), so nothing is carried between turns; and
+ *   2. within a turn both values project from the SAME load, which makes the 1h TTL
+ *      vacuous — the entry is always written by THIS turn's read.
+ * If either ever stops holding (independent loads, or a backend/ledger outliving a
+ * turn), the TTL becomes live and this declaration is no longer justified. That is why
+ * the premise is PINNED rather than merely documented:
+ * `__tests__/schedule-cluster-single-load.test.ts` goes RED if the cluster reads ever
+ * stop sharing one load, or if the memo starts surviving across turns.
  *
  * SAFETY PRESERVED — this narrows §O#1 for exactly these pairs and nothing else:
  *   · a SAME-TYPE pair still goes through `SAME_TYPE_VALUE_CONFLICT` (two VALIDATED
