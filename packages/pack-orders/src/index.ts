@@ -145,6 +145,15 @@ export {
 
 export { ordersPolicyBundle } from "./policies.js"
 
+// LE2-023 — the two sets a workflow FEASIBILITY PRE-CHECK must agree with,
+// exported so the host reads the pack's own transcription instead of making a
+// second one. See each set's comment for why a duplicate would be a real defect
+// rather than a style point.
+export {
+  CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES,
+  CUSTOMER_POST_PONR_FULFILLMENT,
+} from "./policies.js"
+
 export {
   ORDER_TOOL_TO_INTENT,
   ORDER_TOOLS,

@@ -24,6 +24,14 @@
 
 import { getRedisClient, rk, medusaAdmin, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
 import { Channel, type OrderEventItem } from "@ibatexas/types";
+// LE2-023 — the pack's OWN money/PONR sets, so the feasibility projection and
+// the guards that will adjudicate the cancel read ONE transcription. See each
+// set's comment in `packages/pack-orders/src/policies.ts` for why a host-side
+// copy would be a real defect rather than a style point.
+import {
+  CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES,
+  CUSTOMER_POST_PONR_FULFILLMENT,
+} from "@ibatexas/pack-orders";
 import {
   createOrderQueryService,
   createOrderService,
@@ -377,6 +385,25 @@ export function previousOrderCtxFields(previous: PreviousOrder | null): Ctx {
     previousOrderDisplayId: previous.displayId,
     previousOrderTotalInCentavos: previous.totalInCentavos,
     previousOrderItems: previous.items,
+    // LE2-023 — the two DERIVED booleans the swap-for-coupon route branches on
+    // and its confirm sentence states.
+    //
+    // Derived HERE, once, from the pack's OWN exported sets, so the pre-check
+    // that decides whether to offer the workflow and the guard that will decide
+    // whether to allow the cancel cannot disagree. `requireCancellable` is
+    // additionally lenient when the status is unreadable (it returns true rather
+    // than refuse a caller carrying no order state); this projection is NOT —
+    // an unreadable status leaves `previousOrderIsCancelable` false and the
+    // workflow simply is not offered. The asymmetry is correct in both
+    // directions: a guard must not refuse a legitimate direct cancel over a
+    // missing projection field, and a workflow must not OFFER to cancel
+    // something it could not read.
+    previousOrderIsCancelable:
+      previous.fulfillmentStatus !== "" &&
+      !CUSTOMER_POST_PONR_FULFILLMENT.has(previous.fulfillmentStatus),
+    previousOrderPaymentIsSettled:
+      previous.paymentStatus !== null &&
+      CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES.has(previous.paymentStatus),
   };
 }
 

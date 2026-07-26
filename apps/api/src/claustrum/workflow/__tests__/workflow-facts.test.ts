@@ -23,6 +23,15 @@ const FULL_CTX: Readonly<Record<string, unknown>> = {
   previousOrderTotalInCentavos: 8900,
   items: [{ variantId: "v1", quantity: 2, priceInCentavos: 4450 }],
   totalInCentavos: 150000,
+  // LE2-023. All four are read STRAIGHT THROUGH — the derivation that produces
+  // the two `previousOrder*` booleans happens upstream in
+  // `previousOrderCtxFields`, against pack-orders' own exported PONR and
+  // settled-payment sets, precisely so this layer never holds a second opinion
+  // about the point of no return or about whether a customer is owed money.
+  previousOrderIsCancelable: true,
+  previousOrderPaymentIsSettled: true,
+  couponIsValid: true,
+  couponNewTotalInCentavos: 8000,
 };
 
 describe("projectWorkflowFacts — vocabulary completeness", () => {

@@ -133,6 +133,62 @@ export const WORKFLOW_FACTS: readonly WorkflowFactDefinition[] = [
       "bands (`confirmLargeTicket`). Present so a conditional edge can take the " +
       "cheap path without the workflow layer ever formatting or summing money",
   },
+  // ── LE2-023 · the swap-for-coupon vocabulary ───────────────────────────────
+  //
+  // Five members, and every one of them is a PRE-CHECK fact: each answers a
+  // question that must be settled BEFORE a destructive saga is offered, because
+  // the alternative is asking a customer to approve cancelling a real order and
+  // then discovering it was never possible. Two of them (`previousOrderIsCancelable`,
+  // `previousOrderPaymentIsSettled`) are derived host-side from sets EXPORTED BY
+  // `@ibatexas/pack-orders` rather than re-transcribed — see their `why`.
+  {
+    name: "previousOrderIsCancelable",
+    kind: "boolean",
+    ctxField: "previousOrderIsCancelable",
+    why:
+      "whether the customer's most recent order is still before its point of no " +
+      "return — the same verdict `requireCancellable` will reach, because the " +
+      "projection reads pack-orders' own exported `CUSTOMER_POST_PONR_FULFILLMENT` " +
+      "instead of a second copy. A pre-check must decide before any envelope " +
+      "exists, so it cannot ask the kernel; reading the kernel's own set is the " +
+      "only way it can be guaranteed to agree with it",
+  },
+  {
+    name: "previousOrderPaymentIsSettled",
+    kind: "boolean",
+    ctxField: "previousOrderPaymentIsSettled",
+    why:
+      "whether that order's money is already captured, from pack-orders' own " +
+      "exported `CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES`. It is what makes the " +
+      "confirm's refund sentence TRUE: the workflow may only tell a customer " +
+      "their money comes back when `gatePaidCancel` agrees money is there to " +
+      "come back",
+  },
+  {
+    name: "couponIsValid",
+    kind: "boolean",
+    ctxField: "couponIsValid",
+    why:
+      "whether the coupon the customer named is usable RIGHT NOW, from the same " +
+      "`evaluatePromotionRecord` predicate the display route and the " +
+      "COUPON_VALID/COUPON_INVALID claim read (LE2-019). Absent when the lookup " +
+      "could not be made at all, which fails the pre-check closed — for a saga " +
+      "that CANCELS A REAL ORDER, an unproven coupon must never be a reason to " +
+      "proceed",
+  },
+  {
+    name: "couponNewTotalInCentavos",
+    kind: "number",
+    ctxField: "couponNewTotalInCentavos",
+    why:
+      "what the rebuilt basket costs once the coupon applies, in centavos, " +
+      "derived host-side from the order total and the promotion's own " +
+      "`application_method`. ABSENT for every promotion shape whose arithmetic " +
+      "this system cannot do soundly (non-BRL fixed, unrecognised type, or any " +
+      "record carrying targeting rules) — so an uncomputable coupon makes the " +
+      "workflow infeasible with an honest sentence rather than quoting a number " +
+      "that would be wrong at checkout",
+  },
 ]
 
 /** Fast membership for the compiler's `predicate-fact-unknown` rule. */

@@ -65,6 +65,27 @@ export interface PreviousOrder {
   /** Integer centavos (Hard Rule #2). */
   readonly totalInCentavos: number;
   readonly items: readonly PreviousOrderLine[];
+  /**
+   * LE2-023 — the projection's own `payment_status`, VERBATIM, or `null`.
+   *
+   * COPIED, NOT INTERPRETED. Whether cancelling this order returns money is
+   * `gatePaidCancel`'s judgement over its own
+   * `CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES`, and this module deliberately does
+   * not hold an opinion: a second transcription of that set here would be a
+   * second source of truth for whether a customer is owed a refund, and the
+   * swap-for-coupon confirm SAYS SO OUT LOUD to the customer. The set is
+   * exported from `@ibatexas/pack-orders` and read once, downstream.
+   */
+  readonly paymentStatus: string | null;
+  /**
+   * LE2-023 — the projection's own `fulfillment_status`, VERBATIM.
+   *
+   * Same discipline, more force: the point of no return is `canCancelOrder`'s
+   * judgement over `CUSTOMER_POST_PONR_FULFILLMENT`, and a workflow that decided
+   * PONR for itself could offer to cancel an order the kernel is about to refuse
+   * — the exact exchange feasibility pre-checks exist to delete.
+   */
+  readonly fulfillmentStatus: string;
 }
 
 /**
@@ -122,6 +143,17 @@ export async function loadPreviousOrder(customerId: string): Promise<PreviousOrd
       displayId: order.displayId,
       totalInCentavos: order.totalInCentavos,
       items,
+      // Read STRUCTURALLY, exactly like `itemsJson` above: these are projection
+      // columns, so a row written by an older projector can carry a shape the
+      // type does not promise. An unreadable payment status reads as `null`
+      // (⇒ "not settled" ⇒ no refund is promised) and an unreadable fulfillment
+      // status reads as the empty string, which no PONR set contains. Both
+      // unreadable cases therefore land on the SAFE side of the sentence they
+      // ground: nothing is promised about money that could not be read.
+      paymentStatus:
+        typeof order.paymentStatus === "string" ? order.paymentStatus : null,
+      fulfillmentStatus:
+        typeof order.fulfillmentStatus === "string" ? order.fulfillmentStatus : "",
     };
   } catch (error) {
     logger.warn(

@@ -207,6 +207,95 @@ export const WORKFLOW_TERMINAL_MARKERS = ["irreversible", "harmless"] as const
 export type WorkflowTerminalMarker = (typeof WORKFLOW_TERMINAL_MARKERS)[number]
 
 /**
+ * THE GROUNDED FACTS A CONFIRM SENTENCE CAN STATE — LE2-023. Closed, small, and
+ * about MONEY AND CONSEQUENCE only.
+ *
+ * This vocabulary exists for exactly one job: to let a workflow DECLARE what its
+ * whole-workflow confirm question actually told the customer, so the compiler can
+ * check that a {@link WorkflowConfirmCoverage} does not claim to cover a guard
+ * whose question was never asked. It is therefore deliberately NOT the
+ * `WORKFLOW_FACTS` vocabulary — those name projections a PREDICATE reads to
+ * decide a branch; these name propositions a SENTENCE makes to a human. A branch
+ * can read a fact silently; a coverage claim is only honest if the customer read
+ * it.
+ *
+ * Every member is a thing a customer can act on, and the set is small because
+ * each new member is a new way to assert "we told them" — which is the assertion
+ * the whole coverage mechanism rests on.
+ */
+export const WORKFLOW_CONFIRM_FACTS = [
+  /** What the affected order is worth, in money, as the projection states it. */
+  "orderAmount",
+  /** That cancelling implies the customer's money comes back to them. */
+  "refundConsequence",
+  /** What the customer will pay after the route completes. */
+  "newTotal",
+] as const
+
+export type WorkflowConfirmFact = (typeof WORKFLOW_CONFIRM_FACTS)[number]
+
+/**
+ * ONE DECLARED CONFIRM COVERAGE — LE2-023, and the narrowest possible refinement
+ * of LE2-022's invariant.
+ *
+ * ── WHAT LE2-022 ACTUALLY PROTECTED ─────────────────────────────────────────
+ *
+ * LE2-022 shipped the rule "a workflow confirm does not pre-authorize a step's
+ * own confirm" and pinned it with a fixture whose `finishCheckout` activity meets
+ * `confirmLargeTicket` on its own terms and stops the run. That rule's SEMANTIC
+ * content is *the customer must actually be asked the question the guard would
+ * ask*. Blanket non-coverage was its SYNTACTIC form — the cheapest way to
+ * guarantee the semantic one when nothing could express "and this time they
+ * were".
+ *
+ * This type expresses it, which is why the refinement tightens rather than
+ * weakens. Under it, "the workflow already asked" stops being a claim a reviewer
+ * takes on trust and becomes a declaration the compiler checks against the
+ * confirm's own declared content — and everything undeclared keeps LE2-022's
+ * behaviour BYTE-FOR-BYTE (the fixture still compensates; see
+ * `workflow-runtime-v1.e2e.test.ts`).
+ *
+ * ── THE FIVE THINGS THAT MAKE IT HONEST ─────────────────────────────────────
+ *
+ *   1. It names ONE SPECIFIC guard verdict by its basis `reason`, never "this
+ *      activity's confirms". A guard that starts asking a second, different
+ *      question under a second reason is NOT covered, and the run stops at it.
+ *   2. It declares WHICH FACTS that guard's question would have stated, and the
+ *      compiler rejects a coverage whose facts the confirm does not itself
+ *      declare (`confirm-coverage-unstated`). The runtime test completes the
+ *      circuit by pinning that the anchor's REAL sentence carries them.
+ *   3. The runtime resolves it only with a receipt derived from THIS customer's
+ *      affirmation of THIS instance's anchor — instance-scoped, intent-hash
+ *      linked, single-use. There is no standing grant.
+ *   4. It covers REQUEST_CONFIRMATION and NOTHING ELSE. An ESCALATE is never
+ *      coverable: escalation means a HUMAN must look, and no amount of customer
+ *      agreement substitutes for that. The money ladder's upper band is
+ *      therefore untouched by construction rather than by care.
+ *   5. `why` is required, and is the sentence a reviewer reads in the diff.
+ */
+export interface WorkflowConfirmCoverage {
+  /**
+   * The EXACT `reason` field on the covered decision's business basis — e.g.
+   * `"paid_cancel_requires_confirmation"`. Matched verbatim by the runtime.
+   *
+   * A REASON rather than a guard NAME because the reason is what the decision
+   * actually carries into the audit row, and because one guard can produce two
+   * different questions under two reasons (`gatePaidCancel` produces both
+   * `paid_cancel_requires_confirmation` and `paid_cancel_escalation_approved`).
+   * Covering "the guard" would silently cover both.
+   */
+  readonly basisReason: string
+  /**
+   * The facts the covered guard's own sentence states, and which the covering
+   * confirm must therefore also state. Compiler-checked against
+   * {@link WorkflowConfirmPoint.statesFacts}.
+   */
+  readonly statesFacts: readonly WorkflowConfirmFact[]
+  /** Why this coverage is honest, in one clause. Reviewer-facing. */
+  readonly why: string
+}
+
+/**
  * One step. `capability` is adjudicated individually at run time and writes its
  * own audit row — an activity is a normal governed mutation that happens to have
  * been proposed by a workflow instead of by a parse.
@@ -227,6 +316,17 @@ export interface WorkflowActivity {
    * being routed to, which lives in a different table this type cannot see.
    */
   readonly compensation?: WorkflowCompensation
+  /**
+   * LE2-023 — the DECLARED statement that this activity's own
+   * REQUEST_CONFIRMATION was already asked, and answered, by the whole-workflow
+   * confirm. See {@link WorkflowConfirmCoverage}.
+   *
+   * ABSENT is the default and the default is LE2-022's behaviour, unchanged: an
+   * activity that does not reach EXECUTE stops the run and the declared
+   * compensators fire. Coverage is the exception a workflow states out loud,
+   * never the rule.
+   */
+  readonly confirmCoveredBy?: WorkflowConfirmCoverage
 }
 
 /**
@@ -364,6 +464,84 @@ export type WorkflowRouteStep =
       /** Activity ids to run, in order, when it does not. */
       readonly otherwise: readonly string[]
     }
+  | {
+      /**
+       * LE2-023 — route to `then` only while the workflow declares this POLICY
+       * SWITCH open. See {@link WORKFLOW_POLICY_SWITCHES}.
+       *
+       * A THIRD step kind rather than a predicate over a fact, because a policy
+       * switch is not a fact. `WorkflowPredicate` reads {@link WORKFLOW_FACTS} —
+       * projections of the CUSTOMER'S WORLD, evaluated fresh at the moment they
+       * are asked. A switch is the opposite in every respect: authored catalog
+       * data, identical for every customer, and changed only by a reviewed commit
+       * that bumps the catalog serial. Spelling it as a fact would put "what this
+       * business has decided to offer" and "what is true of this customer right
+       * now" into one vocabulary, and the projection layer would then need a
+       * branch that reads the catalog — which is precisely the runtime authority
+       * the catalog must never hold.
+       *
+       * Keeping it separate also keeps the trace honest: a policy-closed branch
+       * records that the BUSINESS is not offering this, not that the customer
+       * failed to qualify for it.
+       */
+      readonly whenPolicyOpen: WorkflowPolicySwitch
+      /** Activity ids to run, in order, while the switch is OPEN. */
+      readonly then: readonly string[]
+      /** Activity ids to run, in order, while it is CLOSED — the shipped path. */
+      readonly otherwise: readonly string[]
+    }
+
+/**
+ * THE POLICY SWITCHES a workflow route may branch on — LE2-023. Closed, and
+ * every member ships CLOSED.
+ *
+ * ── ABSENCE IS OFF, WHICH IS THIS CATALOG'S OWN IDIOM ───────────────────────
+ *
+ * A switch is open for a workflow exactly when the workflow LISTS it in
+ * {@link WorkflowDefinition.policyOpen}. There is no `false`, anywhere, ever —
+ * the same statement `slots.ts` already makes about `workflowScoped` and
+ * `opsForbiddenDestructive`: *"the field is a FLAG whose only meaningful value is
+ * `true`, so `false` is not a weaker statement, it is a slot that says nothing
+ * and should have been omitted."* An explicit `coupon_on_placed_order: false`
+ * would have been the first false-valued authored datum in this entire package,
+ * and it would have read as a considered "no" in a table whose every other row
+ * means "yes, this one" — while a reviewer's eye slides past a `false` far more
+ * easily than past a missing name.
+ *
+ * So "shipping closed" is expressed by saying nothing, and OPENING one later is
+ * exactly one line added to one workflow plus a `CATALOG_VERSION` bump. That is
+ * the ticket's own requirement — *"flipping it later is a catalog change, not
+ * engine work"* — and it is checkable: the diff that opens a switch touches this
+ * package and nothing else.
+ *
+ * ── AND IT IS ONLY ONE OF THE TWO LOCKS ─────────────────────────────────────
+ *
+ * The switch opens the ROUTE. It does not open the EXECUTION: a policy-gated
+ * activity's capability must also be workflow-scoped AND its pack policy must
+ * still produce no EXECUTE, so the kernel REFUSES it even with the route forced
+ * open. Neither lock is sufficient alone, deliberately — the catalog can be
+ * edited by anyone who can edit data, and a feature that ships behind data alone
+ * is one careless line from being live. See the compiler's
+ * `policy-gated-activity-not-scoped` rule and the fixture that forces the route
+ * open and proves the kernel still refuses.
+ */
+export const WORKFLOW_POLICY_SWITCHES = [
+  /**
+   * Applying a coupon to an ALREADY-PLACED order by adjusting its price, instead
+   * of the cancel-and-rebuild route. LE2 Implementation Decision 14's negative
+   * space: no price-adjustment capability exists, three separate modules say so
+   * in their own comments, and the owner's ruling is that it ships closed.
+   */
+  "coupon_on_placed_order",
+] as const
+
+/** One policy switch's stable name. */
+export type WorkflowPolicySwitch = (typeof WORKFLOW_POLICY_SWITCHES)[number]
+
+/** `true` when `name` is a member of the closed policy-switch vocabulary. */
+export function isWorkflowPolicySwitch(name: string): name is WorkflowPolicySwitch {
+  return (WORKFLOW_POLICY_SWITCHES as readonly string[]).includes(name)
+}
 
 /**
  * THE confirm point. Exactly one per workflow in v0 (the field is singular, not
@@ -374,6 +552,31 @@ export type WorkflowRouteStep =
 export interface WorkflowConfirmPoint {
   /** Id of the template rendering the confirm prompt. */
   readonly template: string
+  /**
+   * LE2-023 — the grounded facts this confirm's sentence STATES to the customer.
+   *
+   * A declaration ABOUT A SENTENCE THE WORKFLOW DOES NOT AUTHOR, which is the
+   * subtle part: the words come from the anchor capability's own guard (quoted
+   * verbatim through `{confirmation}`), so this field asserts something about
+   * another module's output. That is exactly why it cannot stand alone. It is
+   * one half of a two-part gate:
+   *
+   *   - COMPILE — a {@link WorkflowConfirmCoverage} may only claim facts listed
+   *     here (`confirm-coverage-unstated`). This catches an author who covers a
+   *     guard their confirm never addressed.
+   *   - RUNTIME — a test drives the real anchor and asserts its real sentence
+   *     carries each declared fact. This catches an author whose declaration was
+   *     honest when written and became false when the guard's copy changed.
+   *
+   * Neither half is sufficient: the first checks a claim against another claim,
+   * the second checks a claim against reality but only for the cases a test
+   * drives. Together they make a stale declaration a build-or-test failure
+   * rather than a customer reading a confirmation for something else.
+   *
+   * ABSENT ⟹ states nothing ⟹ no activity may declare coverage. That is the
+   * v1 shape exactly, and it is why every pre-LE2-023 definition stays legal.
+   */
+  readonly statesFacts?: readonly WorkflowConfirmFact[]
 }
 
 /**
@@ -444,6 +647,48 @@ export const WORKFLOW_BASE_OUTCOMES = ["completed", "declined", "failed"] as con
 export const WORKFLOW_COMPENSATION_OUTCOMES = ["compensated", "stranded"] as const
 
 /**
+ * The outcome a run reaches when the KERNEL SENT A STEP TO A HUMAN — LE2-023.
+ *
+ * Separated from all five above because it is the only one where the story is
+ * NOT OVER. `completed`, `declined`, `failed`, `compensated` and `stranded` all
+ * describe a finished run whose result is whatever it is; `escalated` describes a
+ * run that stopped because a person now has to decide, and that person's decision
+ * will change what happened afterwards.
+ *
+ * ── WHY IT IS NOT `failed`, WHICH IS THE TEMPTING FOLD ──────────────────────
+ *
+ * On the shape that motivated it — a paid cancel at or above the escalate band,
+ * as the FIRST step of a saga — `failed`'s stated meaning ("NOTHING ran") is
+ * literally TRUE, so folding would even pass a state audit. It would still be a
+ * lie about the future: the customer would read "I could not do this" while a
+ * real approval request sits on a staff queue, and if an owner approves it their
+ * order gets cancelled minutes after they were told nothing happened. A false
+ * negative about a pending money action is the same class as a false success,
+ * and this outcome exists to keep the two apart.
+ *
+ * It is also its own OPERATOR bucket for the same reason: a workflow whose
+ * escalations are counted as failures reads as broken when it is in fact working
+ * exactly as its money bands intend.
+ *
+ * ── WHAT THE TEMPLATE MUST SAY (the whole truth, not half of it) ────────────
+ *
+ * The template is required to carry BOTH halves of what an approval actually
+ * does, because the machinery on the other side is narrower than the customer
+ * would assume. An approved escalation resumes and executes THE ESCALATED
+ * ACTIVITY ALONE (`createApprovedOrderCancelExecutor` settles the implied refund
+ * and calls the shared cancel body); there is no saga-resume anywhere in this
+ * system, so the remaining steps of the route DO NOT run. A template that said
+ * only "someone will review this" would leave the customer believing their whole
+ * request was pending. So it must say that the escalated act awaits human review
+ * AND that the rest will need asking again afterwards.
+ *
+ * Required (compiler rule `escalated-outcome-template-missing`) exactly when the
+ * route can reach an activity whose capability the catalog declares
+ * `escalatable: true`.
+ */
+export const WORKFLOW_ESCALATION_OUTCOMES = ["escalated"] as const
+
+/**
  * Every terminal state a workflow instance can REACH and must have text for.
  *
  * `declined` is a first-class outcome, not an error: the customer said no and
@@ -452,6 +697,7 @@ export const WORKFLOW_COMPENSATION_OUTCOMES = ["compensated", "stranded"] as con
 export const WORKFLOW_OUTCOMES = [
   ...WORKFLOW_BASE_OUTCOMES,
   ...WORKFLOW_COMPENSATION_OUTCOMES,
+  ...WORKFLOW_ESCALATION_OUTCOMES,
 ] as const
 
 export type WorkflowOutcome = (typeof WORKFLOW_OUTCOMES)[number]
@@ -462,6 +708,10 @@ export type WorkflowBaseOutcome = (typeof WORKFLOW_BASE_OUTCOMES)[number]
 /** The two a multi-step workflow must author as well. */
 export type WorkflowCompensationOutcome =
   (typeof WORKFLOW_COMPENSATION_OUTCOMES)[number]
+
+/** The one a workflow routing an escalatable capability must author. */
+export type WorkflowEscalationOutcome =
+  (typeof WORKFLOW_ESCALATION_OUTCOMES)[number]
 
 /**
  * Where a trigger phrasing CAME FROM — the review surface, in the provenance
@@ -590,6 +840,14 @@ export interface WorkflowDefinition {
    * exactly as authored.
    */
   readonly route?: readonly WorkflowRouteStep[]
+  /**
+   * LE2-023 — the {@link WORKFLOW_POLICY_SWITCHES} this workflow declares OPEN.
+   *
+   * ABSENT or empty ⟹ every switch is closed, which is what every workflow in
+   * this repository ships as. See the vocabulary's own doc for why there is no
+   * `false` and why opening one is a catalog edit rather than engine work.
+   */
+  readonly policyOpen?: readonly WorkflowPolicySwitch[]
   readonly confirm: WorkflowConfirmPoint
   readonly templates: readonly WorkflowTemplate[]
   /**
@@ -603,5 +861,6 @@ export interface WorkflowDefinition {
    * property of the route — which this record cannot see.
    */
   readonly outcomes: Readonly<Record<WorkflowBaseOutcome, string>> &
-    Readonly<Partial<Record<WorkflowCompensationOutcome, string>>>
+    Readonly<Partial<Record<WorkflowCompensationOutcome, string>>> &
+    Readonly<Partial<Record<WorkflowEscalationOutcome, string>>>
 }

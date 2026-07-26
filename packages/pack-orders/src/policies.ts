@@ -239,7 +239,20 @@ const POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
 // "Cozinha já está preparando"). System/compensation cancels (payment-expiry /
 // stale-order) are NOT bound by the preparing PONR, but they run through
 // `order.status.transition`→CANCELED, not order.cancel (retired BKL-177).
-const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
+// EXPORTED for LE2-023. A workflow FEASIBILITY PRE-CHECK has to answer "could
+// this order be cancelled?" BEFORE any envelope exists — that is the whole point
+// of a pre-check, and it means the kernel cannot be asked. The pre-check must
+// therefore reach the same verdict `requireCancellable` will reach a moment
+// later, and the only way to guarantee that is to read THIS set rather than a
+// second copy of it. A host-side transcription would be a second source of truth
+// for the point of no return, and the day someone adds a status to one and not
+// the other, the workflow offers to cancel an order the kernel then refuses —
+// which is the exact "I asked, you agreed, now I am telling you it was never
+// possible" exchange pre-checks exist to delete.
+//
+// Same rationale as `promotion-validity.ts`'s extraction one layer over: the
+// predicate moves to where both callers can read it, and neither re-derives it.
+export const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
   ...POST_PONR_FULFILLMENT,
   "preparing",
 ])
@@ -252,7 +265,13 @@ const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
 // `disputed`). NOT settled: awaiting_payment / payment_pending / cash_pending
 // (nothing captured yet) and refunded / canceled / waived (money already
 // returned or the order already terminal). Drives `gatePaidCancel`.
-const CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES: ReadonlySet<string> = new Set([
+// EXPORTED for LE2-023, for the reason `CUSTOMER_POST_PONR_FULFILLMENT` above is:
+// the swap-for-coupon confirm has to TELL THE CUSTOMER that cancelling returns
+// their money, and it may only say so when `gatePaidCancel` would agree. One
+// transcription, read by the guard that decides and by the projection that
+// grounds the sentence — never two that can drift into a confirmation promising
+// a refund the money guards do not think is owed.
+export const CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES: ReadonlySet<string> = new Set([
   ...ORDER_PIX_CONFIRMED_STATUSES,
   "partially_refunded",
   "disputed",

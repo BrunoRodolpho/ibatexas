@@ -90,4 +90,23 @@
 // park, and no compensator to run on the way out. That is precisely the
 // no-reuse rule's load-bearing case, and LE2-022's own park/resume AC is a test
 // of it.
-export const CATALOG_VERSION: number = 8
+// v9 (LE2-023) — the SWAP-FOR-COUPON contract. `src/workflows/types.ts` gains
+// four things, and the README's workflow-contract trigger fires on all of them
+// because each changes what a definition MEANS, not only what it may say:
+// `WorkflowConfirmCoverage` + `WorkflowConfirmPoint.statesFacts` (an activity's
+// own REQUEST_CONFIRMATION may be declared already-asked by the whole-workflow
+// confirm — the narrowest possible refinement of LE2-022's blanket rule, and the
+// first time a definition can say anything about what its confirm TOLD the
+// customer); the `whenPolicyOpen` route step plus `policyOpen` (a branch that is
+// compiled in and closed by absence); and the `escalated` outcome (a run that
+// stopped because a human must now decide — the first outcome whose story is not
+// over when the run ends). `src/workflows/facts.ts` gains five members, which is
+// a projection-semantics change under the README's fifth trigger.
+//
+// It matters for replay in the way v8's note describes and then some: an
+// instance pins this serial and RESUMES on the shape it pinned, and a workflow
+// instantiated under v8 had no way to express that its confirm covered a step's
+// own confirm. The same authored bytes therefore do not describe the same run
+// across the boundary — a v8 instance stops at an activity confirm that a v9 one
+// resolves, which is a different set of mutations for one customer "sim".
+export const CATALOG_VERSION: number = 9

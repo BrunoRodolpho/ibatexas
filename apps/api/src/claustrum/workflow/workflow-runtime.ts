@@ -496,16 +496,31 @@ function resolveRoutePlan(
     plan.push({ activity });
   };
 
+  const policyOpen = new Set(instance.definition.policyOpen ?? []);
+
   workflowRoute(instance.definition).forEach((step, stepIndex: number) => {
     if ("activity" in step) {
       push(step.activity);
       return;
     }
-    const held = evaluateWorkflowPredicate(step.when, facts);
+    // LE2-023 — A POLICY SWITCH IS NOT A FACT, so it is not evaluated against
+    // the projection. It is read off the instance's PINNED DEFINITION, which
+    // means a switch opened (or closed) while a run sat parked does not change
+    // what that run does — the same pin that governs which activities a resumed
+    // run executes governs which of them the business was offering when the
+    // customer said yes. `held` is recorded exactly as a predicate's is, so the
+    // operator view can tell a route that took the closed path from one whose
+    // customer did not qualify.
+    const isPolicyStep = "whenPolicyOpen" in step;
+    const held = isPolicyStep
+      ? policyOpen.has(step.whenPolicyOpen)
+      : evaluateWorkflowPredicate(step.when, facts);
     const arm = held ? step.then : step.otherwise;
     branches.push({
       stepIndex,
-      predicate: describeWorkflowPredicate(step.when),
+      predicate: isPolicyStep
+        ? `policy ${step.whenPolicyOpen} ${held ? "open" : "closed"}`
+        : describeWorkflowPredicate(step.when),
       held,
       taken: held ? "then" : "otherwise",
       activityIds: [...arm],
