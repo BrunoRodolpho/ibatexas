@@ -1,0 +1,84 @@
+{
+  "fixture": "workflow-runtime-shape.compensator-target-dangling",
+  "targets": "workflow-runtime-shape/compensator-target-dangling",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/activity-unreachable",
+    "workflow-runtime-shape/compensator-target-dangling"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 10,
+      "diagnostics": 2
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "compensator-target-dangling",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "activities[0].compensation.by",
+      "message": "names \"absent\" as its compensator, which this workflow does not declare as an activity. The rollback then exists in the definition and not in production: the runtime resolves the id, misses, and the mutation is never undone — with the definition still reading as though it would be.",
+      "reference": "absent"
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "activity-unreachable",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "activities[1].id",
+      "message": "declares the activity \"undo\", which no route step reaches and no other activity names as its compensator. It is dead in production and live in review — the shape a rename leaves behind, seen from the other end from `route-target-dangling`. Route it, make it a compensator, or delete it.",
+      "reference": "undo"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/compensator-target-dangling: workflow:conformance.workflow.runtime · activities[0].compensation.by — names \"absent\" as its compensator, which this workflow does not declare as an activity. The rollback then exists in the definition and not in production: the runtime resolves the id, misses, and the mutation is never undone — with the definition still reading as though it would be.",
+    "workflow-runtime-shape/activity-unreachable: workflow:conformance.workflow.runtime · activities[1].id — declares the activity \"undo\", which no route step reaches and no other activity names as its compensator. It is dead in production and live in review — the shape a rename leaves behind, seen from the other end from `route-target-dangling`. Route it, make it a compensator, or delete it."
+  ]
+}

@@ -114,7 +114,25 @@
         "workflow-scoped-kind-advertised",
         "workflow-scoped-reference-unreachable"
       ]
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "sources": [
+        "passes/workflow-runtime-shape.ts"
+      ],
+      "rules": [
+        "activity-unreachable",
+        "compensation-outcome-template-missing",
+        "compensator-not-terminal",
+        "compensator-routed",
+        "compensator-target-dangling",
+        "mutating-activity-uncompensated",
+        "precheck-template-missing",
+        "predicate-fact-unknown",
+        "predicate-malformed",
+        "route-target-dangling"
+      ]
     }
   ],
-  "ruleCount": 51
+  "ruleCount": 61
 }

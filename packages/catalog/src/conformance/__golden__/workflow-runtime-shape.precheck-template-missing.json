@@ -1,0 +1,73 @@
+{
+  "fixture": "workflow-runtime-shape.precheck-template-missing",
+  "targets": "workflow-runtime-shape/precheck-template-missing",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/precheck-template-missing"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 10,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "precheck-template-missing",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "prechecks[0].template",
+      "message": "names the template \"absent\", which the workflow does not declare. A pre-check exists to say WHY the workflow will not run, at the one moment a customer is being turned down; with no template there is nothing to render, and the only remaining source of that sentence is model prose.",
+      "reference": "absent"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/precheck-template-missing: workflow:conformance.workflow.runtime · prechecks[0].template — names the template \"absent\", which the workflow does not declare. A pre-check exists to say WHY the workflow will not run, at the one moment a customer is being turned down; with no template there is nothing to render, and the only remaining source of that sentence is model prose."
+  ]
+}

@@ -74,8 +74,18 @@ export function workflowBase(): Record<string, unknown> {
         source: { from: "claim", claimType: "ORDER_HISTORY", field: "historySummaryText" },
       },
     ],
+    // LE2-022 — the fixture capabilities are `mutating: true` (IDENTITY_BASE),
+    // so a compensation statement is now REQUIRED and its absence would make
+    // every fixture in this file also emit
+    // `workflow-runtime-shape/mutating-activity-uncompensated`, which would stop
+    // each one being a single-purpose witness for the rule it names.
     activities: [
-      { id: "step", capability: FIXTURE_STEP_KIND, payload: { summary: { param: "history" } } },
+      {
+        id: "step",
+        capability: FIXTURE_STEP_KIND,
+        payload: { summary: { param: "history" } },
+        compensation: { terminal: "harmless", why: "conformance fixture" },
+      },
     ],
     confirm: { template: "confirm" },
     templates: [
@@ -106,6 +116,7 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
           id: "step",
           capability: "conformance.workflow.absent",
           payload: { summary: { param: "history" } },
+          compensation: { terminal: "harmless", why: "conformance fixture" },
         },
       ],
     }),
@@ -135,7 +146,12 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
     workflows: fixtureWorkflows({
       ...workflowBase(),
       activities: [
-        { id: "step", capability: FIXTURE_STEP_KIND, payload: { total: { param: "total" } } },
+        {
+          id: "step",
+          capability: FIXTURE_STEP_KIND,
+          payload: { total: { param: "total" } },
+          compensation: { terminal: "harmless", why: "conformance fixture" },
+        },
       ],
     }),
   },
@@ -185,8 +201,18 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
     workflows: fixtureWorkflows({
       ...workflowBase(),
       activities: [
-        { id: "step", capability: FIXTURE_STEP_KIND, payload: { summary: { param: "history" } } },
-        { id: "step", capability: FIXTURE_STEP_KIND, payload: {} },
+        {
+          id: "step",
+          capability: FIXTURE_STEP_KIND,
+          payload: { summary: { param: "history" } },
+          compensation: { terminal: "harmless", why: "conformance fixture" },
+        },
+        {
+          id: "step",
+          capability: FIXTURE_STEP_KIND,
+          payload: {},
+          compensation: { terminal: "harmless", why: "conformance fixture" },
+        },
       ],
     }),
   },

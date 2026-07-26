@@ -1,0 +1,73 @@
+{
+  "fixture": "workflow-runtime-shape.predicate-malformed",
+  "targets": "workflow-runtime-shape/predicate-malformed",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/predicate-malformed"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 10,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "predicate-malformed",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "route[1].when.value",
+      "message": "uses the operator \"atLeast\", which compares against an authored value, and declares none. There is nothing to compare to, so the predicate is FALSE for every fact value it will ever see — a branch that looks conditional and is not.",
+      "reference": "atLeast"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/predicate-malformed: workflow:conformance.workflow.runtime · route[1].when.value — uses the operator \"atLeast\", which compares against an authored value, and declares none. There is nothing to compare to, so the predicate is FALSE for every fact value it will ever see — a branch that looks conditional and is not."
+  ]
+}

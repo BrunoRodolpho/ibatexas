@@ -69,4 +69,25 @@
 // sharing a version breaks replay" is unconditional. A workflow INSTANCE pins
 // this serial and resumes against it across the confirm park, which makes the
 // no-reuse rule load-bearing here rather than bookkeeping.
-export const CATALOG_VERSION: number = 7
+// v8 (LE2-022) — the WORKFLOW RUNTIME v1 contract. The workflow definition
+// shape gains four things, and every one of them changes what a definition
+// MEANS rather than only what it may say: `prechecks` (feasibility, evaluated
+// before any confirm is shown), `route` (conditional edges over the activity
+// pool), `WorkflowActivity.compensation` (what undoes a step, or the authored
+// statement that nothing does), and two new outcomes — `compensated` and
+// `stranded` — with the `outcomes` record's compensation half now conditionally
+// required. The `workflow-runtime-shape` pass and its ten rules police all of
+// it, and both authored corpora move with the contract: the reorder-last
+// activity declares a terminal marker, and the fixture corpus gains a second
+// workflow exercising the three new mechanisms.
+//
+// The README's FIRST trigger does NOT fire — no capability was added and no
+// capability field changed. The THIRD does, and here it fires at its letter
+// rather than only at its intent: an instance PINS this serial and RESUMES on
+// the shape it pinned, so a workflow instantiated under v7 and one instantiated
+// under v8 are not the same run even for byte-identical authored data — v7 had
+// no route to resume onto, no pre-check that could have refused before the
+// park, and no compensator to run on the way out. That is precisely the
+// no-reuse rule's load-bearing case, and LE2-022's own park/resume AC is a test
+// of it.
+export const CATALOG_VERSION: number = 8

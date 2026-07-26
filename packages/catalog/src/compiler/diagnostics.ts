@@ -50,6 +50,13 @@ export const CATALOG_PASS_IDS = [
   // themselves are known to be coherent. Reporting it after them puts the cause
   // above the consequence in a build log.
   "workflow-shape",
+  // LE2-022 — directly after `workflow-shape`, and last overall, for the same
+  // reason `workflow-shape` is last among the others: it reads a table built on
+  // every earlier verdict. Adjacency is the point here too — that pass reports
+  // that a workflow is MALFORMED, this one that its runtime behaviour is
+  // UNACCOUNTED FOR, and an author reading a build log wants the two statements
+  // about one definition next to each other.
+  "workflow-runtime-shape",
 ] as const
 
 /** One static pass's stable id. */

@@ -1,0 +1,72 @@
+{
+  "fixture": "workflow-runtime-shape.compensation-outcome-template-missing",
+  "targets": "workflow-runtime-shape/compensation-outcome-template-missing",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/compensation-outcome-template-missing"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 10,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "compensation-outcome-template-missing",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "outcomes.stranded",
+      "message": "routes 2 activities and has no \"stranded\" template (names \"undefined\"). A multi-step run can stop in the middle, and the two honest things to say about that are different: `compensated` means everything that ran was undone, `stranded` means something that ran could not be. Falling back to `failed` would tell the customer NOTHING happened while a real mutation sits in the store."
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/compensation-outcome-template-missing: workflow:conformance.workflow.runtime · outcomes.stranded — routes 2 activities and has no \"stranded\" template (names \"undefined\"). A multi-step run can stop in the middle, and the two honest things to say about that are different: `compensated` means everything that ran was undone, `stranded` means something that ran could not be. Falling back to `failed` would tell the customer NOTHING happened while a real mutation sits in the store."
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "fixture": "workflow-runtime-shape.compensator-routed",
+  "targets": "workflow-runtime-shape/compensator-routed",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/compensator-routed"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 11,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "compensator-routed",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "activities[0].compensation.by",
+      "message": "names \"undo\" as its compensator while the route ALSO runs \"undo\" as a forward step. It would then execute twice on a failure — once as a step and once as the rollback — and once on success, undoing work the customer approved. A compensator is reached by failure only; take it out of the route.",
+      "reference": "undo"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/compensator-routed: workflow:conformance.workflow.runtime · activities[0].compensation.by — names \"undo\" as its compensator while the route ALSO runs \"undo\" as a forward step. It would then execute twice on a failure — once as a step and once as the rollback — and once on success, undoing work the customer approved. A compensator is reached by failure only; take it out of the route."
+  ]
+}

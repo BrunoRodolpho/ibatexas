@@ -1875,6 +1875,59 @@ export function createIbatexasPlanner(
         readEnriched = true;
       }
 
+      // ── LE2-022 · FEASIBILITY, BEFORE THE ANCHOR ENVELOPE LEAVES ──────────
+      // A workflow whose declared pre-checks do not hold over this turn's
+      // GROUNDED facts is refused HERE — which is before the envelope is
+      // returned, therefore before the kernel adjudicates it, therefore before a
+      // CONFIRM can park. That ordering is the whole acceptance criterion: the
+      // anchor's own guards would also refuse an impossible workflow, but they
+      // would do it AFTER the customer had been asked to approve it and said
+      // yes, and "I asked, you agreed, now I am telling you it was never
+      // possible" is the exchange this gate exists to delete.
+      //
+      // The envelopes are DROPPED, giving the same respond-only plan shape L0
+      // and the alias CLARIFY short-circuit already return, so every downstream
+      // consumer sees a shape it handles. The customer-facing sentence is the
+      // pre-check's OWN authored reason, read back by the responder's
+      // `workflowNotice` seam — never model prose, and never a generic refusal
+      // that leaves them guessing which thing was missing.
+      //
+      // Absent runtime, or a turn that selected no workflow, or one whose
+      // workflow declares no pre-check ⟹ `undefined` ⟹ byte-identical to
+      // pre-LE2-022.
+      const infeasible = await deps.workflowRuntime?.checkFeasibility({
+        turnId: state.turnId,
+        actor: envelopeActor,
+      });
+      if (infeasible !== undefined) {
+        logger.info(
+          {
+            component: "planner",
+            event: "intents.proposed",
+            turnId: state.turnId,
+            envelopeCount: 0,
+            capabilities: [],
+            droppedOutOfPlan: dropped,
+            readToolCalls: readToolCalls.map((c) => c.name),
+            workflowId: infeasible.workflowId,
+            precheckId: infeasible.precheckId,
+          },
+          `planner: workflow ${infeasible.workflowId} failed its ${infeasible.precheckId} pre-check — refusing before any confirm`,
+        );
+        return {
+          envelopes: [],
+          rationale:
+            `ibatexas-planner: workflow ${infeasible.workflowId} is infeasible ` +
+            `(${infeasible.precheckId}) — no confirm shown`,
+          capabilities: [],
+          readToolCalls,
+          usage: {
+            inputTokens: completion.inputTokens + readLoopUsage.inputTokens,
+            outputTokens: completion.outputTokens + readLoopUsage.outputTokens,
+          },
+        };
+      }
+
       // FE-T01 (D3) — a malformed `express_intent` call (the frozen provider's
       // `{raw}` JSON.parse-failure passthrough — see ollama-fetch-client.ts /
       // @claustrum/openai's `fromResponse`) is an extraction-wire FAILURE, not

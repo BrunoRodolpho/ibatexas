@@ -28,8 +28,15 @@
 //                                     exactly one canonical entity each, and
 //                                     no alias edge touches a safety attribute
 //
-// Compensation completeness, graph shape and lifecycle are journey-shaped
-// (tickets 20/22 add the objects AND the passes together).
+// LE2-022 added the eighth, beside `workflow-shape`:
+//
+//   8. `workflow-runtime-shape`     — compensation completeness and conditional
+//                                     graph shape: every mutating activity is
+//                                     undone or declared terminal, every route
+//                                     edge resolves, and every declared
+//                                     predicate reads a grounded fact
+//
+// Lifecycle remains workflow-shaped and unbuilt (its objects do not exist yet).
 //
 // Pass 5 is the STATIC HALF of LE2-018 and only that half. The declaration
 // table says which promotions and zones the code depends on; whether they
@@ -79,6 +86,7 @@ import { runReferentialIntegrityPass } from "./passes/referential-integrity.js"
 import { runSafetyImplicationEdgesPass } from "./passes/safety-implication-edges.js"
 import { runSlotDataflowPass } from "./passes/slot-dataflow.js"
 import { runTerminalCoveragePass } from "./passes/terminal-coverage.js"
+import { runWorkflowRuntimeShapePass } from "./passes/workflow-runtime-shape.js"
 import { runWorkflowShapePass } from "./passes/workflow-shape.js"
 
 export {
@@ -119,6 +127,7 @@ export { runExternalReferencesPass } from "./passes/external-references.js"
 export { runSafetyImplicationEdgesPass } from "./passes/safety-implication-edges.js"
 export { runSlotDataflowPass } from "./passes/slot-dataflow.js"
 export { runTerminalCoveragePass } from "./passes/terminal-coverage.js"
+export { runWorkflowRuntimeShapePass } from "./passes/workflow-runtime-shape.js"
 export { runWorkflowShapePass, workflowObjectName } from "./passes/workflow-shape.js"
 export { SLOT_SPECS, type SlotKind, type SlotSpec } from "./slots.js"
 
@@ -201,6 +210,12 @@ export const CATALOG_PASSES = [
     summary:
       "every workflow's references resolve, its params bind, its outcomes render, and the workflow-scoped access class is coherent",
     run: runWorkflowShapePass,
+  },
+  {
+    id: "workflow-runtime-shape",
+    summary:
+      "every mutating activity is compensated or declared terminal, every route edge resolves, and every predicate reads a grounded fact",
+    run: runWorkflowRuntimeShapePass,
   },
 ] as const satisfies readonly CatalogPass[]
 

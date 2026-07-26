@@ -69,7 +69,7 @@ import { isRegistryClaimTypeReference } from "../../claim-references.js"
 import type { WorkflowDefinition } from "../../workflows/types.js"
 import {
   MIN_WORKFLOW_TRIGGER_PHRASINGS,
-  WORKFLOW_OUTCOMES,
+  WORKFLOW_BASE_OUTCOMES,
 } from "../../workflows/types.js"
 import {
   capabilityObjectName,
@@ -477,7 +477,12 @@ function checkTemplates(ctx: WorkflowContext): readonly CatalogDiagnostic[] {
   }
 
   const outcomes = readRecord(ctx.record["outcomes"])
-  for (const outcome of WORKFLOW_OUTCOMES) {
+  // The BASE three only. LE2-022's two compensation outcomes are required
+  // conditionally — a single-activity workflow cannot reach them — so they are
+  // policed by `workflow-runtime-shape`, which knows the route. Looping the full
+  // set here would demand text for an unreachable outcome from every v0
+  // definition in the corpus.
+  for (const outcome of WORKFLOW_BASE_OUTCOMES) {
     const templateId = outcomes[outcome]
     if (isNonBlank(templateId) && templateIds.has(templateId)) continue
     out.push(
@@ -615,7 +620,7 @@ export function runWorkflowShapePass(
     checked += readArray(record["params"]).length
     diagnostics.push(...checkClaimParams(ctx))
 
-    checked += WORKFLOW_OUTCOMES.length + 1
+    checked += WORKFLOW_BASE_OUTCOMES.length + 1
     diagnostics.push(...checkTemplates(ctx))
 
     checked += readArray(record["triggerPhrasings"]).length

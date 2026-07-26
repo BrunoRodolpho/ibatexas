@@ -218,6 +218,24 @@ export interface IbatexasResponderDeps {
    */
   readonly workflowConfirm?: (turnId: string) => string | undefined;
   /**
+   * LE2-022 — the AUTHORED reason a workflow's FEASIBILITY PRE-CHECK refused
+   * this turn, or `undefined` when none did.
+   *
+   * Structural sibling of {@link workflowConfirm} and injected the same way, but
+   * consulted on the opposite branch: the planner dropped the anchor envelope,
+   * so the turn arrives here as a REFUSE on an EMPTY plan — the same
+   * respond-only shape a social turn takes. Without this seam that turn would
+   * fall through to a model completion and the customer would be told, in prose
+   * the model authored, why a multi-step route they asked for is not happening.
+   * That is precisely a proposition the model has no grounds for: the reason
+   * lives in a projection it never saw.
+   *
+   * The string is the pre-check's own template, rendered from grounded values —
+   * so it names WHAT is missing rather than saying no in general, which is the
+   * only version of this sentence a customer can act on.
+   */
+  readonly workflowNotice?: (turnId: string) => string | undefined;
+  /**
    * BKL-078 — the QUESTION-SHAPE SAFE-UNKNOWN gate. Injected on BOTH conversational
    * conductors when ENABLE_CLAIMS_PIPELINE is on (LE2 Implementation Decision 6
    * dissolved D5, under which only the CUSTOMER conductor passed it; both planes now
@@ -1269,6 +1287,23 @@ export function createIbatexasResponder(
             const rendered = deps.readAnswer?.render(turnId);
             if (rendered !== undefined) {
               return { text: rendered };
+            }
+            // ── LE2-022 · the WORKFLOW FEASIBILITY notice ─────────────────────
+            // The planner refused a selected workflow before minting its anchor
+            // envelope, so this turn is a REFUSE on an empty plan carrying an
+            // AUTHORED pt-BR reason. Return it verbatim, with no model call: the
+            // reason is read off a grounded projection the model never saw, so a
+            // completion here could only paraphrase or invent it.
+            //
+            // FIRST among the template branches because it is the most SPECIFIC
+            // fact about this turn — the customer asked for a named route and
+            // there is an authored sentence about that route. The overlap with
+            // L0 below is empty in practice (an L0 turn short-circuits before
+            // the model call, so it can select no workflow), which makes this a
+            // statement of precedence rather than a live contest.
+            const workflowNotice = deps.workflowNotice?.(turnId);
+            if (workflowNotice !== undefined) {
+              return { text: workflowNotice };
             }
             // ── LE2-007 · L0 · the template reply, zero model calls ────────────
             // The planner stamped this turn L0 (a social-only utterance, no confirm

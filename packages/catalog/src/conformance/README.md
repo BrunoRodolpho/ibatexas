@@ -2,7 +2,7 @@
 
 **This suite is the compiler's compatibility contract.**
 
-The seven static passes are one of Language Engine 2.0's architectural
+The nine static passes are one of Language Engine 2.0's architectural
 foundations. What makes their behavior a *versioned promise* rather than an
 implementation detail is this corpus: one committed fixture catalog per
 rejection class, each one's compiler output pinned byte-for-byte.

@@ -87,6 +87,14 @@ const BROKEN_WORKFLOWS = [
     selection: { capability: "order.ghost" },
     params: [],
     activities: [{ id: "step", capability: "no.such.capability", payload: {} }],
+    // LE2-022 — the `workflow-runtime-shape` half. A pre-check over a fact
+    // outside the closed vocabulary, chosen because it is the one rule in that
+    // pass that depends on NOTHING in the capability table: the compensation
+    // rules read `mutating`, and this fixture's capabilities are themselves
+    // broken, so breaking the new pass through them would couple two fixtures.
+    prechecks: [
+      { id: "ghost", predicate: { fact: "no.such.fact", op: "isTrue" }, template: "confirm" },
+    ],
     confirm: { template: "confirm" },
     templates: [
       { id: "confirm", text: "Confirma?" },

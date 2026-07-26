@@ -1,0 +1,73 @@
+{
+  "fixture": "workflow-runtime-shape.predicate-fact-unknown",
+  "targets": "workflow-runtime-shape/predicate-fact-unknown",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/predicate-fact-unknown"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 10,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "predicate-fact-unknown",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "prechecks[0].predicate.fact",
+      "message": "reads the fact \"claimTruth\", which is not a member of the closed workflow fact vocabulary (`workflows/facts.ts`). The vocabulary is what makes a workflow condition GROUNDED: every member names a field the resolver projects into the same state the kernel's guards are adjudicated against, so a name outside it has nothing behind it. At run time this is perfectly silent — the fact resolves by map lookup, misses, and the predicate is FALSE forever, leaving a branch permanently one-sided or a pre-check that never fires.",
+      "reference": "claimTruth"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/predicate-fact-unknown: workflow:conformance.workflow.runtime · prechecks[0].predicate.fact — reads the fact \"claimTruth\", which is not a member of the closed workflow fact vocabulary (`workflows/facts.ts`). The vocabulary is what makes a workflow condition GROUNDED: every member names a field the resolver projects into the same state the kernel's guards are adjudicated against, so a name outside it has nothing behind it. At run time this is perfectly silent — the fact resolves by map lookup, misses, and the predicate is FALSE forever, leaving a branch permanently one-sided or a pre-check that never fires."
+  ]
+}

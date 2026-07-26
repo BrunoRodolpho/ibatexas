@@ -166,6 +166,21 @@ export const REORDER_LAST_WORKFLOW: WorkflowDefinition = {
       // param. The workflow-scoped handler resolves it from the same
       // owner-scoped projection that grounded the confirm sentence.
       payload: {},
+      // LE2-022 — `order.reorder` is `mutating: true`, so the
+      // compensation-completeness rule requires a statement here and an
+      // omission is a build error.
+      //
+      // IRREVERSIBLE, and NOT because this is the only activity. The marker
+      // states what would be true of the EFFECT if a later step ever failed
+      // after it: a cart rebuilt out from under a customer is a visible change
+      // and the catalog declares no capability that puts the old one back.
+      // Choosing "harmless" on the grounds that nothing runs after it today
+      // would be true positionally and false semantically, and the next author
+      // to add a step would inherit it silently.
+      compensation: {
+        terminal: "irreversible",
+        why: "rebuilds the session cart from a past order; the catalog declares no capability that restores the previous one",
+      },
     },
   ],
   confirm: { template: "confirm" },

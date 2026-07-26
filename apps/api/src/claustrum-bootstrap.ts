@@ -83,6 +83,7 @@ import type {
   AuditRecord,
   AuditSink,
   Decision,
+  IntentActor,
   IntentEnvelope,
   Ledger,
 } from "@adjudicate/core";
@@ -344,9 +345,11 @@ import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import {
   sessionTokenKey,
   loadCartCtx,
+  previousOrderCtxFields,
   resolveAndAssemble,
   resolveCustomerOrderReference,
 } from "./claustrum/resolve-and-assemble.js";
+import { loadPreviousOrder } from "./claustrum/previous-order.js";
 import {
   buildCustomerAuthority,
   customerPrincipalForSession,
@@ -375,8 +378,11 @@ import { buildLanguageEngineAuditMetadata } from "./claustrum/language-engine/au
 import {
   activityIdentityBase,
   activitySessionArg,
+  actorIdentityBase,
   resolveActivityTool,
 } from "./claustrum/workflow/workflow-composition.js";
+import { projectWorkflowFacts } from "./claustrum/workflow/workflow-facts.js";
+import type { WorkflowFacts } from "./claustrum/workflow/workflow-predicates.js";
 import { registerWorkflowAnchorTools } from "./tools/register-workflow-anchor-tools.js";
 import { registerWorkflowScopedTools } from "./tools/register-workflow-scoped-tools.js";
 import {
@@ -1861,14 +1867,73 @@ function buildWorkflowRuntime(deps: {
         currentWorkflowChannel(),
         process.env.KERNEL_TENANT_ID,
       ) as never,
-      {} as never,
+      // THE ACTIVITY'S OWN PAYLOAD — LE2-022. This was `{}`, which meant
+      // `buildCartCtx` projected `paymentMethod: null` and `fulfillment: null`
+      // for every workflow activity, and the guards that read those fields
+      // (`requireSlotsFilledForCheckout`) could never see what the activity was
+      // actually asking for. A directly-parsed request's state carries its
+      // resolved payload, so an activity's must too — "an activity meets the
+      // same grounded state a direct request would" is the contract, and an
+      // empty payload quietly broke half of it.
+      //
+      // It widens NOTHING: the payload is first-party by construction (authored
+      // constants, validated claims, customer slots — `WorkflowParamSource` has
+      // no other member), and `buildCartCtx` reads exactly two fields from it,
+      // both against closed literal sets.
+      (envelope.payload ?? {}) as never,
       activitySessionArg(envelope),
     );
     return { ctx };
   };
 
+  /**
+   * LE2-022 — project the GROUNDED FACTS a declared predicate reads.
+   *
+   * Deliberately the SAME two projections the guards are adjudicated against,
+   * composed: `loadCartCtx` (what `requireCartItemsForCheckout` and
+   * `confirmLargeTicket` read) plus `previousOrderCtxFields` over the same
+   * owner-scoped `loadPreviousOrder` that grounds `confirmReorderLast`'s confirm
+   * sentence. A workflow that branched on a second, separately-derived view of
+   * the customer could route one way while the guard governing that very step
+   * reasoned the other, and per-activity adjudication is the whole design.
+   *
+   * The previous-order read is AUTH-GATED for the same reason it is in
+   * `stampPreviousOrderCtx`, and not as an optimisation: an unauthenticated
+   * caller has no customer id an owner-scoped read could mean, so skipping it
+   * keeps "this read is owner-scoped" true of every call rather than
+   * true-because-the-filter-matched-nothing. The fact then reads ABSENT, the
+   * pre-check refuses, and the customer gets an honest sentence — which is the
+   * correct answer for a guest asking to repeat an order.
+   *
+   * BEST-EFFORT by construction: `loadCartCtx` and `loadPreviousOrder` already
+   * swallow their own IO failures and return nothing, so a store outage produces
+   * ABSENT facts rather than a thrown conversational turn. Absent facts fail
+   * closed (see `workflow-predicates.ts`).
+   */
+  const workflowFacts = async (actor: IntentActor): Promise<WorkflowFacts> => {
+    const identity = actorIdentityBase(
+      actor as { customerId?: string; sessionId?: string },
+      // From the turn binding, NOT hardcoded — a guessed channel would
+      // adjudicate a WhatsApp turn's facts against web rules.
+      currentWorkflowChannel(),
+      process.env.KERNEL_TENANT_ID,
+    );
+    const sessionId = (actor as { sessionId?: string }).sessionId;
+    const ctx = (await loadCartCtx(
+      identity as never,
+      {} as never,
+      sessionId === undefined ? {} : { sessionId },
+    )) as Record<string, unknown>;
+    const previous =
+      identity.customerId === null
+        ? null
+        : await loadPreviousOrder(identity.customerId);
+    return projectWorkflowFacts({ ...ctx, ...previousOrderCtxFields(previous) });
+  };
+
   return createWorkflowRuntime({
     workflows: WORKFLOW_DEFINITIONS,
+    projectFacts: async ({ actor }) => workflowFacts(actor),
     adjudicateActivity: async (envelope) =>
       (
         await adjudicateAndAudit(
@@ -3506,6 +3571,15 @@ export async function bootstrapClaustrum(
       // with an unresolved param — both degrade to `decision.prompt`, which is
       // the behaviour every confirm had before this line existed.
       workflowConfirm: (turnId: string) => workflowRuntime.renderConfirm(turnId),
+      // LE2-022 — the FEASIBILITY notice, wired for the same reason and read on
+      // the opposite branch. When a pre-check refuses, the planner drops the
+      // anchor envelope, so the turn reaches the responder as a REFUSE on an
+      // empty plan; without this closure it would fall through to a model
+      // completion and the customer would be told, in prose the model authored,
+      // why a route they named is not happening — a proposition the model has no
+      // grounds for, since the reason lives in a projection it never saw.
+      // `undefined` on every turn no pre-check refused.
+      workflowNotice: (turnId: string) => workflowRuntime.renderNotice(turnId),
       // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate, wired ONLY
       // when ENABLE_CLAIMS_PIPELINE is on (the SAME flag buildClaimsSeams reads).
       // Closes the `prose_preserved` hallucination leak on the conversational
