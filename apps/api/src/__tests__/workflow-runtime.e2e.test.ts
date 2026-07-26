@@ -251,7 +251,13 @@ function buildHarness(
     return { ctx };
   };
 
-  let harnessRef: { tools: ReturnType<typeof composeCustomerConductor>["tools"] };
+  // A genuine forward reference, not a stray `let`: the runtime's
+  // `dispatchActivity` closure needs the tool registry, the registry comes from
+  // `composeCustomerConductor`, and that call needs the runtime. A holder
+  // object breaks the cycle without a reassignable binding.
+  const harnessRef: {
+    current?: ReturnType<typeof composeCustomerConductor>;
+  } = {};
   const runtime = createWorkflowRuntime({
     workflows: FIXTURE_WORKFLOWS,
     adjudicateActivity: async (envelope) =>
@@ -264,7 +270,7 @@ function buildHarness(
         )
       ).decision,
     dispatchActivity: async (envelope, ctx) => {
-      const tool = harnessRef.tools
+      const tool = harnessRef.current?.tools
         .list()
         .find((t) => String(t.capability) === String(envelope.kind));
       if (tool === undefined) {
@@ -283,7 +289,7 @@ function buildHarness(
     adjudicator,
     workflowRuntime: runtime,
   });
-  harnessRef = harness;
+  harnessRef.current = harness;
   return { harness, sink, session, runtime, medusa };
 }
 
@@ -453,7 +459,12 @@ describe("LE2-020 turn seam — a catalog-declared workflow, selected, confirmed
 
 describe("LE2-020 — the WORKFLOW-SCOPED access class, at the real parse seam", () => {
   it("NEGATIVE: the parser cannot emit a workflow-scoped kind — not advertised, not accepted", async () => {
-    const { harness, sink } = buildHarness({ claims: validatedClaims() });
+    // Called for its FIXTURE SETUP and its sink — the composed harness it
+    // returns is deliberately discarded. The rogue composition below wires NO
+    // workflow runtime, which makes this the stronger claim: the access class
+    // holds even in a composition that never loaded a workflow, because the
+    // subtraction is unconditional rather than a service the runtime provides.
+    const { sink } = buildHarness({ claims: validatedClaims() });
     // A model that tries to propose the workflow-scoped kind DIRECTLY, as a
     // free verb. This is the attack the access class exists for: a
     // hallucination, a stale cached parse, or a prompt injection.
