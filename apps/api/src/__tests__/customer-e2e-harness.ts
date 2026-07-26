@@ -100,6 +100,7 @@ import { createIbatexasResolver } from "../claustrum/ibatexas-resolver.js";
 import {
   closeFunnelTurn,
   openFunnelTurn,
+  type FunnelParseMemoSeam,
   type FunnelPlannerSeam,
   type FunnelResponderSeam,
 } from "../claustrum/funnel-tier.js";
@@ -192,6 +193,54 @@ export function throwingModel(label = "L0 zero-call proof"): ModelProvider {
     complete: vi.fn(async () => boom("complete")),
     stream: () => boom("stream"),
     embed: async () => boom("embed"),
+  };
+}
+
+/**
+ * A model that throws on any TOOL-BEARING (extraction/planner) request but serves
+ * an ordinary responder completion otherwise — the wire-proof instrument for a
+ * tier that removes the PARSE call and only the parse call (LE2-009's L1).
+ *
+ * WHY NOT `throwingModel` FOR L1. L0 answers from a template, so its turn is
+ * genuinely zero-call and `throwingModel` is the honest instrument there. L1
+ * replays a PARSE: the turn still resolves, adjudicates, executes and then has to
+ * SAY something, and unless that reply happens to come from a deterministic
+ * render the responder legitimately calls the model. Using `throwingModel` for an
+ * L1 turn would therefore assert a claim the tier never made. This double asserts
+ * the claim it does make — the extraction surface is never reached — and does it
+ * by construction rather than by counting, exactly like its sibling.
+ *
+ * `tools.length > 0` is the same discriminator `scriptedModel` and the real
+ * `OllamaFetchClient.wireBody()` use to tell a planner body from a responder one.
+ */
+export function plannerThrowingModel(
+  label = "L1 zero-extraction-call proof",
+  opts: { responderText?: string } = {},
+): ModelProvider {
+  const responderText = opts.responderText ?? "Ok.";
+  const complete = vi.fn(async (req: CompletionRequest): Promise<Completion> => {
+    if ((req.tools?.length ?? 0) > 0) {
+      throw new Error(
+        `[customer-e2e-harness] a TOOL-BEARING completion was requested — ${label} requires ZERO extraction calls on this turn`,
+      );
+    }
+    return {
+      model: "mock",
+      stopReason: "end_turn",
+      text: responderText,
+      toolCalls: [],
+      inputTokens: 3,
+      outputTokens: 2,
+    };
+  });
+  return {
+    complete,
+    stream: () => {
+      throw new Error("stream unused");
+    },
+    embed: async () => {
+      throw new Error("embed unused");
+    },
   };
 }
 
@@ -618,6 +667,29 @@ export interface CustomerConductorDeps {
    * synthetic probe. Omitted ⟹ `noopTelemetry` ⟹ byte-identical.
    */
   readonly telemetry?: TelemetryPort;
+  /**
+   * LE2-009 — the funnel's L1 seam (exact-match parse memoization). Normally the
+   * SAME object passed as `funnel` (`createParseFunnel` returns both seams when a
+   * parse cache store is wired); kept a separate option for the same reason the
+   * planner takes it separately — L0 and L1 run at different points in `propose`.
+   * Omitted ⟹ no cache ⟹ every pre-existing harness turn is byte-identical.
+   */
+  readonly parseMemo?: FunnelParseMemoSeam;
+  /**
+   * LE2-009 — the customer plane's DETERMINISTIC action render, which
+   * `claustrum-bootstrap.ts` wires into the real responder in production
+   * (`renderCustomerActionAnswer`) but this harness previously omitted.
+   *
+   * It is what makes a funnel turn provably zero-model-call END TO END rather
+   * than merely zero-EXTRACTION-call: with it, a committed mutation's reply is
+   * rendered from the tool's own outcome, so the responder never needs to author
+   * prose and a `throwingModel` can stand as the wire proof. Omitted ⟹ both hooks
+   * are absent ⟹ byte-identical to every pre-LE2-009 caller.
+   */
+  readonly readAnswer?: {
+    render: (turnId: string) => string | undefined;
+    renderAction: (acted: unknown, turnId: string) => string | undefined;
+  };
 }
 
 export interface CustomerHarness {
@@ -641,6 +713,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
     deriveContext: deriveCustomerPlannerContext,
     ...(deps.funnel ? { funnel: deps.funnel } : {}),
+    ...(deps.parseMemo ? { parseMemo: deps.parseMemo } : {}),
   });
 
   // LE2-007 — the REAL production responder, opt-in. Composed like the customer
@@ -658,6 +731,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
         ...(deps.scheduleSignal !== undefined
           ? { resolveScheduleSignal: () => deps.scheduleSignal }
           : {}),
+        ...(deps.readAnswer !== undefined ? { readAnswer: deps.readAnswer } : {}),
       })
     : inertResponder();
 

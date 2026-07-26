@@ -101,7 +101,12 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
-import type { FunnelPlannerSeam } from "./funnel-tier.js";
+import type { FunnelParseMemoSeam, FunnelPlannerSeam } from "./funnel-tier.js";
+import {
+  buildParseCacheKey,
+  canonicalizeUtterance,
+  isCacheableParse,
+} from "./parse-memo.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
 import { resolveDeliveryCoverage } from "./delivery-coverage-resolver.js";
@@ -442,6 +447,18 @@ export interface IbatexasPlannerDeps {
    * ingress that does not publish simply never reaches L0.
    */
   readonly funnel?: FunnelPlannerSeam;
+  /**
+   * LE2-009 — the funnel's L1 tier: exact-match parse memoization. The SAME
+   * funnel instance the `funnel` option gets (`createParseFunnel` returns both
+   * seams), passed separately because the two run at different points in
+   * `propose`: L0 decides BEFORE any surface exists, L1 needs the composed system
+   * prompt and tool surface because they ARE its cache key (parse-memo.ts).
+   *
+   * Absent ⟹ no lookup, no store, no counters — the planner is byte-identical to
+   * its pre-L1 behaviour, which is how the ops/agent planes and every unit suite
+   * opt out.
+   */
+  readonly parseMemo?: FunnelParseMemoSeam;
 }
 
 /**
@@ -1059,6 +1076,73 @@ export function createIbatexasPlanner(
       // in BOTH passes so it is a genuine per-turn constant the model can never
       // touch.
       const envelopeActor = plannerEnvelopeActor(deps.staffEnvelopeActor, state);
+
+      // ── LE2-009 · L1 · THE FUNNEL'S SECOND QUESTION ────────────────────────
+      // Asked AFTER the surface exists (it is the key) and BEFORE the completion
+      // (which is the cost): have we already parsed this exact utterance under
+      // this exact system prompt, tool surface, model and catalog version? At the
+      // pinned temperature the extraction call is a deterministic function of
+      // precisely those inputs, so a hit replays a parse rather than re-deriving
+      // one. See parse-memo.ts for the key, the doctrine, and the two parse shapes
+      // that are deliberately never cached.
+      const memo = deps.parseMemo;
+      const memoKey =
+        memo === undefined
+          ? undefined
+          : buildParseCacheKey({
+              utterance: state.perception.text,
+              modelId: deps.modelId,
+              // The COMPOSED prompt, closed-hours note included — so a parse made
+              // while the store was closed can never be served while it is open.
+              system,
+              toolSurface: tools,
+            });
+      if (memo !== undefined && memoKey !== undefined) {
+        const cached = await memo.lookupParse(
+          memoKey,
+          canonicalizeUtterance(state.perception.text),
+        );
+        if (cached !== undefined) {
+          // RE-MINT, NEVER REPLAY (parse-memo.ts's central hazard note): the cached
+          // parse carries only `{kind, payload}`. Each envelope is rebuilt here with
+          // THIS turn's actor and a FRESH nonce, so its `intentHash` is new and the
+          // always-on fail-closed execution ledger sees a genuinely new dispatch
+          // instead of deduping the customer's second request against their first.
+          const replayed = cached.proposals.map((proposal, index) =>
+            buildEnvelope({
+              kind: proposal.kind,
+              payload: proposal.payload ?? {},
+              actor: envelopeActor,
+              taint: "UNTRUSTED",
+              nonce: deriveNonce(state, index),
+            }),
+          );
+          const stage = memo.stampMemoHit(state.turnId, memoKey, replayed.length);
+          logger.info(
+            {
+              component: "planner",
+              event: "intents.proposed",
+              turnId: state.turnId,
+              envelopeCount: replayed.length,
+              capabilities: cached.proposals.map((p) => p.kind),
+              droppedOutOfPlan: cached.dropped,
+              readToolCalls: cached.readToolCalls.map((c) => c.name),
+              funnelTier: stage.tier,
+            },
+            `planner proposed ${replayed.length} intent(s) from the L1 parse cache`,
+          );
+          // No `usage`: this turn spent ZERO planner tokens, and reporting the
+          // ORIGINAL parse's token cost again would double-bill the session counter
+          // for a completion that never happened.
+          return {
+            envelopes: replayed,
+            rationale: `ibatexas-planner: funnel L1 (${stage.reason}) — ${replayed.length} envelope(s) replayed, no extraction call`,
+            capabilities: [...cached.proposals.map((p) => p.kind)],
+            readToolCalls: [...cached.readToolCalls],
+          };
+        }
+      }
+
       const startedAt = Date.now();
       // FE-T01 (D3/D4) — pin temperature (deterministic wire) and wrap the
       // call in the bounded empty-completion repair idiom, scoped to a
@@ -1226,6 +1310,12 @@ export function createIbatexasPlanner(
       // BEST-EFFORT (a read throw is captured, never crashes the turn). Gated on
       // readToolExecutors so unit tests + golden fixtures without it are byte-identical.
       let readLoopUsage = { inputTokens: 0, outputTokens: 0 };
+      // LE2-009 — set when the one-hop enrichment ran. A read-enriched parse is
+      // conditioned on LIVE READ RESULTS, so it is not a function of the prompt
+      // alone and must never be memoized (parse-memo.ts's `isCacheableParse`):
+      // caching it would smuggle store state into every future repeat, which is
+      // precisely the "cache the parse, never the answer" line.
+      let readEnriched = false;
       const executors = deps.readToolExecutors;
       const executableReadCalls =
         executors === undefined
@@ -1416,6 +1506,7 @@ export function createIbatexasPlanner(
         capabilities = second.capabilities;
         dropped = [...dropped, ...second.dropped];
         readToolCalls = [...readToolCalls, ...second.readToolCalls];
+        readEnriched = true;
       }
 
       // FE-T01 (D3) — a malformed `express_intent` call (the frozen provider's
@@ -1474,6 +1565,35 @@ export function createIbatexasPlanner(
         },
         `planner proposed ${envelopes.length} intent(s)`,
       );
+
+      // LE2-009 — MEMOIZE THIS PARSE (the miss path's other half). Stores the
+      // model's SELECTION only — capability + payload, never the built envelope
+      // (whose nonce is single-use) and never a resolver-hydrated id. A
+      // read-enriched parse is refused here and counted as a bypass instead.
+      //
+      // Awaited deliberately rather than fire-and-forget: the store is fail-open
+      // (every fault degrades to a no-op inside the port), so awaiting costs one
+      // bounded Redis round-trip and buys a deterministic suite — a test can assert
+      // the entry exists immediately after the turn instead of racing a dangling
+      // promise. Nothing here can throw into the turn.
+      if (memo !== undefined && memoKey !== undefined) {
+        await memo.rememberParse(
+          memoKey,
+          {
+            proposals: envelopes.map((envelope) => ({
+              kind: envelope.kind,
+              // The FILTERED payload as it went onto the envelope — i.e. after
+              // FE-T11's `stripUnauthoredPayloadFields` — so a replay can never
+              // reintroduce a smuggled field the live path had already stripped.
+              payload: (envelope as { payload?: unknown }).payload ?? {},
+            })),
+            readToolCalls: readToolCalls.map((c) => ({ name: c.name, input: c.input })),
+            dropped: [...dropped],
+            keyVersion: memoKey.keyVersion,
+          },
+          isCacheableParse({ readEnriched, extractionFailed: false }),
+        );
+      }
 
       // F4 / cost accounting: report this turn's planning-model token usage so
       // the loop folds it onto the TurnRecord (emitTurn → per-session counter).

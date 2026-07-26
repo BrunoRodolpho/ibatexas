@@ -41,6 +41,14 @@
 import type { CognitiveState } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
 import { normalize } from "./interrogative-discriminator.js";
+import {
+  createParseCacheTelemetry,
+  PARSE_CACHE_TTL_SECONDS,
+  type MemoizedParse,
+  type ParseCacheCounters,
+  type ParseCacheKey,
+  type ParseCacheStore,
+} from "./parse-memo.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. PURE CORE
@@ -60,11 +68,12 @@ import { normalize } from "./interrogative-discriminator.js";
 export type FunnelTier = "L0" | "L1" | "L2";
 
 /**
- * WHY a tier claimed the turn — the machine-stable join field for the trace. Only the
- * L0 member exists today; L1/L2 append their own ("memoized_parse", "scoped_parse",
- * "full_roster_fallback") when they land.
+ * WHY a tier claimed the turn — the machine-stable join field for the trace.
+ * `social_only` is L0's (LE2-007); `memoized_parse` is L1's (LE2-009 — a
+ * byte-identical repeat whose parse was replayed from the cache). L2 appends its
+ * own ("scoped_parse", "full_roster_fallback") when it lands.
  */
-export type FunnelReason = "social_only";
+export type FunnelReason = "social_only" | "memoized_parse";
 
 /**
  * The funnel's OBSERVABILITY CONTRACT — one stage record per funnel-resolved turn
@@ -419,8 +428,43 @@ export interface FunnelPlannerSeam {
 export interface FunnelResponderSeam {
   stageFor(turnId: string): FunnelStageRecord | undefined;
   /** The deterministic pt-BR reply for a stamped stage, or `undefined` if the tier
-   *  does not author its own reply (L1/L2 will not — they still parse). */
+   *  does not author its own reply (L1/L2 do not — they still parse, so the reply
+   *  is produced downstream from the re-minted envelopes exactly as on a miss). */
   reply(stage: FunnelStageRecord): string | undefined;
+}
+
+/**
+ * The L1 seam the PLANNER consumes (LE2-009) — parse memoization, exact match only.
+ *
+ * DELIBERATELY NOT PART OF {@link FunnelPlannerSeam}: L0 `claim()` is SYNCHRONOUS
+ * and decides the turn before any surface is built, while L1 is ASYNCHRONOUS (it
+ * reads Redis) and can only run AFTER the system prompt and tool surface exist —
+ * they are the cache key. Keeping them separate stops a caller from assuming one
+ * ordering for both. Absent ⟹ the planner is byte-identical to its pre-L1 behaviour.
+ */
+export interface FunnelParseMemoSeam {
+  /**
+   * Look up this turn's memoized parse. Returns `undefined` on a miss AND on any
+   * store fault (the store's fail-open contract) — a cache outage is never a turn
+   * failure. `canonical` feeds the repeat-miss counter on a miss.
+   */
+  lookupParse(
+    key: ParseCacheKey,
+    canonical: string,
+  ): Promise<MemoizedParse | undefined>;
+  /** Memoize a parse. A non-cacheable parse is recorded as a bypass, never stored. */
+  rememberParse(
+    key: ParseCacheKey,
+    parse: MemoizedParse,
+    cacheable: boolean,
+  ): Promise<void>;
+  /**
+   * Stamp the L1 stage record for a HIT — the trace's tier attribution, read back
+   * by `funnelStage(turnId)` at the once-per-turn telemetry seam exactly as L0's is.
+   */
+  stampMemoHit(turnId: string, key: ParseCacheKey, proposals: number): FunnelStageRecord;
+  /** The residual repeat-miss telemetry (decision 10's evidence gate). */
+  counters(): ParseCacheCounters;
 }
 
 /**
@@ -432,8 +476,107 @@ export interface FunnelResponderSeam {
 export function createL0Funnel(
   opts: { readonly now?: () => number } = {},
 ): FunnelPlannerSeam & FunnelResponderSeam {
+  return createParseFunnel(opts);
+}
+
+/**
+ * Build the funnel seam with BOTH tiers: L0 (social short-circuit, LE2-007) and —
+ * when a `parseCacheStore` is wired — L1 (exact-match parse memoization, LE2-009).
+ *
+ * ONE instance per composition, shared by the planner and the responder so both
+ * read the SAME stamped stage for a turn. Omitting `parseCacheStore` leaves L1
+ * absent and the composition byte-identical to LE2-007 — which is how the ops and
+ * agent planes (and every pre-L1 unit test) opt out without a flag.
+ *
+ * `now` is injectable so a deterministic suite can freeze a stage record's `at`.
+ */
+export function createParseFunnel(
+  opts: {
+    readonly now?: () => number;
+    readonly parseCacheStore?: ParseCacheStore;
+  } = {},
+): FunnelPlannerSeam & FunnelResponderSeam & Partial<FunnelParseMemoSeam> {
   const now = opts.now ?? Date.now;
+  const store = opts.parseCacheStore;
+  const telemetry = createParseCacheTelemetry();
+
+  const parseMemo: FunnelParseMemoSeam | undefined =
+    store === undefined
+      ? undefined
+      : {
+          async lookupParse(
+            key: ParseCacheKey,
+            canonical: string,
+          ): Promise<MemoizedParse | undefined> {
+            const hit = await store.get(key.key);
+            if (hit === undefined) {
+              telemetry.recordMiss(canonical);
+              return undefined;
+            }
+            telemetry.recordHit();
+            return hit;
+          },
+          async rememberParse(
+            key: ParseCacheKey,
+            parse: MemoizedParse,
+            cacheable: boolean,
+          ): Promise<void> {
+            if (!cacheable) {
+              // A read-enriched or extraction-failed parse: counted so the bypass
+              // RATE is visible, never written (see parse-memo.ts's header).
+              telemetry.recordBypass();
+              return;
+            }
+            await store.set(key.key, parse, PARSE_CACHE_TTL_SECONDS);
+            telemetry.recordStore();
+          },
+          stampMemoHit(
+            turnId: string,
+            key: ParseCacheKey,
+            proposals: number,
+          ): FunnelStageRecord {
+            const stage: FunnelStageRecord = {
+              tier: "L1",
+              reason: "memoized_parse",
+              detail: {
+                cacheHit: 1,
+                keyVersion: key.keyVersion,
+                // A PREFIX only: enough to correlate two turns that shared an
+                // entry in the trace, never enough to be a lookup handle, and
+                // structurally incapable of carrying the utterance itself.
+                keyDigest: key.digest.slice(0, 12),
+                proposals,
+              },
+              at: new Date(now()).toISOString(),
+            };
+            evictOldest(turnStages);
+            turnStages.set(turnId, stage);
+            const counters = telemetry.snapshot();
+            // The funnel's queryable L1 trace line. An L1 HIT makes zero model
+            // calls, so — exactly like L0 — it writes no turn_trace row and no
+            // llm_wire exchange; this line plus the per-turn conductor `turn`
+            // record (which stamps `funnelTier` from this stage) are where the
+            // tier attribution and the counters live for a zero-call turn.
+            logger.info(
+              {
+                component: "funnel",
+                event: "funnel.tier",
+                turnId,
+                tier: stage.tier,
+                reason: stage.reason,
+                keyVersion: key.keyVersion,
+                keyDigest: stage.detail.keyDigest,
+                ...counters,
+              },
+              "funnel: L1 memoized parse — no extraction call this turn",
+            );
+            return stage;
+          },
+          counters: () => telemetry.snapshot(),
+        };
+
   return {
+    ...(parseMemo ?? {}),
     claim(state: CognitiveState): FunnelStageRecord | undefined {
       const verdict = decideL0({
         text: state.perception.text,

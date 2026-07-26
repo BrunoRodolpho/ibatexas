@@ -288,9 +288,15 @@ import { renderCustomerActionAnswer } from "./claustrum/customer-action-render.j
 // LE2 decision 6: the construction moved to `safe-unknown-gate.ts` so the ops
 // conductor composes the SAME object instead of forking one (D5 dissolved).
 import { createSafeUnknownGate } from "./claustrum/safe-unknown-gate.js";
-// LE2-007 — the parse funnel's L0 tier seam + the per-turn stage store the
-// once-per-turn telemetry stamp reads for tier attribution.
-import { createL0Funnel, funnelStage } from "./claustrum/funnel-tier.js";
+// LE2-007/009 — the parse funnel's tier seams (L0 social short-circuit + L1
+// exact-match parse memoization) + the per-turn stage store the once-per-turn
+// telemetry stamp reads for tier attribution.
+import {
+  createParseFunnel,
+  funnelStage,
+  type FunnelParseMemoSeam,
+} from "./claustrum/funnel-tier.js";
+import { createRedisParseCacheStore } from "./claustrum/parse-memo.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -3196,7 +3202,12 @@ export async function bootstrapClaustrum(
   // The seam is inert until a customer INGRESS publishes the turn's funnel context
   // (routes/chat.ts, routes/whatsapp-webhook.ts) — see funnel-tier.ts's fail-closed
   // `decideL0`.
-  const funnel = createL0Funnel();
+  // LE2-009 — the SAME funnel instance now also carries L1 (exact-match parse
+  // memoization) because a Redis-backed parse cache store is wired. The store is
+  // FAIL-OPEN by contract (parse-memo.ts): an unreachable Redis degrades every
+  // lookup to a miss and every write to a no-op, so the turn path is unchanged
+  // when the cache is down — it just costs a completion again.
+  const funnel = createParseFunnel({ parseCacheStore: createRedisParseCacheStore() });
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -3209,6 +3220,9 @@ export async function bootstrapClaustrum(
       // BKL-027 — activate the one-hop read-tool enrichment loop.
       readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
       funnel,
+      // LE2-009 — the L1 half of the same instance (see IbatexasPlannerDeps.parseMemo
+      // for why the two seams are passed separately rather than as one object).
+      ...(funnel.lookupParse !== undefined ? { parseMemo: funnel as FunnelParseMemoSeam } : {}),
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
