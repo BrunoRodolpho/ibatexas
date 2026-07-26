@@ -117,6 +117,58 @@ describe("OllamaFetchClient — wire body (FE-T01)", () => {
     expect(body.response_format).toBeUndefined();
   });
 
+  it("disables thinking on a tool-less body via reasoning_effort: none (the responder's synthesis calls)", async () => {
+    const fetchMock = mockFetchOk(FAKE_COMPLETION);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OllamaFetchClient({ baseUrl: "http://box:11434/v1" });
+
+    await client.chat.completions.create({
+      model: "nemotron-3-nano:4b",
+      messages: [{ role: "user", content: "oi boa noite" }],
+      temperature: 0,
+    });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.reasoning_effort).toBe("none");
+  });
+
+  it("treats an empty tools array as tool-less: reasoning_effort none, no response_format", async () => {
+    const fetchMock = mockFetchOk(FAKE_COMPLETION);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OllamaFetchClient({ baseUrl: "http://box:11434/v1" });
+
+    await client.chat.completions.create({
+      model: "nemotron-3-nano:4b",
+      messages: [{ role: "user", content: "oi" }],
+      tools: [],
+      temperature: 0,
+    });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.reasoning_effort).toBe("none");
+    expect(body.response_format).toBeUndefined();
+  });
+
+  it("does NOT add reasoning_effort to a tool-bearing body (the planner keeps thinking)", async () => {
+    const fetchMock = mockFetchOk(FAKE_COMPLETION);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OllamaFetchClient({ baseUrl: "http://box:11434/v1" });
+
+    await client.chat.completions.create({
+      model: "nemotron-3-nano:4b",
+      messages: [{ role: "user", content: "refund cha-1" }],
+      tools: [EXPRESS_INTENT_TOOL],
+      temperature: 0,
+    });
+
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(body.response_format).toEqual({ type: "json_object" });
+  });
+
   it("still pins the served model override alongside the new fields (pre-existing behavior preserved)", async () => {
     const fetchMock = mockFetchOk(FAKE_COMPLETION);
     vi.stubGlobal("fetch", fetchMock);

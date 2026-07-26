@@ -1,0 +1,51 @@
+{
+  "fixture": "external-references.external-reference-consumer-dangling",
+  "targets": "external-references/external-reference-consumer-dangling",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 1,
+  "rulesEmitted": [
+    "external-references/external-reference-consumer-dangling"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 19,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 2,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "external-references",
+      "rule": "external-reference-consumer-dangling",
+      "severity": "error",
+      "object": "external-reference:promotion.conformance",
+      "field": "declaredBy[0].capability",
+      "message": "\"order.coupon.renamed-away\" is not a capability kind this catalog defines. A consumer names either a real capability or null (for a site that is not a capability at all — a subscriber, a session helper). A stale kind here means a renamed capability left the declaration pointing at nothing, and the boot refusal would send an operator to a symbol that no longer exists.",
+      "reference": "order.coupon.renamed-away"
+    }
+  ],
+  "formatted": [
+    "external-references/external-reference-consumer-dangling: external-reference:promotion.conformance · declaredBy[0].capability — \"order.coupon.renamed-away\" is not a capability kind this catalog defines. A consumer names either a real capability or null (for a site that is not a capability at all — a subscriber, a session helper). A stale kind here means a renamed capability left the declaration pointing at nothing, and the boot refusal would send an operator to a symbol that no longer exists."
+  ]
+}

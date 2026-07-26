@@ -65,6 +65,23 @@ export interface TurnTraceRecord {
   /** ISO timestamp (the LLMTrace.at). */
   readonly recordedAt: string;
   readonly schemaVersion?: number;
+  /**
+   * LE2-014 — the `@ibatexas/catalog` `CATALOG_VERSION` this turn ran under
+   * (the replay enabler: with the prompt manifest and the durable wire
+   * capture, a historical turn is re-runnable against exactly the catalog it
+   * saw).
+   *
+   * Stamped ONCE PER TURN at the flush seam (`flushTurnTraces` in
+   * `claustrum-bootstrap.ts`) and repeated onto every row the turn writes —
+   * the same shape `conversationId` already has, and the only shape available:
+   * `turn_trace` is one row per model call with no per-turn root row.
+   *
+   * Optional, exactly like `schemaVersion`: a row written by a path that does
+   * not resolve a catalog (or by an older writer) is NULL, never a fabricated
+   * version. A wrong version is worse than an absent one — it would send a
+   * replay at the wrong catalog.
+   */
+  readonly catalogVersion?: number;
 }
 
 const TURN_TRACE_DDL = `
@@ -83,8 +100,17 @@ const TURN_TRACE_DDL = `
     duration_ms     INTEGER NOT NULL,
     recorded_at     TIMESTAMPTZ NOT NULL,
     schema_version  INTEGER,
+    catalog_version INTEGER,
     UNIQUE (turn_id, call_index)
   );
+  -- LE2-014: CREATE TABLE IF NOT EXISTS does NOT alter an existing table, so
+  -- every database provisioned before this column existed would silently never
+  -- get it — and the NULL would look like a writer bug rather than a missing
+  -- migration. This ALTER is the idempotent catch-up. Additive and nullable, so
+  -- the adjudicate console's generic reads (createPostgresTurnTraceStore, whose
+  -- canonical migration is 011-create-turn-trace.sql in @adjudicate/audit-
+  -- postgres) are unaffected: it selects named columns and never SELECT *.
+  ALTER TABLE turn_trace ADD COLUMN IF NOT EXISTS catalog_version INTEGER;
   CREATE INDEX IF NOT EXISTS turn_trace_conversation_idx ON turn_trace(conversation_id, recorded_at DESC);
   CREATE INDEX IF NOT EXISTS turn_trace_turn_idx ON turn_trace(turn_id, call_index);
   CREATE INDEX IF NOT EXISTS turn_trace_recorded_idx ON turn_trace(recorded_at);
@@ -142,11 +168,17 @@ export function createTurnTraceWriter(
     async write(record) {
       try {
         await pool.query(
+          // LE2-014: catalog_version is APPENDED LAST, both in the column list
+          // and in the params array. The positional contract matters — the
+          // redaction proof in `__tests__/turn-trace.test.ts` asserts on
+          // `params[9]` being the completion. Insert a column mid-list and that
+          // proof silently starts checking the wrong value.
           `INSERT INTO turn_trace
              (turn_id, call_index, conversation_id, intent_hash, model,
               temperature, input_tokens, output_tokens, prompt_manifest,
-              completion, duration_ms, recorded_at, schema_version)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13)
+              completion, duration_ms, recorded_at, schema_version,
+              catalog_version)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)
            ON CONFLICT (turn_id, call_index) DO UPDATE SET
              completion = EXCLUDED.completion,
              prompt_manifest = EXCLUDED.prompt_manifest,
@@ -166,6 +198,7 @@ export function createTurnTraceWriter(
             record.durationMs,
             record.recordedAt,
             record.schemaVersion ?? null,
+            record.catalogVersion ?? null,
           ],
         );
       } catch (err) {

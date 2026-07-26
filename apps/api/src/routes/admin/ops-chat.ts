@@ -32,6 +32,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import { beginWireTurn } from "../../claustrum/wire-capture.js";
 import { requireStaff } from "../../middleware/staff-auth.js";
 import { getOpsConductorFactory } from "../../claustrum-bootstrap.js";
 import {
@@ -283,7 +284,7 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
           }
         }
 
-        const turn = await handleTurn(capsule, inbound);
+        const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
         // Persist the assistant reply AFTER a successful turn (best-effort).
         try {
           await appendOpsMessages(staffId, [

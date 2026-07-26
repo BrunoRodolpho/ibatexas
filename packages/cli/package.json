@@ -22,6 +22,7 @@
     "@adjudicate/core": "^1.6.0",
     "@adjudicate/runtime": "^0.3.0",
     "@ibatexas/agents": "workspace:*",
+    "@ibatexas/catalog": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/intent-kinds": "workspace:*",
     "@ibatexas/journeys": "workspace:*",

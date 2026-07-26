@@ -203,7 +203,17 @@ coverage, QA viewer build+test, scripted-pipeline suite, full pnpm test — all 
   fails); reconcile PI-lookup gained an orderId fallback (adopts the order's single ACTIVE payment via
   the SUT's own metadata.medusaOrderId stamp; never adopts a payment carrying a different PI). Worker
   gate re-keyed to prod-parity (NODE_ENV test gating stranded jobs — same class as D-014 item 3).
-  Remaining recorded gap: webhook PIX leg passes FORMATTED IBX-#### ids (vs cash flow's raw ids).
+  Recorded gap **CLOSED (BKL-230)**: the webhook PIX leg passed FORMATTED IBX-#### ids (vs cash flow's
+  raw ids). It was not cosmetic — `capturePayment`'s `GET /admin/orders/IBX-0230` 404'd, the throw hit
+  the capture-leg isolation catch above, `result` stayed null and the "already processed" early return
+  fired BEFORE the `order.placed` publish, so PIX orders were completed but never announced (cash was,
+  keeping `rawOrderId` for NATS and formatting only the user-facing string). The leg now returns
+  `completion.order?.id` and the raw id flows to `capturePayment`, the `metadata.medusaOrderId` stamped
+  back onto the PaymentIntent (which later webhook legs read), the reconcile fallback lookup, the
+  `order.placed` payload and `markPixPaid`; nothing on this leg is user-facing, so `formatOrderId` is
+  gone from the route entirely. Pinned by the BKL-230 suite in `stripe-webhook-route.test.ts`, whose
+  id-strict `capturePayment` test reproduces the 404 → swallow → no-publish chain (the older PIX suites
+  stubbed `capturePayment` to `null`, which masked it).
 - **EIGHTH SUT bug class — chat-plane PIX checkout, CLOSED (BKL-230)**: `createCheckout`'s PIX branch
   (create-checkout.ts:598-605) requires `extra.customerName || extra.customerEmail` because Stripe's PIX
   confirm needs a payer, and the conversational tool-pack executor passed no third argument at all — so

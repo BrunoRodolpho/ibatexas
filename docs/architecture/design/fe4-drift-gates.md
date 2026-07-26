@@ -1,7 +1,9 @@
 # FE-4 drift-gate classification (FE-4.3 / FE-T25 / FE-T26 CONTRACT)
 
-FE-4's consolidation (`~/projects/IBX_LANGUAGE_ENGINE_SPEC.md` §"FE-4 — Capability
-metadata consolidation") replaces ~16 hand-maintained lists with generators derived
+FE-4's consolidation (originally specified in `IBX_LANGUAGE_ENGINE_SPEC.md` §"FE-4 —
+Capability metadata consolidation" — that spec doc was lost from disk 2026-07-21 and is
+not reconstituted; surviving authority = the FE rows in `~/projects/ibx-master-tracker.yaml`
+plus this file, per the tracker's header note) replaces ~16 hand-maintained lists with generators derived
 from a single `CapabilityDefinition` registry
 (`packages/packs-composed/src/capability-definitions/`). FE-T19 through FE-T24
 authored and freshness-gated those generators alongside the hand lists they mirror

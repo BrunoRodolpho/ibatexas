@@ -49,6 +49,7 @@ import {
   noopGroundingProvider,
 } from "../../claustrum/noop-memory-grounding.js";
 import { composeOpsConductor } from "../ops-conductor.js";
+import { createIbatexasPromptComposer } from "../../claustrum/prompts/ibatexas-prompts.js";
 import { createOpsToolRegistry } from "../ops-tool-registry.js";
 import { createOpsResolver } from "../ops-resolver.js";
 import type { OrderCandidate } from "../ops-order-resolution.js";
@@ -1709,5 +1710,132 @@ describe("ops conductor — menu.special.set reachable end-to-end (SCN-114)", ()
     // The unparseable price is DROPPED (not written as a wrong number); the verb
     // still parks for confirmation (which shows "sem desconto").
     expect(out.kind).toBe("REQUEST_CONFIRMATION");
+  });
+});
+
+// ── Wire Truth — ops REFUSE conversational recovery + truthful trace manifests ──
+//
+// Spec: ~/projects/IBX_WIRE_TRUTH_SPEC.md. A kernel-refused PROPOSED command
+// (the BKL-233 misparse class) synthesizes a reply to the operator's actual
+// message; a success-claiming or empty draft clamps back to the deterministic
+// refusal line; and every ops model call names its persona in the trace
+// manifest (single catalog tag) instead of emitting `[]` (the workbench's
+// `persona ?`).
+
+describe("ops conductor — Wire Truth: REFUSE recovery + trace manifests", () => {
+  it("a kernel-refused command (BUSINESS_RULE) synthesizes a reply to the operator's message", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: {} }));
+    const recovery = "Não encontrei esse produto no cardápio. Quer conferir o nome?";
+    const { model } = scriptedModel([AVAIL_CALL], recovery);
+    // No matching product → product_not_found (BUSINESS_RULE) — the recovery class.
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "tira o X do cardápio");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.kind).toBe("BUSINESS_RULE");
+      expect(out.response).toBe(recovery);
+      expect(out.response).not.toBe(out.refusal.userFacing);
+    }
+    // The refused executor still NEVER runs — recovery is prose, not action.
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
+  });
+
+  it("a success-claiming recovery draft ('Feito.') clamps back to the deterministic refusal line", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: {} }));
+    // scriptedModel's default responder text is "Feito." — a generic completion
+    // claim on a turn where NOTHING executed. The never-claim-success posture
+    // must fall back to the canned refusal.
+    const { model } = scriptedModel([AVAIL_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "tira o X do cardápio");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.response).toBe(out.refusal.userFacing);
+    }
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
+  });
+
+  it("an AUTH refusal (role-opaque) is NEVER model-paraphrased — verbatim line, no recovery call", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: {} }));
+    const { model, complete } = scriptedModel(
+      [AVAIL_CALL],
+      "Uma paráfrase que nunca deve aparecer.",
+    );
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: { id: "prod_1", status: "published" },
+    });
+    const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "tira o X do cardápio");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("staff_role_violation");
+      expect(out.response).toBe(out.refusal.userFacing);
+    }
+    // Exactly ONE model call (the planner) — no recovery synthesis ran.
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
+  });
+
+  it("ops planner + responder traces carry single-tag persona manifests (never [])", async () => {
+    const manifests: Array<ReadonlyArray<string>> = [];
+    const telemetry: TelemetryPort = {
+      emitTurn: async () => {},
+      emitMemoryAccess: async () => {},
+      emitLLMTrace: async (trace) => {
+        manifests.push((trace as { promptManifest: ReadonlyArray<string> }).promptManifest);
+      },
+    };
+    // Small talk: the planner answers with prose (no tool call — a NON-empty
+    // completion, so repair-or-refuse stays quiet) → empty plan → the
+    // conversational responder. Both calls run on injected ops personas.
+    const complete = vi.fn(async (req: CompletionRequest): Promise<Completion> => {
+      const isPlanner = (req.tools?.length ?? 0) > 0;
+      return {
+        model: "mock",
+        stopReason: "end_turn",
+        text: isPlanner ? "Saudação — nenhuma ação a propor." : "Oi! Como posso ajudar?",
+        toolCalls: [],
+        inputTokens: 5,
+        outputTokens: 4,
+      };
+    });
+    const model: ModelProvider = {
+      complete,
+      stream: () => {
+        throw new Error("stream unused");
+      },
+      embed: async () => {
+        throw new Error("embed unused");
+      },
+    };
+    const base = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(async (_args: unknown) => ({ product: {} })),
+      writeAdjudicatedNote: vi.fn(),
+      product: { id: "prod_1", status: "published" },
+    });
+    const deps = {
+      ...base,
+      telemetry,
+      promptComposer: createIbatexasPromptComposer(),
+    } as unknown as ReturnType<typeof buildDeps>;
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "oi");
+    expect(out.response).toBe("Oi! Como posso ajudar?");
+    expect(manifests.length).toBeGreaterThanOrEqual(2);
+    expect(manifests[0]).toEqual(["ops/planner.persona"]);
+    expect(manifests[manifests.length - 1]).toEqual(["ops/responder.persona"]);
+    for (const m of manifests) expect(m).not.toEqual([]);
   });
 });
