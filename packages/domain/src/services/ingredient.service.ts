@@ -18,6 +18,8 @@
 // update / remove / adjustStock are ROW-OR-NULL (mirror staff-schedule's
 // deleteShift / stampClock): a findUnique existence check, then updateMany /
 // deleteMany, so a missing id is `null` (the route 404s) rather than a P2025 throw.
+// `null` also covers the row VANISHING between those two statements — the mutating
+// paths honor updateMany's `{count}` (BKL-265).
 
 import { prisma } from "../client.js"
 // TYPE-ONLY import (erased at runtime) — safe in this index-eagerly-loaded service;
@@ -77,6 +79,13 @@ export function createIngredientService() {
    * (mirrors staff-schedule's stampClock). Merges the patch onto the loaded row
    * for the return (same idiom as deleteShift/stampClock — the return reflects the
    * write without a second round-trip).
+   *
+   * BKL-265 — the WRITE's `count` is authoritative, not the read's. A row deleted
+   * between the findUnique and the updateMany matches nothing, and the merged
+   * object would then report a stock level no row carries (depleteStock's caller
+   * warns off `shortfallMilli`). `count === 0` is therefore `null`, same as a
+   * missing id. The model carries `@updatedAt`, so Prisma always writes a column
+   * and an empty patch still counts the matched row.
    */
   async function mutateOrNull(
     id: string,
@@ -85,7 +94,8 @@ export function createIngredientService() {
     const existing = await prisma.ingredient.findUnique({ where: { id } })
     if (!existing) return null
     const patch = compute(existing)
-    await prisma.ingredient.updateMany({ where: { id }, data: patch })
+    const { count } = await prisma.ingredient.updateMany({ where: { id }, data: patch })
+    if (count === 0) return null
     return { ...existing, ...patch }
   }
 
@@ -107,7 +117,8 @@ export function createIngredientService() {
     /**
      * Patch an existing ingredient. Only the DEFINED fields of `patch` are written
      * (an omitted field is left untouched — never overwritten with a default).
-     * Row-or-null: returns `null` when no ingredient with that id exists.
+     * Row-or-null: returns `null` when no ingredient with that id exists, or when
+     * the row vanished before the write landed (BKL-265).
      */
     async update(id: string, patch: UpdateIngredientPatch) {
       // Strip undefined so an omitted field is left untouched (not nulled).
@@ -147,7 +158,8 @@ export function createIngredientService() {
     /**
      * Add (or subtract, with a negative delta) `deltaMilli` milli-units of stock.
      * CLAMPED at 0 — stock never goes negative. Row-or-null: returns `null` when no
-     * ingredient with that id exists. Integer arithmetic — precise.
+     * ingredient with that id exists, or when the row vanished before the write
+     * landed (BKL-265). Integer arithmetic — precise.
      */
     async adjustStock(id: string, deltaMilli: number) {
       return mutateOrNull(id, (existing) => ({
@@ -167,8 +179,10 @@ export function createIngredientService() {
      *     — how much MORE was needed than on hand (0 when covered; `> 0` = the
      *     write clamped, i.e. stock went below what the order required).
      * Row-or-null: `null` when no ingredient with that id exists (mirrors
-     * adjustStock's existence check). Integer arithmetic — precise. Returns the
-     * clamped row merged with `shortfallMilli`, or `null`.
+     * adjustStock's existence check) or when the row vanished before the write
+     * landed (BKL-265) — in both cases NOTHING was depleted, so no `shortfallMilli`
+     * is reported. Integer arithmetic — precise. Returns the clamped row merged with
+     * `shortfallMilli`, or `null`.
      */
     async depleteStock(id: string, amountMilli: number): Promise<DepleteStockResult | null> {
       let shortfallMilli = 0
