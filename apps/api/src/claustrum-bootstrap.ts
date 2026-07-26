@@ -146,7 +146,11 @@ import {
   type ApprovedCancelActivePayment,
   type ApprovedCancelOrder,
 } from "./escalation/approved-cancel-executor.js";
-import { settleApprovedInnerRefund } from "./escalation/approved-inner-refund.js";
+import {
+  createInnerRefundPaymentStateProjector,
+  createRefundPolicyResolver,
+  settleApprovedInnerRefund,
+} from "./escalation/approved-inner-refund.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
@@ -3552,31 +3556,13 @@ export async function bootstrapClaustrum(
         settleInnerRefund: (args) =>
           settleApprovedInnerRefund(
             {
-              projectPaymentState: async (paymentId) => {
-                const p = await createPaymentQueryService().getById(paymentId);
-                return buildOpsRefundResumeState(
-                  p === null
-                    ? null
-                    : {
-                        status: p.status,
-                        amountInCentavos: p.amountInCentavos,
-                        refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
-                        method: p.method,
-                        version: p.version,
-                        orderId: p.orderId,
-                      },
-                  process.env.KERNEL_TENANT_ID ?? "ibatexas",
-                );
-              },
-              policyForRefund: () => {
-                const policy = policyForKind("payment.refund.issue");
-                if (policy === null) {
-                  throw new Error(
-                    "escalation approval: no installed pack owns \"payment.refund.issue\"",
-                  );
-                }
-                return policy;
-              },
+              projectPaymentState: createInnerRefundPaymentStateProjector({
+                getPayment: (paymentId) =>
+                  createPaymentQueryService().getById(paymentId),
+                buildRefundState: buildOpsRefundResumeState,
+                tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
+              }),
+              policyForRefund: createRefundPolicyResolver(policyForKind),
               adjudicate: async ({ envelope, state, policy, receipt }) =>
                 (
                   await adjudicateAndAudit(envelope, state as never, policy as never, {

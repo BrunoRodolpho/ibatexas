@@ -117,6 +117,80 @@ export interface ApprovedInnerRefundResult {
   readonly intentHash?: string;
 }
 
+/**
+ * The live payment row shape the inner-refund projector maps from.
+ */
+export interface InnerRefundPaymentRow {
+  readonly status: string;
+  readonly amountInCentavos: number;
+  readonly refundedAmountCentavos?: number | null;
+  readonly method: string;
+  readonly version: number;
+  readonly orderId?: string | null;
+}
+
+/**
+ * Build the `projectPaymentState` dep from a live payment reader.
+ *
+ * Extracted out of the composition root deliberately: it is the mapping that decides
+ * what the kernel SEES about the money, so it belongs somewhere a test can drive it.
+ * A missing row projects `null` into `buildOpsRefundResumeState`, which yields a
+ * `{ ctx: { exists: false } }` state ⇒ the kernel REFUSEs (fail-closed).
+ */
+export function createInnerRefundPaymentStateProjector(deps: {
+  readonly getPayment: (paymentId: string) => Promise<InnerRefundPaymentRow | null>;
+  readonly buildRefundState: (
+    payment: {
+      status: string;
+      amountInCentavos: number;
+      refundedAmountCentavos: number;
+      method: string;
+      version: number;
+      orderId?: string | null;
+    } | null,
+    tenantId: string,
+  ) => unknown;
+  readonly tenantId: string;
+}): (paymentId: string) => Promise<unknown> {
+  return async (paymentId) => {
+    const p = await deps.getPayment(paymentId);
+    return deps.buildRefundState(
+      p === null
+        ? null
+        : {
+            status: p.status,
+            amountInCentavos: p.amountInCentavos,
+            // A null/absent refunded total means NOTHING refunded yet — never
+            // silently treated as the full amount.
+            refundedAmountCentavos: p.refundedAmountCentavos ?? 0,
+            method: p.method,
+            version: p.version,
+            orderId: p.orderId ?? null,
+          },
+      deps.tenantId,
+    );
+  };
+}
+
+/**
+ * Resolve the COMPOSED refund PolicyBundle, failing LOUDLY when no installed pack
+ * owns the kind — an unowned kind would otherwise adjudicate against `undefined` and
+ * the failure would surface far from its cause.
+ */
+export function createRefundPolicyResolver(
+  policyForKind: (kind: string) => unknown | null,
+): () => unknown {
+  return () => {
+    const policy = policyForKind("payment.refund.issue");
+    if (policy === null || policy === undefined) {
+      throw new Error(
+        'escalation approval: no installed pack owns kind "payment.refund.issue"',
+      );
+    }
+    return policy;
+  };
+}
+
 /** TRUE iff the decision carries the escalate-band marker branch's OWN basis. */
 export function refundExecuteReachedViaMarker(decision: Decision): boolean {
   return decision.basis.some(

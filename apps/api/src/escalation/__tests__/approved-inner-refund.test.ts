@@ -15,6 +15,8 @@ import type { AuditRecord, Decision, IntentEnvelope } from "@adjudicate/core";
 import {
   settleApprovedInnerRefund,
   refundExecuteReachedViaMarker,
+  createInnerRefundPaymentStateProjector,
+  createRefundPolicyResolver,
   REFUND_ESCALATION_APPROVED_BASIS,
   type ApprovedInnerRefundDeps,
 } from "../approved-inner-refund.js";
@@ -227,5 +229,103 @@ describe("BKL-103 — settleApprovedInnerRefund", () => {
     // suppresses the duplicate in production.
     expect(seen[0]!.nonce).toBe(seen[1]!.nonce);
     expect(seen[0]!.intentHash).toBe(seen[1]!.intentHash);
+  });
+});
+
+// ── The production wiring helpers (extracted OUT of the composition root so they
+//    are drivable here rather than only reachable via a booted process) ──────────
+
+describe("BKL-103 — createInnerRefundPaymentStateProjector", () => {
+  it("maps a live payment row into the refund state, defaulting a null refunded total to ZERO", async () => {
+    const seen: unknown[] = [];
+    const project = createInnerRefundPaymentStateProjector({
+      getPayment: async () => ({
+        status: "paid",
+        amountInCentavos: BIG,
+        // A null refunded total must read as NOTHING refunded — never as the full
+        // amount, which would silently make the refundable balance zero.
+        refundedAmountCentavos: null,
+        method: "pix",
+        version: 3,
+        orderId: ORDER_ID,
+      }),
+      buildRefundState: (p, tenantId) => {
+        seen.push({ p, tenantId });
+        return { ctx: { exists: p !== null } };
+      },
+      tenantId: "ibatexas",
+    });
+
+    await project(PAYMENT_ID);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      tenantId: "ibatexas",
+      p: {
+        status: "paid",
+        amountInCentavos: BIG,
+        refundedAmountCentavos: 0,
+        method: "pix",
+        version: 3,
+        orderId: ORDER_ID,
+      },
+    });
+  });
+
+  it("projects NULL for a vanished payment — the kernel then REFUSEs (fail-closed)", async () => {
+    const project = createInnerRefundPaymentStateProjector({
+      getPayment: async () => null,
+      buildRefundState: (p) => ({ ctx: { exists: p !== null } }),
+      tenantId: "ibatexas",
+    });
+    expect(await project(PAYMENT_ID)).toEqual({ ctx: { exists: false } });
+  });
+
+  it("is wired to the REAL projector: a live paid row yields a refundable state, a disputed one does not", async () => {
+    const paid = createInnerRefundPaymentStateProjector({
+      getPayment: async () => ({
+        status: "paid",
+        amountInCentavos: BIG,
+        refundedAmountCentavos: 0,
+        method: "pix",
+        version: 3,
+        orderId: ORDER_ID,
+      }),
+      buildRefundState: buildOpsRefundResumeState,
+      tenantId: "ibatexas",
+    });
+    expect(await paid(PAYMENT_ID)).not.toEqual({ ctx: { exists: false } });
+
+    const disputed = createInnerRefundPaymentStateProjector({
+      getPayment: async () => ({
+        status: "disputed",
+        amountInCentavos: BIG,
+        refundedAmountCentavos: 0,
+        method: "pix",
+        version: 3,
+        orderId: ORDER_ID,
+      }),
+      buildRefundState: buildOpsRefundResumeState,
+      tenantId: "ibatexas",
+    });
+    // OPS_REFUNDABLE_STATUSES excludes `disputed` ⇒ no refund on a chargeback.
+    expect(await disputed(PAYMENT_ID)).toEqual({ ctx: { exists: false } });
+  });
+});
+
+describe("BKL-103 — createRefundPolicyResolver", () => {
+  it("returns the composed refund bundle", () => {
+    const resolve = createRefundPolicyResolver((kind) =>
+      kind === "payment.refund.issue" ? OPS_ROUTER : null,
+    );
+    expect(resolve()).toBe(OPS_ROUTER);
+  });
+
+  it("THROWS LOUDLY when no installed pack owns the kind (never adjudicates against undefined)", () => {
+    expect(() => createRefundPolicyResolver(() => null)()).toThrow(
+      /no installed pack owns kind "payment.refund.issue"/,
+    );
+    expect(() => createRefundPolicyResolver(() => undefined)()).toThrow(
+      /no installed pack owns/,
+    );
   });
 });
