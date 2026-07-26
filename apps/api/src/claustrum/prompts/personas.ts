@@ -59,6 +59,45 @@ export const PLANNER_PERSONA = [
 ].join("\n");
 
 /**
+ * BKL-234 — the SCHEDULE-cluster mapping lines, shared VERBATIM by the customer and
+ * ops claim-planner personas (the schedule scope is identical on both planes, so a
+ * copy in each persona would be two things to keep in sync — this is one).
+ *
+ * Both schedule lines instruct the 4B to propose the PAIR (hours + open-now). That
+ * is load-bearing, not a nicety, and it is what makes a bare hours question
+ * answerable at all:
+ *
+ *   · §O#15 REQUIRES STORE_OPEN_NOW on any turn the STORE_OPEN_NOW_Q span fires, and
+ *     its generated markers (/abert|fechad|que horas|funciona|hor[áa]rio/) fire on
+ *     every hours phrasing. A turn that proposed ONLY STORE_HOURS therefore had a
+ *     required-but-ABSENT companion, so the completeness gate DEGRADED the turn to
+ *     the safe-unknown copy — discarding an hours claim that had already VALIDATED
+ *     against the first-party read. Naming both in the mapping is what satisfies the
+ *     closure deterministically.
+ *   · STORE_HOURS deliberately stays OUT of `REQUIRED_CLAIM_CLOSURE` (BKL-121 D3):
+ *     it has honest holiday/override falsifiers, so on an exception day it demotes to
+ *     UNKNOWN. Requiring it would couple it to STORE_OPEN_NOW's completeness and lose
+ *     the open-now answer on exactly those days. Proposing it additively keeps D3's
+ *     posture — the §D filter drops the UNKNOWN member and the open-now fact still
+ *     renders.
+ *
+ * Co-rendering the pair is SOUND because they are complementary attribute
+ * projections of ONE schedule read; `SCHEDULE_CLUSTER_COMPATIBLE`
+ * (ibatexas-claims-kernel-deps.ts) declares the pairs so P2 admits the co-render
+ * instead of §O#1 default-denying it into an ESCALATE.
+ */
+const SCHEDULE_CLAIM_MAPPING_LINES: readonly string[] = [
+  "- está aberto/fechado agora, que horas funciona agora => STORE_OPEN_NOW (proponha",
+  "  TAMBÉM STORE_HOURS — o sistema responde o período atual e a agenda de hoje juntos)",
+  "- horário de funcionamento hoje, qual o horário de funcionamento, que horas abre ou",
+  "  fecha, até que horas fica aberto => STORE_HOURS (proponha TAMBÉM STORE_OPEN_NOW —",
+  "  o sistema responde a agenda de hoje e o período atual juntos)",
+  "- horário de um DIA específico (ex.: domingo, amanhã, no feriado) => STORE_HOURS_FOR_DATE,",
+  "  e o `subject` deve ser a DATA no formato ISO AAAA-MM-DD (ex.: 2026-07-12); se não",
+  "  souber a data exata, use o nome do dia — o sistema resolve a data da fonte primária.",
+];
+
+/**
  * CLAIM-planner persona (Track A on 4B — tag-then-derive STEP 1). The
  * `proposeClaims` (Q6b) path is a DIFFERENT job from intent extraction: the model
  * SELECTS a claim TYPE from the registry enum that matches the customer's
@@ -79,11 +118,7 @@ export const CLAIM_PLANNER_PERSONA = [
   "`subject` (a chave do recurso/assunto, ex.: o id do pedido, ou \"loja\").",
   "",
   "Guia de mapeamento:",
-  "- está aberto/fechado agora, que horas funciona agora => STORE_OPEN_NOW",
-  "- horário de funcionamento hoje (a agenda de hoje) => STORE_HOURS",
-  "- horário de um DIA específico (ex.: domingo, amanhã, no feriado) => STORE_HOURS_FOR_DATE,",
-  "  e o `subject` deve ser a DATA no formato ISO AAAA-MM-DD (ex.: 2026-07-12); se não",
-  "  souber a data exata, use o nome do dia — o sistema resolve a data da fonte primária.",
+  ...SCHEDULE_CLAIM_MAPPING_LINES,
   "- alérgenos/ingredientes de um item => MENU_ITEM_ALLERGENS",
   "- quanto custa / qual o preço de um item do cardápio, e o `subject` é o item => MENU_ITEM_PRICE",
   "- o que vem/acompanha um item, do que é feito, composição do prato => MENU_ITEM_CONTENTS",
@@ -142,11 +177,7 @@ export const OPS_CLAIM_PLANNER_PERSONA = [
   "- quais/quantas reservas hoje, reservas do dia => OPS_RESERVATIONS_TODAY",
   "",
   "Guia de mapeamento (loja e cardápio):",
-  "- está aberto/fechado agora, que horas funciona agora => STORE_OPEN_NOW",
-  "- horário de funcionamento hoje (a agenda de hoje) => STORE_HOURS",
-  "- horário de um DIA específico (ex.: domingo, amanhã, no feriado) => STORE_HOURS_FOR_DATE,",
-  "  e o `subject` deve ser a DATA no formato ISO AAAA-MM-DD (ex.: 2026-07-12); se não",
-  "  souber a data exata, use o nome do dia — o sistema resolve a data da fonte primária.",
+  ...SCHEDULE_CLAIM_MAPPING_LINES,
   "- o que tem no cardápio / quais os pratos (o cardápio INTEIRO) => MENU_OVERVIEW",
   "- quanto custa / qual o preço de um item do cardápio, e o `subject` é o item => MENU_ITEM_PRICE",
   "- o que vem/acompanha um item, do que é feito => MENU_ITEM_CONTENTS",
