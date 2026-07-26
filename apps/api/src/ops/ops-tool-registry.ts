@@ -37,16 +37,18 @@
 //     `payment.status_changed` (the SAME event the admin refund route publishes —
 //     drives auto-cancel-on-full-refund) + an `ops.refund.executed` audit event.
 //     riskLevel "high".
-//   - ops.alert.resolve.staff → `opsAlertSvc.resolveAlertFromEnvelope` (BKL-088;
-//     the D10 SECOND governed layer). The executor BUILDS a SYSTEM
-//     `ops.alert.resolve` envelope (staff identity on the payload: `resolvedBy:
-//     "staff:<id>"`, `resolutionType: STAFF`, FORCED from the Capsule) and calls
-//     the SAME service the admin ops-alerts resolve route calls (which
-//     adjudicates + audits that SYSTEM kind internally). No route-layer NATS/
-//     event-log side effect exists to reproduce. riskLevel "low".
-//   - incident.ticket.close.staff → `incidentSvc.closeIncidentFromEnvelope`
-//     (BKL-088; same D10 posture over the SYSTEM `incident.ticket.close` kind,
-//     the admin incidents resolve route's path). riskLevel "low".
+//   - ops.alert.resolve.staff → `opsAlertSvc.writeAdjudicatedAlertResolve`
+//     (BKL-088; the POST-adjudication write). Staff identity is FORCED from the
+//     Capsule onto the payload (`resolvedBy: "staff:<id>"`, `resolutionType:
+//     STAFF`). The composed router already produced the Decision at SUBMIT; this
+//     executor performs NO adjudication. No route-layer NATS/event-log side
+//     effect exists to reproduce. riskLevel "low". BKL-260 — it USED to build a
+//     SYSTEM `ops.alert.resolve` envelope and adjudicate it a second time via
+//     `resolveAlertFromEnvelope`; see that executor's doc for why that inner run
+//     was a strictly weaker duplicate decision.
+//   - incident.ticket.close.staff → `incidentSvc.writeAdjudicatedIncidentClose`
+//     (BKL-088/BKL-260; same posture over the incident row, the admin incidents
+//     resolve route's write). riskLevel "low".
 //   - schedule.override.set → `scheduleSvc.upsertOverride` (SCN-127; the SAME
 //     domain-service call the admin schedule override route uses — NO Medusa
 //     egress, NO second adjudication). The resolver already stamped a concrete
@@ -61,7 +63,6 @@
 // context); the injected side-effect deps make it unit-testable with spies.
 
 import { randomUUID } from "node:crypto";
-import type { IntentEnvelope } from "@adjudicate/core";
 import {
   createToolRegistry,
   type CapabilityId,
@@ -74,9 +75,7 @@ import type { MedusaAdjudicatedArgs } from "@ibatexas/tools";
 import type {
   AddNoteResult,
   IncidentClosePayload,
-  IncidentState,
   OpsAlertResolvePayload,
-  OpsAlertState,
   PaymentRefundIssuePayload,
 } from "@ibatexas/domain";
 import type {
@@ -91,7 +90,6 @@ import type {
   ProductPriceSetPayload,
   ScheduleOverrideSetPayload,
 } from "@ibatexas/pack-ops";
-import { buildSystemEnvelope } from "../subscribers/__shared__/system-actor-envelope.js";
 import type {
   OrderFulfillmentStatus,
   OrderStatusChangedEvent,
@@ -185,30 +183,39 @@ export interface OpsRefundEventLogEntry {
 }
 
 /**
- * BKL-088 — the SYSTEM-write layer the `ops.alert.resolve.staff` executor
- * drives (the D10 second governed layer). Structural subset of `OpsAlertService`
- * — the SAME method the admin ops-alerts resolve route calls. It adjudicates a
- * SYSTEM `ops.alert.resolve` envelope internally (`withAdjudicate`), so the
- * executor performs NO adjudication of the SYSTEM kind itself; it only BUILDS
- * the SYSTEM envelope (staff identity on the payload) and calls this.
+ * BKL-088/BKL-260 — the POST-adjudication alert-resolve write the
+ * `ops.alert.resolve.staff` executor drives. Structural subset of
+ * `OpsAlertService.writeAdjudicatedAlertResolve`, which performs NO adjudication:
+ * the composed ops router already produced the Decision at SUBMIT.
+ *
+ * BKL-260 — this used to be `resolveAlertFromEnvelope`, and the executor BUILT a
+ * SYSTEM `ops.alert.resolve` envelope for it. That was a SECOND kernel decision
+ * for one staff action (the BKL-232/242/243 class on the ops plane), and a
+ * strictly weaker one — see the domain method's doc for the guard-subset proof.
+ * The self-adjudicating `*FromEnvelope` entry point stays for the admin resolve
+ * route and the watchdog jobs, which have no decision behind them.
+ *
+ * Returns the current alert row, or `null` when the id does not exist — the
+ * committed-shape signal the ops action render gates its success line on
+ * (BKL-239/240, PR #412).
  */
 export interface OpsAlertResolveWriter {
-  resolveAlertFromEnvelope(
-    envelope: IntentEnvelope<"ops.alert.resolve", OpsAlertResolvePayload>,
-    state: OpsAlertState,
-  ): Promise<{ readonly result?: { readonly status: string } | null }>;
+  writeAdjudicatedAlertResolve(
+    payload: OpsAlertResolvePayload,
+  ): Promise<{ readonly status: string } | null>;
 }
 
 /**
- * BKL-088 — the SYSTEM-write layer the `incident.ticket.close.staff` executor
- * drives. Structural subset of `IncidentService.closeIncidentFromEnvelope` (the
- * SAME method the admin incidents resolve route calls).
+ * BKL-088/BKL-260 — the POST-adjudication incident-close write the
+ * `incident.ticket.close.staff` executor drives. Structural subset of
+ * `IncidentService.writeAdjudicatedIncidentClose`; same posture as
+ * {@link OpsAlertResolveWriter}, including the `null`-when-absent contract the
+ * render gate reads.
  */
 export interface IncidentCloseWriter {
-  closeIncidentFromEnvelope(
-    envelope: IntentEnvelope<"incident.ticket.close", IncidentClosePayload>,
-    state: IncidentState,
-  ): Promise<{ readonly result?: { readonly status: string } | null }>;
+  writeAdjudicatedIncidentClose(
+    payload: IncidentClosePayload,
+  ): Promise<{ readonly status: string } | null>;
 }
 
 /**
@@ -279,15 +286,15 @@ export interface OpsToolRegistryDeps {
   /** BKL-085 — the payment command service's POST-adjudication refund writer. */
   readonly paymentCmdSvc: OpsRefundWriter;
   /**
-   * BKL-088 — the ops-alert resolve SYSTEM-write layer (the SAME service the
-   * admin ops-alerts resolve route calls). Bootstrap wires it to
-   * `createOpsAlertService({ auditSink })` so the SYSTEM adjudication is audited.
+   * BKL-088/BKL-260 — the ops-alert resolve POST-adjudication write (the SAME
+   * domain service the admin ops-alerts resolve route uses, entered through its
+   * non-adjudicating method). Bootstrap wires it to `createOpsAlertService()`.
    */
   readonly opsAlertSvc: OpsAlertResolveWriter;
   /**
-   * BKL-088 — the incident close SYSTEM-write layer (the SAME service the admin
-   * incidents resolve route calls). Bootstrap wires it to
-   * `createIncidentService({ auditSink })`.
+   * BKL-088/BKL-260 — the incident close POST-adjudication write (the SAME domain
+   * service the admin incidents resolve route uses). Bootstrap wires it to
+   * `createIncidentService()`.
    */
   readonly incidentSvc: IncidentCloseWriter;
   /**
@@ -710,66 +717,64 @@ function opsResolvedBy(staffId: string | null): string {
 }
 
 /**
- * Executor for `ops.alert.resolve.staff` (BKL-088) — the D10 SECOND governed
- * layer. The composed router already produced the STAFF-verb Decision (carrying
- * `adminSessionOnlyGuard` + `staffRoleGuard` {OWNER,MANAGER} + the actionability
- * guard) at the conductor SUBMIT stage; this executor performs NO adjudication
- * of the staff kind. It BUILDS a SYSTEM `ops.alert.resolve` envelope — staff
- * identity on the payload (`resolvedBy: "staff:<id>"`, `resolutionType: STAFF`,
- * FORCED, never the model) — and calls `resolveAlertFromEnvelope`, EXACTLY the
- * admin ops-alerts resolve route's path (which adjudicates that SYSTEM kind
- * internally + audits it). The admin resolve route emits no NATS/event-log side
- * effect, so there is none to reproduce (verified). The model-supplied `reason`
- * (an operator note) rides the audited STAFF-verb envelope only; the SYSTEM
- * `OpsAlertResolvePayload` has no reason slot to persist.
+ * Executor for `ops.alert.resolve.staff` (BKL-088, BKL-260) — the
+ * POST-adjudication write. The composed router already produced the STAFF-verb
+ * Decision (carrying `adminSessionOnlyGuard` + `staffRoleGuard` {OWNER,MANAGER}
+ * + the actionability guard, against resolver-projected state) at the conductor
+ * SUBMIT stage; this executor performs NO adjudication. Staff identity is FORCED
+ * from the Capsule (`resolvedBy: "staff:<id>"`, `resolutionType: STAFF`), never
+ * the model. The admin resolve route emits no NATS/event-log side effect, so
+ * there is none to reproduce (verified). The model-supplied `reason` (an operator
+ * note) rides the audited STAFF-verb envelope only; `OpsAlertResolvePayload` has
+ * no reason slot to persist.
+ *
+ * BKL-260 — this used to BUILD a SYSTEM `ops.alert.resolve` envelope and run it
+ * through `resolveAlertFromEnvelope`, adjudicating a second time for one staff
+ * action. It was billed as the D10 "second governed layer", but D10 covers egress
+ * to a DIFFERENT system (the Medusa admin API, which the catalog verbs still go
+ * through) — not a second decision on the same domain write. The inner run
+ * adjudicated a strict guard SUBSET and could only ever return EXECUTE, so
+ * deleting it strictly tightens. The runtime class gate is
+ * `apps/api/src/__tests__/tool-dispatch-self-readjudication.test.ts`.
+ *
+ * `status: null` (the alert id does not exist) is propagated, not smoothed — the
+ * ops action render gates its success line on it (BKL-239/240, PR #412).
  */
 async function executeAlertResolveStaff(
   deps: OpsToolRegistryDeps,
   payload: OpsAlertResolveStaffPayload,
   staffId: string | null,
 ): Promise<{ alertId: string; status: string | null }> {
-  const systemPayload: OpsAlertResolvePayload = {
+  const writePayload: OpsAlertResolvePayload = {
     id: payload.alertId,
     resolvedBy: opsResolvedBy(staffId),
     resolutionType: "STAFF",
   };
-  const envelope = buildSystemEnvelope({
-    kind: "ops.alert.resolve" as const,
-    payload: systemPayload,
-    sourceSubject: "ops.alert.ops_staff_resolve",
-    eventId: `${payload.alertId}:resolve:${Date.now()}`,
-  });
-  const out = await deps.opsAlertSvc.resolveAlertFromEnvelope(envelope, {});
-  return { alertId: payload.alertId, status: out.result?.status ?? null };
+  const alert = await deps.opsAlertSvc.writeAdjudicatedAlertResolve(writePayload);
+  return { alertId: payload.alertId, status: alert?.status ?? null };
 }
 
 /**
- * Executor for `incident.ticket.close.staff` (BKL-088) — the D10 SECOND
- * governed layer. Same posture as {@link executeAlertResolveStaff}: builds a
- * SYSTEM `incident.ticket.close` envelope with FORCED `resolvedBy` +
- * `resolutionType: STAFF` (never AUTO/HANDED_OFF — those are system-driven) and
- * calls `closeIncidentFromEnvelope`, exactly the admin incidents resolve route's
- * path (no NATS/event-log side effect to reproduce).
+ * Executor for `incident.ticket.close.staff` (BKL-088, BKL-260) — same posture as
+ * {@link executeAlertResolveStaff}: the POST-adjudication write with FORCED
+ * `resolvedBy` + `resolutionType: STAFF` (never AUTO/HANDED_OFF — those are
+ * system-driven), no second adjudication, no NATS/event-log side effect to
+ * reproduce, and `status: null` propagated for the render gate.
  */
 async function executeIncidentCloseStaff(
   deps: OpsToolRegistryDeps,
   payload: IncidentCloseStaffPayload,
   staffId: string | null,
 ): Promise<{ incidentId: string; status: string | null }> {
-  const systemPayload: IncidentClosePayload = {
+  const writePayload: IncidentClosePayload = {
     id: payload.incidentId,
     resolvedBy: opsResolvedBy(staffId),
     resolutionType: "STAFF",
     closingTurnId: null,
   };
-  const envelope = buildSystemEnvelope({
-    kind: "incident.ticket.close" as const,
-    payload: systemPayload,
-    sourceSubject: "incident.ops_staff_resolve",
-    eventId: `${payload.incidentId}:resolve:${Date.now()}`,
-  });
-  const out = await deps.incidentSvc.closeIncidentFromEnvelope(envelope, {});
-  return { incidentId: payload.incidentId, status: out.result?.status ?? null };
+  const incident =
+    await deps.incidentSvc.writeAdjudicatedIncidentClose(writePayload);
+  return { incidentId: payload.incidentId, status: incident?.status ?? null };
 }
 
 /**

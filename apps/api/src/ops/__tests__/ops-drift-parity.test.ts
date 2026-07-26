@@ -54,12 +54,12 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
   },
   publishPaymentStatusChanged: async () => {},
   appendRefundEventLog: async () => {},
-  // BKL-088 — the alert-resolve + incident-close SYSTEM-write layers.
+  // BKL-088/BKL-260 — the alert-resolve + incident-close POST-adjudication writes.
   opsAlertSvc: {
-    resolveAlertFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
+    writeAdjudicatedAlertResolve: async () => ({ status: "RESOLVED" }),
   },
   incidentSvc: {
-    closeIncidentFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
+    writeAdjudicatedIncidentClose: async () => ({ status: "RESOLVED" }),
   },
   // SCN-127 — the schedule-override write layer + cache invalidation.
   scheduleSvc: { upsertOverride: async () => ({ date: "2026-07-10", isOpen: false }) },

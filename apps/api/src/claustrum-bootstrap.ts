@@ -3482,11 +3482,14 @@ export async function bootstrapClaustrum(
   // BKL-085 — the ops-plane refund audit event log (parity with the admin
   // route's admin.refund.executed row). Shared instance; append is best-effort.
   const opsRefundEventLogSvc = createOrderEventLogService(logger);
-  // BKL-088 — the ops-alert + incident SYSTEM-write services, constructed WITH
-  // the audit sink (exactly like the admin ops-alerts / incidents resolve
-  // routes) so the SECOND (SYSTEM) governed layer's adjudication is audited.
-  // Shared singletons reused per turn (the resolver's by-id reads AND the tool
-  // executors' resolve/close writes both go through these).
+  // BKL-088 — the ops-alert + incident services. Shared singletons reused per
+  // turn (the resolver's by-id reads AND the tool executors' resolve/close writes
+  // both go through these). Still constructed WITH the audit sink, exactly like
+  // the admin ops-alerts / incidents resolve routes: BKL-260 moved the ops
+  // executors onto the non-adjudicating `writeAdjudicated*` methods, so the sink
+  // is currently unused on this path — but it stays so that any caller reaching
+  // for a `*FromEnvelope` method through this instance is audited by default
+  // rather than silently blind.
   const opsAlertSvc = createOpsAlertService({ auditSink });
   const opsIncidentSvc = createIncidentService({ auditSink });
   // The ops registry's governed side-effect deps (injected for testability).
@@ -3511,9 +3514,10 @@ export async function bootstrapClaustrum(
     // BKL-085 — the ops refund POST-adjudication ledger write (writeAdjudicatedRefund
     // does NO adjudication; the composed router already produced the Decision).
     paymentCmdSvc: createPaymentCommandService(),
-    // BKL-088 — the alert-resolve + incident-close SYSTEM-write layers (the D10
-    // second governed layer). The executors build the SYSTEM envelope + call
-    // these, exactly like the admin ops-alerts / incidents resolve routes.
+    // BKL-088/BKL-260 — the alert-resolve + incident-close POST-adjudication
+    // writes. The executors call `writeAdjudicated*` under the Decision the
+    // composed ops router already produced; they no longer mint a SYSTEM envelope
+    // and adjudicate a second time.
     opsAlertSvc,
     incidentSvc: opsIncidentSvc,
     // SCN-127 — the schedule-override write path. Reuses the SAME
