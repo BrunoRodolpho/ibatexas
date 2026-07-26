@@ -31,6 +31,7 @@
 import type { AliasEdge } from "../alias-gazetteer.js"
 import type { CapabilityDefinition } from "../capability-definitions/types.js"
 import type { ExternalReferenceDeclaration } from "../external-references.js"
+import type { WorkflowDefinition } from "../workflows/types.js"
 
 /** One fixture catalog and the rule it exists to prove. */
 export interface ConformanceFixture {
@@ -76,6 +77,13 @@ export interface ConformanceFixture {
    * somebody declared a colloquial.
    */
   readonly aliases?: readonly AliasEdge[]
+  /**
+   * The fixture's workflow corpus (LE2-020). Omitted means NONE, for exactly
+   * the same reason as the two tables above — and with one extra bite here: the
+   * real corpus is EMPTY in v0, so a fixture that silently inherited it would
+   * pass today and change meaning the day the first workflow is authored.
+   */
+  readonly workflows?: readonly WorkflowDefinition[]
 }
 
 /**
@@ -110,6 +118,19 @@ export function fixtureExternalReferences(
  */
 export function fixtureAliases(...objects: readonly unknown[]): readonly AliasEdge[] {
   return objects as readonly AliasEdge[]
+}
+
+/**
+ * Widen hand-authored workflow objects into the corpus a pass receives — the
+ * same single-cast discipline, for the same reason: an activity that binds an
+ * undeclared param, or a confirm point naming a template that does not exist,
+ * is precisely what the pass exists to reject and the authored type will not
+ * express it.
+ */
+export function fixtureWorkflows(
+  ...objects: readonly unknown[]
+): readonly WorkflowDefinition[] {
+  return objects as readonly WorkflowDefinition[]
 }
 
 /** `<pass>/<rule>` — the suite's stable id for one rejection class. */

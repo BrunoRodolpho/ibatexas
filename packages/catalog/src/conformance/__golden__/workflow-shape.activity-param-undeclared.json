@@ -1,0 +1,68 @@
+{
+  "fixture": "workflow-shape.activity-param-undeclared",
+  "targets": "workflow-shape/activity-param-undeclared",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/activity-param-undeclared"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 11,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "activity-param-undeclared",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "activities[0].payload.total",
+      "message": "binds the param \"total\", which the workflow never declares. A param is what says WHERE a value comes from — a validated claim or a customer-authored slot — so an unbound binding is a payload field with no admissible source at all.",
+      "reference": "total"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/activity-param-undeclared: workflow:conformance.workflow.linear · activities[0].payload.total — binds the param \"total\", which the workflow never declares. A param is what says WHERE a value comes from — a validated claim or a customer-authored slot — so an unbound binding is a payload field with no admissible source at all."
+  ]
+}

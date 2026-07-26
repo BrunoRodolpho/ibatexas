@@ -1,0 +1,67 @@
+{
+  "fixture": "workflow-shape.outcome-template-missing",
+  "targets": "workflow-shape/outcome-template-missing",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/outcome-template-missing"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 11,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "outcome-template-missing",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "outcomes.failed",
+      "message": "has no render template (names \"\"). Every outcome a workflow can reach needs authored pt-BR text, including the ones nobody wants to think about: a declined run and a failed run are exactly when the customer most needs an honest sentence, and a missing template is how a run ends in silence."
+    }
+  ],
+  "formatted": [
+    "workflow-shape/outcome-template-missing: workflow:conformance.workflow.linear · outcomes.failed — has no render template (names \"\"). Every outcome a workflow can reach needs authored pt-BR text, including the ones nobody wants to think about: a declined run and a failed run are exactly when the customer most needs an honest sentence, and a missing template is how a run ends in silence."
+  ]
+}

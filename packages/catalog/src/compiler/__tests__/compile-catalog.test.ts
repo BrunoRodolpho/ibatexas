@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest"
 import { CAPABILITY_DEFINITIONS } from "../../capability-definitions/definitions.js"
 import type { AliasEdge } from "../../alias-gazetteer.js"
 import type { CapabilityDefinition } from "../../capability-definitions/types.js"
+import type { WorkflowDefinition } from "../../workflows/types.js"
 import {
   assertClaimReferencesResolve,
   CatalogCrossReferenceError,
@@ -71,14 +72,41 @@ const BROKEN_ALIASES = [
   },
 ] as unknown as readonly AliasEdge[]
 
-/** Both halves of the broken catalog, compiled together. */
+/**
+ * The workflow-shape half of {@link EVERY_PASS_BROKEN} (LE2-020) — an activity
+ * routed at a capability nothing declares. Kept a separate table for the same
+ * reason the aliases are: the pass reads its OWN table, so breaking it from the
+ * capability definitions is not possible.
+ */
+const BROKEN_WORKFLOWS = [
+  {
+    id: "workflow.ghost",
+    title: "Fluxo fantasma",
+    description: "Fixture.",
+    matchers: [{ capability: "order.ghost" }],
+    selection: { capability: "order.ghost" },
+    params: [],
+    activities: [{ id: "step", capability: "no.such.capability", payload: {} }],
+    confirm: { template: "confirm" },
+    templates: [
+      { id: "confirm", text: "Confirma?" },
+      { id: "completed", text: "Pronto." },
+      { id: "declined", text: "Tudo bem." },
+      { id: "failed", text: "Não consegui." },
+    ],
+    outcomes: { completed: "completed", declined: "declined", failed: "failed" },
+  },
+] as unknown as readonly WorkflowDefinition[]
+
+/** Every half of the broken catalog, compiled together. */
 function compileEverythingBroken(
   definitions: readonly CapabilityDefinition[] = EVERY_PASS_BROKEN,
   aliases: readonly AliasEdge[] = BROKEN_ALIASES,
+  workflows: readonly WorkflowDefinition[] = BROKEN_WORKFLOWS,
 ): CatalogCompileResult {
   // `undefined` keeps the REAL external-reference table, which is what trips
   // that pass — see EVERY_PASS_BROKEN's doc.
-  return compileCatalog(definitions, undefined, aliases)
+  return compileCatalog(definitions, undefined, aliases, workflows)
 }
 
 describe("compileCatalog — registration and reporting", () => {

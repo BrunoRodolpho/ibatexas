@@ -5,6 +5,7 @@
   "capabilities": 1,
   "externalReferences": 0,
   "aliases": 0,
+  "workflows": 0,
   "rulesEmitted": [
     "referential-integrity/claim-reference-dangling",
     "safety-implication-edges/safety-restricted-claim-edge"
@@ -17,7 +18,7 @@
     },
     {
       "pass": "slot-dataflow",
-      "checked": 21,
+      "checked": 22,
       "diagnostics": 0
     },
     {
@@ -43,6 +44,11 @@
     {
       "pass": "external-references",
       "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
       "diagnostics": 0
     }
   ],

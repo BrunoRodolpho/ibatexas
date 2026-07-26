@@ -282,6 +282,42 @@ interface CapabilityDefinitionCommon {
    * -kinds.ts`'s own doc for the full disposition.
    */
   readonly opsForbiddenDestructive?: true
+  /**
+   * LE2-020 / LE2 Implementation Decision 15 — the WORKFLOW-SCOPED ACCESS
+   * CLASS. `true` for a capability that is **workflow-invocable only**: it must
+   * never appear in the advertised tool surface, must never be accepted from a
+   * parse, and can be invoked ONLY by an instantiated workflow's executor —
+   * with per-activity kernel adjudication fully intact (a workflow chooses
+   * WHICH envelope to submit; it never decides whether it may run).
+   *
+   * The class exists because some capabilities are orchestration-shaped: they
+   * are meaningful as a step inside an authored multi-step route and dangerous
+   * as a free verb the parser can reach directly. `order.reorder` is the first
+   * member — the spec's own example ("the reorder orchestration becomes
+   * journey-invocable … standalone reordering rides the reorder-last journey").
+   *
+   * This is DISTINCT from all three neighbouring fields, and deliberately so:
+   *   - `plannerAdvertisedBy` records who DOES advertise a kind. Declaring both
+   *     is a contradiction, and the compiler's `workflow-scoped-kind-advertised`
+   *     rule makes it a build error rather than a runtime disagreement.
+   *   - `opsForbiddenDestructive` forbids a kind on the OPS plane. This one is
+   *     about the parser on ANY plane.
+   *   - `tier: "identity"` says a kind has no richly-authored chat metadata.
+   *     That is a statement about AUTHORING; this is a statement about
+   *     REACHABILITY, and the two are independent (a chat-tier capability could
+   *     in principle be moved into the class, which is exactly what Decision 15
+   *     contemplates for a future orchestration).
+   *
+   * `undefined`/absent (the default, correct for 57 of 58 kinds) means the kind
+   * is reachable exactly as it always was. Optional on both tiers.
+   *
+   * ENFORCEMENT lives downstream, not here: the catalog DECLARES the class and
+   * `workflowScopedKinds()` (`../workflows/projections.ts`) projects it; the
+   * planner subtracts it from the turn's authorized roster at its single choke
+   * point, which is what makes both halves — never advertised, never accepted —
+   * true of the same one edit.
+   */
+  readonly workflowScoped?: true
 }
 
 /**

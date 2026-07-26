@@ -115,7 +115,14 @@ import type { ScheduleSignal } from "../claustrum/closed-hours.js";
 import { WebConfirmChannel } from "../claustrum/web-confirm-channel.js";
 import { buildLanguageEngineAuditMetadata } from "../claustrum/language-engine/audit-metadata.js";
 import { registerIbatexasToolPacks } from "../tools/register-ibatexas-tool-packs.js";
+import { registerWorkflowScopedTools } from "../tools/register-workflow-scoped-tools.js";
 import { isGuestCustomerId } from "../tools/guest-identity.js";
+import type { WorkflowRuntime } from "../claustrum/workflow/workflow-runtime.js";
+import {
+  installWorkflowRuntime,
+  observeWorkflowDecisions,
+} from "../claustrum/workflow/workflow-install.js";
+import { closeWorkflowTurn } from "../claustrum/workflow/workflow-trace.js";
 
 /** Fixed instant every park is stamped with, so park shapes are deterministic. */
 export const HARNESS_NOW = "2026-07-25T12:00:00.000Z";
@@ -721,7 +728,26 @@ export interface CustomerConductorDeps {
    * canonicalization ⟹ byte-identical to every pre-alias caller.
    */
   readonly aliasSeam?: FunnelAliasSeam;
+  /**
+   * LE2-020 — the WORKFLOW RUNTIME. Wired into three places at once, exactly as
+   * a production composition would: the planner (which advertises the closed
+   * workflow surface and instantiates a selection), the tool registry (whose
+   * anchor tools are wrapped so a confirmed workflow runs its activities), and
+   * the adjudicator (decorated to observe the kernel's confirm sentence so the
+   * confirm template can quote it).
+   *
+   * Omitted ⟹ no workflow is advertised, no tool is wrapped, no decision is
+   * observed ⟹ every pre-existing harness turn is byte-identical.
+   */
+  readonly workflowRuntime?: WorkflowRuntime;
 }
+
+/**
+ * The turn currently being driven — see the observer note in
+ * `composeCustomerConductor`. Module-scoped because the conductor is composed
+ * once and `runCustomerTurn` is the only writer.
+ */
+let currentTurnId: string | undefined;
 
 export interface CustomerHarness {
   readonly conductor: Conductor;
@@ -737,6 +763,17 @@ export interface CustomerHarness {
 export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerHarness {
   const tools = createToolRegistry();
   registerIbatexasToolPacks(tools);
+  // LE2-020 — AFTER the real roster, because the registry is last-write-wins
+  // per capability and that ordering IS the installation mechanism. Wraps only
+  // the anchor kinds of workflows the runtime actually loaded, so an empty
+  // corpus wraps nothing.
+  if (deps.workflowRuntime !== undefined) {
+    // The workflow-scoped handlers FIRST — `installWorkflowRuntime` asserts the
+    // anchor has a tool, and a workflow-scoped activity needs one too before
+    // the runtime can dispatch it.
+    registerWorkflowScopedTools(tools, deps.workflowRuntime.activityCapabilities());
+    installWorkflowRuntime(tools, deps.workflowRuntime);
+  }
 
   const planner = createIbatexasPlanner({
     model: deps.model,
@@ -748,6 +785,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     ...(deps.retriever ? { retriever: deps.retriever } : {}),
     ...(deps.scopeSeam ? { scopeSeam: deps.scopeSeam } : {}),
     ...(deps.aliasSeam ? { aliasSeam: deps.aliasSeam } : {}),
+    ...(deps.workflowRuntime ? { workflowRuntime: deps.workflowRuntime } : {}),
   });
 
   // LE2-007 — the REAL production responder, opt-in. Composed like the customer
@@ -780,8 +818,23 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
   // when not requested and when ENABLE_CLAIMS_PIPELINE is off.
   const claimsSeams = deps.withClaims === true ? buildClaimsSeams({ planner }) : {};
 
+  // LE2-020 — the decision observer. `currentTurnId` is set by
+  // `runCustomerTurn` for the duration of one turn, which is sound HERE because
+  // this harness drives exactly one turn at a time (every caller awaits
+  // `runCustomerTurn`). A production ingress must bind the turn the same way it
+  // already binds the funnel context via `openFunnelTurn` — and in v0 nothing
+  // depends on it, because production loads no workflow.
+  const adjudicator =
+    deps.workflowRuntime === undefined
+      ? deps.adjudicator
+      : observeWorkflowDecisions(
+          deps.adjudicator,
+          deps.workflowRuntime,
+          () => currentTurnId,
+        );
+
   const conductor = createConductor({
-    adjudicator: deps.adjudicator,
+    adjudicator,
     memory: customerMemory(),
     grounding: emptyGrounding(),
     planner,
@@ -866,6 +919,9 @@ export async function runCustomerTurn(
       confirmWindowOpen:
         (capsule.loadedSession?.pendingConfirmations?.length ?? 0) > 0,
     });
+    // LE2-020 — bind the turn for the workflow decision observer, the same
+    // ingress-seam shape `openFunnelTurn` uses one line above.
+    currentTurnId = capsule.turnId;
     const turn = await handleTurn(capsule, message);
     return {
       decision: turn.decision as Decision,
@@ -876,6 +932,22 @@ export async function runCustomerTurn(
     };
   } finally {
     closeFunnelTurn(capsule.turnId);
+    currentTurnId = undefined;
     await harness.conductor.closeCapsule(capsule);
   }
+}
+
+/**
+ * Drop a turn's workflow state. Deliberately NOT in `runCustomerTurn`'s
+ * `finally`: a multi-turn confirm flow needs the instance to SURVIVE the
+ * selecting turn so the confirming turn can run it, and the trace to survive
+ * the running turn so a test can read it. The production ingress owns the same
+ * decision — it is the confirm window's lifetime, not the turn's.
+ */
+export function closeCustomerWorkflowTurn(
+  runtime: WorkflowRuntime,
+  turnId: string,
+): void {
+  runtime.close(turnId);
+  closeWorkflowTurn(turnId);
 }
