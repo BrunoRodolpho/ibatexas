@@ -120,10 +120,7 @@ import {
   PINNED_COMPLETION_TEMPERATURE,
 } from "./model-call-defaults.js";
 import { completeWithResilience, isEmptyCompletion } from "./complete-with-retry.js";
-import {
-  EXTRACTION_SCHEMAS_BY_CAPABILITY,
-  ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY,
-} from "./language-engine/wire-schemas.js";
+import { ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY } from "./language-engine/wire-schemas.js";
 import {
   READ_TOOL_SCHEMAS_BY_NAME,
   sanitizeReadToolInput,
@@ -484,20 +481,20 @@ function isExpressIntentInput(input: unknown): input is ExpressIntentInput {
 /**
  * FE-T11 (plan-time payload filter — the PARSE-seam enforcement half).
  *
- * `EXTRACTION_SCHEMAS_BY_CAPABILITY` (wire-schemas.ts) only narrows what is
- * ADVERTISED to the model — `buildToolSurface`, above, embeds each authored
- * capability's narrowed `payload` JSON-Schema into the `express_intent` tool
- * definition. Nothing previously validated the model's ACTUAL tool-call
- * `payload` against that schema before it became `IntentEnvelope.payload`:
- * this stack has no grammar-constrained decoding (a completion's tool-call
- * arguments are not enforced against `inputSchema` at the model layer), so a
- * completion can freely emit a key its capability's authored schema never
- * declared — e.g. a hallucinated `orderId` for `payment.pix.regenerate`,
- * whose schema declares ZERO fields. Unfiltered, that key reached
- * `resolveOrderId` (`resolve-and-assemble.ts`) and was read as an EXPLICIT
- * customer reference, silently bypassing the auto-resolve confirm gate — the
- * advertised schema alone did NOT close this; this filter is the missing
- * enforcement half.
+ * Since BKL-255(a) this is the ONLY half: the authored per-capability schemas
+ * are no longer advertised to the model at all (`buildToolSurface`, above,
+ * dropped the `allOf` narrowing the engine silently discarded at decode —
+ * LE2-004). Nothing validated the model's ACTUAL tool-call `payload` against
+ * those schemas before it became `IntentEnvelope.payload`: this stack has no
+ * grammar-constrained decoding (a completion's tool-call arguments are not
+ * enforced against `inputSchema` at the model layer), so a completion can
+ * freely emit a key its capability's authored schema never declared — e.g. a
+ * hallucinated `orderId` for `payment.pix.regenerate`, whose schema declares
+ * ZERO fields. Unfiltered, that key reached `resolveOrderId`
+ * (`resolve-and-assemble.ts`) and was read as an EXPLICIT customer reference,
+ * silently bypassing the auto-resolve confirm gate. Advertising the schema
+ * never closed this even when we believed the model saw it; this filter is
+ * what actually does.
  *
  * Name-level strip ONLY — no type coercion, no repair; that stays the
  * resolver's job (P3, one transformation per seam). A capability absent from
@@ -666,21 +663,26 @@ function buildToolSurface(
   }> = [];
 
   if (plan.allowedIntents.length > 0) {
-    // FE-1.1/FE-1.4 — per-capability extraction schema on the wire. For each
-    // allowed intent that has an AUTHORED extraction schema
-    // (EXTRACTION_SCHEMAS_BY_CAPABILITY), narrow the `payload` shape the
-    // model sees via a `capability`-discriminated `if/then` clause — additive
-    // over the existing generic `payload:{type:"object"}` shape (kept as the
-    // base/fallback for every capability without an authored schema yet, so
-    // this is byte-identical for every turn that doesn't propose a capability
-    // in the registry).
-    const perCapabilitySchemas = plan.allowedIntents
-      .map((kind) => {
-        const payloadSchema = EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind);
-        return payloadSchema === undefined ? null : { kind, payloadSchema };
-      })
-      .filter((x): x is { kind: string; payloadSchema: Record<string, unknown> } => x !== null);
-
+    // BKL-255(a) — the per-capability `allOf`/`if-then` payload narrowing that
+    // FE-1.1/FE-1.4 composed here is GONE: this engine never saw it.
+    //
+    // LE2-004 (wire-proven) established that Ollama decodes a tool's JSON-Schema
+    // into a CLOSED Go struct that silently DROPS `allOf` — the constraint never
+    // reaches the model, and (like every unsupported constraint on this engine)
+    // it never errors, so its deadness was invisible from the status code.
+    // Re-confirmed within-epoch on 2026-07-26 against nemotron-3-nano:4b: the
+    // production 13-tool surface sent with and without the 20 `allOf` clauses,
+    // interleaved A/B/A/B/A/B at temperature 0, returned BYTE-IDENTICAL
+    // completions on 8/8 utterances (48 exchanges) — 10,010 bytes of the 17,987-
+    // byte body were dead wire.
+    //
+    // The authored schemas themselves are NOT dead and stay in wire-schemas.ts:
+    // they are the live source of `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY`,
+    // which `stripUnauthoredPayloadFields` (below) enforces at the PARSE seam —
+    // the half that actually bounds the model's payload. Re-expressing the
+    // narrowing in a form this engine DOES decode (under `properties.payload`)
+    // is BKL-255(b), deliberately not done here: it is a real change to what the
+    // model sees and needs its own A/B, not a refactor.
     tools.push({
       name: EXPRESS_INTENT_TOOL,
       description:
@@ -701,14 +703,6 @@ function buildToolSurface(
         },
         required: ["capability", "payload"],
         additionalProperties: false,
-        ...(perCapabilitySchemas.length > 0
-          ? {
-              allOf: perCapabilitySchemas.map(({ kind, payloadSchema }) => ({
-                if: { properties: { capability: { const: kind } } },
-                then: { properties: { payload: payloadSchema } },
-              })),
-            }
-          : {}),
       },
     });
   }
