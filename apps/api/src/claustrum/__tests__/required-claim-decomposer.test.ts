@@ -795,6 +795,71 @@ describe("required-claim completeness — presence-complement pair (BKL-163)", (
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LE2-013 — THE DELIVERY PAIR IS A PRESENCE-COMPLEMENT PAIR TOO.
+//
+// LE2-002 built DELIVERY_COVERAGE / DELIVERY_NO_COVERAGE "on the CART_CONTENTS/
+// CART_EMPTY precedent" (its own commit message) and gave DELIVERY_COVERAGE_Q a
+// closure row requiring BOTH — but never registered the pair in
+// PRESENCE_COMPLEMENT_PAIRS. The investigator records `delivery:coverage` only on a
+// zone match and `delivery:no_coverage` only on a POSITIVE out-of-zone
+// determination, so exactly one can ever VALIDATE: completeness was STRUCTURALLY
+// unsatisfiable and EVERY coverage turn degraded RENDER→UNKNOWN, on BOTH planes.
+// Byte-for-byte the BKL-163 cart bug.
+//
+// WHY CI STAYED GREEN: LE2-002's turn-seam tests call `renderer-from-claims`
+// `render(...)` directly, which is one layer BELOW this gate (the gate is applied
+// by `claims-renderer-adapter.ts`). LE2-013's ops turn-seam suite drives the real
+// adapter through a real `handleTurn`, which is what surfaced it. NON-VACUOUS: with
+// the pair unregistered, the first two cases below report `complete: false`.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("required-claim completeness — the DELIVERY presence-complement pair (LE2-013)", () => {
+  const required = decomposeRequiredClaims(["DELIVERY_COVERAGE_Q"]);
+  const resolved = (
+    entries: ReadonlyArray<[RegistryClaimType, ClaimVerdict]>,
+  ): ReadonlyMap<string, ClaimVerdict> => new Map(entries);
+
+  it("the closure row really does require the whole pair (the precondition)", () => {
+    expect(required.has("DELIVERY_COVERAGE")).toBe(true);
+    expect(required.has("DELIVERY_NO_COVERAGE")).toBe(true);
+  });
+
+  it("COVERED: DELIVERY_COVERAGE VALIDATED alone satisfies the pair (the Ibaté turn renders)", () => {
+    const r = checkRequiredClaimCompleteness(
+      required,
+      resolved([
+        ["DELIVERY_COVERAGE", "VALIDATED"],
+        ["DELIVERY_NO_COVERAGE", "UNKNOWN"],
+      ]),
+    );
+    expect(r.complete).toBe(true);
+    expect(r.unsatisfied).toEqual([]);
+  });
+
+  it("OUT OF ZONE: DELIVERY_NO_COVERAGE VALIDATED alone satisfies the pair", () => {
+    const r = checkRequiredClaimCompleteness(
+      required,
+      resolved([
+        ["DELIVERY_NO_COVERAGE", "VALIDATED"],
+        ["DELIVERY_COVERAGE", "UNKNOWN"],
+      ]),
+    );
+    expect(r.complete).toBe(true);
+    expect(r.unsatisfied).toEqual([]);
+  });
+
+  it("NEITHER member VALIDATED still DEGRADES (an unreadable zone projection stays honest)", () => {
+    // Inv 7 preserved: "could not check" must not become a coverage answer in
+    // either direction just because the pair is now complement-aware.
+    const r = checkRequiredClaimCompleteness(
+      required,
+      resolved([["DELIVERY_COVERAGE", "UNKNOWN"]]),
+    );
+    expect(r.complete).toBe(false);
+    expect(r.unsatisfied).toEqual(["DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // F2 — the polysemous "status" must route by its DISCRIMINATOR (payment vs order),
 // not unconditionally to ORDER. NON-VACUOUS: with the old `/pedido|cad[êe]|status/`
 // → ORDER_STATUS_Q rule, "status do meu pagamento" wrongly carried ORDER_STATUS_Q.

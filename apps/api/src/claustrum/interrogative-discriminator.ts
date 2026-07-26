@@ -156,3 +156,40 @@ export function hasInfoQuestion(text: string): boolean {
 export function shouldDegradeToSafeUnknown(text: string): boolean {
   return !isSmalltalkOnly(text) && hasInfoQuestion(text);
 }
+
+/**
+ * LE2-013 — the RAW-PROSE RETIREMENT gate: DEGRADE iff the message is NOT
+ * smalltalk-only. The strictly-stronger sibling of
+ * {@link shouldDegradeToSafeUnknown}, and the whole of ticket 13's first
+ * acceptance criterion.
+ *
+ * ── Why the positive net is not enough ───────────────────────────────────────
+ * {@link hasInfoQuestion} is a POSITIVE net (Q1..Q4 + the D2 English net), so its
+ * MISSES are exactly the hole this ticket closes: an information-bearing turn that
+ * matches no marker ("me passa o faturamento da semana", "preciso do total de
+ * ontem", "confirmação do fornecedor pra amanhã") is neither smalltalk nor a
+ * recognised question, so the responder's empty-plan branch shipped model prose —
+ * a digit-free factual assertion that the ops digit clamp
+ * (`clampUngroundedOpsFact`) cannot see, because the clamp only demotes ungrounded
+ * NUMBERS. Widening the positive net indefinitely is a losing game; INVERTING the
+ * default is not. So on the ops plane the question becomes "is this small talk?"
+ * — the ONE discriminator that is a closed, enumerated lexicon
+ * ({@link SMALLTALK_TOKENS} + {@link SMALLTALK_PHRASES}, the BKL-110 0/15 corpus)
+ * rather than an open-ended net — and everything else terminates at the
+ * deterministic SAFE_UNKNOWN render.
+ *
+ * ── Still DEMOTE-ONLY, still sound ───────────────────────────────────────────
+ * A `true` can only ever move a turn prose→SAFE_UNKNOWN. It never promotes, never
+ * touches the render or claim-proposal paths, and it is reached only AFTER the
+ * deterministic read render and BEFORE any model call (see the responder's
+ * REFUSE/empty-plan branch), so a genuinely VALIDATED claim still supersedes it at
+ * handle-turn §6a. Over-including a token in the smalltalk lexicon is the ONLY
+ * failure direction, and it merely keeps a turn on the (clamped) prose path.
+ *
+ * PURE. Deliberately plane-agnostic: the PLANE choice lives in
+ * `safe-unknown-gate.ts` (`SafeUnknownGateOptions.retireRawProse`), because the
+ * customer plane's own retirement is a separate, spec-level decision.
+ */
+export function shouldRetireRawProse(text: string): boolean {
+  return !isSmalltalkOnly(text);
+}
