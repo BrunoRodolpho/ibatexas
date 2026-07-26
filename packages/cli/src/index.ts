@@ -18,6 +18,7 @@ import { registerScenarioCommands } from "./commands/scenario.js"
 import { registerJourneyCommands } from "./commands/journey.js"
 import { registerGraphCommands } from "./commands/graph.js"
 import { registerCatalogCommands } from "./commands/catalog.js"
+import { registerAliasCommands } from "./commands/alias.js"
 import { registerAgentCommands } from "./commands/agent.js"
 import { registerStaffCommands } from "./commands/staff.js"
 import { registerDebugCommands } from "./commands/debug.js"
@@ -101,6 +102,12 @@ function buildHelpText(): string {
       commands: [
         { usage: "api products list", desc: "List products from the catalog" },
         { usage: "api products add",  desc: "Add a product interactively" },
+      ],
+    },
+    {
+      title: "Catalog",
+      commands: [
+        { usage: "alias mine", desc: "Mine recorded turns into a ranked candidate-alias report (offline; writes no catalog data)" },
       ],
     },
     {
@@ -396,6 +403,7 @@ const groupedCommands: { name: string; register: (cmd: Command) => void; descrip
   { name: "journey",  register: registerJourneyCommands,  description: "Journeys — LLM-driven journey registry gates (test plane)" },
   { name: "graph",    register: registerGraphCommands,    description: "Graphs — derived capability/journeys/run/impact graphs + drift gate (test plane)" },
   { name: "catalog",  register: registerCatalogCommands,  description: "Catalog — fail-closed static compiler over the versioned business-definition root (LE2-016)" },
+  { name: "alias",    register: registerAliasCommands,    description: "Alias gazetteer — offline mining of colloquial product names into an owner-approval report (LE2-026)" },
   { name: "agent",    register: registerAgentCommands,    description: "Agents — managed-agent registry, kill-switch operator controls, and test-plane trigger injection" },
   { name: "staff",    register: registerStaffCommands,    description: "Staff — OWNER-only staff administration (list, update, deactivate, assign role)" },
   { name: "debug",    register: registerDebugCommands },
