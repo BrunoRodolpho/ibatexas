@@ -58,7 +58,7 @@ import {
   storeLastLocation,
   getLastLocation,
 } from "../whatsapp/session.js";
-import { sendText, sendMedia } from "../whatsapp/client.js";
+import { sendText, sendMedia, type SendCorrelation } from "../whatsapp/client.js";
 import {
   classifyTurnDelivery,
   classifyCatchError,
@@ -332,7 +332,11 @@ async function retryForMissedMessages(
     // NOT a delivered reply: it must not be sent and must not auto-resolve the
     // OPEN incident; instead it falls through to the whitespace_only branch below.
     if (retryResponse.text && retryResponse.text.trim().length > 0) {
-      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(retryResponse.text));
+      // LE2-030 — correlate the captured Twilio SID to this (retry) turn.
+      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(retryResponse.text), {
+        turnId: retryResponse.turnId ?? null,
+        conversationId: session.sessionId,
+      });
       await appendMessages(session.sessionId, [
         { role: "assistant", content: retryResponse.text },
       ], true, { customerId: session.customerId, channel: "whatsapp" });
@@ -392,15 +396,31 @@ interface TwilioWebhookBody {
 
 // ── Webhook validation helpers ───────────────────────────────────────────────
 
-interface SignatureError {
+export interface SignatureError {
   code: number;
   error: string;
   logMessage: string;
 }
 
-function verifyTwilioSignature(
+/**
+ * Verify Twilio's `X-Twilio-Signature` over the posted form params.
+ *
+ * LE2-030 — EXPORTED and URL-parameterized so the delivery-status callback
+ * route (`whatsapp-status-callback.ts`) validates its callbacks through THIS
+ * function rather than a second copy of the rule. `opts.webhookUrl` defaults to
+ * `TWILIO_WEBHOOK_URL` so the inbound call site is unchanged; the callback route
+ * passes its own URL (Twilio signs the exact URL it posted to, and the two
+ * endpoints have different paths). `opts.logTag` namespaces the log line and
+ * `opts.urlEnvVar` names the missing var in the misconfiguration message.
+ */
+export function verifyTwilioSignature(
   request: FastifyRequest,
-  body: TwilioWebhookBody,
+  body: Record<string, unknown>,
+  opts?: {
+    readonly webhookUrl?: string | undefined;
+    readonly logTag?: string;
+    readonly urlEnvVar?: string;
+  },
 ): SignatureError | null {
   const authToken = process.env.TWILIO_AUTH_TOKEN;
   // D-AUTHURL: webhookUrl MUST be the exact public URL Twilio posted to — it is
@@ -409,20 +429,22 @@ function verifyTwilioSignature(
   // verifyTwilioSignature below rejects every request. The shape (no query, https
   // in prod) is asserted at startup in ../config.ts; see .env.example for the full
   // contract.
-  const webhookUrl = process.env.TWILIO_WEBHOOK_URL;
+  const webhookUrl = opts?.webhookUrl ?? process.env.TWILIO_WEBHOOK_URL;
+  const tag = opts?.logTag ?? "whatsapp.incoming";
+  const urlEnvVar = opts?.urlEnvVar ?? "TWILIO_WEBHOOK_URL";
 
   if (!authToken || !webhookUrl) {
-    return { code: 500, error: "Webhook not configured", logMessage: "[whatsapp.config] TWILIO_AUTH_TOKEN or TWILIO_WEBHOOK_URL not set" };
+    return { code: 500, error: "Webhook not configured", logMessage: `[whatsapp.config] TWILIO_AUTH_TOKEN or ${urlEnvVar} not set` };
   }
 
   const signature = request.headers["x-twilio-signature"];
   if (typeof signature !== "string") {
-    return { code: 400, error: "Missing signature", logMessage: "[whatsapp.incoming] Missing X-Twilio-Signature" };
+    return { code: 400, error: "Missing signature", logMessage: `[${tag}] Missing X-Twilio-Signature` };
   }
 
   const isValid = twilio.validateRequest(authToken, signature, webhookUrl, body as Record<string, string>);
   if (!isValid) {
-    return { code: 403, error: "Invalid signature", logMessage: "[whatsapp.incoming] Invalid Twilio signature" };
+    return { code: 403, error: "Invalid signature", logMessage: `[${tag}] Invalid Twilio signature` };
   }
 
   return null;
@@ -615,7 +637,7 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       const startMs = Date.now();
 
       // ── 1. Verify Twilio signature ──────────────────────────────────────────
-      const signatureError = verifyTwilioSignature(request, body);
+      const signatureError = verifyTwilioSignature(request, body as Record<string, unknown>);
       if (signatureError) {
         server.log.warn({ ip: request.ip }, signatureError.logMessage);
         return reply.code(signatureError.code).send({ error: signatureError.error });
@@ -856,6 +878,9 @@ async function sendPixFollowUp(
   session: WaSession,
   log: LogFn,
   track?: { readonly onEnter: () => void; readonly onComplete: () => void },
+  // LE2-030 — the turn this PIX artifact belongs to, so the copia-e-cola part
+  // and the QR media send land in the delivery store under the same turn_id.
+  correlation?: SendCorrelation,
 ): Promise<boolean> {
   const { pixCopyPaste, pixQrCode } = pixData;
   const textHasPixCode = pixCopyPaste && agentText.includes(pixCopyPaste);
@@ -869,6 +894,7 @@ async function sendPixFollowUp(
       mintReceiptReply(
         `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
       ),
+      correlation,
     );
     track?.onComplete();
     pixDelivered = true;
@@ -877,7 +903,7 @@ async function sendPixFollowUp(
   if (pixQrCode) {
     // EGRESS BRAND (Plan 1 / F4): mint the customer-facing caption at the
     // producer; sendMedia no longer mints prose internally.
-    await sendMedia(`whatsapp:${phone}`, pixQrCode, mintReceiptReply("QR Code PIX"))
+    await sendMedia(`whatsapp:${phone}`, pixQrCode, mintReceiptReply("QR Code PIX"), correlation)
       .then(() => {
         pixDelivered = true;
       })
@@ -1199,7 +1225,13 @@ async function handleMessageAsync(
     let textSent = false;
     if (agentResponse.text && agentResponse.text.trim().length > 0 && !turnAbort.signal.aborted) {
       sendEntered = true;
-      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(agentResponse.text));
+      // LE2-030 — the turn correlation the delivery store joins on. Purely
+      // additive: `sendText` records the returned SID against this turn_id and
+      // part index, and changes nothing about the send itself.
+      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(agentResponse.text), {
+        turnId: agentResponse.turnId ?? null,
+        conversationId: session.sessionId,
+      });
       sendCompleted = true;
       textSent = true;
 
@@ -1234,6 +1266,8 @@ async function handleMessageAsync(
             sendCompleted = true;
           },
         },
+        // LE2-030 — same turn correlation as the text reply above.
+        { turnId: agentResponse.turnId ?? null, conversationId: session.sessionId },
       );
     }
 

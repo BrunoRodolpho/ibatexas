@@ -1,0 +1,50 @@
+{
+  "fixture": "slot-dataflow.unknown-slot",
+  "targets": "slot-dataflow/unknown-slot",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "slot-dataflow/unknown-slot"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "unknown-slot",
+      "severity": "error",
+      "object": "capability:conformance.slot.unknown",
+      "field": "refusalCodes",
+      "message": "no such slot in the capability-definition contract (types.ts). A misspelled slot is read by nothing and silently behaves as if it were never authored."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/unknown-slot: capability:conformance.slot.unknown · refusalCodes — no such slot in the capability-definition contract (types.ts). A misspelled slot is read by nothing and silently behaves as if it were never authored."
+  ]
+}

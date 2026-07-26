@@ -1,0 +1,37 @@
+{
+  "fixture": "clean.minimal-identity",
+  "targets": null,
+  "ok": true,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 19,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [],
+  "formatted": []
+}

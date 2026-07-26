@@ -1,0 +1,51 @@
+{
+  "fixture": "external-references.external-reference-unknown-store",
+  "targets": "external-references/external-reference-unknown-store",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 1,
+  "rulesEmitted": [
+    "external-references/external-reference-unknown-store"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 19,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 2,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "external-references",
+      "rule": "external-reference-unknown-store",
+      "severity": "error",
+      "object": "external-reference:promotion.conformance",
+      "field": "store",
+      "message": "\"loyalty-ledger\" is not a live store this repo knows how to probe. Known stores: promotion, delivery-zone. A store is a pair — the id in src/external-references.ts and a probe in packages/tools/src/external-references/probes.ts — and a declaration naming a store with no probe could never be reconciled, so it would either fail every boot or (worse) be skipped silently.",
+      "reference": "loyalty-ledger"
+    }
+  ],
+  "formatted": [
+    "external-references/external-reference-unknown-store: external-reference:promotion.conformance · store — \"loyalty-ledger\" is not a live store this repo knows how to probe. Known stores: promotion, delivery-zone. A store is a pair — the id in src/external-references.ts and a probe in packages/tools/src/external-references/probes.ts — and a declaration naming a store with no probe could never be reconciled, so it would either fail every boot or (worse) be skipped silently."
+  ]
+}

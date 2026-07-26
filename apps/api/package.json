@@ -46,6 +46,7 @@
     "@fastify/swagger-ui": "^5.2.5",
     "@ibatexas/agents": "workspace:*",
     "@ibatexas/audit-sink": "workspace:*",
+    "@ibatexas/catalog": "workspace:*",
     "@ibatexas/domain": "workspace:*",
     "@ibatexas/intent-kinds": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",

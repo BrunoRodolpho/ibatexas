@@ -46,6 +46,9 @@ const mockStripeAdjudicatedUpdate = vi.hoisted(() => vi.fn().mockResolvedValue({
 // mock so the bypass-sentinel test below can assert it is NEVER invoked
 // for the metadata-persist path.
 const mockBareStripePaymentIntentsUpdate = vi.hoisted(() => vi.fn().mockResolvedValue({}));
+// BKL-230: markPixPaid keys a Redis flag off the order id — hoisted so the
+// raw-vs-display suite can assert it receives the RAW Medusa order id.
+const mockMarkPixPaid = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 // P0-X9: typed errors from medusaAdjudicated. Mocked for instanceof checks.
 const MockRefusedError = vi.hoisted(() =>
@@ -143,7 +146,7 @@ vi.mock("@ibatexas/audit-sink", () => ({
 }));
 
 vi.mock("../jobs/pix-expiry-monitor.js", () => ({
-  markPixPaid: vi.fn().mockResolvedValue(undefined),
+  markPixPaid: mockMarkPixPaid,
 }));
 
 // Ack-then-async (P1-NET-STRIPESYNC): the route now enqueues a durable job
@@ -1674,6 +1677,231 @@ describe("POST /api/webhooks/stripe — PIX cart-complete via medusaAdjudicated 
   });
 });
 
+// ── BKL-230: PIX leg must carry the RAW Medusa order id downstream ──────────
+//
+// The webhook's PIX leg completed the cart (order row landed) but then handed
+// the DISPLAY-formatted id (formatOrderId → "IBX-####") downstream as if it
+// were a Medusa order id. capturePayment's GET /admin/orders/IBX-0230 404'd,
+// the throw hit the capture-leg isolation catch, `result` stayed null, and the
+// "already processed" early return fired BEFORE the order.placed publish — so
+// PIX orders were never announced (cash orders were; it keeps rawOrderId for
+// NATS and formats only the user-facing string).
+//
+// These tests drive the REAL success path: capturePayment resolves a result
+// object rather than the `null` the older PIX suites stub — that stub is
+// exactly what masked the defect, since a null result is indistinguishable
+// from the swallowed-404 no-op.
+
+describe("POST /api/webhooks/stripe — PIX leg carries the RAW Medusa order id (BKL-230)", () => {
+  const RAW_ORDER_ID = "order_pix_bkl230";
+  const DISPLAY_ID = 230;
+  const FORMATTED_ORDER_ID = "IBX-0230";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    setupEnv();
+    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // No local Payment row for this PI → reconcile takes the T2-1 fallback,
+    // which looks the order up by id. Another seam the id must be raw for.
+    mockGetByStripePaymentIntentId.mockResolvedValue(null);
+    mockGetActiveByOrderId.mockResolvedValue(null);
+    mockGetAuditSinkEmit.mockResolvedValue(undefined);
+    mockStripeAdjudicatedUpdate.mockResolvedValue({});
+    mockPublishNatsEvent.mockResolvedValue(undefined);
+    mockGetRedisClient.mockResolvedValue(
+      createMockRedis({ set: vi.fn().mockResolvedValue("OK"), hDel: vi.fn().mockResolvedValue(1) }),
+    );
+
+    // cart-complete yields an order carrying BOTH ids — the shape that made
+    // the old code prefer the display form.
+    mockMedusaAdjudicated.mockResolvedValue({
+      type: "order",
+      order: { id: RAW_ORDER_ID, display_id: DISPLAY_ID },
+    });
+
+    // The un-masking stub: a real capture result, so reaching (or not reaching)
+    // the order.placed publish is observable.
+    mockCapturePayment.mockResolvedValue({
+      customerId: "cus_bkl230",
+      displayId: DISPLAY_ID,
+      customerEmail: "cliente@example.com",
+      customerName: "Cliente",
+      customerPhone: "+5511999999999",
+      totalInCentavos: 8900,
+      subtotalInCentavos: 8900,
+      shippingInCentavos: 0,
+      items: [],
+      paymentMethod: "pix",
+      deliveryType: "pickup",
+      tipInCentavos: 0,
+    });
+  });
+
+  function createPixEvent(eventId = "evt_pix_bkl230_01") {
+    return {
+      id: eventId,
+      livemode: false,
+      type: "payment_intent.succeeded",
+      created: 1_700_000_000,
+      data: {
+        object: {
+          id: "pi_pix_bkl230",
+          amount: 8900,
+          // medusaOrderId absent → the cart-complete branch owns id resolution.
+          metadata: { cartId: "cart_pix_bkl230", customerId: "cus_bkl230" },
+          last_payment_error: null,
+        },
+      },
+    };
+  }
+
+  async function fire(eventId?: string) {
+    mockConstructEvent.mockReturnValue(createPixEvent(eventId));
+    const app = await buildTestServer();
+    return app.inject({
+      method: "POST",
+      url: "/api/webhooks/stripe",
+      headers: { "content-type": "application/json", "stripe-signature": "t=123,v1=valid" },
+      payload: Buffer.from("{}"),
+    });
+  }
+
+  it("calls capturePayment with the RAW order id (not the formatted display id)", async () => {
+    const res = await fire("evt_pix_bkl230_capture");
+
+    expect(res.statusCode).toBe(200);
+    expect(mockCapturePayment).toHaveBeenCalledTimes(1);
+    expect(mockCapturePayment).toHaveBeenCalledWith(RAW_ORDER_ID, "pi_pix_bkl230", {
+      amountInCentavos: 8900,
+    });
+  });
+
+  it("persists metadata.medusaOrderId back to the PaymentIntent as the RAW id", async () => {
+    const res = await fire("evt_pix_bkl230_meta");
+
+    expect(res.statusCode).toBe(200);
+    expect(mockStripeAdjudicatedUpdate).toHaveBeenCalledTimes(1);
+    const [, params] = mockStripeAdjudicatedUpdate.mock.calls[0]!;
+    expect((params as { metadata: Record<string, string> }).metadata.medusaOrderId).toBe(
+      RAW_ORDER_ID,
+    );
+  });
+
+  it("publishes order.placed exactly once with the RAW order id", async () => {
+    const res = await fire("evt_pix_bkl230_placed");
+
+    expect(res.statusCode).toBe(200);
+    const placed = mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.placed");
+    expect(placed).toHaveLength(1);
+    expect(placed[0]?.[1]).toMatchObject({
+      eventType: "order.placed",
+      orderId: RAW_ORDER_ID,
+      displayId: DISPLAY_ID,
+      paymentMethod: "pix",
+      paymentStatus: "captured",
+      stripePaymentIntentId: "pi_pix_bkl230",
+    });
+  });
+
+  it("passes the RAW order id to the reconcile fallback lookup and to markPixPaid", async () => {
+    const res = await fire("evt_pix_bkl230_reconcile");
+
+    expect(res.statusCode).toBe(200);
+    // T2-1 fallback: the Payment row is found by ORDER id when the PI is unknown.
+    expect(mockGetActiveByOrderId).toHaveBeenCalledWith(RAW_ORDER_ID);
+    // The PIX-paid flag keys off the order id too.
+    expect(mockMarkPixPaid).toHaveBeenCalledWith(RAW_ORDER_ID);
+  });
+
+  it("locks the capture on the RAW order id", async () => {
+    const keysSeen: string[] = [];
+    lockState.impl = async (key: string, fn: () => Promise<unknown>) => {
+      keysSeen.push(key);
+      return fn();
+    };
+    try {
+      await fire("evt_pix_bkl230_lock");
+    } finally {
+      lockState.impl = async (_key: string, fn: () => Promise<unknown>) => fn();
+    }
+
+    expect(keysSeen).toContain(`order-capture:${RAW_ORDER_ID}`);
+    expect(keysSeen).not.toContain(`order-capture:${FORMATTED_ORDER_ID}`);
+  });
+
+  it("regression: the formatted IBX-#### string reaches NONE of the downstream seams", async () => {
+    const res = await fire("evt_pix_bkl230_regression");
+    expect(res.statusCode).toBe(200);
+
+    const seams = {
+      capturePayment: mockCapturePayment.mock.calls,
+      stripeMetadataPersist: mockStripeAdjudicatedUpdate.mock.calls,
+      natsPublish: mockPublishNatsEvent.mock.calls,
+      reconcileOrderLookup: mockGetActiveByOrderId.mock.calls,
+      markPixPaid: mockMarkPixPaid.mock.calls,
+    };
+
+    for (const [seam, calls] of Object.entries(seams)) {
+      expect(calls.length, `${seam} should have been exercised`).toBeGreaterThan(0);
+      expect(JSON.stringify(calls), `${seam} must not carry a formatted order id`).not.toContain(
+        "IBX-",
+      );
+    }
+  });
+
+  it("reaches the order.placed publish against an id-strict capturePayment (the live defect)", async () => {
+    // The seam the other tests mock away: capturePayment's first act is
+    // GET /admin/orders/:id, which 404s for anything that is not a real Medusa
+    // id. Modelling that throw is what makes this test reproduce the PRODUCTION
+    // failure rather than just an argument mismatch — with the formatted id the
+    // capture threw, the isolation catch swallowed it, `result` stayed null and
+    // the handler returned at the "already processed" no-op, so order.placed
+    // never published for ANY PIX order.
+    mockCapturePayment.mockImplementation(async (orderId: string) => {
+      if (orderId !== RAW_ORDER_ID) {
+        throw new Error(`Medusa admin GET /admin/orders/${orderId} failed: 404 Not Found`);
+      }
+      return {
+        customerId: "cus_bkl230",
+        displayId: DISPLAY_ID,
+        customerEmail: "cliente@example.com",
+        customerName: "Cliente",
+        customerPhone: "+5511999999999",
+        totalInCentavos: 8900,
+        subtotalInCentavos: 8900,
+        shippingInCentavos: 0,
+        items: [],
+        paymentMethod: "pix",
+        deliveryType: "pickup",
+        tipInCentavos: 0,
+      };
+    });
+
+    const res = await fire("evt_pix_bkl230_idstrict");
+
+    expect(res.statusCode).toBe(200);
+    const placed = mockPublishNatsEvent.mock.calls.filter((c) => c[0] === "order.placed");
+    expect(placed).toHaveLength(1);
+    expect(placed[0]?.[1]).toMatchObject({ orderId: RAW_ORDER_ID });
+    // And the PIX-paid flag past the publish is reached too (the old early
+    // return skipped everything below the no-op branch).
+    expect(mockMarkPixPaid).toHaveBeenCalledWith(RAW_ORDER_ID);
+  });
+
+  it("still short-circuits to the already-processed no-op when capturePayment yields null", async () => {
+    // The guard the fix must not erase: a genuine no-op (order already
+    // captured / lock lost) still skips order.placed and only reconciles.
+    mockCapturePayment.mockResolvedValue(null);
+
+    const res = await fire("evt_pix_bkl230_noop");
+
+    expect(res.statusCode).toBe(200);
+    expect(mockPublishNatsEvent).not.toHaveBeenCalledWith("order.placed", expect.anything());
+    expect(mockGetActiveByOrderId).toHaveBeenCalledWith(RAW_ORDER_ID);
+  });
+});
+
 // ── W8-V2 (NEW-W7-V2): PIX cart-complete metadata-update via stripeAdjudicated ──
 //
 // The bare `stripe.paymentIntents.update(...)` at stripe-webhook.ts:308
@@ -1750,7 +1978,10 @@ describe("POST /api/webhooks/stripe — PIX cart-complete metadata-update via st
       metadata: expect.objectContaining({
         cartId: "cart_pix_42",
         customerId: "cus_01",
-        medusaOrderId: expect.stringMatching(/order|200/),
+        // BKL-230: pinned to the RAW id. The old /order|200/ pattern also
+        // matched the formatted "IBX-0200", so it passed while the leg was
+        // persisting a display id that every later reader treats as a Medusa id.
+        medusaOrderId: "order_pix_42",
       }),
     });
     expect(meta).toMatchObject({

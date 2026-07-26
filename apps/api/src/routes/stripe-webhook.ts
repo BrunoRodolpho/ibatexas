@@ -64,7 +64,6 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import { buildEnvelope } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import {
-  formatOrderId,
   PaymentStatus,
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
@@ -411,8 +410,9 @@ function handlePixCompletionError(
  * reconcile pattern). sourceSubject = "webhook:stripe:<event.id>" surfaces in
  * audit.
  *
- * Returns the resolved orderId (the original `orderId` when there is nothing to
- * complete). Throws on cart-complete lock contention so the BullMQ job retries.
+ * Returns the resolved RAW Medusa order id (the original `orderId` when there is
+ * nothing to complete). Throws on cart-complete lock contention so the BullMQ
+ * job retries.
  */
 async function completePixCartIfNeeded(
   paymentIntent: Stripe.PaymentIntent,
@@ -460,9 +460,18 @@ async function completePixCartIfNeeded(
       // throw AFTER the try so the governance catch below doesn't swallow it.
       contended = true;
     } else {
-      resolvedOrderId = completion.order?.display_id
-        ? formatOrderId(completion.order.display_id)
-        : completion.order?.id;
+      // BKL-230: the RAW Medusa order id — never the formatted IBX-#### form.
+      // Every consumer downstream of this return is machine-facing (admin
+      // GET /admin/orders/:id in capturePayment, the Payment row's orderId in
+      // reconcile's getActiveByOrderId, the order.placed payload, the
+      // medusaOrderId we stamp back onto the PI for later webhook legs to read).
+      // Formatting here made the admin GET 404, so capturePayment threw, the
+      // isolation catch below swallowed it, and the null result short-circuited
+      // to "already processed" BEFORE order.placed ever published — PIX orders
+      // silently never announced. Same raw-vs-display split the cash path keeps
+      // in packages/tools/src/cart/create-checkout.ts. No user-facing string is
+      // built on this leg, so the display form has no use here at all.
+      resolvedOrderId = completion.order?.id;
 
       if (resolvedOrderId) {
         // W8-V2 (NEW-W7-V2): persist orderId back to the PaymentIntent

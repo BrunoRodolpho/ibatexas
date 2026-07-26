@@ -47,6 +47,18 @@ import {
   composeMenuContentsText,
 } from "./menu-item-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
+import {
+  DELIVERY_COVERAGE_KEY,
+  DELIVERY_NEEDS_CEP_MARKER_KEY,
+  DELIVERY_NO_COVERAGE_KEY,
+  resolveDeliveryCoverage,
+} from "./delivery-coverage-resolver.js";
+import {
+  COUPON_INVALID_KEY,
+  COUPON_NEEDS_CODE_MARKER_KEY,
+  COUPON_VALID_KEY,
+  resolveCouponValidity,
+} from "./coupon-validity-resolver.js";
 import { classifyRequestSpans } from "./required-claim-decomposer.js";
 
 /**
@@ -546,6 +558,140 @@ export function createFirstPartyTurnReads(
           read: async () => ({ infoText }),
         });
       }
+    }
+
+    // LE2-002 / NEW-007 DELIVERY_COVERAGE / DELIVERY_NO_COVERAGE — the delivery
+    // coverage read ("vocês entregam em Ibaté?"), GATED on a DELIVERY_COVERAGE_Q
+    // span. FIXED subject (single keys, like STORE_INFO / MENU_OVERVIEW), PUBLIC
+    // store policy → placed BEFORE the authenticated-customer gate (a coverage
+    // question is the most common GUEST question there is — a first-time customer
+    // asks it before they have any account at all).
+    //
+    // The shared per-turn-memoized resolver goes through the delivery-zones
+    // projection (zone-NAME arm) or the EXISTING estimation tool (CEP arm) — no new
+    // DB path — and returns exactly one of four states. This block is the honesty
+    // wiring for all four, and the ONLY place the complementary pair is recorded:
+    //
+    //   · covered      → `delivery:coverage` PRESENT with the composed scalar.
+    //   · not_covered  → `delivery:no_coverage` PRESENT (a POSITIVE out-of-zone
+    //                    determination is a FACT — a VALIDATED negative render).
+    //   · needs_cep    → NEITHER claim key; the needs-CEP MARKER instead, which
+    //                    forces the CLARIFY-for-CEP ask downstream. Never a
+    //                    nearest-neighbour guess.
+    //   · unknown      → NOTHING recorded at all → both claims resolve ABSENT →
+    //                    honest UNKNOWN. Inv 7: "could not check" is a DISTINCT
+    //                    state from "we don't deliver", and it must never render as
+    //                    the negative.
+    //
+    // Exactly one of the two claim keys can ever be PRESENT, so the pair can never
+    // render a contradiction. The `delivery:zones_changed` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    if (menuSpans.includes("DELIVERY_COVERAGE_Q")) {
+      const coverage = await resolveDeliveryCoverage(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+      );
+      if (coverage.kind === "covered") {
+        const coverageText = coverage.coverageText;
+        reads.push({
+          key: DELIVERY_COVERAGE_KEY,
+          source: "delivery.coverage",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ coverageText }),
+        });
+      } else if (coverage.kind === "not_covered") {
+        const noCoverageText = coverage.noCoverageText;
+        reads.push({
+          key: DELIVERY_NO_COVERAGE_KEY,
+          source: "delivery.coverage",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ noCoverageText }),
+        });
+      } else if (coverage.kind === "needs_cep") {
+        reads.push({
+          key: DELIVERY_NEEDS_CEP_MARKER_KEY,
+          source: "delivery.coverage.marker",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ needsCep: true }),
+        });
+      }
+      // `unknown` — deliberately records NOTHING (see the block header).
+    }
+
+    // LE2-019 / spec Decision 18 COUPON_VALID / COUPON_INVALID — the coupon
+    // validity read ("o cupom X1234 vale?"), GATED on a COUPON_VALIDITY_Q span.
+    // FIXED subject (single keys, like DELIVERY_COVERAGE / STORE_INFO), PUBLIC
+    // store policy → placed BEFORE the authenticated-customer gate: a coupon is
+    // valid or not regardless of who is asking, and a first-time customer holding
+    // a flyer code has no account yet.
+    //
+    // The shared per-turn-memoized resolver goes through the EXISTING `medusaAdmin`
+    // transport at the EXISTING `/admin/promotions?code=` path and the SHARED
+    // usability predicate — no new store path — and returns exactly one of four
+    // states. This block is the honesty wiring for all four, and the ONLY place the
+    // complementary pair is recorded:
+    //
+    //   · valid      → `coupon:valid` PRESENT with the composed terms scalar.
+    //   · invalid    → `coupon:invalid` PRESENT (a POSITIVE not-usable determination
+    //                  off a SUCCESSFUL lookup is a FACT — a VALIDATED negative).
+    //   · needs_code → NEITHER claim key; the needs-CODE MARKER instead, which
+    //                  forces the CLARIFY-for-code ask downstream. Never a guess at
+    //                  which coupon was meant.
+    //   · unknown    → NOTHING recorded at all → both claims resolve ABSENT →
+    //                  honest UNKNOWN. Inv 7: "could not check" is a DISTINCT state
+    //                  from "your coupon is invalid", and it must never render as
+    //                  the negative. (This is exactly where this read DIVERGES from
+    //                  the display route POST /api/coupons/validate, which may
+    //                  collapse a failed lookup to `valid: false`.)
+    //
+    // Exactly one of the two claim keys can ever be PRESENT, so the pair can never
+    // render a contradiction. The `coupon:promotions_changed` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    //
+    // DECISION 14: a READ only. Nothing here applies a coupon, touches a cart, or
+    // builds an intent envelope.
+    if (menuSpans.includes("COUPON_VALIDITY_Q")) {
+      const coupon = await resolveCouponValidity(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+      );
+      if (coupon.kind === "valid") {
+        const validityText = coupon.validityText;
+        reads.push({
+          key: COUPON_VALID_KEY,
+          source: "promotions.validity",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ validityText }),
+        });
+      } else if (coupon.kind === "invalid") {
+        const invalidityText = coupon.invalidityText;
+        reads.push({
+          key: COUPON_INVALID_KEY,
+          source: "promotions.validity",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ invalidityText }),
+        });
+      } else if (coupon.kind === "needs_code") {
+        reads.push({
+          key: COUPON_NEEDS_CODE_MARKER_KEY,
+          source: "promotions.validity.marker",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ needsCode: true }),
+        });
+      }
+      // `unknown` — deliberately records NOTHING (see the block header).
     }
 
     if (!isAuthenticatedCustomer(customerId)) return reads;

@@ -11,14 +11,20 @@ import { describe, expect, it } from "vitest"
 import {
   buildLinks,
   buildWireSections,
+  deliveryState,
   derivePipeline,
+  groupsOrFallback,
   mergeTimeline,
   personaPhase,
   promptIdForPersona,
+  rollupDelivery,
   stageFacts,
   type AdjDecision,
+  type DeliveryRecord,
   type InvestigationContext,
   type LlmCall,
+  type RcaConversation,
+  type RcaConversationGroup,
   type RcaTurnDetail,
   type VlLine,
   type WireExchange,
@@ -86,7 +92,23 @@ function adj(over: Partial<AdjDecision> = {}): AdjDecision {
 }
 
 function D(over: Partial<RcaTurnDetail> = {}): RcaTurnDetail {
-  return { context: ctx(), llm: [], adj: [], vl: [], wire: [], degraded: { adj: false, vl: false, wire: false }, ...over }
+  return { context: ctx(), llm: [], adj: [], vl: [], wire: [], delivery: [], degraded: { adj: false, vl: false, wire: false, delivery: false }, ...over }
+}
+
+/** LE2-030 — one whatsapp_delivery row (a captured SID + its latest status). */
+function del(over: Partial<DeliveryRecord> = {}): DeliveryRecord {
+  return {
+    messageSid: "SM_0",
+    partIndex: 0,
+    status: null,
+    sentAt: T1,
+    statusAt: null,
+    errorCode: null,
+    errorMessage: null,
+    callbackCount: 0,
+    source: "send",
+    ...over,
+  }
 }
 
 // ── persona classification (NEVER positional) ───────────────────────────────
@@ -205,7 +227,7 @@ describe("derivePipeline — send stage (reply.sent is the verdict)", () => {
   })
 
   it("whatsapp with a degraded VL lane reads silent — never 'no send event'", () => {
-    const d = D({ degraded: { adj: false, vl: true, wire: false } })
+    const d = D({ degraded: { adj: false, vl: true, wire: false, delivery: false } })
     expect(stage(d, "send")).toMatchObject({ state: "silent", sub: "VL degraded" })
   })
 
@@ -215,6 +237,125 @@ describe("derivePipeline — send stage (reply.sent is the verdict)", () => {
       vl: [vl({ fields: { event: "turn", response: "olá" } })],
     })
     expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "replied" })
+  })
+})
+
+// ── LE2-030: Twilio delivery confirmation outranks reply.sent ───────────────
+
+describe("deliveryState / rollupDelivery", () => {
+  it("maps Twilio's vocabulary onto the three workbench states", () => {
+    expect(deliveryState("delivered")).toBe("delivered")
+    expect(deliveryState("read")).toBe("delivered")
+    expect(deliveryState("failed")).toBe("failed")
+    expect(deliveryState("undelivered")).toBe("failed")
+    expect(deliveryState("canceled")).toBe("failed")
+    // In-flight and "no callback yet" are the SAME honest answer: pending.
+    expect(deliveryState("sent")).toBe("pending")
+    expect(deliveryState("queued")).toBe("pending")
+    expect(deliveryState(null)).toBe("pending")
+  })
+
+  it("returns null with no rows (a pre-capture or web turn)", () => {
+    expect(rollupDelivery([])).toBeNull()
+  })
+
+  it("one failed part fails the whole reply; one unconfirmed keeps it pending", () => {
+    expect(
+      rollupDelivery([del({ status: "delivered" }), del({ status: "failed", partIndex: 1 })]),
+    ).toMatchObject({ state: "failed", delivered: 1, failed: 1, pending: 0, total: 2 })
+    expect(
+      rollupDelivery([del({ status: "delivered" }), del({ status: null, partIndex: 1 })]),
+    ).toMatchObject({ state: "pending", delivered: 1, failed: 0, pending: 1 })
+    expect(
+      rollupDelivery([del({ status: "delivered" }), del({ status: "read", partIndex: 1 })]),
+    ).toMatchObject({ state: "delivered", delivered: 2 })
+  })
+})
+
+describe("derivePipeline — send stage (LE2-030: delivered / failed / pending)", () => {
+  const sent = vl({ fields: { event: "reply.sent", disposition: "deliverable", deliveredText: "true" } })
+
+  it("delivered — every captured part confirmed by Twilio", () => {
+    const d = D({ vl: [sent], delivery: [del({ status: "delivered" })] })
+    expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "delivered" })
+  })
+
+  it("failed — Twilio said the reply never landed, even though reply.sent claimed delivery", () => {
+    const d = D({
+      vl: [sent],
+      delivery: [del({ status: "undelivered", errorCode: "63024" })],
+    })
+    expect(stage(d, "send")).toMatchObject({ state: "fail", sub: "failed · 1/1 not delivered" })
+  })
+
+  it("pending — accepted by Twilio, no callback yet: silent, never a failure", () => {
+    const d = D({ vl: [sent], delivery: [del({ status: null })] })
+    expect(stage(d, "send")).toMatchObject({ state: "silent", sub: "pending · 1/1 unconfirmed" })
+  })
+
+  it("counts multi-part replies", () => {
+    const d = D({
+      vl: [sent],
+      delivery: [del({ status: "delivered" }), del({ status: "delivered", partIndex: 1 })],
+    })
+    expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "delivered (2 parts)" })
+  })
+
+  it("a paused turn stays designed silence — it has no SIDs to confirm", () => {
+    const d = D({
+      vl: [vl({ fields: { event: "reply.sent", disposition: "suppressed_paused" } })],
+      delivery: [],
+    })
+    expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "paused · designed silence" })
+  })
+
+  it("falls back to the reply.sent verdict when no delivery rows exist (pre-capture turn)", () => {
+    const d = D({ vl: [sent], delivery: [] })
+    expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "delivered" })
+  })
+
+  it("tolerates an older API that sends no delivery field at all", () => {
+    const d = D({ vl: [sent] })
+    delete (d as { delivery?: unknown }).delivery
+    expect(stage(d, "send")).toMatchObject({ state: "ok", sub: "delivered" })
+  })
+})
+
+describe("stageFacts — send stage carries the per-part delivery evidence", () => {
+  it("leads with the rollup, then one line per part", () => {
+    const d = D({
+      vl: [vl({ fields: { event: "reply.sent", deliveredText: "true" } })],
+      delivery: [
+        del({ messageSid: "SM_a", status: "delivered", statusAt: T2 }),
+        del({
+          messageSid: "SM_b",
+          partIndex: 1,
+          status: "failed",
+          statusAt: T2,
+          errorCode: "63016",
+          errorMessage: "Failed to send freeform message",
+        }),
+      ],
+    })
+    const facts = stageFacts(d, "send")
+    expect(facts[0]).toBe("delivery: 1 delivered · 1 failed · 0 pending (2 parts)")
+    expect(facts[1]).toContain("SM_a")
+    expect(facts[1]).toContain("delivered")
+    expect(facts[2]).toContain("SM_b")
+    expect(facts[2]).toContain("failed")
+    expect(facts[2]).toContain("63016")
+    // The reply.sent fields still follow.
+    expect(facts).toContain("deliveredText: true")
+  })
+
+  it("says so explicitly when a part has no callback yet", () => {
+    const d = D({ delivery: [del({ messageSid: "SM_c" })] })
+    expect(stageFacts(d, "send")[1]).toContain("no callback yet")
+  })
+
+  it("never mints a verdict from a degraded delivery lane", () => {
+    const d = D({ delivery: [], degraded: { adj: false, vl: false, wire: false, delivery: true } })
+    expect(stageFacts(d, "send")).toContain("delivery lane degraded — absence is not a signal here")
   })
 })
 
@@ -329,6 +470,64 @@ describe("stageFacts", () => {
 
   it("returns [] for an unknown stage key — never throws", () => {
     expect(stageFacts(D(), "nope")).toEqual([])
+  })
+})
+
+// ── LE2-031: the rail's grouped shape ───────────────────────────────────────
+// Grouping itself is a SERVER concern (apps/api qa-rca-grouping.ts, pinned
+// there). What the client owns is the degradation: an API build that does not
+// group must not make the rail lie about identity.
+
+describe("groupsOrFallback", () => {
+  const rows: RcaConversation[] = [
+    {
+      sessionId: "sess-1",
+      chatCuid: null,
+      channel: "whatsapp",
+      startedAt: T0,
+      lastAt: T2,
+      lastText: null,
+      lastRole: null,
+      turnCount: 2,
+    },
+  ]
+
+  it("passes the server's groups through untouched when they are present", () => {
+    const groups: RcaConversationGroup[] = [
+      {
+        groupKey: "customer:cus_1",
+        kind: "customer",
+        label: "cus_1",
+        customerId: "cus_1",
+        phoneHash: null,
+        staffId: null,
+        sessionIds: ["sess-1"],
+        channels: ["whatsapp"],
+        sessionCount: 1,
+        turnCount: 2,
+        startedAt: T0,
+        lastAt: T2,
+      },
+    ]
+    expect(groupsOrFallback(rows, groups)).toEqual({ groups, ungrouped: false })
+  })
+
+  it("falls back to one row per session — and NEVER calls them unidentified", () => {
+    const out = groupsOrFallback(rows, undefined)
+    expect(out.ungrouped).toBe(true)
+    expect(out.groups).toHaveLength(1)
+    // "unidentified" is a server finding about the data; "ungrouped" is a fact
+    // about this API build. Conflating them would fabricate a finding.
+    expect(out.groups[0]!.kind).toBe("ungrouped")
+    expect(out.groups[0]!.groupKey).toBe("session:sess-1")
+    expect(out.groups[0]!.sessionIds).toEqual(["sess-1"])
+    expect(out.groups[0]!.customerId).toBeNull()
+  })
+
+  it("keeps the fallback key stable across refreshes (it is the session id)", () => {
+    const a = groupsOrFallback(rows, undefined).groups.map((g) => g.groupKey)
+    const b = groupsOrFallback([{ ...rows[0]!, turnCount: 9 }], undefined).groups.map((g) => g.groupKey)
+    expect(b).toEqual(a)
   })
 })
 
