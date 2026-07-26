@@ -246,6 +246,15 @@ const WHATSAPP_GUARD_REFS: readonly CapabilityGuardRef[] = [
 //       EXECUTE also stands up the PIX QR, so the pairing is real but is
 //       not evidence about how customers ask to REGENERATE a code.)
 //
+//       PII-SCRUBBED, and therefore NOT byte-verbatim (unlike [S]): real
+//       order ids became `12345` and a real customer's given name became
+//       `Fulano`. Production utterances are customer data and a catalog is a
+//       committed, widely-read artifact; the retrieval value is in the SHAPE
+//       of the request, never in the specific digits. Product names
+//       (`Farofa de Bacon Defumado`) and promo codes (`BEMVINDO10`) are the
+//       business's own catalog, not personal data, and are kept — they are
+//       real customer vocabulary and carry genuine retrieval signal.
+//
 //   [A] FREELY AUTHORED colloquial paraphrase. This is the register-gap
 //       fill LE2-008 measured the need for, and it is the class with no
 //       external grounding — authored from the pt-BR a customer plausibly
@@ -458,7 +467,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
       /* P */ "cancela meu pedido",
       /* P */ "quero cancelar meu pedido",
       /* P */ "cancela o pedido 4 aí que mudei de ideia",
-      /* P */ "quero cancelar o pedido 902436 e receber meu dinheiro de volta",
+      /* P */ "quero cancelar o pedido 12345 e receber meu dinheiro de volta",
       /* A */ "desisti do pedido",
       /* A */ "não quero mais o pedido",
       /* A */ "anula meu pedido",
@@ -586,7 +595,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     conversationTriggers: [
       /* S */ "tira a coca do meu pedido",
       /* P */ "tira a Farofa de Bacon Defumado do meu pedido",
-      /* P */ "tira a sobremesa do pedido 902436 que eu acabei de pagar",
+      /* P */ "tira a sobremesa do pedido 12345 que eu acabei de pagar",
       /* P */ "tira o Refrigerante do pedido",
       /* P */ "tira a Mandioca Frita do meu pedido",
       /* A */ "remove um item do pedido que já fiz",
@@ -625,7 +634,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     successClaimLinks: ["note-added"],
     conversationTriggers: [
       /* S */ "adiciona uma observação no meu pedido: sem cebola, por favor",
-      /* P */ "adiciona uma observação no pedido 933869: cliente chega às 20h",
+      /* P */ "adiciona uma observação no pedido 12345: cliente chega às 20h",
       /* P */ "anota no meu pedido que o cliente vai atrasar",
       /* P */ "adiciona outra observação: cliente prefere pagar em dinheiro",
       /* A */ "anota que é sem cebola",
@@ -662,7 +671,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     conversationTriggers: [
       /* S */ "dou 5 estrelas pro pedido, chegou rapidinho e quentinho",
       /* P */ "quero avaliar meu pedido: 5 estrelas, comida excelente",
-      /* P */ "quero avaliar o pedido 902436: 5 estrelas",
+      /* P */ "quero avaliar o pedido 12345: 5 estrelas",
       /* A */ "quero deixar uma avaliação",
       /* A */ "nota 5 pro pedido",
       /* A */ "adorei a comida, quero avaliar",
@@ -705,7 +714,7 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     conversationTriggers: [
       /* S */ "quero uma mesa pra 4 pessoas dia 20/03 às 20h",
       /* P */ "Quero reservar uma mesa para 4 pessoas amanhã às 19h",
-      /* P */ "quero reservar uma mesa para 4 pessoas hoje as 20h, meu nome e Carlos",
+      /* P */ "quero reservar uma mesa para 4 pessoas hoje as 20h, meu nome e Fulano",
       /* A */ "quero reservar uma mesa",
       /* A */ "tem mesa pra hoje à noite?",
       /* A */ "queria marcar uma mesa pra 6 pessoas",

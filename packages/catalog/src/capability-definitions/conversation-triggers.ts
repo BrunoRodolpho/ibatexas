@@ -11,6 +11,7 @@
  * phrasing, not an implementation detail of the checker.
  */
 
+import { normalizeDiacritics } from "../text-normalization.js"
 import type { CapabilityDefinition } from "./types.js"
 
 /**
@@ -46,16 +47,15 @@ export const MIN_CONVERSATION_TRIGGERS = 6
  * of the stored form would degrade the very retrieval this projection
  * exists to improve (and would violate Hard Rule #4's spirit besides).
  *
- * Deliberately NOT imported from `@ibatexas/tools`: this package's only
- * dependency is `@adjudicate/core` (see its package.json) and the catalog
- * stays dependency-light by design. Nine lines of Unicode folding is a
- * cheaper price than a new edge in the build graph.
+ * The accent/case fold is NOT reimplemented here: it comes from
+ * `../text-normalization.ts`, the package's single `normalizeDiacritics`,
+ * shared with `compiler/safety-markers.ts`'s `normalizeReference`. Only the
+ * TAIL differs — that one folds separators to `_` for identifier matching,
+ * this one folds punctuation to spaces for prose. See that module for why the
+ * shared half lives at the package root rather than beside either caller.
  */
 export function normalizeTriggerPhrasing(phrasing: string): string {
-  return phrasing
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
+  return normalizeDiacritics(phrasing)
     .replace(/[^\p{L}\p{N} ]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()

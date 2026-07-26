@@ -52,6 +52,8 @@
 //
 // Pure: no clock, no RNG, no IO.
 
+import { normalizeDiacritics } from "../text-normalization.js"
+
 /**
  * Which safety family a marker belongs to. Both families are compile errors —
  * the family only selects which ratified tracker row the diagnostic cites
@@ -124,12 +126,13 @@ export const SAFETY_MARKERS: readonly SafetyMarker[] = [
  * locale-independent (no `toLocaleLowerCase`).
  */
 export function normalizeReference(reference: string): string {
-  return reference
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[\s./\-]+/g, "_")
+  // The accent/case fold is shared with the conversation projection's own
+  // normalizer (LE2-033) — see `../text-normalization.ts` for why only the
+  // HEAD is shared and the separator tail below stays local to this caller.
+  return normalizeDiacritics(reference.replace(/([a-z0-9])([A-Z])/g, "$1_$2")).replace(
+    /[\s./\-]+/g,
+    "_",
+  )
 }
 
 /** Does `marker` fire on an already-normalized reference? */

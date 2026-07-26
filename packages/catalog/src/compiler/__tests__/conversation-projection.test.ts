@@ -16,6 +16,8 @@ import {
 } from "../../capability-definitions/conversation-triggers.js"
 import type { CapabilityDefinition } from "../../capability-definitions/types.js"
 import { runConversationProjectionPass } from "../passes/conversation-projection.js"
+import { normalizeReference } from "../safety-markers.js"
+import { normalizeDiacritics } from "../../text-normalization.js"
 
 /** `MIN_CONVERSATION_TRIGGERS` distinct, well-formed phrasings. */
 function floorTriggers(prefix = "gatilho"): string[] {
@@ -226,5 +228,26 @@ describe("normalizeTriggerPhrasing", () => {
   it("is idempotent", () => {
     const once = normalizeTriggerPhrasing("Tira a Coça!  ")
     expect(normalizeTriggerPhrasing(once)).toBe(once)
+  })
+
+  it("shares its accent/case fold with the compiler's normalizeReference", () => {
+    // There is ONE `normalizeDiacritics` in this package and both normalizers
+    // compose it (`../../text-normalization.ts`). This pins that: a future
+    // edit that re-inlines the fold in either caller — and lets the two drift
+    // on what "é === e" means — fails here rather than silently.
+    for (const word of ["Glúten", "COÇA", "João", "Alérgenos", "Ação"]) {
+      const folded = normalizeDiacritics(word)
+      expect(normalizeTriggerPhrasing(word)).toBe(folded)
+      expect(normalizeReference(word)).toBe(folded)
+    }
+  })
+
+  it("the two normalizers still differ where they MUST — the separator tail", () => {
+    // Shared head, different tails, on purpose: identifier space folds
+    // separators to `_` so a marker matches a whole segment; prose space folds
+    // punctuation to spaces so words stay words. Collapsing them would break
+    // one of the two callers.
+    expect(normalizeReference("sem-gluten lactose")).toBe("sem_gluten_lactose")
+    expect(normalizeTriggerPhrasing("sem-gluten lactose")).toBe("sem gluten lactose")
   })
 })

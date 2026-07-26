@@ -102,6 +102,8 @@ export {
   type KnownIntentKindsExternalInputs,
 } from "./capability-definitions/index.js"
 
+export { normalizeDiacritics } from "./text-normalization.js"
+
 export {
   CLAIM_CLASS_REFERENCES,
   isClaimClassReference,
