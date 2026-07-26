@@ -672,7 +672,7 @@ export function listIbatexasToolPacks(): ReadonlyArray<TD<unknown, unknown>> {
  * chat-surfaced-kinds set (the registrar deliberately does not import
  * `@ibatexas/pack-*` / `@ibatexas/packs-composed` to stay dependency-light —
  * `apps/api/src/claustrum-bootstrap.ts` builds `chatSurfacedKinds` from
- * `@ibatexas/packs-composed/capability-definitions` and passes it in, exactly
+ * `@ibatexas/catalog` and passes it in, exactly
  * like it already does for `planners`). Returns a list of human-readable
  * problems; empty array means the roster is healthy.
  */
@@ -813,9 +813,9 @@ export interface ToolRosterDriftOptions {
    * in the OPS tool registry by construction — see `opsPlaneDriftProblems`'s
    * own doc). The real chat-registry boot call
    * (`apps/api/src/claustrum-bootstrap.ts`) supplies it, built from
-   * `@ibatexas/packs-composed/capability-definitions`'s
+   * `@ibatexas/catalog`'s
    * `generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)` — the registrar
-   * itself still does not import packs-composed (stays dependency-light);
+   * itself still does not import the catalog (stays dependency-light);
    * the caller computes and injects the set, exactly like `planners`.
    */
   readonly chatSurfacedKinds?: ReadonlySet<string>;

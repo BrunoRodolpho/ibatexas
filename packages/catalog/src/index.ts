@@ -52,12 +52,17 @@
  *     a thin adapter over the compiler's referential-integrity edge table
  *     (same API, same messages, one table).
  *
- * # Compatibility
+ * # The only import path
  *
- * This was an EXPAND-phase move: every pre-existing import path still works.
- * `@ibatexas/packs-composed/capability-definitions` re-exports the capability
- * surface below verbatim (and still runs its own eager guard-resolution boot
- * assertion), so no call site changed.
+ * LE2-014 moved the capability surface here behind a re-export barrel in
+ * `@ibatexas/packs-composed`, so that no call site had to change in the same
+ * commit as the move. LE2-015 migrated every caller and deleted that barrel's
+ * re-exports. This package is now the ONE place a business definition is
+ * imported from; there is no compatibility path left to choose instead.
+ *
+ * What packs-composed kept is guard-ref RESOLUTION — binding a definition's
+ * guard reference to a live guard function in an installed Pack, which is
+ * runtime authority and so was never the catalog's to hold.
  */
 
 export { CATALOG_VERSION } from "./version.js"

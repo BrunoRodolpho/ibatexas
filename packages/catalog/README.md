@@ -242,10 +242,19 @@ workbench displays it on the turn header strip.
 Together with the durable wire capture this closes deterministic turn replay:
 any historical turn is re-runnable against exactly the catalog it saw.
 
-## Compatibility
+## The only import path
 
-This was an **expand-phase move** — accretion, zero behavior change. Every
-pre-existing import path still works:
-`@ibatexas/packs-composed/capability-definitions` re-exports this package's
-capability surface verbatim and still runs its own eager guard-resolution boot
-assertion. No call site changed.
+The move landed in two halves, both zero-behavior-change. LE2-014 was the
+**expand** phase: the files moved here and
+`@ibatexas/packs-composed/capability-definitions` re-exported them verbatim, so
+no call site had to change in the same commit as the move. LE2-015 was the
+**contract** phase: every caller now imports `@ibatexas/catalog`, and those
+re-exports are deleted.
+
+Import capability definitions, their types, and every `generate*` projection
+from this package. There is no second path.
+
+`@ibatexas/packs-composed/capability-definitions` still exists and still runs
+its eager guard-resolution boot assertion, but it exports only the
+guard-resolution surface — binding a guard reference to a live guard function
+in an installed Pack is runtime authority, which the catalog never holds.

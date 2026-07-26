@@ -2,8 +2,8 @@
  * `@ibatexas/catalog` capability definitions — the AUTHORED business
  * definition and its pure projections. Moved here wholesale from
  * `@ibatexas/packs-composed/capability-definitions` by LE2-014 (the catalog
- * expand phase); `@ibatexas/packs-composed/capability-definitions` still
- * exports every name below, unchanged, by re-exporting this module.
+ * expand phase). LE2-015 completed the move: that barrel's re-exports are
+ * deleted and every caller imports these names from `@ibatexas/catalog`.
  *
  * See `types.ts` for the field contract, `definitions.ts` for the authored
  * data, and the `generate-*.ts` modules for the generated families.
@@ -56,10 +56,9 @@
  *      The catalog authors the reference; the composition site proves it
  *      binds. The boot assertion belongs on the binding side.
  *
- * The observable contract is unchanged: importing
- * `@ibatexas/packs-composed/capability-definitions` still runs
- * `assertGuardRefsResolve` eagerly at module-evaluation time, exactly as
- * before, because that barrel still performs the call.
+ * That barrel still performs the eager `assertGuardRefsResolve` call at
+ * module-evaluation time, exactly as before — LE2-015 removed its re-exports,
+ * not its boot assertion.
  *
  * # Cross-reference checking
  *

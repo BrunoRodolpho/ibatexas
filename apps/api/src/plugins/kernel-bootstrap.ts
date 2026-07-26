@@ -48,9 +48,9 @@
 //
 //   7. `assertCapabilityGuardRefsWired()` (FE-T19) — called from
 //      `bootstrapKernel()`. Asserts every `CapabilityGuardRef` on the
-//      authored `CapabilityDefinition` registry
-//      (`@ibatexas/packs-composed/capability-definitions`) resolves to a
-//      real, live guard function on the installed Packs' `PolicyBundle`s.
+//      authored `CapabilityDefinition` registry (`@ibatexas/catalog`)
+//      resolves to a real, live guard function on the installed Packs'
+//      `PolicyBundle`s.
 //      Refuses to boot if a guard-ref was left dangling by a rename,
 //      removal, or phase move (`GuardRefResolutionError`). This is IN
 //      ADDITION to the same assertion already running eagerly at module-
@@ -537,7 +537,7 @@ export async function assertCommandServiceBoundaryGateWired(
 
 // ── Capability guard-ref boot assertion (FE-T19) ─────────────────────────────
 //
-// `@ibatexas/packs-composed/capability-definitions` authors a per-capability
+// `@ibatexas/catalog` authors a per-capability
 // `CapabilityDefinition` whose `guardRefs` declaratively NAME the Pack guards
 // that apply to it. That data is checked against the LIVE `PolicyBundle`
 // guard arrays by `assertGuardRefsResolve` — an independent materialization,

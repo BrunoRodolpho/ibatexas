@@ -3,8 +3,11 @@
 // region of packages/intent-kinds/src/index.ts from CAPABILITY_DEFINITIONS.
 //
 // Run: `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds`
-// After: editing packages/packs-composed/src/capability-definitions/
-//        definitions.ts (add/remove/reorder a capability).
+// After: editing packages/catalog/src/capability-definitions/definitions.ts
+//        (add/remove/reorder a capability). That file moved out of this
+//        package in LE2-014; the GENERATED_BEGIN sentinel spliced into
+//        intent-kinds still names the old path, and is left alone on purpose
+//        — rewording it would rewrite a committed generated artifact.
 //
 // Splices `buildGeneratedRegion()`'s output between the GENERATED_BEGIN /
 // GENERATED_END sentinel markers already present in ../../intent-kinds/src/
