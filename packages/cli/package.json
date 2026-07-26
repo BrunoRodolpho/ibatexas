@@ -27,6 +27,7 @@
     "@ibatexas/intent-kinds": "workspace:*",
     "@ibatexas/journeys": "workspace:*",
     "@ibatexas/nats-client": "workspace:*",
+    "@ibatexas/pii": "workspace:*",
     "@ibatexas/tools": "workspace:*",
     "@ibatexas/types": "workspace:*",
     "@inquirer/prompts": "^7.10.1",

@@ -757,6 +757,32 @@ ibx policy diff <baseline>         # diff the live manifest against a committed 
 
 ---
 
+### Alias gazetteer — `ibx alias`
+
+Offline mining of the colloquial names customers use for products, into a ranked
+owner-approval report. Reads recorded turns; **writes no catalog data** — approved
+rows land by editing `packages/catalog/src/alias-gazetteer.ts` in a normal PR.
+
+```bash
+ibx alias mine                     # mine + write the report to scratch/language-engine-2/results/
+ibx alias mine --since 7d          # narrow the labelled-event (VictoriaLogs) window
+ibx alias mine --limit 20000       # widen the transcript read
+ibx alias mine --min-evidence 3    # only recurring candidates
+ibx alias mine --no-embed          # deterministic frequency ranking, no embedder
+ibx alias mine --stdout            # print instead of writing a file
+ibx alias mine --out ./report.md   # write somewhere else
+```
+
+Requires Postgres (`:5433`). VictoriaLogs (`:9428`, from
+`docker-compose.observability.yml`) and the embedder (`OLLAMA_EMBED_URL`) are
+optional — the report states per source what was reachable and which ranking mode
+produced it.
+
+Full runbook, run cadence and row-type reference:
+[docs/ops/runbooks/alias-mining.md](../ops/runbooks/alias-mining.md).
+
+---
+
 ## Local URLs (when running)
 
 | Service         | URL                              |

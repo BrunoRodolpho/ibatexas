@@ -662,6 +662,9 @@ importers:
       '@ibatexas/nats-client':
         specifier: workspace:*
         version: link:../nats-client
+      '@ibatexas/pii':
+        specifier: workspace:*
+        version: link:../pii
       '@ibatexas/tools':
         specifier: workspace:*
         version: link:../tools

@@ -165,25 +165,55 @@ export function normalizeAliasSurface(surface: string): string {
  * it; authoring a hundred plausible colloquials here would be inventing the
  * measurement that ticket exists to take.
  *
- * # Two things deliberately NOT in the table
+ * # One thing deliberately NOT in the table
  *
- * The ticket names "pep" -> pepperoni and "coquinha" -> Coca-Cola as the
- * motivating examples. Neither is here, and that is a finding rather than an
- * omission: IbateXas is a smokehouse. There is no pepperoni and no cola in the
- * seed catalog — the beverages are `cerveja-artesanal-ipa`, `limonada-suica`
- * and `suco-do-dia`. Authoring those two edges would mean inventing canonical
- * names for entities that do not exist, which is precisely the mistake
- * `external-references.ts` refused when it declined to declare a delivery zone
- * no code path names ("declaring one would INVENT a go-live requirement").
- * They earn a row the day the store sells the thing.
+ * The ticket names "pep" -> pepperoni as a motivating example. It is not here,
+ * and that is a finding rather than an omission: IbateXas is a smokehouse and
+ * there is no pepperoni in the seed catalog. Authoring that edge would mean
+ * inventing a canonical name for an entity that does not exist, which is
+ * precisely the mistake `external-references.ts` refused when it declined to
+ * declare a delivery zone no code path names ("declaring one would INVENT a
+ * go-live requirement"). It earns a row the day the store sells the thing.
  *
- * Related, and worth an owner's attention: `refrigerante` is the single most
- * frequent product word in the sampled production utterances ("põe mais um
- * refrigerante no meu pedido", 8 occurrences) and there is NO soft-drink
- * handle in the seed at all. That is a catalog gap the alias layer cannot fix
- * and should not paper over — an alias pointing at a nonexistent handle would
- * turn a customer's clear request into a silent miss instead of the CLARIFY
- * the ticket asks for.
+ * # CORRECTION (LE2-026): `refrigerante` is NOT a catalog gap
+ *
+ * An earlier revision of this header stated that `refrigerante` is the most
+ * frequent product word in production utterances and that "there is NO
+ * soft-drink handle in the seed at all" — a catalog gap the alias layer must
+ * not paper over. The first half is true. **The second half is false**, and it
+ * is corrected here rather than quietly deleted, because the way it went wrong
+ * is the most useful thing in this file.
+ *
+ * `apps/commerce/src/seed-data.ts` seeds a product titled "Refrigerante",
+ * handle `refrigerante`, category `bebidas`, with two variants — Coca-Cola and
+ * Guaraná Antarctica. It is published and live. Two other modules already
+ * depend on that fact: `packages/tools/src/mappers/product-mapper.ts` lifts
+ * variant titles into search tags precisely so "coca" and "guaraná" match the
+ * generic product, and `packages/journeys/src/live/seed-item-cart.ts` maps
+ * both colloquials onto `refrigerante` variants. The ticket's OTHER motivating
+ * example, "coquinha" -> Coca-Cola, was therefore declined on a false premise.
+ *
+ * **The lesson is the one this module doc states two sections above and then
+ * failed to apply to itself.** "Reconciliation, deferred" says plainly that
+ * this package cannot prove a canonical name resolves to a live product — that
+ * is a live-store question needing a probe or a boot gate. The claim above was
+ * exactly that kind of live-store claim, made from a package-local view, and it
+ * read as authoritative because it was specific and confidently phrased. A
+ * reviewer acting on it would have rejected a CORRECT alias.
+ *
+ * So: a statement in this file about what the store does or does not sell is
+ * not a fact this package can hold. Verify it against the live roster
+ * (`ibx alias mine` classifies every mined surface against `product` /
+ * `product_variant`, which is how this error was caught) or do not write it.
+ *
+ * What the corrected evidence actually shows, for whoever grows this table:
+ *   - `coca` (12 distinct production utterances), `coca-cola` and `guaraná`
+ *     name VARIANTS of `refrigerante`. {@link AliasEdge.canonical} is a product
+ *     or category handle, so they cannot be expressed here yet — and an edge
+ *     pointing at the parent product would collapse two variants into one and
+ *     lose the customer's actual choice. Open owner decision on the edge shape.
+ *   - `agua` / `água` IS a real catalog gap: no water product exists in the
+ *     seed or in the live store, and customers ask for one by the unit.
  */
 export const ALIAS_GAZETTEER: readonly AliasEdge[] = [
   // ── The ambiguous surface: two costelas, one word ────────────────────────
