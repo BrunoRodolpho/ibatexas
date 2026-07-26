@@ -525,12 +525,34 @@ function executedKinds(acted: unknown): ReadonlySet<string> {
 
 /**
  * Whether the runtime ACCEPTED a scheduled-pickup order this turn (F6). True ONLY
- * when a checkout genuinely COMMITTED (`order.checkout.create` ∈ executedKinds — an
- * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER) AND the checkout output
- * flagged `scheduledPickup === true`. That flag is set ONLY for pickup (no
- * deliveryCep) placed while closed, so a delivery/immediate order accepted while
- * closed (the kernel does NOT gate closed-hours) is `accepted === false` and keeps
- * the SAFE closed-hours degrade — never a false pickup confirmation.
+ * when a checkout was DISPATCHED (`order.checkout.create` ∈ executedKinds — an
+ * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER), the executor did NOT
+ * REPORT failure (BKL-239), AND the checkout output flagged `scheduledPickup ===
+ * true`. That flag is set ONLY for pickup (no deliveryCep) placed while closed, so a
+ * delivery/immediate order accepted while closed (the kernel does NOT gate
+ * closed-hours) is `accepted === false` and keeps the SAFE closed-hours degrade —
+ * never a false pickup confirmation.
+ *
+ * BKL-239 — membership in `executedKinds` is DISPATCH MECHANICS, not a business
+ * outcome: @claustrum's dispatcher decides `executed` vs `failed` purely on whether
+ * `tool.execute` THREW (execution/dispatch.js — it never inspects the returned
+ * value), and `createCheckout` RETURNS `success:false` rather than throwing on its
+ * PIX legs (packages/tools/src/cart/create-checkout.ts:133 no QR data on the
+ * confirmed PaymentIntent, :188 the catch-all that converts EVERY throw in
+ * `confirmPixAndGetQrCode` into a returned failure) — and :611 spreads
+ * `scheduledPickup` ONTO that failure (`{ ...pixResult, scheduledPickup }`). So a
+ * FAILED closed-hours scheduled PIX checkout arrived here as fully `executed`
+ * carrying `{ success:false, paymentMethod:"pix", scheduledPickup:true }` and voiced
+ * `closedHoursScheduledConfirmation(..., true)` — telling a customer their order was
+ * registered and only the PIX payment was outstanding when NOTHING was placed. The
+ * same false-claim class BKL-230/BKL-247 killed on the action-render seam.
+ *
+ * Gated on `success !== false` — render UNLESS failure was REPORTED (the polarity
+ * ratified in BKL-247): an absent/non-boolean `success` keeps today's behaviour, so
+ * no committed fixture silently stops confirming. On THIS seam the two polarities
+ * coincide on any real result anyway (`CheckoutResult.success` is a REQUIRED boolean
+ * — create-checkout.ts:25 — and only `createCheckout` ever stamps `scheduledPickup`),
+ * so `!== false` misses no real failure while keeping both seams uniform.
  *
  * `awaitingPixPayment` reflects the QR-first-then-confirm PIX flow: a scheduled PIX
  * pickup EXECUTEs + generates the QR but payment is still pending. (A re-entry while
@@ -544,9 +566,12 @@ function acceptedScheduledPickup(
     return { accepted: false, awaitingPixPayment: false };
   }
   const result = summarizeActed(acted)?.result as
-    | { scheduledPickup?: unknown; paymentMethod?: unknown }
+    | { scheduledPickup?: unknown; paymentMethod?: unknown; success?: unknown }
     | undefined;
-  const accepted = result?.scheduledPickup === true;
+  // BKL-239 — the executor's OWN outcome gates the confirmation. A reported failure
+  // falls through to `accepted:false`, i.e. the SAFE closed-hours degrade the
+  // delivery/immediate path already takes (offer/disclosure), never a confirmation.
+  const accepted = result?.success !== false && result?.scheduledPickup === true;
   return { accepted, awaitingPixPayment: accepted && result?.paymentMethod === "pix" };
 }
 

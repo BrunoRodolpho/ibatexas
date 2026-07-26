@@ -478,7 +478,9 @@ async function executeMenuSpecialSet(
   deps: OpsToolRegistryDeps,
   payload: MenuSpecialSetPayload,
 ): Promise<{
-  specialId: string;
+  /** BKL-240 — `null` when the UPDATE leg touched NO row (see below): the
+   *  committed-shape signal the ops action render gates the success line on. */
+  specialId: string | null;
   productId: string;
   date: string;
   created: boolean;
@@ -492,12 +494,21 @@ async function executeMenuSpecialSet(
     daySpecials.find((s) => s.medusaProductId === payload.productId) ?? null;
 
   if (existing) {
-    await deps.dailySpecialSvc.update(existing.id, {
+    const updated = await deps.dailySpecialSvc.update(existing.id, {
       ...promoFields,
       active: true,
     });
     return {
-      specialId: existing.id,
+      // BKL-240 — `OpsDailySpecialWriter.update` is ROW-OR-NULL (the domain
+      // service's `mutateOrNull`: packages/domain/src/services/daily-special
+      // .service.ts:67 — a missing id is `null`, no throw). The row can VANISH
+      // between the `list` above and this write (a concurrent delete/cleanup), and
+      // the write then touched NOTHING. Reporting `existing.id` regardless — as
+      // this executor did before — handed the render a truthy id for a special
+      // that does not exist, so staff were told "definido como especial de …" for
+      // a row nobody could see. Propagate the null as the failure signal instead;
+      // the render abstains on it and the grounded path speaks.
+      specialId: updated === null ? null : existing.id,
       productId: payload.productId,
       date: payload.date,
       created: false,
