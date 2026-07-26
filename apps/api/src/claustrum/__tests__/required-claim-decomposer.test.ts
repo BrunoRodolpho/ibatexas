@@ -654,6 +654,122 @@ describe("classifyRequestSpans — BKL-206 order/payment MUTATION imperatives do
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-238 — the CHECKOUT verbs join the same mutation-imperative net BKL-206 gave
+// `cancel`. A checkout utterance carries the vocabulary of BOTH owner-scoped status
+// reads ("pedido" → ORDER_STATUS_Q; "pagar"/"pago" is a STRONG payment token and a
+// bare "pix" pushes too → PAYMENT_STATUS_Q), so before the fix EVERY checkout turn
+// forced the {ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS} closure — unsatisfiable at
+// checkout time, since the payment does not exist yet — and the turn degraded
+// RENDER→UNKNOWN with the mutation silently dropped (live-caught as SCN-049).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("classifyRequestSpans — BKL-238 checkout imperatives don't ride the status reads", () => {
+  // The SCN-049 shape and its neighbours: the checkout verb is what must win, even
+  // when the utterance also names the order AND the payment method.
+  const CHECKOUT_MUTATIONS: readonly string[] = [
+    "quero fechar o pedido e pagar com pix", // SCN-049 — the exact bitten shape
+    "quero fechar o pedido",
+    "fecha o pedido no pix",
+    "pode fechar a conta",
+    "bora fechar, vou pagar com pix",
+    "fechar pedido",
+    "finaliza meu pedido",
+    "quero finalizar o pedido com pix",
+    "finalize o pedido, vou pagar no pix",
+    "já escolhi, fecho o pedido agora",
+  ];
+
+  it.each(CHECKOUT_MUTATIONS)(
+    "%j fires NEITHER status read → takes the mutation path",
+    (text) => {
+      const spans = classifyRequestSpans(text);
+      expect(spans).not.toContain("ORDER_STATUS_Q");
+      expect(spans).not.toContain("PAYMENT_STATUS_Q");
+    },
+  );
+
+  it("the SCN-049 utterance no longer forces the unsatisfiable PAYMENT_STATUS closure", () => {
+    // The defect end-to-end, in closure terms. Pre-fix the spans were
+    // ["ORDER_STATUS_Q","PAYMENT_STATUS_Q"], whose closure a checkout turn can never
+    // satisfy (there is no settled payment to validate yet) — so completeness failed
+    // and the turn degraded RENDER→UNKNOWN. Post-fix nothing is required of it.
+    const spans = classifyRequestSpans("quero fechar o pedido e pagar com pix");
+    const required = decomposeRequiredClaims(spans);
+    expect([...required]).toEqual([]);
+    expect(checkRequiredClaimCompleteness(required, new Map()).complete).toBe(true);
+
+    // …and this is what it used to be: the closure the checkout turn dead-ended in.
+    const preFix = decomposeRequiredClaims(["ORDER_STATUS_Q", "PAYMENT_STATUS_Q"]);
+    const stillDegrades = checkRequiredClaimCompleteness(preFix, new Map());
+    expect(stillDegrades.complete).toBe(false);
+    expect(stillDegrades.unsatisfied).toEqual([
+      "ORDER_FULFILLMENT_STAGE",
+      "PAYMENT_STATUS",
+    ]);
+  });
+
+  // ── NEGATIVE CONTROLS: the fix must be additive-only ────────────────────────
+  it("a GENUINE payment/order status ask still fires (no checkout verb) — surgical", () => {
+    expect(classifyRequestSpans("meu pagamento foi aprovado?")).toContain(
+      "PAYMENT_STATUS_Q",
+    );
+    expect(classifyRequestSpans("já paguei, cadê meu pedido?")).toContain(
+      "PAYMENT_STATUS_Q",
+    );
+    expect(classifyRequestSpans("cadê meu pedido?")).toContain("ORDER_STATUS_Q");
+    expect(classifyRequestSpans("status do pedido 933869?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  it("the `finalizad*` PARTICIPLE is a status ask, not a checkout mutation", () => {
+    // "meu pedido foi finalizado?" asks whether the order COMPLETED — a read. The
+    // `finaliz(?!ad)` lookahead is what keeps it out of the mutation net.
+    for (const text of [
+      "meu pedido foi finalizado?",
+      "o pedido 933869 já está finalizado?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  it("the `fech*` STORE-CLOSED family is untouched (STORE_OPEN_NOW still fires)", () => {
+    // fechado(s) / fechamento / fecham / fechou are the hours-and-open-state READ
+    // vocabulary — the `fech(?!ad|ament|ou|am)` lookahead keeps every one of them out
+    // of the mutation net, and the schedule spans they DO fire are unchanged.
+    for (const text of [
+      "vocês estão fechados?",
+      "o restaurante tá fechado agora?",
+      "qual o horário de fechamento?",
+      "que horas vocês fecham?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("STORE_OPEN_NOW_Q");
+    }
+  });
+
+  it("a store-hours read that shares the bare verb form still classifies correctly", () => {
+    // "que horas fecha?" is the one hours phrasing that shares the bare imperative
+    // form ("fecha o pedido"), so it DOES trip the net — harmlessly: STORE_OPEN_NOW_Q
+    // is not one of the `!mutationImperative`-gated classify-only spans, and an
+    // over-fire only ever routes a read to the model path (the BKL-201 fail-SAFE
+    // direction), never produces a wrong render.
+    expect(classifyRequestSpans("que horas fecha?")).toContain("STORE_OPEN_NOW_Q");
+  });
+
+  it("READ imperatives and other reads keep firing (the net stays mutation-only)", () => {
+    expect(classifyRequestSpans("me mostra o cardápio")).toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("quanto custa o brisket")).toContain(
+      "MENU_ITEM_PRICE_Q",
+    );
+    expect(classifyRequestSpans("o que tem no meu carrinho?")).toContain(
+      "CART_CONTENTS_Q",
+    );
+    expect(classifyRequestSpans("minha reserva está confirmada?")).toContain(
+      "RESERVATION_STATUS_Q",
+    );
+  });
+});
+
 describe("required-claim decomposer — conservative-over-decomposing", () => {
   it("UNIONs across multiple span-classes (over-include, never under-include)", () => {
     const required = decomposeRequiredClaims(["PAYMENT_STATUS_Q", "PICKUP_Q"]);
