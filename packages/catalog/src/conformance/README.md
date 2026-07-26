@@ -2,7 +2,7 @@
 
 **This suite is the compiler's compatibility contract.**
 
-The five static passes are one of Language Engine 2.0's architectural
+The seven static passes are one of Language Engine 2.0's architectural
 foundations. What makes their behavior a *versioned promise* rather than an
 implementation detail is this corpus: one committed fixture catalog per
 rejection class, each one's compiler output pinned byte-for-byte.
@@ -20,7 +20,8 @@ parses `src/compiler/` for the registered passes and every rule id they can
 emit, and fails — naming the gap — when the corpus does not cover one. A
 ticket that adds a pass turns this test red until its fixtures land in the
 same change — which is exactly what happened to LE2-018's `external-references`
-pass, and how its five fixtures came to exist.
+pass and to LE2-025a's `alias-gazetteer` pass, and how their fixtures came to
+exist.
 
 ## What it is, and what it is not
 

@@ -4,6 +4,7 @@
   "ok": false,
   "capabilities": 1,
   "externalReferences": 0,
+  "aliases": 0,
   "rulesEmitted": [
     "slot-dataflow/blank-required-slot",
     "terminal-coverage/refusal-terminal-without-chain"
@@ -22,6 +23,11 @@
     {
       "pass": "conversation-projection",
       "checked": 6,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
       "diagnostics": 0
     },
     {

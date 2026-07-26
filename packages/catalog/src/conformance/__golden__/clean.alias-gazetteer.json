@@ -1,30 +1,30 @@
 {
-  "fixture": "clean.minimal-chat",
+  "fixture": "clean.alias-gazetteer",
   "targets": null,
   "ok": true,
   "capabilities": 1,
   "externalReferences": 0,
-  "aliases": 0,
+  "aliases": 3,
   "rulesEmitted": [],
   "passes": [
     {
       "pass": "referential-integrity",
-      "checked": 3,
+      "checked": 2,
       "diagnostics": 0
     },
     {
       "pass": "slot-dataflow",
-      "checked": 27,
+      "checked": 20,
       "diagnostics": 0
     },
     {
       "pass": "conversation-projection",
-      "checked": 6,
+      "checked": 0,
       "diagnostics": 0
     },
     {
       "pass": "alias-gazetteer",
-      "checked": 0,
+      "checked": 8,
       "diagnostics": 0
     },
     {
@@ -34,7 +34,7 @@
     },
     {
       "pass": "terminal-coverage",
-      "checked": 4,
+      "checked": 3,
       "diagnostics": 0
     },
     {

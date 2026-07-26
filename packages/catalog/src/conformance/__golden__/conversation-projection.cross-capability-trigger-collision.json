@@ -4,6 +4,7 @@
   "ok": false,
   "capabilities": 2,
   "externalReferences": 0,
+  "aliases": 0,
   "rulesEmitted": [
     "conversation-projection/cross-capability-trigger-collision"
   ],
@@ -22,6 +23,11 @@
       "pass": "conversation-projection",
       "checked": 12,
       "diagnostics": 1
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
     },
     {
       "pass": "safety-implication-edges",

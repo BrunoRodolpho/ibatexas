@@ -4,6 +4,7 @@
   "ok": false,
   "capabilities": 2,
   "externalReferences": 0,
+  "aliases": 0,
   "rulesEmitted": [
     "terminal-coverage/divergent-pack-guard-chain"
   ],
@@ -21,6 +22,11 @@
     {
       "pass": "conversation-projection",
       "checked": 12,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
       "diagnostics": 0
     },
     {

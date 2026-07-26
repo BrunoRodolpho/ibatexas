@@ -12,6 +12,10 @@
 // a fixture is a visible edit, and the meta-gate turns it into a named
 // failure.
 
+import {
+  ALIAS_GAZETTEER_FIXTURES,
+  CLEAN_ALIAS_GAZETTEER_FIXTURE,
+} from "./alias-gazetteer.js"
 import { CLEAN_FIXTURES } from "./clean.js"
 import { CONVERSATION_PROJECTION_FIXTURES } from "./conversation-projection.js"
 import {
@@ -33,11 +37,13 @@ export const CONFORMANCE_FIXTURES: readonly ConformanceFixture[] = [
   ...REFERENTIAL_INTEGRITY_FIXTURES,
   ...SLOT_DATAFLOW_FIXTURES,
   ...CONVERSATION_PROJECTION_FIXTURES,
+  ...ALIAS_GAZETTEER_FIXTURES,
   ...SAFETY_IMPLICATION_EDGES_FIXTURES,
   ...TERMINAL_COVERAGE_FIXTURES,
   ...EXTERNAL_REFERENCES_FIXTURES,
   ...CLEAN_FIXTURES,
   CLEAN_EXTERNAL_REFERENCE_FIXTURE,
+  CLEAN_ALIAS_GAZETTEER_FIXTURE,
 ]
 
 /** The fixtures that must FAIL to compile — everything with a target rule. */

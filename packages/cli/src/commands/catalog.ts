@@ -66,7 +66,8 @@ function printReport(
   console.log(
     chalk.dim(
       `catalog v${result.catalogVersion} — ${result.capabilities} capability definition(s), ` +
-        `${result.externalReferences} external reference(s), ${result.passes.length} static pass(es)`,
+        `${result.externalReferences} external reference(s), ${result.aliases} alias edge(s), ` +
+        `${result.passes.length} static pass(es)`,
     ),
   )
   for (const pass of result.passes) {

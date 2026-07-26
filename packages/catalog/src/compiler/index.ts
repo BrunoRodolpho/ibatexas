@@ -22,6 +22,12 @@
 //                                     well-formed and no two capabilities
 //                                     claim the same one
 //
+// LE2-025a added the seventh, beside it:
+//
+//   7. `alias-gazetteer`            — the colloquial surface forms resolve to
+//                                     exactly one canonical entity each, and
+//                                     no alias edge touches a safety attribute
+//
 // Compensation completeness, graph shape and lifecycle are journey-shaped
 // (tickets 20/22 add the objects AND the passes together).
 //
@@ -49,6 +55,7 @@
 // allergen-edge violation behind an unrelated typo. Fail-closed is about the
 // EXIT CODE, not about how little the tool is willing to tell you.
 
+import { ALIAS_GAZETTEER, type AliasEdge } from "../alias-gazetteer.js"
 import type { CapabilityDefinition } from "../capability-definitions/types.js"
 import {
   EXTERNAL_REFERENCES,
@@ -63,6 +70,7 @@ import {
   type CatalogPassId,
   type CatalogPassResult,
 } from "./diagnostics.js"
+import { runAliasGazetteerPass } from "./passes/alias-gazetteer.js"
 import { runConversationProjectionPass } from "./passes/conversation-projection.js"
 import { runExternalReferencesPass } from "./passes/external-references.js"
 import { runReferentialIntegrityPass } from "./passes/referential-integrity.js"
@@ -71,6 +79,7 @@ import { runSlotDataflowPass } from "./passes/slot-dataflow.js"
 import { runTerminalCoveragePass } from "./passes/terminal-coverage.js"
 
 export {
+  aliasObjectName,
   CATALOG_PASS_IDS,
   capabilityObjectName,
   externalReferenceObjectName,
@@ -101,6 +110,7 @@ export {
   type CatalogReferenceEdge,
   type EdgeDangler,
 } from "./passes/referential-integrity.js"
+export { runAliasGazetteerPass } from "./passes/alias-gazetteer.js"
 export { runConversationProjectionPass } from "./passes/conversation-projection.js"
 export { runExternalReferencesPass } from "./passes/external-references.js"
 export { runSafetyImplicationEdgesPass } from "./passes/safety-implication-edges.js"
@@ -111,12 +121,18 @@ export { SLOT_SPECS, type SlotKind, type SlotSpec } from "./slots.js"
 /**
  * One registered static pass.
  *
- * A pass receives the WHOLE authored catalog — the capability definitions and
- * the external-reference declarations — and takes what it needs. Four of the
- * five ignore the second argument entirely (JS arity makes that free, and a
- * one-argument pass function stays assignable), which keeps the fact that only
- * `external-references` reads the declaration table visible in its signature
- * rather than buried in a shared context object.
+ * A pass receives the WHOLE authored catalog — the capability definitions, the
+ * external-reference declarations and the alias gazetteer — and takes what it
+ * needs. Most ignore the trailing arguments entirely (JS arity makes that
+ * free, and a one-argument pass function stays assignable), which keeps WHICH
+ * table a pass reads visible in its signature rather than buried in a shared
+ * context object.
+ *
+ * Arity only lets a pass drop TRAILING arguments, so a pass that wants only
+ * the last one cannot express itself that way. `alias-gazetteer` is that case:
+ * it reads the gazetteer and nothing else, so it is registered through a small
+ * adapter below rather than being given two parameters it would have to name
+ * and ignore.
  */
 export interface CatalogPass {
   readonly id: CatalogPassId
@@ -125,6 +141,7 @@ export interface CatalogPass {
   readonly run: (
     definitions: readonly CapabilityDefinition[],
     externalReferences: readonly ExternalReferenceDeclaration[],
+    aliases: readonly AliasEdge[],
   ) => CatalogPassResult
 }
 
@@ -150,6 +167,13 @@ export const CATALOG_PASSES = [
     id: "conversation-projection",
     summary: "trigger phrasings are well-formed and no two capabilities share one",
     run: runConversationProjectionPass,
+  },
+  {
+    id: "alias-gazetteer",
+    summary: "every colloquial surface form resolves to exactly one entity, and none is safety-bearing",
+    // The adapter the `CatalogPass` doc explains: this pass reads only the
+    // third table, and arity cannot drop leading arguments.
+    run: (_definitions, _externalReferences, aliases) => runAliasGazetteerPass(aliases),
   },
   {
     id: "safety-implication-edges",
@@ -185,6 +209,8 @@ export interface CatalogCompileResult {
   readonly capabilities: number
   /** How many external-reference declarations were compiled (LE2-018). */
   readonly externalReferences: number
+  /** How many alias edges were compiled (LE2-025a). */
+  readonly aliases: number
   /** Per-pass results, in {@link CATALOG_PASSES} order. */
   readonly passes: readonly CatalogPassResult[]
   /** Every diagnostic, flattened and stable-ordered. */
@@ -197,20 +223,21 @@ export interface CatalogCompileResult {
  * what makes the same function usable from a build gate, the CLI, and a
  * fixture test.
  *
- * `externalReferences` defaults to the REAL authored table rather than to `[]`.
- * The asymmetry with `definitions` is deliberate and fail-closed: a production
- * caller that forgot the argument would otherwise compile zero declarations
- * and report a green `external-references` pass over nothing — a vacuous gate,
+ * `externalReferences` and `aliases` default to the REAL authored tables
+ * rather than to `[]`. The asymmetry with `definitions` is deliberate and
+ * fail-closed: a production caller that forgot an argument would otherwise
+ * compile zero rows and report that pass green over nothing — a vacuous gate,
  * the exact failure mode `checked` exists to expose. Fixtures pass their own
- * (usually empty) table explicitly, so the default never leaks real data into
+ * (usually empty) tables explicitly, so the defaults never leak real data into
  * a pinned golden.
  */
 export function compileCatalog(
   definitions: readonly CapabilityDefinition[],
   externalReferences: readonly ExternalReferenceDeclaration[] = EXTERNAL_REFERENCES,
+  aliases: readonly AliasEdge[] = ALIAS_GAZETTEER,
 ): CatalogCompileResult {
   const passes = CATALOG_PASSES.map((pass) => {
-    const result = pass.run(definitions, externalReferences)
+    const result = pass.run(definitions, externalReferences, aliases)
     return { ...result, diagnostics: sortDiagnostics(result.diagnostics) }
   })
   const diagnostics = sortDiagnostics(passes.flatMap((p) => p.diagnostics))
@@ -219,6 +246,7 @@ export function compileCatalog(
     catalogVersion: CATALOG_VERSION,
     capabilities: definitions.length,
     externalReferences: externalReferences.length,
+    aliases: aliases.length,
     passes,
     diagnostics,
   }
@@ -230,6 +258,7 @@ export function formatCatalogReport(result: CatalogCompileResult): string {
     ? `[catalog] catalog check OK — v${result.catalogVersion}: ` +
       `${result.capabilities} capability definition(s), ` +
       `${result.externalReferences} external reference(s), ` +
+      `${result.aliases} alias edge(s), ` +
       `${result.passes.length} static pass(es), 0 diagnostics.`
     : `[catalog] catalog check FAILED — v${result.catalogVersion}: ` +
       `${result.diagnostics.length} diagnostic(s) across ` +
@@ -272,8 +301,9 @@ export class CatalogCompileError extends Error {
 export function assertCatalogCompiles(
   definitions: readonly CapabilityDefinition[],
   externalReferences?: readonly ExternalReferenceDeclaration[],
+  aliases?: readonly AliasEdge[],
 ): CatalogCompileResult {
-  const result = compileCatalog(definitions, externalReferences)
+  const result = compileCatalog(definitions, externalReferences, aliases)
   if (!result.ok) throw new CatalogCompileError(result)
   return result
 }

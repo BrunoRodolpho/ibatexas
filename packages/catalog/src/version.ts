@@ -23,4 +23,14 @@
 // halves of the bump discipline's first trigger ("adding, removing, or
 // editing a capability; changing any field on one" AND "the field contract
 // itself") apply, so the serial moves even though no existing field changed.
-export const CATALOG_VERSION: number = 3
+// v4 (LE2-025a) — the alias gazetteer: `src/alias-gazetteer.ts`, nine authored
+// surface-form -> canonical-entity edges, and the compiler pass that keeps them
+// unambiguous and safety-free. No capability field changed, so the README's
+// first trigger does not fire; the serial moves under the third ("a projection
+// semantics change") read at its intent rather than its letter. The version is
+// stamped into a turn's trace so a historical turn can be re-run against the
+// business definition it saw, and the set of colloquials the system will
+// canonicalize is part of that definition — the day the runtime half reads
+// this table, a turn compiled under v3 and one under v4 are not replayable
+// against each other.
+export const CATALOG_VERSION: number = 4

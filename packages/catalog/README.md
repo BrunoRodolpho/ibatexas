@@ -29,11 +29,12 @@ constrains claim generation, the installed Packs own their guards, and
 | `src/capability-definitions/` | The authored capability data (58 capabilities — 20 chat-tier, 38 identity-tier) and its thirteen pure projection generators |
 | `src/claim-references.ts` | The claim **name spaces** a definition may point at |
 | `src/external-references.ts` | The names the catalog **depends on but does not own** — a promotion in Medusa, a zone row in the domain DB (LE2-018) |
-| `src/compiler/` | The **catalog compiler** — six fail-closed static passes, wired into `build`, CI, and `ibx catalog check` |
+| `src/alias-gazetteer.ts` | The **colloquial names** customers use for what the catalog sells — surface form -> canonical entity (LE2-025) |
+| `src/compiler/` | The **catalog compiler** — seven fail-closed static passes, wired into `build`, CI, and `ibx catalog check` |
 | `src/conformance/` | The compiler's **conformance suite** — a fixture catalog per rejection class, golden-pinned ([README](src/conformance/README.md)) |
 | `src/build-gates/check-claim-references.ts` | Cross-reference check v0 — now a thin adapter over the compiler's referential edge table (same API) |
 
-## The catalog compiler (LE2-016/018)
+## The catalog compiler (LE2-016/018/033/025)
 
 LE2 Implementation Decision 16: *"The catalog compiler is fully fail-closed.
 Static passes … are compile/CI errors."* **An inconsistent catalog does not
@@ -47,6 +48,7 @@ build.**
 | `terminal-coverage` | Declared terminals are complete and pack-coherent | a guard chain with no refusal floor; two capabilities of one Pack declaring different floors |
 | `external-references` | The external-reference table is well-formed and consumer-attributed | a declaration naming an unprobeable store; a `keyFrom` that is not an env-var name; a consumer naming a capability kind that no longer exists |
 | `conversation-projection` | The authored pt-BR trigger phrasings are well-formed and SEPARATE capabilities | two capabilities both claiming `"tira a coca"`; a capability below the six-phrasing floor; a phrasing with a stray double space |
+| `alias-gazetteer` | Every colloquial surface form resolves to exactly one entity, and no alias edge touches a safety attribute | `"costela"` naming two products with no declared disambiguation; an alias resolving to `sem-gluten`; a canonical name that is not a handle |
 
 Every diagnostic names **the object, the offending slot/edge, and the violated
 rule**, and the whole list is stable-sorted so a CI log diff is meaningful.
@@ -59,7 +61,7 @@ rule**, and the whole list is stable-sorted so a CI log diff is meaningful.
 Run it:
 
 ```bash
-ibx catalog check            # all six passes, human-readable
+ibx catalog check            # all seven passes, human-readable
 ibx catalog check --json     # the full CatalogCompileResult
 ibx catalog check --live     # …plus reconciliation against the live stores (LE2-018)
 pnpm --filter @ibatexas/catalog run check   # the same passes, no CLI build needed
@@ -168,8 +170,8 @@ need a reviewer:
 
 ### The conformance suite is the compiler's compatibility contract (LE2-017)
 
-`src/conformance/` holds one committed fixture catalog per **rule id** — 30
-today across the six passes, plus four clean controls — each with its
+`src/conformance/` holds one committed fixture catalog per **rule id** — 38
+today across the seven passes, plus five clean controls — each with its
 compiler output pinned byte-for-byte in `src/conformance/__golden__/`. The
 passes' unit tests assert pass *logic*; the conformance corpus pins the
 *diagnostic contract*: the exact diagnostics, in the exact order, with the
@@ -190,9 +192,75 @@ pnpm --filter @ibatexas/catalog run conformance:regen   # regenerate goldens del
 See [`src/conformance/README.md`](src/conformance/README.md) for how to add a
 fixture and how to read a golden diff.
 
+## The alias gazetteer (LE2-025)
+
+`src/alias-gazetteer.ts` holds the colloquial names customers use for what the
+catalog sells: one **surface form** (what a customer types) and one **canonical
+entity** (what the system calls it). `"farofa"` is the whole
+`farofa-de-bacon-defumado`; `"brisket"` is `brisket-americano`.
+
+Nine edges today — six read out of real production utterances, three freely
+authored, each tagged with its `provenance`. It is a **seed**, not coverage:
+LE2-026's mining loop is what grows it.
+
+Like `conversationTriggers`, this is **inert data with no runtime authority**.
+Nothing in this package or any other consumes it yet — canonicalization at
+parse entry, the L1/L2 effects, the CLARIFY routing for an unknown surface
+form and the trace record of a resolution are LE2-025's runtime half.
+
+### Ambiguity is a compile error
+
+**A surface form that names two entities must declare how to tell them
+apart.** The seed contains a real instance: the store sells both
+`costela-bovina-defumada` and `costela-defumada-congelada`, and customers type
+the bare word (*"tira a costela do meu carrinho"*). Every resolution of that
+word is a coin flip between a fresh cut and a frozen one — different price,
+different fulfilment — and no ordering of the table makes the guess correct.
+So each reading declares the token that selects it (`bovina` / `congelada`),
+or the build fails.
+
+Three rules protect that one:
+
+| Rule | Rejects |
+|---|---|
+| `ambiguous-alias-surface` | one surface, two entities, at least one reading with no `disambiguatedBy` |
+| `colliding-alias-disambiguation` | both readings declaring the *same* token — a coin flip with paperwork |
+| `unnecessary-alias-disambiguation` | a token on a surface that names one entity, which silently stops it matching the bare word |
+
+### Canonical names are declared, never verified
+
+A canonical name is an opaque kebab-case ASCII handle. Nothing here proves
+`brisket-americano` is a product that exists — that is a live-store question of
+exactly the kind `external-references.ts` was built for, and answering it needs
+a reconciliation surface (a `product` store, a probe, a boot refusal) that
+LE2-025a deliberately does **not** build. **This is an open decision for the
+owner.** Until it is made, a typo'd canonical name is caught by review and by
+the runtime finding nothing, never by a build gate.
+
+### Safety binding: both ends of the edge
+
+No alias edge may terminate in — or *start from* — an allergen or dietary
+attribute (BKL-143 / BKL-123 / BKL-171, the same ratified policy
+`safety-implication-edges` applies to claim edges, using the same
+`safetyMarkerOf` vocabulary).
+
+The surface end matters as much as the target end, and the reason is specific
+to this layer: canonicalization runs **before** the parse, so an alias on a
+safety-bearing phrase would rewrite the customer's own words out of the
+utterance, and §O#9's closed-taxonomy safety routing would never see the marker
+it exists to escalate on. An alias layer that can silently disarm the safety
+router is worse than one that rejects a few edges it did not need to.
+
+That conservatism has a **deliberate false positive**, worked through in the
+pass: `pudim-de-leite-condensado` is an ordinary dessert whose handle contains
+`leite`, and it is unaliasable. That is the right answer rather than an
+accepted cost — an alias resolving a word with no dairy signal into a dairy
+product, on the customer's behalf, before the parse, is precisely the silent
+inference the rulings forbid. The product stays orderable by its real name.
+
 ### Not here, by design
 
-Journeys, aliases, and the pairings knowledge graph are **later LE2 tickets** —
+Journeys and the pairings knowledge graph are **later LE2 tickets** —
 Decision 13's "nothing new is added until what exists is unified" is a
 constraint on this package, not an oversight. A catalog CMS, an admin editor,
 and any runtime catalog-mutation path are **ratified Out-of-Scope**: catalog
@@ -208,7 +276,7 @@ catalog depend on its own dependent and produce a circular turbo build graph.)
 
 ## Version-bump discipline
 
-`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `3`.
+`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `4`.
 
 It is deliberately *not* derived (no content hash, no git sha, no build
 timestamp): a derived version changes on every unrelated edit and cannot be
@@ -224,6 +292,9 @@ Bump by **exactly +1**, in the **same commit** as the change, for any change to:
   `surfaces`, `successClaimLinks`, `legacyNames`, `adminLabel`, …)
 - `src/capability-definitions/types.ts` — the field contract itself
 - `src/claim-references.ts` — either claim name space
+- `src/alias-gazetteer.ts` — adding, removing or editing an alias edge. The
+  set of colloquials the system will canonicalize is part of the business
+  definition a historical turn must be replayable against
 - Any `src/capability-definitions/generate-*.ts` whose output would change for
   unchanged input (a projection semantics change)
 

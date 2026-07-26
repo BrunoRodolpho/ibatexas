@@ -1,0 +1,62 @@
+{
+  "fixture": "alias-gazetteer.malformed-alias-surface",
+  "targets": "alias-gazetteer/malformed-alias-surface",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 1,
+  "rulesEmitted": [
+    "alias-gazetteer/malformed-alias-surface"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 2,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "alias-gazetteer",
+      "rule": "malformed-alias-surface",
+      "severity": "error",
+      "object": "alias: conformance  apelido malformado ",
+      "field": "surface",
+      "message": "surface form \" conformance  apelido malformado \" is not in normal form: it has leading or trailing whitespace. A surface form is matched against what a customer typed, so stray whitespace and control characters make an alias that can never fire — silently, and looking correct in review.",
+      "reference": " conformance  apelido malformado "
+    }
+  ],
+  "formatted": [
+    "alias-gazetteer/malformed-alias-surface: alias: conformance  apelido malformado  · surface — surface form \" conformance  apelido malformado \" is not in normal form: it has leading or trailing whitespace. A surface form is matched against what a customer typed, so stray whitespace and control characters make an alias that can never fire — silently, and looking correct in review."
+  ]
+}

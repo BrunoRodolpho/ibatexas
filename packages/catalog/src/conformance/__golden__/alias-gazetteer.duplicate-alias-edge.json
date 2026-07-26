@@ -1,0 +1,62 @@
+{
+  "fixture": "alias-gazetteer.duplicate-alias-edge",
+  "targets": "alias-gazetteer/duplicate-alias-edge",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 2,
+  "rulesEmitted": [
+    "alias-gazetteer/duplicate-alias-edge"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 4,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "alias-gazetteer",
+      "rule": "duplicate-alias-edge",
+      "severity": "error",
+      "object": "alias:Conformance Apelido Repetido!",
+      "field": "canonical",
+      "message": "this edge repeats the one at array position 0 — the same surface form (\"conformance apelido repetido\" under the gazetteer's normal form) resolving to the same entity \"conformance-entidade-canonica\". The second row can never change a resolution; it can only drift away from the first one when somebody edits the wrong copy.",
+      "reference": "conformance-entidade-canonica"
+    }
+  ],
+  "formatted": [
+    "alias-gazetteer/duplicate-alias-edge: alias:Conformance Apelido Repetido! · canonical — this edge repeats the one at array position 0 — the same surface form (\"conformance apelido repetido\" under the gazetteer's normal form) resolving to the same entity \"conformance-entidade-canonica\". The second row can never change a resolution; it can only drift away from the first one when somebody edits the wrong copy."
+  ]
+}

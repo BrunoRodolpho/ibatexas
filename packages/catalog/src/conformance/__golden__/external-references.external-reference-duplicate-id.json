@@ -4,6 +4,7 @@
   "ok": false,
   "capabilities": 1,
   "externalReferences": 2,
+  "aliases": 0,
   "rulesEmitted": [
     "external-references/external-reference-duplicate-id"
   ],
@@ -20,6 +21,11 @@
     },
     {
       "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
       "checked": 0,
       "diagnostics": 0
     },

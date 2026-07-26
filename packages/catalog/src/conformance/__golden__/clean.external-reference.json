@@ -4,6 +4,7 @@
   "ok": true,
   "capabilities": 1,
   "externalReferences": 1,
+  "aliases": 0,
   "rulesEmitted": [],
   "passes": [
     {
@@ -18,6 +19,11 @@
     },
     {
       "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
       "checked": 0,
       "diagnostics": 0
     },

@@ -9,10 +9,12 @@
  *
  * Read that last sentence as a constraint on this file. What is here is what
  * MOVED, plus the version and the reference vocabulary the move needs to be
- * checkable. Journeys, aliases, and the pairings graph are later tickets and
- * are deliberately absent. There is no CMS, no admin editor, and no runtime
- * mutation path — the catalog is hand-authored, code-reviewed data (that is a
- * ratified Out-of-Scope item, not an oversight).
+ * checkable, plus what later tickets have since ADDED under their own numbers
+ * (the conversation projection, LE2-033; the alias gazetteer, LE2-025).
+ * Journeys and the pairings graph are still later tickets and are deliberately
+ * absent. There is no CMS, no admin editor, and no runtime mutation path — the
+ * catalog is hand-authored, code-reviewed data (that is a ratified
+ * Out-of-Scope item, not an oversight).
  *
  * # The one rule this package lives by
  *
@@ -42,10 +44,17 @@
  *     its key, and which code sites break without it. The catalog DECLARES;
  *     the verification (and every byte of IO it needs) lives downstream in
  *     `@ibatexas/tools`, the api's boot gate, and `ibx catalog check --live`.
- *   - `compiler/` — the catalog compiler (LE2-016/018): five fail-closed
- *     STATIC passes (referential integrity, slot dataflow, safety-implication
- *     edges, terminal coverage, external references) over the authored data,
- *     wired into `pnpm --filter @ibatexas/catalog build`, into CI, and into
+ *   - `alias-gazetteer.ts` — the colloquial names customers use for what the
+ *     catalog sells (LE2-025): surface form -> canonical entity, with a
+ *     declared disambiguation wherever one word names two things. Data only —
+ *     canonicalization at parse entry, the L1/L2 effects and the CLARIFY
+ *     routing are the ticket's runtime half. Canonical names are DECLARED,
+ *     never verified: see that module on the deferred reconciliation decision.
+ *   - `compiler/` — the catalog compiler (LE2-016/018/033/025): seven
+ *     fail-closed STATIC passes (referential integrity, slot dataflow,
+ *     conversation projection, alias gazetteer, safety-implication edges,
+ *     terminal coverage, external references) over the authored data, wired
+ *     into `pnpm --filter @ibatexas/catalog build`, into CI, and into
  *     `ibx catalog check`. Pure build tooling — a compiler, never a runtime
  *     authority.
  *   - `build-gates/check-claim-references.ts` — cross-reference check v0, now
@@ -102,7 +111,15 @@ export {
   type KnownIntentKindsExternalInputs,
 } from "./capability-definitions/index.js"
 
-export { normalizeDiacritics } from "./text-normalization.js"
+export { normalizeDiacritics, normalizeProseForm } from "./text-normalization.js"
+
+export {
+  ALIAS_GAZETTEER,
+  ALIAS_PROVENANCES,
+  normalizeAliasSurface,
+  type AliasEdge,
+  type AliasProvenance,
+} from "./alias-gazetteer.js"
 
 export {
   CLAIM_CLASS_REFERENCES,
@@ -140,6 +157,7 @@ export {
 } from "./capability-definitions/vocabularies.js"
 
 export {
+  aliasObjectName,
   assertCatalogCompiles,
   CATALOG_PASS_IDS,
   CATALOG_PASSES,
@@ -148,6 +166,7 @@ export {
   externalReferenceObjectName,
   formatCatalogReport,
   formatDiagnostic,
+  runAliasGazetteerPass,
   runExternalReferencesPass,
   runReferentialIntegrityPass,
   runSafetyImplicationEdgesPass,

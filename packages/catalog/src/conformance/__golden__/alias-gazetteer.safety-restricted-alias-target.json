@@ -1,0 +1,62 @@
+{
+  "fixture": "alias-gazetteer.safety-restricted-alias-target",
+  "targets": "alias-gazetteer/safety-restricted-alias-target",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 1,
+  "rulesEmitted": [
+    "alias-gazetteer/safety-restricted-alias-target"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 2,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "alias-gazetteer",
+      "rule": "safety-restricted-alias-target",
+      "severity": "error",
+      "object": "alias:conformance apelido",
+      "field": "canonical",
+      "message": "alias edge terminates in the dietary-restriction attribute \"conformance-sem-gluten\" (marker \"gluten\"). Forbidden by the ratified BKL-143 / BKL-123 / BKL-171 rulings: a colloquial word may not be declared to NAME an allergen or dietary class, because the resolution would then license exactly the customer-facing assertion those rulings refused. Reopening requires an explicit owner reversal in writing. If this is an ordinary product whose NAME merely contains an ingredient word, that is the deliberate false positive documented in this pass — the product stays orderable by its real name.",
+      "reference": "conformance-sem-gluten"
+    }
+  ],
+  "formatted": [
+    "alias-gazetteer/safety-restricted-alias-target: alias:conformance apelido · canonical — alias edge terminates in the dietary-restriction attribute \"conformance-sem-gluten\" (marker \"gluten\"). Forbidden by the ratified BKL-143 / BKL-123 / BKL-171 rulings: a colloquial word may not be declared to NAME an allergen or dietary class, because the resolution would then license exactly the customer-facing assertion those rulings refused. Reopening requires an explicit owner reversal in writing. If this is an ordinary product whose NAME merely contains an ingredient word, that is the deliberate false positive documented in this pass — the product stays orderable by its real name."
+  ]
+}

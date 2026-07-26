@@ -69,6 +69,8 @@ export interface ConformanceGolden {
   readonly capabilities: number
   /** How many external-reference declarations the fixture carried (LE2-018). */
   readonly externalReferences: number
+  /** How many alias edges the fixture carried (LE2-025a). */
+  readonly aliases: number
   /** Every `<pass>/<rule>` the fixture actually emitted, sorted. */
   readonly rulesEmitted: readonly string[]
   readonly passes: readonly GoldenPass[]
@@ -113,16 +115,21 @@ function canonicalDiagnostic(diagnostic: CatalogDiagnostic): GoldenDiagnostic {
 
 /** Compile one fixture and shape its result as a golden. */
 export function computeGolden(fixture: ConformanceFixture): ConformanceGolden {
-  // Always pass the table EXPLICITLY — `compileCatalog`'s default is the real
-  // authored one, and a fixture must never inherit live data (see
+  // Always pass the tables EXPLICITLY — `compileCatalog`'s defaults are the
+  // real authored ones, and a fixture must never inherit live data (see
   // `ConformanceFixture.externalReferences`).
-  const result = compileCatalog(fixture.definitions, fixture.externalReferences ?? [])
+  const result = compileCatalog(
+    fixture.definitions,
+    fixture.externalReferences ?? [],
+    fixture.aliases ?? [],
+  )
   return {
     fixture: fixture.name,
     targets: fixture.targets,
     ok: result.ok,
     capabilities: result.capabilities,
     externalReferences: result.externalReferences,
+    aliases: result.aliases,
     rulesEmitted: [...new Set(result.diagnostics.map(ruleId))].sort(),
     passes: result.passes.map((pass) => ({
       pass: pass.pass,

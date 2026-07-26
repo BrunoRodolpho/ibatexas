@@ -1,0 +1,62 @@
+{
+  "fixture": "alias-gazetteer.colliding-alias-disambiguation",
+  "targets": "alias-gazetteer/colliding-alias-disambiguation",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 2,
+  "rulesEmitted": [
+    "alias-gazetteer/colliding-alias-disambiguation"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 6,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "alias-gazetteer",
+      "rule": "colliding-alias-disambiguation",
+      "severity": "error",
+      "object": "alias:conformance apelido colidente",
+      "field": "disambiguatedBy",
+      "message": "\"conformance token\" already selects the reading at array position 0 (\"conformance-entidade-canonica\"). A token both readings claim leaves the surface form exactly as ambiguous as it was before — a coin flip with paperwork. The disambiguating token must be the thing that actually differs in what the customer says.",
+      "reference": "conformance token"
+    }
+  ],
+  "formatted": [
+    "alias-gazetteer/colliding-alias-disambiguation: alias:conformance apelido colidente · disambiguatedBy — \"conformance token\" already selects the reading at array position 0 (\"conformance-entidade-canonica\"). A token both readings claim leaves the surface form exactly as ambiguous as it was before — a coin flip with paperwork. The disambiguating token must be the thing that actually differs in what the customer says."
+  ]
+}

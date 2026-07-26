@@ -1,0 +1,72 @@
+{
+  "fixture": "alias-gazetteer.ambiguous-alias-surface",
+  "targets": "alias-gazetteer/ambiguous-alias-surface",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 2,
+  "rulesEmitted": [
+    "alias-gazetteer/ambiguous-alias-surface"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 4,
+      "diagnostics": 2
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "alias-gazetteer",
+      "rule": "ambiguous-alias-surface",
+      "severity": "error",
+      "object": "alias:conformance apelido ambiguo",
+      "field": "surface",
+      "message": "this surface form names 2 entities (conformance-entidade-alternativa, conformance-entidade-canonica), and the reading at array position 1 (\"conformance-entidade-alternativa\") declares no `disambiguatedBy` — so resolving it would be a coin flip between entities with different prices and different fulfilment. Ticket 25: an ambiguous alias without a declared disambiguation is a compile error, because there is no ordering of the table that makes the guess correct. Declare the token the customer actually says to select THIS reading; the runtime CLARIFIES when none is present.",
+      "reference": "conformance-entidade-alternativa"
+    },
+    {
+      "pass": "alias-gazetteer",
+      "rule": "ambiguous-alias-surface",
+      "severity": "error",
+      "object": "alias:conformance apelido ambiguo",
+      "field": "surface",
+      "message": "this surface form names 2 entities (conformance-entidade-alternativa, conformance-entidade-canonica), and the reading at array position 0 (\"conformance-entidade-canonica\") declares no `disambiguatedBy` — so resolving it would be a coin flip between entities with different prices and different fulfilment. Ticket 25: an ambiguous alias without a declared disambiguation is a compile error, because there is no ordering of the table that makes the guess correct. Declare the token the customer actually says to select THIS reading; the runtime CLARIFIES when none is present.",
+      "reference": "conformance-entidade-canonica"
+    }
+  ],
+  "formatted": [
+    "alias-gazetteer/ambiguous-alias-surface: alias:conformance apelido ambiguo · surface — this surface form names 2 entities (conformance-entidade-alternativa, conformance-entidade-canonica), and the reading at array position 1 (\"conformance-entidade-alternativa\") declares no `disambiguatedBy` — so resolving it would be a coin flip between entities with different prices and different fulfilment. Ticket 25: an ambiguous alias without a declared disambiguation is a compile error, because there is no ordering of the table that makes the guess correct. Declare the token the customer actually says to select THIS reading; the runtime CLARIFIES when none is present.",
+    "alias-gazetteer/ambiguous-alias-surface: alias:conformance apelido ambiguo · surface — this surface form names 2 entities (conformance-entidade-alternativa, conformance-entidade-canonica), and the reading at array position 0 (\"conformance-entidade-canonica\") declares no `disambiguatedBy` — so resolving it would be a coin flip between entities with different prices and different fulfilment. Ticket 25: an ambiguous alias without a declared disambiguation is a compile error, because there is no ordering of the table that makes the guess correct. Declare the token the customer actually says to select THIS reading; the runtime CLARIFIES when none is present."
+  ]
+}

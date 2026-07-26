@@ -35,6 +35,12 @@ export const CATALOG_PASS_IDS = [
   // CONTENTS do not separate capabilities. Adjacency puts both halves of one
   // authoring mistake next to each other in a build log.
   "conversation-projection",
+  // LE2-025a — the second half of the language surface, and so adjacent to the
+  // first: `conversation-projection` governs how a capability is ASKED FOR,
+  // this pass governs how the things it acts on are NAMED. Both compare under
+  // one word-space normal form, and an author reading a build log sees the two
+  // customer-vocabulary passes together.
+  "alias-gazetteer",
   "safety-implication-edges",
   "terminal-coverage",
   "external-references",
@@ -156,4 +162,20 @@ export function externalReferenceObjectName(id: unknown, index: number): string 
   return typeof id === "string" && id.trim() !== ""
     ? `external-reference:${id}`
     : `external-reference:#${index}`
+}
+
+/**
+ * Name an alias edge for {@link CatalogDiagnostic.object} (LE2-025a).
+ *
+ * The SURFACE FORM is the name, spelled exactly as authored — it is what a
+ * human searches `alias-gazetteer.ts` for. Two edges of one ambiguous surface
+ * therefore share an object name, which is correct: the ambiguity is a
+ * property of the surface, not of either row, and the pair reads as one
+ * finding in a sorted build log. The array-position fallback is the same
+ * discipline as {@link capabilityObjectName}.
+ */
+export function aliasObjectName(surface: unknown, index: number): string {
+  return typeof surface === "string" && surface.trim() !== ""
+    ? `alias:${surface}`
+    : `alias:#${index}`
 }
