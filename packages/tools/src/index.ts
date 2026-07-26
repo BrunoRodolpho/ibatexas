@@ -45,7 +45,7 @@ export { addOrderNote, AddOrderNoteTool } from "./cart/add-order-note.js"
 export { getCustomerProfile, GetCustomerProfileTool } from "./intelligence/get-customer-profile.js"
 export { getRecommendations, GetRecommendationsTool, buildPersonalizedQuery } from "./intelligence/get-recommendations.js"
 export { updatePreferences, UpdatePreferencesTool } from "./intelligence/update-preferences.js"
-export { submitReview, SubmitReviewTool } from "./intelligence/submit-review.js"
+export { submitReview, submitReviewPreAdjudicated, SubmitReviewTool } from "./intelligence/submit-review.js"
 export { getAlsoAdded, GetAlsoAddedTool } from "./intelligence/get-also-added.js"
 export { getOrderedTogether, GetOrderedTogetherTool } from "./intelligence/get-ordered-together.js"
 export { scheduleFollowUp, ScheduleFollowUpTool } from "./intelligence/schedule-follow-up.js"
@@ -298,11 +298,11 @@ export { EMBED_DIM } from "./config.js"
 
 // ── Reservation tools ──────────────────────────────────────────────────────────
 export { checkTableAvailability, CheckTableAvailabilityTool } from "./reservation/check-availability.js"
-export { createReservation, CreateReservationTool } from "./reservation/create-reservation.js"
+export { createReservation, createReservationPreAdjudicated, CreateReservationTool } from "./reservation/create-reservation.js"
 export { modifyReservation, modifyReservationPreAdjudicated, ModifyReservationTool } from "./reservation/modify-reservation.js"
-export { cancelReservation, CancelReservationTool } from "./reservation/cancel-reservation.js"
+export { cancelReservation, cancelReservationPreAdjudicated, CancelReservationTool } from "./reservation/cancel-reservation.js"
 export { getMyReservations, GetMyReservationsTool } from "./reservation/get-my-reservations.js"
-export { joinWaitlist, JoinWaitlistTool } from "./reservation/join-waitlist.js"
+export { joinWaitlist, joinWaitlistPreAdjudicated, JoinWaitlistTool } from "./reservation/join-waitlist.js"
 export {
   sendReservationConfirmation,
   sendReservationModified,

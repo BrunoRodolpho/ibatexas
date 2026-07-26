@@ -239,12 +239,23 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * Get or create customer preferences.
      * Allergens are always explicit arrays — never inferred (CLAUDE.md rule 1).
      *
-     * @deprecated Use `updatePreferencesFromEnvelope` instead — the bare-arg
-     *   entry point bypasses the kernel adjudication (allergen-explicit-array
-     *   guard, audit emit, etc). Kept as the executor for the envelope
-     *   wrapper above and for any remaining callers; will be removed once
-     *   the M3 migration completes. See `customer.preferences.update` in
-     *   `packages/pack-customer-onboarding`.
+     * Bare-arg entry point: it performs NO adjudication. Two kinds of caller
+     * may use it, and only these two:
+     *
+     *   1. `updatePreferencesFromEnvelope` below, as its kernel executor.
+     *   2. A caller that ALREADY HOLDS a positive (EXECUTE/REWRITE) decision for
+     *      `customer.preferences.update` — since BKL-242, the `update_preferences`
+     *      tool on the claustrum dispatch path, which the Conductor invokes only
+     *      after adjudicating that intent through the COMPOSED policy router.
+     *      Re-running `updatePreferencesFromEnvelope` there would adjudicate the
+     *      same intent a second time against the RAW
+     *      `customerOnboardingPolicyBundle` — a strict subset of the composed
+     *      router (no `refuseAllergenMentionGuard`) and, as wired, audit-blind.
+     *      Same rationale as `OrderCommandService.writeAdjudicatedNote`.
+     *
+     * @deprecated for any OTHER caller — an ungoverned bare call bypasses the
+     *   kernel entirely (CLAUDE.md rule #9). See `customer.preferences.update`
+     *   in `packages/pack-customer-onboarding`.
      */
     async updatePreferences(
       customerId: string,
@@ -261,10 +272,22 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * Submit or update a product review.
      * Returns the updated aggregate rating for the product.
      *
-     * @deprecated Use `submitReviewFromEnvelope` instead — the bare-arg
-     *   entry point bypasses the kernel adjudication (rating-range guard,
-     *   audit emit, etc). Kept for any remaining callers; will be removed
-     *   once the M3 migration completes. See `order.review.submit` in
+     * Bare-arg entry point: it performs NO adjudication. Two kinds of caller
+     * may use it, and only these two:
+     *
+     *   1. `submitReviewFromEnvelope` below, as its kernel executor.
+     *   2. A caller that ALREADY HOLDS a positive (EXECUTE/REWRITE) decision for
+     *      `order.review.submit` — since BKL-243, `submitReviewPreAdjudicated`
+     *      on the claustrum dispatch path, which the Conductor invokes only after
+     *      adjudicating that intent through the COMPOSED policy router. Re-running
+     *      `submitReviewFromEnvelope` there would adjudicate the same intent a
+     *      second time against the RAW `ordersPolicyBundle` — a strict subset of
+     *      the composed router (no `refuseUnresolvedReviewProductGuard`) and, as
+     *      wired, audit-blind. Same rationale as
+     *      `OrderCommandService.writeAdjudicatedNote`.
+     *
+     * @deprecated for any OTHER caller — an ungoverned bare call bypasses the
+     *   kernel entirely (CLAUDE.md rule #9). See `order.review.submit` in
      *   `packages/pack-orders`.
      */
     async submitReview(input: {

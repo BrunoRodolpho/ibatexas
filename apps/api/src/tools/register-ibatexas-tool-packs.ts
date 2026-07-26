@@ -23,11 +23,32 @@
 // hands each tool a per-turn `Capsule`; `agentCtxFromCapsule()` adapts it. Two
 // handler shapes exist and the wrapper calls each correctly:
 //   - `(input, ctx: AgentContext)` — orders / customer-onboarding / payments.
-//   - `(input)` — the 4 reservation handlers. `createReservation`/`joinWaitlist`
-//     take a single arg; `modify`/`cancelReservation` are wrapped by
-//     `withReservationOwnership`, whose type is `(input) => Promise<R>`. They
-//     carry `customerId` INSIDE the input payload and do their own ownership
-//     check, so the adapter ctx is intentionally not threaded into them.
+//   - `(input)` — the 4 reservation handlers. `create*`/`joinWaitlist*` take a
+//     single arg; `modify*`/`cancel*` are wrapped by `withReservationOwnership`,
+//     whose type is `(input) => Promise<R>`. They carry `customerId` INSIDE the
+//     input payload and do their own ownership check, so the adapter ctx is
+//     intentionally not threaded into them.
+//
+// ── BKL-242/243 — dispatch entry points are PRE-ADJUDICATED ────────────────
+//
+// Every `execute` below runs AFTER the Conductor has adjudicated the intent
+// through the audited kernel and claimed its execution-ledger key. A handler
+// that mints a fresh envelope of the SAME kind and adjudicates it again
+// produces a second decision for one customer action — a duplicate the ledger
+// can never absorb, because a fresh `nonce: randomUUID()` gives it a different
+// `intentHash`. Where that second run is wired with no `auditSink` it is worse
+// than duplicated: it is INVISIBLE, and an inner REFUSE silently contradicts
+// the audited EXECUTE.
+//
+// So the handlers dispatched here are the `*PreAdjudicated` twins (or, where
+// this registry is a handler's only caller, the handler converted in place —
+// `addOrderNote`, `updatePreferences`). The self-adjudicating originals stay
+// exported for the REST routes, which have no kernel decision behind them and
+// must gate themselves (CLAUDE.md rule #9).
+//
+// `tool-dispatch-self-readjudication.test.ts` is the class gate: it drives every
+// entry in this roster and fails if any handler mints an envelope of its own
+// registered `intentKind`.
 
 import {
   addOrderNote,
@@ -35,18 +56,18 @@ import {
   amendOrder,
   applyCoupon,
   cancelOrder,
-  cancelReservation,
+  cancelReservationPreAdjudicated,
   createCheckout,
-  createReservation,
+  createReservationPreAdjudicated,
   getOrCreateCart,
   handoffToHuman,
-  joinWaitlist,
+  joinWaitlistPreAdjudicated,
   medusaAdmin,
   modifyReservationPreAdjudicated,
   regeneratePix,
   removeFromCart,
   setPixDetails,
-  submitReview,
+  submitReviewPreAdjudicated,
   updateCart,
   updatePreferences,
 } from "@ibatexas/tools";
@@ -480,6 +501,11 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "order.note.add",
     description: "Adicionar uma observação a um pedido.",
     riskLevel: "low",
+    // BKL-242 — `addOrderNote` was CONVERTED IN PLACE (this registry is its only
+    // caller; there is no REST note route). It now persists via
+    // `OrderCommandService.writeAdjudicatedNote` instead of re-adjudicating.
+    // PROVEN live audit-blind: conductor EXECUTE intent_audit 5278, note row 9ms
+    // later, NO second audit row — the tool built its services with no auditSink.
     execute: (input, ctx) => addOrderNote(input as never, ctx),
   }),
   makeTool({
@@ -488,7 +514,9 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "order.review.submit",
     description: "Enviar uma avaliação de um pedido concluído.",
     riskLevel: "low",
-    execute: (input, ctx) => submitReview(input as never, ctx),
+    // BKL-243 — the PRE-ADJUDICATED entry point (same class as BKL-232 below).
+    // The self-adjudicating `submitReview` stays on the REST /api/me route.
+    execute: (input, ctx) => submitReviewPreAdjudicated(input as never, ctx),
   }),
 
   // ── pack-reservations (4) — single-arg handlers ────────────────────────────
@@ -498,7 +526,12 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "reservation.create",
     description: "Criar uma reserva de mesa.",
     riskLevel: "medium",
-    execute: (input) => createReservation(input as never),
+    // BKL-243 — the PRE-ADJUDICATED entry point (same class as BKL-232 below).
+    // Dispatch runs on a kernel EXECUTE the Conductor already audited and
+    // ledger-claimed; the self-adjudicating `createReservation` minted a second
+    // `reservation.create` envelope here (fresh nonce ⇒ a hash the ledger could
+    // never dedup) and adjudicated the same intent twice.
+    execute: (input) => createReservationPreAdjudicated(input as never),
   }),
   makeReservationTool({
     id: "ibatexas.reservation.modify.v1",
@@ -519,7 +552,11 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "reservation.cancel",
     description: "Cancelar uma reserva existente.",
     riskLevel: "medium",
-    execute: (input) => cancelReservation(input as never),
+    // BKL-242 — the PRE-ADJUDICATED entry point. PROVEN live: intent_audit pair
+    // 6712/6714 under one turn_trace (1dc9a6b8), two `reservation.cancel`
+    // EXECUTE rows 5.23s apart for a single customer confirm. The
+    // self-adjudicating `cancelReservation` stays on the REST route.
+    execute: (input) => cancelReservationPreAdjudicated(input as never),
   }),
   makeReservationTool({
     id: "ibatexas.reservation.joinWaitlist.v1",
@@ -527,7 +564,8 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "reservation.waitlist.join",
     description: "Entrar na lista de espera de um horário lotado.",
     riskLevel: "low",
-    execute: (input) => joinWaitlist(input as never),
+    // BKL-243 — the PRE-ADJUDICATED entry point (same class as BKL-232 above).
+    execute: (input) => joinWaitlistPreAdjudicated(input as never),
   }),
 
   // ── pack-customer-onboarding (2) ────────────────────────────────────────────
@@ -537,6 +575,12 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     intentKind: "customer.preferences.update",
     description: "Atualizar as preferências do cliente.",
     riskLevel: "low",
+    // BKL-242 — `updatePreferences` was CONVERTED IN PLACE (this registry is its
+    // only caller; the REST /api/me route calls the domain service directly).
+    // PROVEN live audit-blind (conductor EXECUTE intent_audit 6172, no second
+    // row). Dropping the inner run TIGHTENS governance: it adjudicated the RAW
+    // `customerOnboardingPolicyBundle`, a strict subset of the composed router
+    // the Conductor uses — the inner run had no `refuseAllergenMentionGuard`.
     execute: (input, ctx) => updatePreferences(input as never, ctx),
   }),
   makeTool({
