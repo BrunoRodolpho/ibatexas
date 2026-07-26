@@ -21,6 +21,7 @@ import {
   renderWorkflowTemplate,
   resolveWorkflowParams,
 } from "../workflow-params.js";
+import { sortedByCodeUnits } from "../workflow-ordering.js";
 import { createWorkflowRuntime } from "../workflow-runtime.js";
 import {
   sanitizeWorkflowSlots,
@@ -106,7 +107,7 @@ describe("the closed workflow surface", () => {
       new Set(["note"]),
     );
     expect(slots).toEqual({ note: "sem cebola" });
-    expect([...dropped].sort()).toEqual(["nested", "orderId"]);
+    expect(sortedByCodeUnits(dropped)).toEqual(["nested", "orderId"]);
   });
 });
 

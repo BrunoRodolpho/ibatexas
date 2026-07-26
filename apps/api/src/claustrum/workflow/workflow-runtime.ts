@@ -61,6 +61,7 @@ import {
   type WorkflowDefinition,
 } from "@ibatexas/catalog";
 import { logger } from "../../lib/logger.js";
+import { sortedByCodeUnits } from "./workflow-ordering.js";
 import {
   buildActivityPayload,
   renderWorkflowTemplate,
@@ -206,6 +207,175 @@ function confirmPromptOf(decision: Decision): string | undefined {
   return undefined;
 }
 
+/**
+ * Submit ONE activity: mint its envelope, put it through the kernel, and — only
+ * on EXECUTE — dispatch it. Always returns a step record, whatever the kernel
+ * said: a refused step is not an error to swallow, it is the single most useful
+ * row the trace can carry (see workflow-trace.ts).
+ *
+ * Extracted from the sequence loop because "submit one activity and report what
+ * the kernel said" is the unit the whole design turns on — per-activity
+ * adjudication — and it is worth being able to read it without the loop's
+ * bookkeeping around it.
+ */
+async function submitActivity(args: {
+  readonly deps: WorkflowRuntimeDeps;
+  readonly instance: WorkflowInstance;
+  readonly activity: WorkflowDefinition["activities"][number];
+  readonly stepIndex: number;
+  readonly payload: Readonly<Record<string, WorkflowParamValue>>;
+  readonly actor: IntentActor;
+  readonly ctx: unknown;
+  readonly turnId: string;
+  readonly now: () => number;
+}): Promise<WorkflowStepRecord> {
+  const { deps, instance, activity, stepIndex, payload, actor, ctx, turnId, now } = args;
+  const stepStartedAt = now();
+
+  const envelope = buildEnvelope({
+    kind: activity.capability,
+    payload,
+    // The SAME actor the selection ran under: a workflow acts for the customer
+    // who confirmed it, never for a broader principal.
+    actor,
+    // Deliberately NOT widened. The values are first-party (validated claims,
+    // customer slots, authored constants), but taint describes PROVENANCE of
+    // the request, and the request originated in a parse. Widening it here
+    // would hand every workflow activity an authority the same mutation would
+    // not have outside a workflow.
+    taint: "UNTRUSTED",
+    nonce: `${instance.instanceId}#${stepIndex}`,
+  }) as IntentEnvelope;
+
+  // EACH ACTIVITY, INDIVIDUALLY. Its own envelope, its own adjudication, its
+  // own audit row.
+  const decision = await deps.adjudicateActivity(envelope);
+  const decisionKind = String((decision as { kind?: unknown }).kind ?? "UNKNOWN");
+  let ran = false;
+  if (decisionKind === "EXECUTE") {
+    try {
+      await deps.dispatchActivity(envelope, ctx);
+      ran = true;
+    } catch (error) {
+      logger.warn(
+        {
+          component: "workflow",
+          event: "workflow.activity.threw",
+          turnId,
+          instanceId: instance.instanceId,
+          activityId: activity.id,
+          capability: activity.capability,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "workflow: an adjudicated activity's executor threw",
+      );
+    }
+  }
+
+  const basisCode = basisCodeOf(decision);
+  return {
+    instanceId: instance.instanceId,
+    stepIndex,
+    activityId: activity.id,
+    capability: activity.capability,
+    decision: decisionKind,
+    ...(basisCode === undefined ? {} : { basisCode }),
+    executed: ran,
+    durationMs: now() - stepStartedAt,
+    at: new Date(now()).toISOString(),
+  };
+}
+
+/**
+ * The sequence outcome for a run that never started: a param did not resolve,
+ * so NOTHING is submitted. Its own named function because "we refused before
+ * the kernel saw anything" is a materially different event from "the kernel
+ * refused a step", and the trace has to be able to tell them apart — this one
+ * produces ZERO step records.
+ */
+function unresolvedParamsOutcome(
+  instance: WorkflowInstance,
+  turnId: string,
+): SequenceOutcome {
+  logger.warn(
+    {
+      component: "workflow",
+      event: "workflow.params.unresolved",
+      turnId,
+      instanceId: instance.instanceId,
+      workflowId: instance.workflowId,
+      unresolvedParams: instance.unresolved,
+    },
+    "workflow: params did not resolve from a validated claim or a customer slot — nothing submitted",
+  );
+  return {
+    steps: [],
+    outcome: "failed",
+    ...(instance.definition.activities[0]?.id === undefined
+      ? {}
+      : { failedActivityId: instance.definition.activities[0].id }),
+    executed: 0,
+  };
+}
+
+/** What the linear sequence did — the input to the run record. */
+interface SequenceOutcome {
+  readonly steps: readonly WorkflowStepRecord[];
+  readonly outcome: WorkflowRunOutcome;
+  readonly failedActivityId?: string;
+  readonly executed: number;
+}
+
+/**
+ * Run the LINEAR sequence, stopping at the first activity that does not reach
+ * EXECUTE.
+ *
+ * The stop is the fail-closed rule, not an optimisation: v0 has no compensators
+ * (ticket 22 owns those), so carrying on past a step the kernel refused would
+ * leave the customer with a partial result they never agreed to and nothing can
+ * undo. A payload that cannot be built stops the run the same way and BEFORE
+ * submitting anything — see workflow-params.ts on why a partial payload is the
+ * dangerous shape.
+ */
+async function runActivitySequence(args: {
+  readonly deps: WorkflowRuntimeDeps;
+  readonly instance: WorkflowInstance;
+  readonly actor: IntentActor;
+  readonly ctx: unknown;
+  readonly turnId: string;
+  readonly now: () => number;
+}): Promise<SequenceOutcome> {
+  const { deps, instance, actor, ctx, turnId, now } = args;
+  const steps: WorkflowStepRecord[] = [];
+  let executed = 0;
+
+  for (const [stepIndex, activity] of instance.definition.activities.entries()) {
+    const payload = buildActivityPayload(activity.payload, instance.params);
+    if (payload === undefined) {
+      return { steps, outcome: "failed", failedActivityId: activity.id, executed };
+    }
+
+    const step = await submitActivity({
+      deps,
+      instance,
+      activity,
+      stepIndex,
+      payload,
+      actor,
+      ctx,
+      turnId,
+      now,
+    });
+    steps.push(step);
+    if (!step.executed) {
+      return { steps, outcome: "failed", failedActivityId: activity.id, executed };
+    }
+    executed += 1;
+  }
+
+  return { steps, outcome: "completed", executed };
+}
+
 export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntime {
   const now = deps.now ?? Date.now;
   const newInstanceId = deps.newInstanceId ?? randomUUID;
@@ -240,7 +410,9 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
           id: workflow.id,
           title: workflow.title,
           description: workflow.description,
-          slots: [...workflowSlotNames(workflow)].sort(),
+          // STATED collation — this list lands in the `start_workflow` tool
+          // description, which the L1 cache key digests. See workflow-ordering.ts.
+          slots: sortedByCodeUnits(workflowSlotNames(workflow)),
         }));
     },
 
@@ -351,103 +523,14 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
       if (instance === undefined) return undefined;
 
       const runStartedAt = now();
-      const steps: WorkflowStepRecord[] = [];
-      let outcome: WorkflowRunOutcome = "completed";
-      let failedActivityId: string | undefined;
-      let executed = 0;
-
       // A param that did not resolve fails the run BEFORE anything is
       // submitted. There is no admissible way to fill it (see
       // workflow-params.ts), so submitting a partial payload would be a real
       // mutation against a value nobody authored.
-      if (instance.unresolved.length > 0) {
-        outcome = "failed";
-        failedActivityId = instance.definition.activities[0]?.id;
-        logger.warn(
-          {
-            component: "workflow",
-            event: "workflow.params.unresolved",
-            turnId,
-            instanceId: instance.instanceId,
-            workflowId: instance.workflowId,
-            unresolvedParams: instance.unresolved,
-          },
-          "workflow: params did not resolve from a validated claim or a customer slot — nothing submitted",
-        );
-      } else {
-        for (const [stepIndex, activity] of instance.definition.activities.entries()) {
-          const stepStartedAt = now();
-          const payload = buildActivityPayload(activity.payload, instance.params);
-          if (payload === undefined) {
-            outcome = "failed";
-            failedActivityId = activity.id;
-            break;
-          }
-
-          const envelope = buildEnvelope({
-            kind: activity.capability,
-            payload,
-            // The SAME actor the selection ran under: a workflow acts for the
-            // customer who confirmed it, never for a broader principal.
-            actor,
-            // Deliberately NOT widened. The values are first-party (validated
-            // claims, customer slots, authored constants), but taint describes
-            // PROVENANCE of the request, and the request originated in a parse.
-            // Widening it here would hand every workflow activity an authority
-            // the same mutation would not have outside a workflow.
-            taint: "UNTRUSTED",
-            nonce: `${instance.instanceId}#${stepIndex}`,
-          }) as IntentEnvelope;
-
-          // EACH ACTIVITY, INDIVIDUALLY. Its own envelope, its own
-          // adjudication, its own audit row.
-          const decision = await deps.adjudicateActivity(envelope);
-          const decisionKind = String((decision as { kind?: unknown }).kind ?? "UNKNOWN");
-          let ran = false;
-          if (decisionKind === "EXECUTE") {
-            try {
-              await deps.dispatchActivity(envelope, ctx);
-              ran = true;
-              executed += 1;
-            } catch (error) {
-              logger.warn(
-                {
-                  component: "workflow",
-                  event: "workflow.activity.threw",
-                  turnId,
-                  instanceId: instance.instanceId,
-                  activityId: activity.id,
-                  capability: activity.capability,
-                  error: error instanceof Error ? error.message : String(error),
-                },
-                "workflow: an adjudicated activity's executor threw",
-              );
-            }
-          }
-
-          const basisCode = basisCodeOf(decision);
-          steps.push({
-            instanceId: instance.instanceId,
-            stepIndex,
-            activityId: activity.id,
-            capability: activity.capability,
-            decision: decisionKind,
-            ...(basisCode === undefined ? {} : { basisCode }),
-            executed: ran,
-            durationMs: now() - stepStartedAt,
-            at: new Date(now()).toISOString(),
-          });
-
-          if (!ran) {
-            // LINEAR AND FAIL-CLOSED: v0 has no compensators, so carrying on
-            // past a step the kernel stopped would leave the customer with a
-            // partial result nobody can undo.
-            outcome = "failed";
-            failedActivityId = activity.id;
-            break;
-          }
-        }
-      }
+      const sequence: SequenceOutcome =
+        instance.unresolved.length > 0
+          ? unresolvedParamsOutcome(instance, turnId)
+          : await runActivitySequence({ deps, instance, actor, ctx, turnId, now });
 
       const trace: WorkflowTrace = {
         run: {
@@ -455,15 +538,17 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
           workflowId: instance.workflowId,
           catalogVersion: instance.catalogVersion,
           turnId,
-          outcome,
+          outcome: sequence.outcome,
           activitiesTotal: instance.definition.activities.length,
-          activitiesExecuted: executed,
-          ...(failedActivityId === undefined ? {} : { failedActivityId }),
+          activitiesExecuted: sequence.executed,
+          ...(sequence.failedActivityId === undefined
+            ? {}
+            : { failedActivityId: sequence.failedActivityId }),
           durationMs: now() - runStartedAt,
           startedAt: instance.startedAt,
           at: new Date(now()).toISOString(),
         },
-        steps,
+        steps: sequence.steps,
       };
       recordWorkflowTrace(turnId, trace);
       return trace;

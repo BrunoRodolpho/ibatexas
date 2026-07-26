@@ -760,20 +760,55 @@ export interface CustomerHarness {
  * registry + real WebConfirmChannel, over the caller's model/session/adjudicator.
  * Claims seams are deliberately absent (see the file header).
  */
-export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerHarness {
+/**
+ * Build the tool registry for a composition: the real roster, plus — only when a
+ * workflow runtime is wired — the workflow-scoped handlers its corpus invokes
+ * and the anchor wrappers.
+ *
+ * Extracted from {@link composeCustomerConductor} (LE2-020) because the ORDER
+ * here is load-bearing and deserves to be readable on its own: the registry is
+ * last-write-wins per capability, so "scoped handlers, then anchors, then hand
+ * it over" IS the installation mechanism, not a style choice.
+ */
+function buildHarnessTools(
+  workflowRuntime: WorkflowRuntime | undefined,
+): ReturnType<typeof createToolRegistry> {
   const tools = createToolRegistry();
   registerIbatexasToolPacks(tools);
-  // LE2-020 — AFTER the real roster, because the registry is last-write-wins
-  // per capability and that ordering IS the installation mechanism. Wraps only
-  // the anchor kinds of workflows the runtime actually loaded, so an empty
-  // corpus wraps nothing.
-  if (deps.workflowRuntime !== undefined) {
+  if (workflowRuntime !== undefined) {
     // The workflow-scoped handlers FIRST — `installWorkflowRuntime` asserts the
     // anchor has a tool, and a workflow-scoped activity needs one too before
     // the runtime can dispatch it.
-    registerWorkflowScopedTools(tools, deps.workflowRuntime.activityCapabilities());
-    installWorkflowRuntime(tools, deps.workflowRuntime);
+    registerWorkflowScopedTools(tools, workflowRuntime.activityCapabilities());
+    installWorkflowRuntime(tools, workflowRuntime);
   }
+  return tools;
+}
+
+/**
+ * The RESPONDER for a composition: the real production one when a test opts in
+ * (`realResponder`), else the inert stub this harness shipped with. See the
+ * file header on why the default is inert.
+ */
+function buildHarnessResponder(deps: CustomerConductorDeps): ResponderPort {
+  if (deps.realResponder !== true) return inertResponder();
+  // Composed like the customer plane's `buildResponder`: the same explainer
+  // shape, the same funnel instance the planner got, and the schedule signal
+  // (when the test wires one) so the closed-hours layers are armed.
+  return createIbatexasResponder({
+    model: deps.model,
+    modelId: "mock-model",
+    explainer: { render: (r) => r.userFacing },
+    ...(deps.funnel ? { funnel: deps.funnel } : {}),
+    ...(deps.scheduleSignal !== undefined
+      ? { resolveScheduleSignal: () => deps.scheduleSignal }
+      : {}),
+    ...(deps.readAnswer !== undefined ? { readAnswer: deps.readAnswer } : {}),
+  });
+}
+
+export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerHarness {
+  const tools = buildHarnessTools(deps.workflowRuntime);
 
   const planner = createIbatexasPlanner({
     model: deps.model,
@@ -788,24 +823,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     ...(deps.workflowRuntime ? { workflowRuntime: deps.workflowRuntime } : {}),
   });
 
-  // LE2-007 — the REAL production responder, opt-in. Composed like the customer
-  // plane's `buildResponder`: the same explainer shape, the same funnel instance the
-  // planner got, and the schedule signal (when the test wires one) so the closed-hours
-  // layers are armed. Claims seams stay absent per the file header, so a REFUSE on an
-  // empty plan reaches the conversational branch exactly as it does in production
-  // with the claims pipeline off.
-  const responder: ResponderPort = deps.realResponder
-    ? createIbatexasResponder({
-        model: deps.model,
-        modelId: "mock-model",
-        explainer: { render: (r) => r.userFacing },
-        ...(deps.funnel ? { funnel: deps.funnel } : {}),
-        ...(deps.scheduleSignal !== undefined
-          ? { resolveScheduleSignal: () => deps.scheduleSignal }
-          : {}),
-        ...(deps.readAnswer !== undefined ? { readAnswer: deps.readAnswer } : {}),
-      })
-    : inertResponder();
+  const responder = buildHarnessResponder(deps);
 
   const webChannel = new WebConfirmChannel({
     gatewaySigningKey: "harness-web-signing-key",
@@ -814,8 +832,8 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
   });
 
   // BKL-234 — the REAL customer claims seams, opt-in. Same builder the customer
-  // composition root uses, parameterized only by this harness's planner; `{}` both
-  // when not requested and when ENABLE_CLAIMS_PIPELINE is off.
+  // composition root uses, parameterized only by this harness's planner; `{}`
+  // both when not requested and when ENABLE_CLAIMS_PIPELINE is off.
   const claimsSeams = deps.withClaims === true ? buildClaimsSeams({ planner }) : {};
 
   // LE2-020 — the decision observer. `currentTurnId` is set by
@@ -827,11 +845,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
   const adjudicator =
     deps.workflowRuntime === undefined
       ? deps.adjudicator
-      : observeWorkflowDecisions(
-          deps.adjudicator,
-          deps.workflowRuntime,
-          () => currentTurnId,
-        );
+      : observeWorkflowDecisions(deps.adjudicator, deps.workflowRuntime, () => currentTurnId);
 
   const conductor = createConductor({
     adjudicator,

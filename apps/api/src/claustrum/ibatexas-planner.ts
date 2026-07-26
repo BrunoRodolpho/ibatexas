@@ -880,6 +880,110 @@ function plannerEnvelopeActor(
 }
 
 /**
+ * Turn ONE in-plan `express_intent` call into an envelope, or report why it was
+ * dropped.
+ *
+ * Extracted from {@link translateToolCalls} (LE2-020) because that function now
+ * dispatches over THREE tool shapes, and the per-shape admission rules are the
+ * part a reviewer actually needs to read. Behaviour is unchanged: the same
+ * structural check, the same allowlist check, the same payload filter, the same
+ * `buildEnvelope` arguments, in the same order.
+ */
+function admitExpressIntent(args: {
+  readonly input: unknown;
+  readonly allowed: ReadonlySet<string>;
+  readonly state: CognitiveState;
+  readonly actor: IntentActor;
+  /** LAZY: a dropped call must not consume a nonce, exactly as before the
+   *  extraction (`deriveNonce` is injectable and may be a counting double). */
+  readonly nonce: () => string;
+}): { readonly envelope: IntentEnvelope; readonly capability: string } | { readonly dropped: string } {
+  if (!isExpressIntentInput(args.input)) {
+    // FE-T01 (NIT-1) — the SAME constant the extraction-failure REFUSE check
+    // reads, so producer and consumer cannot drift apart.
+    return { dropped: MALFORMED_EXPRESS_INTENT_MARKER };
+  }
+  const { capability, payload } = args.input;
+  // Defense in depth: never build an envelope for a capability the pack
+  // planners did not authorize this turn, even if the model (or a compromised
+  // prompt) emits one.
+  if (!args.allowed.has(capability)) return { dropped: capability };
+
+  // FE-T11 — the plan-time payload filter (see stripUnauthoredPayloadFields's
+  // doc): the ENFORCEMENT half of the authored extraction schemas, closing the
+  // class of bug where a smuggled key rode the wire unfiltered straight into
+  // buildEnvelope. Runs BEFORE buildEnvelope, unconditionally, for every
+  // capability — a no-op for any capability with no authored schema.
+  const { filtered: filteredPayload, stripped } = stripUnauthoredPayloadFields(
+    capability,
+    payload ?? {},
+  );
+  if (stripped.length > 0) {
+    // SIGNAL — names only, NEVER values (the stripped value could be arbitrary
+    // model-generated text/PII).
+    logger.warn(
+      {
+        component: "planner",
+        event: "express_intent.payload_fields_stripped",
+        turnId: args.state.turnId,
+        capability,
+        strippedFields: stripped,
+      },
+      `planner stripped ${stripped.length} unauthored payload field(s) for "${capability}"`,
+    );
+  }
+  return {
+    envelope: buildEnvelope({
+      kind: capability,
+      payload: filteredPayload ?? {},
+      // Per-turn constant (customer plane: llm/conversation; ops plane:
+      // user/admin:<staffId>/role). `payload` above is the ONLY thing the model
+      // influences — never `actor`.
+      actor: args.actor,
+      taint: "UNTRUSTED",
+      nonce: args.nonce(),
+    }),
+    capability,
+  };
+}
+
+/**
+ * Turn ONE `start_workflow` call into the workflow's ANCHOR envelope, or report
+ * why it was dropped (LE2-020).
+ *
+ * Treated with exactly the suspicion an `express_intent` call gets: structurally
+ * validated, then checked against the CLOSED surface this turn actually offered
+ * (inside `selectWorkflow`), then turned into an ordinary IntentEnvelope so the
+ * kernel adjudicates the selection like any other proposed mutation. Selecting a
+ * workflow grants nothing on its own.
+ */
+function admitWorkflowSelection(args: {
+  readonly input: unknown;
+  readonly selectWorkflow:
+    | ((workflowId: string, slots: unknown) => { readonly kind: string; readonly payload: unknown } | undefined)
+    | undefined;
+  readonly actor: IntentActor;
+  /** LAZY — see {@link admitExpressIntent}. */
+  readonly nonce: () => string;
+}): { readonly envelope: IntentEnvelope; readonly capability: string } | { readonly dropped: string } {
+  if (!isStartWorkflowInput(args.input)) {
+    return { dropped: MALFORMED_START_WORKFLOW_MARKER };
+  }
+  const selected = args.selectWorkflow?.(args.input.workflow, args.input.slots);
+  if (selected === undefined) return { dropped: args.input.workflow };
+  return {
+    envelope: buildEnvelope({
+      kind: selected.kind,
+      payload: selected.payload ?? {},
+      actor: args.actor,
+      taint: "UNTRUSTED",
+      nonce: args.nonce(),
+    }),
+    capability: selected.kind,
+  };
+}
+
+/**
  * Translate the model's tool calls into the planner's outputs (RC-A1): each
  * in-plan `express_intent` becomes an `IntentEnvelope`; a visible read tool is
  * recorded in `readToolCalls`; a malformed/out-of-plan/unknown call is dropped
@@ -926,92 +1030,37 @@ function translateToolCalls(args: {
   const dropped: string[] = [];
 
   for (const call of args.toolCalls ?? []) {
-    if (call.name === EXPRESS_INTENT_TOOL) {
-      if (!isExpressIntentInput(call.input)) {
-        // FE-T01 (NIT-1) — the SAME constant the extraction-failure REFUSE
-        // check below reads, so producer and consumer cannot drift apart.
-        dropped.push(MALFORMED_EXPRESS_INTENT_MARKER);
-        continue;
+    if (call.name !== EXPRESS_INTENT_TOOL && call.name !== START_WORKFLOW_TOOL) {
+      if (args.visibleReadTools.includes(call.name)) {
+        readToolCalls.push({ name: call.name, input: call.input });
+      } else {
+        dropped.push(call.name);
       }
-      const { capability, payload } = call.input;
-      // Defense in depth: never build an envelope for a capability the
-      // pack planners did not authorize this turn, even if the model
-      // (or a compromised prompt) emits one.
-      if (!args.allowed.has(capability)) {
-        dropped.push(capability);
-        continue;
-      }
-      // FE-T11 — the plan-time payload filter (see stripUnauthoredPayload
-      // Fields's doc): the ENFORCEMENT half of the authored extraction
-      // schemas, closing the class of bug where a smuggled key (e.g. a
-      // hallucinated orderId) rode the wire unfiltered straight into
-      // buildEnvelope. Runs BEFORE buildEnvelope, unconditionally, for every
-      // capability — a no-op for any capability with no authored schema.
-      const { filtered: filteredPayload, stripped } = stripUnauthoredPayloadFields(
-        capability,
-        payload ?? {},
-      );
-      if (stripped.length > 0) {
-        // SIGNAL — names only, NEVER values (the stripped value could be
-        // arbitrary model-generated text/PII): observability for how often a
-        // completion attempts to smuggle an unauthored field past a capability's
-        // narrowed wire schema.
-        logger.warn(
-          {
-            component: "planner",
-            event: "express_intent.payload_fields_stripped",
-            turnId: args.state.turnId,
-            capability,
-            strippedFields: stripped,
-          },
-          `planner stripped ${stripped.length} unauthored payload field(s) for "${capability}"`,
-        );
-      }
-      envelopes.push(
-        buildEnvelope({
-          kind: capability,
-          payload: filteredPayload ?? {},
-          // Per-turn constant (customer plane: llm/conversation; ops plane:
-          // user/admin:<staffId>/role). `payload` above is the ONLY thing the
-          // model influences — never `actor`.
-          actor: args.actor,
-          taint: "UNTRUSTED",
-          nonce: args.deriveNonce(args.state, envelopes.length),
-        }),
-      );
-      capabilities.push(capability);
-    } else if (call.name === START_WORKFLOW_TOOL) {
-      // LE2-020 — a WORKFLOW SELECTION. Treated with exactly the suspicion an
-      // `express_intent` call gets: structurally validated, then checked
-      // against the closed surface this turn actually offered (inside
-      // `selectWorkflow`), then turned into an ordinary IntentEnvelope for the
-      // ANCHOR capability so the kernel adjudicates the selection the same way
-      // it adjudicates any other proposed mutation. Selecting a workflow grants
-      // nothing on its own.
-      if (!isStartWorkflowInput(call.input)) {
-        dropped.push(MALFORMED_START_WORKFLOW_MARKER);
-        continue;
-      }
-      const selected = args.selectWorkflow?.(call.input.workflow, call.input.slots);
-      if (selected === undefined) {
-        dropped.push(call.input.workflow);
-        continue;
-      }
-      envelopes.push(
-        buildEnvelope({
-          kind: selected.kind,
-          payload: selected.payload ?? {},
-          actor: args.actor,
-          taint: "UNTRUSTED",
-          nonce: args.deriveNonce(args.state, envelopes.length),
-        }),
-      );
-      capabilities.push(selected.kind);
-    } else if (args.visibleReadTools.includes(call.name)) {
-      readToolCalls.push({ name: call.name, input: call.input });
-    } else {
-      dropped.push(call.name);
+      continue;
     }
+
+    const admitted =
+      call.name === EXPRESS_INTENT_TOOL
+        ? admitExpressIntent({
+            input: call.input,
+            allowed: args.allowed,
+            state: args.state,
+            actor: args.actor,
+            nonce: () => args.deriveNonce(args.state, envelopes.length),
+          })
+        : admitWorkflowSelection({
+            input: call.input,
+            selectWorkflow: args.selectWorkflow,
+            actor: args.actor,
+            nonce: () => args.deriveNonce(args.state, envelopes.length),
+          });
+
+    if ("dropped" in admitted) {
+      dropped.push(admitted.dropped);
+      continue;
+    }
+    envelopes.push(admitted.envelope);
+    capabilities.push(admitted.capability);
   }
 
   return { envelopes, capabilities, readToolCalls, dropped };

@@ -40,6 +40,7 @@ import type {
   WorkflowDefinition,
   WorkflowPayloadBinding,
 } from "@ibatexas/catalog";
+import { sortedByCodeUnits } from "./workflow-ordering.js";
 
 /** A value a param may hold. Deliberately scalar — no nested model output. */
 export type WorkflowParamValue = string | number | boolean;
@@ -96,7 +97,10 @@ export function resolveWorkflowParams(
     if (!resolution.resolved) unresolved.push(param.name);
   }
 
-  return { params, unresolved: unresolved.sort() };
+  // Copy-then-sort in a STATED collation: `unresolved` is exposed as
+  // `readonly string[]` and is logged verbatim, so it must read the same way
+  // twice and must not be reordered under a caller.
+  return { params, unresolved: sortedByCodeUnits(unresolved) };
 }
 
 function resolveOne(
