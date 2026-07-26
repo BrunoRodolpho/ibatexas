@@ -324,8 +324,26 @@ export function composeOpsConductor(
     // The SAME `createSafeUnknownGate` the customer plane composes, minus the
     // customer-copy scheduled-pickup offer (see SafeUnknownGateOptions).
     // Flag-OFF → omitted → byte-identical to the pre-LE2 ops responder.
+    //
+    // LE2-013 — THE HOLE CLOSES. `retireRawProse` flips this plane's discriminator
+    // from LE2-011's POSITIVE info-question net to its complement-of-smalltalk. The
+    // skeleton's net could only degrade a turn it RECOGNISED as a question, so its
+    // misses were still a live prose surface: an information-bearing staff turn with
+    // no '?' and no WH/polar marker ("me passa o total de ontem", "o fornecedor
+    // confirmou pra amanhã") ran the conversational completion, and the digit clamp
+    // beneath it sees only NUMBERS. With the retirement the empty-plan FACTUAL path
+    // terminates at the deterministic safe-unknown render ALWAYS, and raw prose
+    // survives ONLY for small talk — the exact shape spec decision 6 ratifies. The
+    // clamp is RETAINED beneath the gate as belt-and-suspenders (it is no longer the
+    // primary defense; it now guards the surviving small-talk branch — see
+    // `clampUngrounded` above and its LE2-013 turn-seam pin).
     ...(claimsPipelineEnabled()
-      ? { safeUnknown: createSafeUnknownGate({ closedHoursOffer: false }) }
+      ? {
+          safeUnknown: createSafeUnknownGate({
+            closedHoursOffer: false,
+            retireRawProse: true,
+          }),
+        }
       : {}),
   });
 
