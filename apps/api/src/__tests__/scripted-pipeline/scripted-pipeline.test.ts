@@ -325,13 +325,29 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       expect(result.response.text).toBe(
         "Olá! Tudo ótimo por aqui. Como posso ajudar?",
       );
-      // 4 from the IBX-GC-006 run above + 2 from this re-drive (small-talk calls
-      // both planner and responder each turn; the model-free fixtures do not).
+      // 4 from the IBX-GC-006 run above + 1 from this re-drive.
+      //
+      // LE2-009 changed this count from 6 to 5, and the change IS the funnel's L1
+      // tier doing its job: this test re-drives a BYTE-IDENTICAL utterance through
+      // the real `bootstrapClaustrum`, which now wires exact-match parse
+      // memoization, so the second turn replays its parse instead of buying a
+      // second extraction completion. (L0 does not fire here — `decideL0` is
+      // fail-closed on a missing funnel context and this test calls `handleTurn`
+      // directly rather than through an ingress that publishes one.)
+      //
+      // The test keeps its teeth. Its purpose is to pin that the scripted provider
+      // resolves by CONTENT rather than rotating a cursor (plan v2 ledger #13), and
+      // that is still proven twice over: the RESPONDER — which L1 never caches,
+      // because the doctrine is cache-the-parse-never-the-answer — is still called
+      // on both drives and still returns the same completion for the same content
+      // key, and the re-driven reply text asserted above is identical.
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes).toHaveLength(6);
+      expect(completes).toHaveLength(5);
+      // ONE planner call across both drives: the second was served from the cache.
       expect(
         completes.filter((c) => c.label === "planner:smalltalk-noop"),
-      ).toHaveLength(2);
+      ).toHaveLength(1);
+      // TWO responder calls, same content key, same reply — the anti-cursor proof.
       expect(
         completes.filter((c) => c.label === "responder:smalltalk-noop"),
       ).toHaveLength(2);
