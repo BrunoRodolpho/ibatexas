@@ -47,6 +47,7 @@ ibx dev start --with-stripe      # also start Stripe webhook listener
 ibx dev start --no-tui           # plain log output
 ibx dev start commerce api       # only named services + dependencies
 ibx dev start --skip-docker      # skip docker compose (infra running)
+ibx dev start --no-observability # skip the obs stack (see the warning below)
 
 ibx dev stop                     # stop all + Docker
 ibx dev stop web                 # stop one service
@@ -63,12 +64,32 @@ ibx dev test @ibatexas/cli       # run tests for a specific package
 
 `ibx dev start` launches [process-compose](https://github.com/F1bonacc1/process-compose), which orchestrates:
 1. Docker infrastructure (Postgres 5433, Redis 6379, Typesense 8108, NATS 4222)
-2. Commerce (Medusa) — waits for Docker healthy
-3. API — waits for Commerce healthy
-4. Web + Admin — wait for Docker healthy
-5. (optional) ngrok tunnel + Stripe listener — wait for API healthy
+2. Observability (VictoriaLogs 9428, VictoriaMetrics 8428, Grafana 3030) — a **default** service
+3. Commerce (Medusa) — waits for Docker healthy
+4. API — waits for Commerce healthy
+5. Web + Admin — wait for Docker healthy
+6. (optional) ngrok tunnel + Stripe listener — wait for API healthy
 
 After startup, the TUI shows all processes with per-service logs. Press Ctrl+C for graceful shutdown.
+
+#### Why observability is a default service
+
+VictoriaLogs is not just a log viewer — it is the **only** record of a zero-call
+funnel turn. L0 / L1 / L2-fallback / ALIAS turns make no model call, so by design
+they write **no `turn_trace` row**; the pino log line *is* the record. When
+VictoriaLogs is down those turns are never written anywhere, so the evidence is
+lost permanently rather than merely delayed (BKL-266; measured ~6h on 2026-07-04
+and ~15h on 2026-07-26).
+
+Two consequences for the dev workflow:
+
+- `--no-observability` skips the obs stack, and `--skip-docker` skips it too
+  (it is a Docker one-shot). Both print a yellow `Observability OFF` line in the
+  start plan — that is not cosmetic, it means funnel records are being dropped.
+- The API prints **one** `[funnel-sink]` warning at boot when `VICTORIALOGS_URL`
+  is unset or the endpoint does not answer `/health`. It never refuses boot and
+  never retries; steady-state detection belongs to the 5-minute watchdog in
+  `apps/api/src/jobs/observability-liveness-checker.ts`.
 
 ### Services — `ibx svc`
 

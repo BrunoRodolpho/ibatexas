@@ -108,36 +108,56 @@ interface StartOpts {
   tui: boolean
   withTunnel?: boolean
   withStripe?: boolean
+  /** commander `--no-observability`: true (default) keeps the obs one-shot. */
+  observability?: boolean
   yes?: boolean
 }
+
+/** Default dev-stack process set. `observability` is a DEFAULT member: it brings
+ *  up VictoriaLogs, which is the only place zero-call funnel turns
+ *  (L0/L1/L2-fallback/ALIAS) are ever recorded — those write NO turn_trace row by
+ *  design, so the pino line IS the record and an outage loses them permanently
+ *  (never-written, not late). Exported so the drift test can prove
+ *  CORE + tunnel + stripe covers every process declared in process-compose.yaml,
+ *  which is what makes the `all` + opt-out expansion below faithful. */
+export const CORE_PROCESSES = [
+  "infra", "observability", "build-packages",
+  "commerce", "api", "web-clean", "web", "admin-clean", "admin",
+  "qa-viewer", "adj-console", "adjutant",
+] as const
+
+/** The two opt-in processes `all` adds on top of CORE_PROCESSES. */
+export const OPTIONAL_PROCESSES = ["tunnel", "stripe"] as const
 
 /** Resolve which process-compose processes to launch from the requested
  *  services + flags:
  *    named args → only those (process-compose resolves deps)
  *    "all"      → no filter (starts everything including tunnel/stripe)
  *    default    → core only, optionally + tunnel/stripe via flags
- *  Docker one-shots (`infra`, `observability`) are dropped when skipping Docker. */
-function resolveProcessList(
+ *  Docker one-shots (`infra`, `observability`) are dropped when skipping Docker.
+ *  Exported for unit testing — the default-membership of `observability` was
+ *  entirely unpinned before BKL-266. */
+export function resolveProcessList(
   services: string[],
   opts: StartOpts,
   skipDocker: boolean | undefined,
 ): string[] {
   const isAll = services.includes("all")
   const named = services.filter((s) => s !== "all")
+  const optOutObservability = opts.observability === false
 
-  const CORE = [
-    "infra", "observability", "build-packages",
-    "commerce", "api", "web-clean", "web", "admin-clean", "admin",
-    "qa-viewer", "adj-console", "adjutant",
-  ]
   let processes: string[]
 
   if (named.length > 0) {
     processes = named
   } else if (isAll) {
-    processes = [] // empty = start all processes in YAML
+    // Normally an empty filter (= start every process in the YAML). With the
+    // opt-out we must MATERIALIZE the set, since "everything except one" cannot
+    // be expressed as an empty filter. CORE + OPTIONAL is proven equal to the
+    // YAML's process set by the drift test, so the two paths stay equivalent.
+    processes = optOutObservability ? [...CORE_PROCESSES, ...OPTIONAL_PROCESSES] : []
   } else {
-    processes = [...CORE]
+    processes = [...CORE_PROCESSES]
     if (opts.withTunnel) processes.push("tunnel")
     if (opts.withStripe) processes.push("stripe")
   }
@@ -148,6 +168,16 @@ function resolveProcessList(
       const idx = processes.indexOf(dockerProc)
       if (idx !== -1) processes.splice(idx, 1)
     }
+  }
+
+  // BKL-266 — dedicated opt-out. Before this the ONLY way to skip the obs stack
+  // was --skip-docker, which also drops `infra`: "Postgres is already running"
+  // and "I don't want VictoriaLogs" were the same switch, so the evidence
+  // channel got dropped as a side effect of an unrelated choice. Skipping it is
+  // now an explicit, separate decision.
+  if (optOutObservability) {
+    const idx = processes.indexOf("observability")
+    if (idx !== -1) processes.splice(idx, 1)
   }
 
   return processes
@@ -461,6 +491,13 @@ async function printStartPlan(processes: string[], skipDocker: boolean | undefin
   }
   if (has("observability") && !skipDocker) {
     row("Observability", observabilityEndpoints().map((e) => `${e.name} ${e.address}`).join("  ·  "))
+  } else {
+    // BKL-266 — say the consequence out loud at the same place the developer
+    // chose it. VictoriaLogs is the ONLY record of a zero-call funnel turn.
+    console.log(
+      `  ${chalk.yellow("!")} ${"Observability".padEnd(NAME_W)} ` +
+        chalk.yellow("OFF — zero-call funnel turns (L0/L1/L2-fallback/ALIAS) will not be recorded anywhere"),
+    )
   }
   const services = resolveServices(undefined)
   for (const svc of services) {
@@ -559,6 +596,7 @@ export function registerDevCommands(dev: Command) {
     .argument("[services...]", "commerce api web admin all (default: 4 core services)")
     .option("--skip-docker, --no-docker", "Skip 'docker compose up' (assume infra is already running)")
     .option("--no-tui", "Disable TUI (plain log output)")
+    .option("--no-observability", "Skip the VictoriaLogs/VictoriaMetrics/Grafana stack (loses zero-call funnel records)")
     .option("--with-tunnel", "Enable ngrok tunnel")
     .option("--with-stripe", "Enable Stripe webhook forwarding")
     .option("-y, --yes", "Skip the start confirmation prompt")
@@ -572,6 +610,7 @@ export function registerDevCommands(dev: Command) {
     .description("Start dev stack in TUI — 4 core services by default, 'all' includes tunnel + stripe")
     .option("--skip-docker, --no-docker", "Skip 'docker compose up' (assume infra is already running)")
     .option("--no-tui", "Disable TUI (plain log output)")
+    .option("--no-observability", "Skip the VictoriaLogs/VictoriaMetrics/Grafana stack (loses zero-call funnel records)")
     .option("--with-tunnel", "Enable ngrok tunnel")
     .option("--with-stripe", "Enable Stripe webhook forwarding")
     .option("-y, --yes", "Skip the start confirmation prompt")
