@@ -7,16 +7,28 @@
 // defines. A DANGLER — a link to a claim id nothing defines — fails the
 // catalog's build.
 //
-// # Why a build gate and not (only) a test
+// # ABSORBED by the catalog compiler (LE2-016) — this module is the v0 API
 //
-// The repo's existing idiom for "this data must stay consistent with that
-// data" is a fail-closed gate rather than a hope: the capability-definitions
-// freshness gates, the roster-integrity pins, and `toolRosterDrift()` running
-// fail-closed at boot in `claustrum-bootstrap.ts`. A dangling claim link is
-// the same class of fault — a generated/derived surface silently pointing at
-// nothing — so it gets the same treatment. Wiring it into `pnpm build` means a
-// broken catalog cannot even produce a `dist/` for a downstream package to
-// consume, which is strictly earlier than a test failure.
+// The v0 gate was written against a REFERENCE-EXTRACTOR table rather than one
+// hard-coded field, precisely so the check could grow "by appending one
+// extractor, never by rewriting the gate". LE2-016 collected that growth: the
+// edge table now lives in `../compiler/passes/referential-integrity.ts` (where
+// it gained the pack-id edges), and this module is a THIN ADAPTER over the
+// same table — the compiler's referential pass and the functions below run the
+// identical `CLAIM_REFERENCE_EDGES` array, so there is nothing to drift.
+//
+// Nothing here changed shape or behavior. `findClaimReferenceDanglers`,
+// `assertClaimReferencesResolve`, `formatClaimReferenceReport` and
+// `CatalogCrossReferenceError` keep their exact v0 signatures, message format,
+// and semantics (a non-string in a reference slot is still reported as a
+// dangler — `isClaimClassReference` accepts `unknown`), so every caller and
+// the `src/__tests__/claim-references.test.ts` pins stay valid.
+//
+// What DID change is where the failure surfaces first: the package build now
+// runs `scripts/check-catalog.ts` (all four static passes), which subsumes
+// this check. `pnpm --filter @ibatexas/catalog run check:claim-refs` still
+// runs the v0 check alone, and the compiler's `referential-integrity` pass
+// reports the same faults as structured diagnostics.
 //
 // This does NOT replace `apps/api/src/claustrum/__tests__/capability-
 // definitions.success-claim-round-trip.test.ts`. That test checks the same
@@ -25,26 +37,18 @@
 // this package's `CLAIM_CLASS_REFERENCES` mirror honest. This gate is the
 // cheap, early, dependency-free half that runs where the data lives.
 //
-// # v0 scope
-//
-// v0 checks the ONE capability->claim edge that exists today:
-// `CapabilityDefinition.successClaimLinks` -> `CLAIM_CLASS_REFERENCES`. The
-// checker is written against a REFERENCE-EXTRACTOR list rather than that one
-// field, so the claims-expansion workstream adds an edge (e.g. a future
-// registry-claim-type field -> `REGISTRY_CLAIM_TYPE_REFERENCES`) by appending
-// one extractor, never by rewriting the gate. Nothing speculative is wired
-// today — there is exactly one extractor below because there is exactly one
-// edge.
-//
-// Pure: no clock, no RNG, no IO. `scripts/check-claim-references.ts` is the
-// thin process-exiting runner.
+// Pure: no clock, no RNG, no IO.
 
 import {
   CLAIM_CLASS_REFERENCES,
-  isClaimClassReference,
   isRegistryClaimTypeReference,
   REGISTRY_CLAIM_TYPE_REFERENCES,
 } from "../claim-references.js"
+import {
+  CLAIM_REFERENCE_EDGES,
+  countEdgeReferences,
+  findEdgeDanglers,
+} from "../compiler/passes/referential-integrity.js"
 import type { CapabilityDefinition } from "../capability-definitions/types.js"
 
 /** One unresolved claim reference found on a capability definition. */
@@ -60,26 +64,6 @@ export interface ClaimReferenceDangler {
 }
 
 /**
- * One capability->claim edge: where the references live on a definition, and
- * which vocabulary resolves them. Adding an edge is adding an entry here.
- */
-interface ClaimReferenceEdge {
-  readonly field: string
-  readonly vocabulary: string
-  readonly read: (def: CapabilityDefinition) => readonly string[]
-  readonly resolves: (reference: string) => boolean
-}
-
-const EDGES: readonly ClaimReferenceEdge[] = [
-  {
-    field: "successClaimLinks",
-    vocabulary: "CLAIM_CLASS_REFERENCES",
-    read: (def) => def.successClaimLinks ?? [],
-    resolves: isClaimClassReference,
-  },
-]
-
-/**
  * Every unresolved claim reference across `definitions`, in definition order
  * then field order (deterministic — the failure message must be stable so a
  * CI log diff is meaningful). Empty array means the catalog is coherent.
@@ -87,22 +71,14 @@ const EDGES: readonly ClaimReferenceEdge[] = [
 export function findClaimReferenceDanglers(
   definitions: readonly CapabilityDefinition[],
 ): readonly ClaimReferenceDangler[] {
-  const danglers: ClaimReferenceDangler[] = []
-  for (const def of definitions) {
-    for (const edge of EDGES) {
-      for (const reference of edge.read(def)) {
-        if (!edge.resolves(reference)) {
-          danglers.push({
-            kind: def.kind,
-            field: edge.field,
-            reference,
-            vocabulary: edge.vocabulary,
-          })
-        }
-      }
-    }
-  }
-  return danglers
+  return findEdgeDanglers(definitions, CLAIM_REFERENCE_EDGES).map(
+    ({ kind, field, reference, vocabulary }) => ({
+      kind,
+      field,
+      reference,
+      vocabulary,
+    }),
+  )
 }
 
 /** The human-readable failure report for a non-empty dangler list. */
@@ -148,11 +124,7 @@ export function assertClaimReferencesResolve(
 ): number {
   const danglers = findClaimReferenceDanglers(definitions)
   if (danglers.length > 0) throw new CatalogCrossReferenceError(danglers)
-  let checked = 0
-  for (const def of definitions) {
-    for (const edge of EDGES) checked += edge.read(def).length
-  }
-  return checked
+  return countEdgeReferences(definitions, CLAIM_REFERENCE_EDGES)
 }
 
 /** The vocabularies this gate resolves against, for the runner's summary. */
@@ -163,7 +135,7 @@ export const CHECKED_VOCABULARIES = {
 
 /**
  * Exported so a future edge into the registry-type name space has its resolver
- * already named and tested. Not referenced by {@link EDGES} today — no
- * definition field points at that name space yet (see claim-references.ts).
+ * already named and tested. Not referenced by `CLAIM_REFERENCE_EDGES` today —
+ * no definition field points at that name space yet (see claim-references.ts).
  */
 export const registryClaimTypeResolver = isRegistryClaimTypeReference

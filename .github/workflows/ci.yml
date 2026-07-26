@@ -72,6 +72,18 @@ jobs:
         env:
           pnpm_config_pm_on_fail: ignore
       - run: pnpm build
+      # Catalog compiler gate (LE2-016). `pnpm build` ALREADY runs the four
+      # static passes — @ibatexas/catalog's own `build` script is
+      # `tsc && tsx scripts/check-catalog.ts`, so a bad catalog can never
+      # produce a dist/ for a downstream package and the build above fails
+      # first. This step re-runs the identical passes through the CLI for two
+      # reasons: it makes the catalog verdict a NAMED, visible check in the CI
+      # log rather than a line buried in turbo's fan-out, and it proves the
+      # `ibx catalog check` entry point itself works on every commit (the
+      # command a human runs locally must be the command CI runs). Pure — no
+      # DB, no network, no services. Needs the built CLI → after `pnpm build`.
+      - name: Catalog compiler gate (LE2-016, static passes)
+        run: node packages/cli/dist/index.js catalog check
       # Pack governance gates (F11/F12). The Tier-3 planner-coherence checks
       # already ride `pnpm test` (per-pack conformance suites); these add the
       # AI-BOM drift gate (EU AI Act Art. 11 / NIST AI RMF) and the Tier-1

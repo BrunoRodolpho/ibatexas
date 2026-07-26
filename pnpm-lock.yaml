@@ -647,6 +647,9 @@ importers:
       '@ibatexas/agents':
         specifier: workspace:*
         version: link:../agents
+      '@ibatexas/catalog':
+        specifier: workspace:*
+        version: link:../catalog
       '@ibatexas/domain':
         specifier: workspace:*
         version: link:../domain

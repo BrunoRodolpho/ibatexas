@@ -28,7 +28,58 @@ constrains claim generation, the installed Packs own their guards, and
 | `src/version.ts` | `CATALOG_VERSION` — the monotonic serial (see below) |
 | `src/capability-definitions/` | The authored capability data (58 capabilities — 20 chat-tier, 38 identity-tier) and its twelve pure projection generators |
 | `src/claim-references.ts` | The claim **name spaces** a definition may point at |
-| `src/build-gates/check-claim-references.ts` | Cross-reference check v0, wired into `build` |
+| `src/compiler/` | The **catalog compiler** — four fail-closed static passes, wired into `build`, CI, and `ibx catalog check` |
+| `src/build-gates/check-claim-references.ts` | Cross-reference check v0 — now a thin adapter over the compiler's referential edge table (same API) |
+
+## The catalog compiler (LE2-016)
+
+LE2 Implementation Decision 16: *"The catalog compiler is fully fail-closed.
+Static passes … are compile/CI errors."* **An inconsistent catalog does not
+build.**
+
+| Pass | What it proves | Example rejection |
+|---|---|---|
+| `referential-integrity` | Every cross-reference resolves; every identity is unambiguous | `successClaimLinks[1] -> "order-nuked"` resolves against nothing; two capabilities claim the tool name `reorder` |
+| `slot-dataflow` | Every declared slot is well-formed for its tier contract | `successClaimLinks: []` (say `undefined`); `refusalCodes:` (a typo nothing reads); `refusalCode` on an identity-tier capability |
+| `safety-implication-edges` | No claim edge terminates in an allergen/dietary attribute | a capability linking its success to `MENU_ITEM_ALLERGENS` or to `sem_gluten` |
+| `terminal-coverage` | Declared terminals are complete and pack-coherent | a guard chain with no refusal floor; two capabilities of one Pack declaring different floors |
+
+Every diagnostic names **the object, the offending slot/edge, and the violated
+rule**, and the whole list is stable-sorted so a CI log diff is meaningful.
+
+```
+✗ slot-dataflow — 1 error(s) (1300 checked)
+    slot-dataflow/unknown-slot: capability:order.cancel · refusalCodes — no such slot in the …
+```
+
+Run it:
+
+```bash
+ibx catalog check            # all four passes, human-readable
+ibx catalog check --json     # the full CatalogCompileResult
+pnpm --filter @ibatexas/catalog run check   # the same passes, no CLI build needed
+```
+
+The passes are **pure** — no clock, no RNG, no network, no IO beyond the
+package's own data — so the command needs no database and no running service,
+and reproduces exactly what CI sees. The compiler is a **build tool**: it is
+upstream of the runtime and holds none of its authority.
+
+### The safety pass is a ratified policy, not a heuristic
+
+`safety-implication-edges` encodes three ratified tracker rulings and nothing
+else: **BKL-143** (an owner-attested allergens array does not license a
+customer-facing *"não contém X"* render — standing policy is honest self-report
+plus real staff handoff), **BKL-123** (`MENU_ITEM_ALLERGENS` stays deliberately
+UNKNOWN-only), and **BKL-171** (no dietary *"sem glúten/lactose"* renders;
+vegano/vegetariano-only renders remain out too). Reopening any of them requires
+an explicit owner reversal in writing — and a deliberate change to
+`src/compiler/passes/safety-implication-edges.ts`, never a quiet edit to the
+marker list.
+
+Unrecognized safety-bearing names route **conservatively to deny**: markers are
+matched as stems, so a reference nobody anticipated (`menu-item-allergens-v2`)
+is refused by construction rather than assumed harmless.
 
 ### Not here, by design
 

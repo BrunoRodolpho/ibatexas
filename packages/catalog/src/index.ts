@@ -36,8 +36,14 @@
  *     projections, moved intact from `@ibatexas/packs-composed`.
  *   - `claim-references.ts` — the claim NAME SPACES definitions may point at
  *     (mirrors, pinned to the runtime originals by apps/api tests).
- *   - `build-gates/check-claim-references.ts` — cross-reference check v0,
- *     wired into `pnpm --filter @ibatexas/catalog build`.
+ *   - `compiler/` — the catalog compiler (LE2-016): four fail-closed STATIC
+ *     passes (referential integrity, slot dataflow, safety-implication edges,
+ *     terminal coverage) over the authored data, wired into `pnpm --filter
+ *     @ibatexas/catalog build`, into CI, and into `ibx catalog check`. Pure
+ *     build tooling — a compiler, never a runtime authority.
+ *   - `build-gates/check-claim-references.ts` — cross-reference check v0, now
+ *     a thin adapter over the compiler's referential-integrity edge table
+ *     (same API, same messages, one table).
  *
  * # Compatibility
  *
@@ -97,3 +103,37 @@ export {
   formatClaimReferenceReport,
   type ClaimReferenceDangler,
 } from "./build-gates/check-claim-references.js"
+
+export {
+  CAPABILITY_AUTH_LEVELS,
+  CAPABILITY_PACK_IDS,
+  CAPABILITY_SURFACES,
+  CAPABILITY_TIERS,
+  GUARD_PHASES,
+  GUARD_REF_PHASES,
+  type GuardRefPhase,
+} from "./capability-definitions/vocabularies.js"
+
+export {
+  assertCatalogCompiles,
+  CATALOG_PASS_IDS,
+  CATALOG_PASSES,
+  CatalogCompileError,
+  compileCatalog,
+  formatCatalogReport,
+  formatDiagnostic,
+  runReferentialIntegrityPass,
+  runSafetyImplicationEdgesPass,
+  runSlotDataflowPass,
+  runTerminalCoveragePass,
+  safetyMarkerOf,
+  sortDiagnostics,
+  type CatalogCompileResult,
+  type CatalogDiagnostic,
+  type CatalogDiagnosticSeverity,
+  type CatalogPass,
+  type CatalogPassId,
+  type CatalogPassResult,
+  type SafetyFamily,
+  type SafetyMarker,
+} from "./compiler/index.js"
