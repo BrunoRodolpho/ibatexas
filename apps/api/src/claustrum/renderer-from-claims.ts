@@ -53,6 +53,7 @@ import { localizeClaimEnum } from "./claims-labels.js";
 import {
   clarifyWithCandidatesText,
   isPropositionFree,
+  SAFE_CLARIFY_DELIVERY_CEP_TEMPLATE,
   SAFE_TEMPLATES,
   SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
   SAFE_ESCALATE_EMERGENCY_TEMPLATE,
@@ -264,6 +265,11 @@ export function render(
   // table is static data, and an un-templated VALIDATED type still ABSTAINS to
   // the proposition-free UNKNOWN (§O#3), never free-authored prose.
   templates: Readonly<Record<string, Template>> = VALIDATED_TEMPLATES,
+  // LE2-002 — when the request carries delivery-coverage phrasing (the adapter
+  // computes it via the classifier's own net), a CLARIFY terminal renders the
+  // ask-for-the-CEP variant instead of the generic "qual pedido?" disambiguation.
+  // Default false → byte-identical.
+  deliveryCoverageAsk: boolean = false,
 ): RenderResult {
   // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
   // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
@@ -284,6 +290,7 @@ export function render(
     allergenAsk,
     emergencyAsk,
     templates,
+    deliveryCoverageAsk,
   );
 }
 
@@ -303,10 +310,18 @@ export function renderRenderables(
   allergenAsk: boolean = false,
   emergencyAsk: boolean = false,
   templates: Readonly<Record<string, Template>> = VALIDATED_TEMPLATES,
+  deliveryCoverageAsk: boolean = false,
 ): RenderResult {
   // ── 1. §O#5 render-half: a non-RENDER terminal emits ONLY the safe template. ──
   if (terminal !== "RENDER") {
-    return renderTerminalResult(terminal, suppressions, candidates, allergenAsk, emergencyAsk);
+    return renderTerminalResult(
+      terminal,
+      suppressions,
+      candidates,
+      allergenAsk,
+      emergencyAsk,
+      deliveryCoverageAsk,
+    );
   }
 
   // ── 2. RENDER path: index by type for the Inv 6 1:1 proposition lookup, then
@@ -345,6 +360,7 @@ function renderTerminalResult(
   candidates: readonly RenderDisambiguationCandidate[] = [],
   allergenAsk: boolean = false,
   emergencyAsk: boolean = false,
+  deliveryCoverageAsk: boolean = false,
 ): RenderResult {
   // BKL-170 — a CLARIFY the adopter enriched with first-party, owner-scoped
   // disambiguation candidates (0.8.0 `disambiguationCandidates` carrier) renders the
@@ -370,7 +386,17 @@ function renderTerminalResult(
         ? SAFE_ESCALATE_EMERGENCY_TEMPLATE
         : SAFE_TEMPLATES.escalate
       : terminal === "CLARIFY"
-        ? SAFE_TEMPLATES.clarify
+        ? // LE2-002 — a delivery-COVERAGE ask that lands on CLARIFY renders the
+          // ask-for-the-CEP variant: the resolver refused to nearest-neighbour an
+          // unrecognised place onto a zone, so the turn asks for the ONE datum that
+          // settles it. Still proposition-free (it asserts coverage in NEITHER
+          // direction); every other CLARIFY renders the generic disambiguation ask,
+          // byte-identical. Deliberately BELOW the BKL-170 candidates branch above:
+          // an owner-scoped ≥2-record ambiguity keeps its specific voicing, and a
+          // coverage turn never carries disambiguation candidates.
+          deliveryCoverageAsk
+          ? SAFE_CLARIFY_DELIVERY_CEP_TEMPLATE
+          : SAFE_TEMPLATES.clarify
         : allergenAsk
           ? SAFE_UNKNOWN_ALLERGEN_TEMPLATE
           : SAFE_TEMPLATES.unknown;

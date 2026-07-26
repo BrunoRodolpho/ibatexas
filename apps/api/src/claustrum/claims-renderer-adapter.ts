@@ -44,6 +44,7 @@ import {
   classifyRequestSpans,
   decomposeRequiredClaims,
   isAllergenFamilyAsk,
+  isDeliveryCoverageAsk,
   isMedicalEmergencyAsk,
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
@@ -350,6 +351,10 @@ export function createIbatexasClaimsRenderer(
         // LE2-012 — the PLANE's template table (customer ∪ plane). `undefined`
         // selects `render`'s own default (the customer grammar) — byte-identical.
         templates,
+        // LE2-002 — a delivery-COVERAGE ask landing on CLARIFY renders the
+        // ask-for-the-CEP variant (the classifier's own net decides; absent
+        // requestText → false → generic clarify, byte-identical).
+        isDeliveryCoverageAsk(context?.requestText ?? ""),
       );
       // BKL-209 — fire the best-effort SAFETY sink when the turn resolved to a
       // medical-emergency ESCALATE, so staff are notified ("vou avisar nossa

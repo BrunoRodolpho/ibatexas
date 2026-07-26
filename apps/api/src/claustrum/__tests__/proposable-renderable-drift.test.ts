@@ -149,6 +149,14 @@ const NON_TRIAD_RENDERABLE = [
   "MENU_ITEM_CONTENTS",
   // BKL-214 — the dietary-preference read, non-Triad public like MENU_OVERVIEW.
   "MENU_DIETARY",
+  // LE2-002 / NEW-007 — the delivery-coverage PAIR. Both carry a validated
+  // pre-composed-scalar template and both are `not_applicable`-ownership (a delivery
+  // ZONE is store policy, owned by nobody), so they are intentionally OUT of
+  // TRIAD_SCOPED_TYPES — exactly like STORE_INFO / MENU_OVERVIEW. The gap pin
+  // (PROPOSABLE \ RENDERABLE) is UNCHANGED: both types ship WITH their templates, so
+  // neither joins KNOWN_CUSTOMER_UNRENDERABLE_TYPES.
+  "DELIVERY_COVERAGE",
+  "DELIVERY_NO_COVERAGE",
 ] as const;
 
 describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ the deliberate non-Triad public reads", () => {

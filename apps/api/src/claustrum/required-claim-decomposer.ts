@@ -73,6 +73,14 @@ export type SpanClass =
   | "MENU_OVERVIEW_Q"
   | "MENU_DIETARY_Q"
   | "STORE_INFO_Q"
+  // LE2-002 / NEW-007 — a DELIVERY-COVERAGE question ("vocês entregam em Ibaté?",
+  // "entregam no CEP 14815000?", "fazem entrega pra São Carlos?"). A CAPABILITY
+  // question about where the STORE delivers — deliberately DISJOINT from
+  // ORDER_STATUS_Q, which is about the customer's OWN in-flight delivery (the
+  // BKL-204 `capabilityQuestion` guard already keeps those two apart; this span is
+  // what finally gives the capability half a grounded answer instead of the prose
+  // path that shipped the ungrounded "Sim, entregamos em Ibate").
+  | "DELIVERY_COVERAGE_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
@@ -147,6 +155,17 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // UNKNOWN; never demotes a co-occurring answer. Public (`not_applicable`) → never
   // Triad-scoped.
   STORE_INFO_Q: ["STORE_INFO"],
+  // LE2-002 / NEW-007 — a delivery-COVERAGE question requires the complementary
+  // PAIR, exactly like CART_CONTENTS_Q requires CART_CONTENTS + CART_EMPTY. The two
+  // read COMPLEMENTARY keys (`delivery:coverage` vs `delivery:no_coverage` — at most
+  // one is ever PRESENT), so exactly one can validate and the other resolves honest
+  // UNKNOWN and is dropped by the kernel's §D filter — never a rendered
+  // contradiction. Requiring both here is also what auto-enrols the pair into the
+  // classify-only candidate set and into the claim-planner's RELEVANCE_GOVERNED_TYPES
+  // (an over-proposed coverage claim is DEMOTED on a turn whose coverage span did not
+  // fire, KEPT when it did). PUBLIC (`not_applicable`) → never Triad-scoped, and no
+  // unrelated span force-requires either type.
+  DELIVERY_COVERAGE_Q: ["DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -211,6 +230,63 @@ const ALLERGEN_FAMILY_RE =
 /** BKL-184 — does this request text carry allergen-family phrasing? Pure. */
 export function isAllergenFamilyAsk(text: string): boolean {
   return ALLERGEN_FAMILY_RE.test(text.toLowerCase());
+}
+
+/**
+ * A SELF-REFERENCE to the customer's OWN order/payment/delivery/reservation: a
+ * possessive attached to one of those NOUNS ("meu pedido", "minha entrega") or an
+ * explicit order display number. Hoisted to module scope (BKL-204 authored it
+ * inline) so the LE2-002 delivery-coverage net below reuses the SAME definition
+ * rather than a second, drifting copy — the two nets must agree on exactly one
+ * question: is this about the STORE's policy, or about THIS customer's resource?
+ *
+ * NOT any bare possessive ("minha região" is a coverage question, not the
+ * customer's order). A bare CEP is not an order number (no `#`, no "pedido nº"),
+ * so a coverage question carrying a CEP never trips the explicit-number arm. Pure.
+ */
+const SELF_RESOURCE_REFERENCE_RE =
+  /(?<![a-z])(meu|minha|meus|minhas)\s+(pedido|pagamento|entrega|reserva)/;
+const EXPLICIT_ORDER_NUMBER_RE = /(?<![a-z])pedido\s*n?[ºo°.]?\s*#?\d{2,}|#\d{2,}/;
+
+function isSelfResourceReference(lowerText: string): boolean {
+  return (
+    SELF_RESOURCE_REFERENCE_RE.test(lowerText) || EXPLICIT_ORDER_NUMBER_RE.test(lowerText)
+  );
+}
+
+/**
+ * LE2-002 / NEW-007 — the DETERMINISTIC delivery-COVERAGE net: does this text ask
+ * whether/where/at-what-cost the RESTAURANT delivers? The capability half of the
+ * BKL-204 delivery/order split, given its own span so it stops falling through to
+ * the lie-capable prose path (the 2026-07-20 ungrounded "Sim, entregamos em Ibate").
+ *
+ * FIRES on the phrasings customers actually use for coverage + fee + ETA:
+ *   · "vocês entregam …" / "vocês fazem entrega" / "fazem entrega em …"
+ *   · "entregam em/no/na/pra/para/até <lugar ou CEP>"
+ *   · "atendem em/no/na <lugar>" (the pt-BR synonym for serving an area)
+ *   · "área/região/zona de entrega", "onde vocês entregam"
+ *   · the fee/ETA asks: "taxa de entrega", "valor/preço do frete", "quanto custa a
+ *     entrega", "quanto tempo demora a entrega"
+ *
+ * DOES NOT FIRE on a SELF-REFERENCE ("cadê minha entrega?", "meu pedido saiu para
+ * entrega?") — that is an ORDER_STATUS question about the customer's own in-flight
+ * delivery and keeps its owner-scoped read, unchanged. This is the same guard
+ * BKL-204 uses in the opposite direction, sharing ONE definition.
+ *
+ * Over-firing is DEMOTE-ONLY safe: the resolver never guesses, so a false positive
+ * lands on the CLARIFY-for-CEP ask (or an honest UNKNOWN), never a wrong coverage
+ * answer. Pure; applies the classifier's own lowercase normalization.
+ */
+const DELIVERY_COVERAGE_ASK_RE =
+  /voc[êe]s\s+entregam|(?:faz|fazem)\s+entrega|entregam?\s+(?:em|no|na|nos|nas|pra|para|at[ée])(?![a-z])|(?:onde|at[ée]\s+onde)\s+(?:voc[êe]s\s+)?entregam|(?:[áa]rea|regi[õo]es?|regi[ãa]o|zona)\s+de\s+entrega|atende[m]?\s+(?:em|no|na|nos|nas)(?![a-z])|taxa\s+de\s+(?:entrega|frete)|(?:valor|pre[çc]o)\s+d[oa]\s+(?:entrega|frete)|quanto\s+(?:custa|fica|sai|[ée])\s+(?:a\s+entrega|o\s+frete)|quanto\s+tempo\s+(?:demora|leva)\s+(?:a\s+)?(?:entrega|pra\s+entregar)/;
+
+/** LE2-002 — does this request text ask about DELIVERY COVERAGE (not the
+ *  customer's own delivery)? Pure. Exported so the render seam can select the
+ *  CLARIFY-for-CEP ask without a second, drifting regex (the BKL-184 idiom). */
+export function isDeliveryCoverageAsk(text: string): boolean {
+  const t = text.toLowerCase();
+  if (isSelfResourceReference(t)) return false;
+  return DELIVERY_COVERAGE_ASK_RE.test(t);
 }
 
 /**
@@ -366,6 +442,18 @@ export function classifyRequestSpans(text: string): SpanClass[] {
     classes.push("STORE_INFO_Q");
   }
 
+  // LE2-002 / NEW-007 — a delivery-COVERAGE question ("vocês entregam em Ibaté?",
+  // "entregam no CEP 14815000?", "qual a taxa de entrega?"). Gated on
+  // `!mutationImperative` like every other classify-only-eligible READ span (the
+  // BKL-201/206 read-vs-mutation split), and DISJOINT from ORDER_STATUS_Q by the
+  // shared self-reference guard inside `isDeliveryCoverageAsk` — "cadê MINHA
+  // entrega?" stays an owner-scoped order question and never fires this span.
+  // Over-inclusion is DEMOTE-ONLY safe: an unmatched place resolves to the
+  // CLARIFY-for-CEP ask, never a guessed coverage answer.
+  if (!mutationImperative && isDeliveryCoverageAsk(t)) {
+    classes.push("DELIVERY_COVERAGE_Q");
+  }
+
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —
   // do NOT regress to a coarse `/pedido|cad[êe]|status/` rule that misroutes a
   // payment "status" to ORDER-only).
@@ -385,9 +473,7 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // NOT any bare possessive ("minha região" is a coverage question, not the
   // customer's order). It disables the capability guard so a genuine self-status
   // ask with a dual token still fires.
-  const selfReference =
-    /(?<![a-z])(meu|minha|meus|minhas)\s+(pedido|pagamento|entrega|reserva)/.test(t) ||
-    /(?<![a-z])pedido\s*n?[ºo°.]?\s*#?\d{2,}|#\d{2,}/.test(t);
+  const selfReference = isSelfResourceReference(t);
   const capabilityQuestion =
     !selfReference &&
     /voc[êe]s\s+(entregam|aceit\w*|fazem)|fazem\s+entrega|entregam?\s+(em|no|na|pra|para|at[ée])|aceit\w*\s+(vale|ticket|refei|cart|pix|dinheiro|pagamento|d[ée]bito|cr[ée]dito)|quais?\s+(as\s+|os\s+)?(formas?|op[çc][õo]es)\s+de\s+pagamento|quanto\s+(custa|fica|sai|[ée]|vale)\s+(a\s+entrega|o\s+frete)|taxa\s+de\s+entrega|valor\s+d[oa]\s+(entrega|frete)/.test(
