@@ -47,6 +47,7 @@ import {
   type ToolRegistry,
   type TurnResult,
 } from "@claustrum/core";
+import { beginWireTurn } from "./wire-capture.js";
 import type { IntentEnvelope } from "@adjudicate/core";
 import { logger } from "../lib/logger.js";
 import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
@@ -260,7 +261,7 @@ export function createLiveTriggerRunner(
     });
 
     try {
-      const result = await handleTurn(capsule, agentInbound);
+      const result = await beginWireTurn(() => handleTurn(capsule, agentInbound));
       // W1 no-reply incident — DEFERRED here (P2-16). The WhatsApp + web/chat
       // seams (whatsapp-webhook.ts, routes/chat.ts via conversation/no-delivery.ts)
       // detect "customer owed a reply" and open a governed incident on an

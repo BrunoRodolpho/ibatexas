@@ -1,0 +1,50 @@
+{
+  "fixture": "slot-dataflow.empty-optional-slot",
+  "targets": "slot-dataflow/empty-optional-slot",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "slot-dataflow/empty-optional-slot"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "empty-optional-slot",
+      "severity": "error",
+      "object": "capability:conformance.slot.empty-optional",
+      "field": "successClaimLinks",
+      "message": "optional slot is declared but empty. The contract spells 'none' as `undefined` (or omission), not as an empty value — an empty one asserts the slot was authored when it was not."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/empty-optional-slot: capability:conformance.slot.empty-optional · successClaimLinks — optional slot is declared but empty. The contract spells 'none' as `undefined` (or omission), not as an empty value — an empty one asserts the slot was authored when it was not."
+  ]
+}

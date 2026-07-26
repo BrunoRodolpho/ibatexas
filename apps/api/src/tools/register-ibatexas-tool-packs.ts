@@ -71,6 +71,8 @@ import {
   CAPABILITY_DEFINITIONS,
   generateCapabilityDescriptions,
 } from "@ibatexas/packs-composed/capability-definitions";
+import { isGuestCustomerId } from "./guest-identity.js";
+import { resolvePixPayerIdentity } from "./pix-payer-identity.js";
 
 function asCapability(s: string): CapId {
   return s as CapId;
@@ -102,18 +104,15 @@ function asIntentKind(s: string): IntK {
 // role maps to userType "staff" (the only non-customer authenticated bucket
 // AgentContext models); everything else with a real id is "customer".
 
-// Exported as the single source of truth for the guest-marker convention:
-// claustrum-bootstrap imports these instead of re-declaring them (A3), so the
-// planner/read-executor identity derivation and the session-TTL selection can
-// never drift from the Capsule adapter's notion of "is this a real customer".
-export const GUEST_ID_PREFIXES = ["guest:", "anon:", "anonymous:"] as const;
-
-export function isGuestCustomerId(id: string | undefined): boolean {
-  if (id === undefined) return true;
-  const trimmed = id.trim();
-  if (trimmed === "") return true;
-  return GUEST_ID_PREFIXES.some((p) => trimmed.startsWith(p));
-}
+// Re-exported as the single source of truth for the guest-marker convention:
+// claustrum-bootstrap imports these from HERE instead of re-declaring them (A3),
+// so the planner/read-executor identity derivation and the session-TTL selection
+// can never drift from the Capsule adapter's notion of "is this a real
+// customer". The declarations themselves moved to the leaf module
+// `guest-identity.ts` (BKL-230) purely to break an import cycle with
+// `pix-payer-identity.ts`, which needs the same predicate; this re-export keeps
+// every existing importer of this file working unchanged.
+export { GUEST_ID_PREFIXES, isGuestCustomerId } from "./guest-identity.js";
 
 /** Map a ChannelKind ("whatsapp"|"web") onto the `Channel` enum the handlers use.
  *  The enum VALUES are byte-identical to ChannelKind, so this is a value lookup
@@ -370,7 +369,30 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
     description: "Criar checkout (sessão de pagamento) a partir do carrinho.",
     riskLevel: "high",
     requiresConfirmation: true,
-    execute: (input, ctx) => createCheckout(input as never, ctx),
+    // BKL-230 — thread the PIX payer identity `createCheckout`'s PIX branch
+    // hard-requires (`extra.customerName || extra.customerEmail`; Stripe's PIX
+    // confirm needs a payer). This executor previously called
+    // `createCheckout(input, ctx)` with no third argument, so EVERY chat /
+    // WhatsApp PIX checkout died on that guard with "Nome e email são
+    // obrigatórios para pagamento PIX." — no QR, no `metadata.cartId`, no
+    // `payment_intent.succeeded`, no order. The HTTP cart route always supplied
+    // it (`resolvePixBillingDetails`) and calls `createCheckout` directly, so
+    // only this conversational path was affected.
+    //
+    // The identity is resolved SERVER-SIDE from the session's authenticated
+    // customerId — never extracted from the utterance, never read off the
+    // payload. See pix-payer-identity.ts for the precedence and the PII/IDOR
+    // rationale. Resolved only for PIX so card/cash checkouts keep paying zero
+    // extra I/O. A guest resolves to `{}` and the existing guard fails the
+    // checkout with its existing message — identity is never fabricated.
+    execute: async (input, ctx) => {
+      const { paymentMethod } = input as { paymentMethod?: string };
+      const extra =
+        paymentMethod === "pix"
+          ? await resolvePixPayerIdentity(ctx.customerId)
+          : undefined;
+      return createCheckout(input as never, ctx, extra);
+    },
   }),
   makeTool({
     id: "ibatexas.order.cancel.v1",

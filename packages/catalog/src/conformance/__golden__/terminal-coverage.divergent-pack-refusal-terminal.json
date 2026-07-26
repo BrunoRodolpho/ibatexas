@@ -1,0 +1,50 @@
+{
+  "fixture": "terminal-coverage.divergent-pack-refusal-terminal",
+  "targets": "terminal-coverage/divergent-pack-refusal-terminal",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "terminal-coverage/divergent-pack-refusal-terminal"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 6,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 50,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 7,
+      "diagnostics": 1
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "terminal-coverage",
+      "rule": "divergent-pack-refusal-terminal",
+      "severity": "error",
+      "object": "pack:ibatexas/pack-orders",
+      "field": "refusalCode",
+      "message": "capabilities of this Pack declare 2 different refusal floors: \"order.default.deny\" (conformance.terminal.floor-a); \"order.default.refuse\" (conformance.terminal.floor-b). A Pack has exactly one PolicyBundle.default basis code, so at most one of these can be right — the others mis-declare where their capability's fall-through REFUSE lands."
+    }
+  ],
+  "formatted": [
+    "terminal-coverage/divergent-pack-refusal-terminal: pack:ibatexas/pack-orders · refusalCode — capabilities of this Pack declare 2 different refusal floors: \"order.default.deny\" (conformance.terminal.floor-a); \"order.default.refuse\" (conformance.terminal.floor-b). A Pack has exactly one PolicyBundle.default basis code, so at most one of these can be right — the others mis-declare where their capability's fall-through REFUSE lands."
+  ]
+}

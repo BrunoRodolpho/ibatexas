@@ -188,10 +188,61 @@ Parameter Store on each `ibatexas-deploy` run.
    `admin`, `commerce`), tagged with commit SHA + `latest`.
 3. **migrate** — runs Prisma `migrate deploy` (`@ibatexas/domain`) against
    `STAGING_DIRECT_DATABASE_URL`.
-4. **deploy** — SSM Run Command on the dev host: `/usr/local/bin/ibatexas-deploy`
+4. **catalog-live** — the pre-deploy gate, below. Blocks step 5.
+5. **deploy** — SSM Run Command on the dev host: `/usr/local/bin/ibatexas-deploy`
    (ECR login + `docker compose pull` + `docker compose up -d`).
-5. **health-check** — probes 4 HTTPS endpoints until 2xx/3xx: storefront,
+6. **health-check** — probes 4 HTTPS endpoints until 2xx/3xx: storefront,
    `api/health`, admin, `commerce/health`.
+
+### Pre-deploy gate — external references (LE2-018)
+
+**The api refuses to start if a declared external reference is missing.**
+`@ibatexas/catalog` (`src/external-references.ts`) declares the names the code
+depends on but does not own — today the welcome-credit and loyalty-reward
+coupons, which must exist as Medusa promotions. At boot,
+`claustrum-bootstrap.ts` reconciles every one of them against its live store,
+and any miss (config variable unset, promotion absent, store unreachable) kills
+the process with a diagnostic naming the reference, its store, its config
+variable and the code sites that break. This is strict by owner decision
+(LE2 Implementation Decision 16): there is no flag, no dev-mode warning and no
+allowlist.
+
+So the same check runs **before** a deploy, as the `catalog-live` job:
+
+```bash
+ibx catalog check --live          # exit 1 if any declared reference is missing
+ibx catalog check --live --json   # same, machine-readable
+```
+
+Run it yourself against any environment whose config you have loaded — that is
+the point of it. It is the cheap way to find a dangling reference; the
+expensive way is a container that will not come up.
+
+> **Where the live check does and does not run.** It runs in
+> `deploy-staging.yml` (`catalog-live`, gating `deploy`), and by hand. It does
+> **not** run in `ci.yml`: a GitHub-hosted runner on a pull request has no
+> Medusa and no database, so the check there could only be skipped-but-green or
+> red on every commit. `ci.yml` runs the *static* half only
+> (`ibx catalog check` — the five compiler passes, including the one that
+> validates the declaration table's shape).
+
+The `catalog-live` job needs the target environment's store config. Until these
+exist it fails, which is the gate doing its job — an environment whose
+references nobody has verified is exactly what it exists to catch:
+
+| Kind | Name |
+|------|------|
+| secret | `STAGING_MEDUSA_ADMIN_EMAIL` |
+| secret | `STAGING_MEDUSA_ADMIN_PASSWORD` |
+| secret | `STAGING_DIRECT_DATABASE_URL` *(already used by `migrate`)* |
+| var | `STAGING_MEDUSA_URL` |
+| var | `STAGING_WELCOME_CREDIT_COUPON_CODE` |
+| var | `STAGING_LOYALTY_REWARD_COUPON_CODE` |
+
+Adding a reference is: declare it in `packages/catalog/src/external-references.ts`,
+add its variable to `.env.example` and to the environment's secrets/vars, and
+create the thing itself in its store. The compiler will tell you if the
+declaration is malformed; `--live` will tell you if the thing is missing.
 
 ---
 

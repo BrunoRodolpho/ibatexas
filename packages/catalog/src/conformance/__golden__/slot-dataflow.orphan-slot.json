@@ -1,0 +1,50 @@
+{
+  "fixture": "slot-dataflow.orphan-slot",
+  "targets": "slot-dataflow/orphan-slot",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "slot-dataflow/orphan-slot"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "orphan-slot",
+      "severity": "error",
+      "object": "capability:conformance.slot.orphan",
+      "field": "surfaces",
+      "message": "slot is chat-tier-only but this capability is tier \"identity\". types.ts gives IdentityCapabilityDefinition no such property at all — a value here describes a surface the capability does not have."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/orphan-slot: capability:conformance.slot.orphan · surfaces — slot is chat-tier-only but this capability is tier \"identity\". types.ts gives IdentityCapabilityDefinition no such property at all — a value here describes a surface the capability does not have."
+  ]
+}

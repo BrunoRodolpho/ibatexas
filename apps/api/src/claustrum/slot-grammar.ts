@@ -177,6 +177,12 @@ export const MENU_OVERVIEW = "MENU_OVERVIEW";
 export const MENU_DIETARY = "MENU_DIETARY";
 /** BKL-136 — the PUBLIC store-info read (owner-attested address/parking scalar). */
 export const STORE_INFO = "STORE_INFO";
+/** LE2-002 / NEW-007 — the PUBLIC delivery-coverage pair (zone-grounded scalars). */
+export const DELIVERY_COVERAGE = "DELIVERY_COVERAGE";
+export const DELIVERY_NO_COVERAGE = "DELIVERY_NO_COVERAGE";
+/** LE2-019 — the PUBLIC coupon-validity pair (promotion-record-grounded scalars). */
+export const COUPON_VALID = "COUPON_VALID";
+export const COUPON_INVALID = "COUPON_INVALID";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -375,6 +381,75 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     posture: "validated",
     slots: [prop(STORE_INFO, "infoText")],
   },
+  // LE2-002 / NEW-007 — the GROUNDED-YES delivery-coverage template. ONE proposition
+  // slot bound 1:1 to the C6 valueBinding FIELD (`coverageText`, claim-registry.ts):
+  // the deterministic pt-BR scalar delivery-coverage-resolver.ts composes from the
+  // zone row's INTEGER centavos + minutes (Hard Rule 2) — never model-authored, and
+  // never reachable without a VALIDATED zone read behind it (which is precisely the
+  // ungrounded "Sim, entregamos em Ibate" this ticket closes).
+  //
+  // The SOFT CAVEAT is STATIC LITERAL text, not part of the proposition, and that
+  // split is deliberate: "confirmo certinho pelo endereço no checkout" asserts
+  // nothing about the world — it describes what the SYSTEM will do next — so it
+  // belongs in the frame, not in the ledger-bound value. Keeping it literal also
+  // means it can never be dropped by the frozen single-C6-field mint (which keeps
+  // only the bound path and discards every sibling read field).
+  [DELIVERY_COVERAGE]: {
+    claimType: DELIVERY_COVERAGE,
+    posture: "validated",
+    slots: [
+      prop(DELIVERY_COVERAGE, "coverageText"),
+      lit(". Confirmo certinho pelo endereço no checkout."),
+    ],
+  },
+  // LE2-002 / NEW-007 — the HONEST-NO template. Also a VALIDATED assertion (a
+  // definitive out-of-every-zone determination IS a fact, not an absence of one),
+  // with its own static frame: the negative carries a PICKUP offer where the
+  // positive carries the checkout caveat. Bound 1:1 to the C6 `noCoverageText`.
+  [DELIVERY_NO_COVERAGE]: {
+    claimType: DELIVERY_NO_COVERAGE,
+    posture: "validated",
+    slots: [
+      prop(DELIVERY_NO_COVERAGE, "noCoverageText"),
+      lit(" — mas você pode retirar aqui no restaurante, se preferir."),
+    ],
+  },
+  // LE2-019 — the GROUNDED-YES coupon template. ONE proposition slot bound 1:1 to
+  // the C6 valueBinding FIELD (`validityText`, claim-registry.ts): the
+  // deterministic pt-BR scalar coupon-validity-resolver.ts composes from the
+  // PROMOTION RECORD's own code + `application_method` — never model-authored, and
+  // never reachable without a VALIDATED promotion lookup behind it.
+  //
+  // The application hint is STATIC LITERAL text, not part of the proposition, and
+  // that split is deliberate on TWO counts. First, the DELIVERY_COVERAGE reason:
+  // "é só informar o código no checkout" asserts nothing about the world — it
+  // describes what the CUSTOMER does next — so it belongs in the frame, not in the
+  // ledger-bound value. Second, Decision 14: the sentence describes the customer
+  // entering a code at checkout; it never says the SYSTEM will apply anything,
+  // because no apply / price-adjustment capability exists to promise.
+  [COUPON_VALID]: {
+    claimType: COUPON_VALID,
+    posture: "validated",
+    slots: [
+      prop(COUPON_VALID, "validityText"),
+      lit(". É só informar o código no checkout."),
+    ],
+  },
+  // LE2-019 — the HONEST-NO template. Also a VALIDATED assertion (a definitive
+  // not-usable determination off a SUCCESSFUL promotion lookup IS a fact, not an
+  // absence of one), with its own static frame: the negative carries an offer to
+  // check ANOTHER code where the positive carries the checkout hint. Bound 1:1 to
+  // the C6 `invalidityText`. It states no REASON — why a campaign is exhausted or
+  // a promotion is still in draft is store-internal, and voicing it would assert
+  // facts the customer cannot verify and the claim never validated.
+  [COUPON_INVALID]: {
+    claimType: COUPON_INVALID,
+    posture: "validated",
+    slots: [
+      prop(COUPON_INVALID, "invalidityText"),
+      lit(" — se você tiver outro código, me manda que eu confiro."),
+    ],
+  },
   // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
   // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO
   // registered ClaimDefinition — it is absent from CLAIM_REGISTRY/REGISTRY_SPECS
@@ -495,6 +570,62 @@ export const SAFE_UNKNOWN_ALLERGEN_TEMPLATE: Template = {
   slots: [
     lit(
       "Não localizei essa informação de alérgenos confirmada agora — por segurança, prefiro não arriscar uma resposta. Quer que eu peça para um atendente confirmar com a cozinha?",
+    ),
+  ],
+};
+
+/**
+ * LE2-002 / NEW-007 — the DELIVERY-COVERAGE CLARIFY variant: the third branch of
+ * spec Implementation Decision 4. Selected ONLY when the request carries
+ * delivery-coverage phrasing (required-claim-decomposer.ts `isDeliveryCoverageAsk`
+ * — the SAME net the span classifier uses to route the question to the coverage
+ * claims) AND the terminal is CLARIFY; every other CLARIFY renders the generic
+ * {@link SAFE_TEMPLATES}.clarify, byte-identical.
+ *
+ * This is what the resolver's refusal to GUESS renders as. A place name that
+ * matched no active zone must NOT be nearest-neighboured onto the closest one, so
+ * the turn asks for the CEP — the ONE datum that resolves coverage exactly, through
+ * the estimation tool.
+ *
+ * PROPOSITION-FREE BY CONSTRUCTION (Inv 6 / §O#5): it asserts NO coverage fact in
+ * either direction — it never says the place is probably covered, never says it is
+ * not, and never names a nearby zone. It reports only the SYSTEM's own state ("por
+ * aqui eu confirmo pelo CEP") and asks. Standalone const (SAFE_TEMPLATES is closed
+ * over the posture union).
+ */
+export const SAFE_CLARIFY_DELIVERY_CEP_TEMPLATE: Template = {
+  claimType: "__SAFE_CLARIFY_DELIVERY_CEP__",
+  posture: "clarify",
+  slots: [
+    lit(
+      "Para confirmar a entrega eu preciso do CEP — me manda o CEP do endereço que eu verifico a taxa e o prazo certinhos.",
+    ),
+  ],
+};
+
+/**
+ * LE2-019 — the COUPON-VALIDITY CLARIFY variant. Selected ONLY when the request
+ * carries coupon phrasing (required-claim-decomposer.ts `isCouponValidityAsk` —
+ * the SAME net the span classifier uses to route the question to the coupon
+ * claims) AND the terminal is CLARIFY; every other CLARIFY renders the generic
+ * {@link SAFE_TEMPLATES}.clarify, byte-identical.
+ *
+ * This is what the resolver's refusal to GUESS renders as. Coupon phrasing with
+ * no extractable code — or with TWO, which we will not pick between — must NOT be
+ * answered about some code the customer did not name, so the turn asks for the
+ * one datum that settles it.
+ *
+ * PROPOSITION-FREE BY CONSTRUCTION (Inv 6 / §O#5): it asserts NO validity fact in
+ * either direction — it never says a coupon is probably good, never says it is
+ * not, and never names a promotion. It reports only the SYSTEM's own state and
+ * asks. Standalone const (SAFE_TEMPLATES is closed over the posture union).
+ */
+export const SAFE_CLARIFY_COUPON_CODE_TEMPLATE: Template = {
+  claimType: "__SAFE_CLARIFY_COUPON_CODE__",
+  posture: "clarify",
+  slots: [
+    lit(
+      "Para conferir o cupom eu preciso do código — me manda o código certinho que eu verifico se está valendo.",
     ),
   ],
 };

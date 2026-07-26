@@ -32,6 +32,7 @@ import {
 } from "@ibatexas/tools";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import logger from "../lib/logger.js";
+import { recordOutboundSid } from "./delivery-store.js";
 import { hashPhone } from "./session.js";
 
 /** Compute retry delay: uses Retry-After header for 429, exponential backoff otherwise. */
@@ -357,10 +358,30 @@ async function acquireSendToken(from: string): Promise<void> {
 // ── Send helpers ───────────────────────────────────────────────────────────────
 
 /**
+ * LE2-030 — optional correlation carried alongside a send so the captured
+ * Twilio SID can be joined back to the conductor turn that produced the reply.
+ *
+ * OPTIONAL by design: most send call sites (jobs, subscriber alerts, the PIX
+ * expiry monitor) have no conductor turn at all. Those sends are still recorded
+ * — with a NULL `turn_id` — so the undelivered query covers every outbound
+ * message, not just conversational replies.
+ */
+export interface SendCorrelation {
+  /** `capsule.turnId` — the RCA workbench's join key. */
+  readonly turnId?: string | null;
+  /** The conversation/session id (turn_trace.conversation_id). */
+  readonly conversationId?: string | null;
+}
+
+/**
  * Send a text message, auto-splitting if >4096 chars.
  * Retries up to 3x; never on a post-send-ambiguous timeout.
  */
-export async function sendText(to: string, body: RenderedReply): Promise<void> {
+export async function sendText(
+  to: string,
+  body: RenderedReply,
+  correlation?: SendCorrelation,
+): Promise<void> {
   const parts = splitForWhatsApp(body);
   const hash = hashPhone(to.replace("whatsapp:", ""));
 
@@ -370,10 +391,23 @@ export async function sendText(to: string, body: RenderedReply): Promise<void> {
     // 200ms delay between subsequent parts to preserve order
     if (i > 0) await sleep(200);
 
-    await sendSingleMessage(to, parts[i], hash, i);
+    await sendSingleMessage(to, parts[i], hash, i, correlation);
   }
 
   logger.info({ phone_hash: hash, parts_count: parts.length }, "[whatsapp.send]");
+}
+
+/**
+ * LE2-030 — pull the Twilio message SID out of the SDK's `MessageInstance`.
+ * The adjudicated wrapper types the return as `unknown` (the SDK shape flows
+ * through unchanged), so read it structurally. Returns null for any shape that
+ * does not carry a plausible SID rather than inventing one — a fabricated
+ * correlation key is worse than an absent one.
+ */
+function extractMessageSid(result: unknown): string | null {
+  if (result === null || typeof result !== "object") return null;
+  const sid = (result as { sid?: unknown }).sid;
+  return typeof sid === "string" && sid.length > 0 ? sid : null;
 }
 
 /**
@@ -385,12 +419,22 @@ export async function sendText(to: string, body: RenderedReply): Promise<void> {
  * @param part  Index of this part within a logical message (for the idempotency
  *              key — split parts are distinct messages and must each be sent).
  * @param ctx   Log namespace + the adjudication metadata for this send.
+ *
+ * LE2-030: the ONLY addition to this path is SID capture after a successful
+ * create — no new retry rule, no new send, no change to the create payload.
+ * The capture is fully fail-open (`recordOutboundSid` swallows its own errors),
+ * so a delivery-store outage leaves sending byte-for-byte as it was.
  */
 async function createMessage(
   params: { from: string; to: string; body?: RenderedReply; mediaUrl?: string[] },
   hash: string,
   part: number,
-  ctx: { logTag: string; sourceSubject: string; reason: string },
+  ctx: {
+    logTag: string;
+    sourceSubject: string;
+    reason: string;
+    correlation?: SendCorrelation;
+  },
 ): Promise<void> {
   const { from, to } = params;
   // The idempotency hash is computed over the underlying string; unwrap (which
@@ -416,11 +460,32 @@ async function createMessage(
     // Proactive shared rate limit (awaited before every create).
     await acquireSendToken(from);
     try {
-      await twilioAdjudicated.messages.create(params, {
+      const result = await twilioAdjudicated.messages.create(params, {
         sourceSubject: ctx.sourceSubject,
         reason: ctx.reason,
         auditSink: getAuditSink(),
       });
+      // LE2-030 — persist the SID for this accepted part, correlated to the
+      // turn. AWAITED (not fire-and-forget) so the row exists before Twilio's
+      // first status callback can arrive: a callback for a not-yet-written SID
+      // would be an unrecoverable no-op. The write never throws.
+      const sid = extractMessageSid(result);
+      if (sid !== null) {
+        await recordOutboundSid({
+          messageSid: sid,
+          turnId: ctx.correlation?.turnId ?? null,
+          conversationId: ctx.correlation?.conversationId ?? null,
+          partIndex: part,
+          phoneHash: hash,
+          source: ctx.logTag,
+          sentAt: new Date().toISOString(),
+        });
+      } else {
+        logger.warn(
+          { phone_hash: hash, part },
+          `[whatsapp.${ctx.logTag}.no_sid] send accepted but no SID on the response — delivery unverifiable`,
+        );
+      }
       return;
     } catch (err) {
       // Kernel REFUSE is permanent — retrying would emit a fresh audit record
@@ -460,6 +525,7 @@ async function sendSingleMessage(
   body: RenderedReply,
   hash: string,
   part: number,
+  correlation?: SendCorrelation,
 ): Promise<void> {
   // Touch the legacy client factory so a missing TWILIO_* env is surfaced
   // before the kernel-gated send is attempted (preserves the original
@@ -469,7 +535,12 @@ async function sendSingleMessage(
     { from: getWhatsAppNumber(), to, body },
     hash,
     part,
-    { logTag: "send", sourceSubject: "whatsapp:sendText", reason: "send-text" },
+    {
+      logTag: "send",
+      sourceSubject: "whatsapp:sendText",
+      reason: "send-text",
+      ...(correlation !== undefined ? { correlation } : {}),
+    },
   );
 }
 
@@ -545,6 +616,7 @@ export async function sendMedia(
   to: string,
   mediaUrl: string,
   body?: RenderedReply,
+  correlation?: SendCorrelation,
 ): Promise<void> {
   // EGRESS BRAND (Plan 1 / F4): the optional customer-facing caption `body` is
   // minted by the CALLER (the producer) and arrives as a `RenderedReply`; this
@@ -560,7 +632,12 @@ export async function sendMedia(
     { from, to, mediaUrl: [mediaUrl], ...(body ? { body } : {}) },
     hash,
     0,
-    { logTag: "sendMedia", sourceSubject: "whatsapp:sendMedia", reason: "send-media" },
+    {
+      logTag: "sendMedia",
+      sourceSubject: "whatsapp:sendMedia",
+      reason: "send-media",
+      ...(correlation !== undefined ? { correlation } : {}),
+    },
   );
   logger.info({ phone_hash: hash, media_url_host: mediaUrlHost(mediaUrl) }, "[whatsapp.sendMedia]");
 }
