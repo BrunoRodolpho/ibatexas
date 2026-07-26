@@ -39,8 +39,10 @@
 // `redis`, and global `fetch` are shared across the whole graph and do reach
 // inside.
 //
-// Explainer/memory/grounding/telemetry are inert stubs, and the claims seams are
-// deliberately omitted so a render degrade cannot interfere. The RESPONDER defaults
+// Explainer/memory/grounding/telemetry are inert stubs, and the claims seams
+// default OFF so a render degrade cannot interfere — BKL-234 makes them OPT-IN
+// REAL (`withClaims: true`, the same `buildClaimsSeams` composition as
+// claustrum-bootstrap). The RESPONDER defaults
 // to an inert stub for the same original reason — this harness asserted on `decision`
 // / `acted` / park state, not on rendered text, because render precedence was another
 // worker's surface — and LE2-007 makes it OPT-IN REAL (`realResponder: true`), because
@@ -49,7 +51,8 @@
 //
 // SCOPE: checkout-turn needs, plus the funnel's L0 tier (LE2-007 — `funnel`,
 // `realResponder`, `scheduleSignal`, `throwingModel`, and the per-turn funnel context
-// `runCustomerTurn` publishes like the production ingresses). No speculative ports.
+// `runCustomerTurn` publishes like the production ingresses), plus the opt-in claims
+// seams (BKL-234 — `withClaims`). No speculative ports.
 // Expected to keep growing as later tickets extend the customer funnel.
 
 import { randomUUID } from "node:crypto";
@@ -91,6 +94,7 @@ import {
 import { buildIbatexasPolicyPacks, type ErasedPack } from "../claustrum/compose-policy-packs.js";
 import { composePolicyRouter } from "../claustrum/capability-policy.js";
 import { createIbatexasPlanner } from "../claustrum/ibatexas-planner.js";
+import { buildClaimsSeams } from "../claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "../claustrum/ibatexas-responder.js";
 import { createIbatexasResolver } from "../claustrum/ibatexas-resolver.js";
 import {
@@ -571,6 +575,20 @@ export interface CustomerConductorDeps {
   readonly session: SessionPort;
   readonly adjudicator: Adjudicator;
   /**
+   * BKL-234 — OPT IN to the customer plane's real claims seams (investigator, claim
+   * planner, claims kernel, render-from-claims renderer + the precedence lattice),
+   * exactly as `claustrum-bootstrap.ts` composes them.
+   *
+   * DEFAULT OFF, deliberately: the PIX/checkout suites this harness was built for
+   * assert on action replies, and a claims render degrade would clobber them (the
+   * reason the file header says claims seams are absent). Omitting the flag leaves
+   * every existing caller byte-identical — the spread is `{}`.
+   *
+   * `buildClaimsSeams` itself also returns `{}` unless ENABLE_CLAIMS_PIPELINE is on,
+   * so an opting-in test must set that env var too.
+   */
+  readonly withClaims?: boolean;
+  /**
    * LE2-007 — the parse funnel's tier seam, wired into BOTH real seams (planner +
    * responder) exactly as `bootstrapClaustrum` wires one instance into both. Omitted ⟹
    * no funnel ⟹ every pre-existing harness turn is byte-identical.
@@ -649,6 +667,11 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     gateway: "customer-e2e-harness",
   });
 
+  // BKL-234 — the REAL customer claims seams, opt-in. Same builder the customer
+  // composition root uses, parameterized only by this harness's planner; `{}` both
+  // when not requested and when ENABLE_CLAIMS_PIPELINE is off.
+  const claimsSeams = deps.withClaims === true ? buildClaimsSeams({ planner }) : {};
+
   const conductor = createConductor({
     adjudicator: deps.adjudicator,
     memory: customerMemory(),
@@ -664,6 +687,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     tenantResolver: singleTenant,
     resolver: createIbatexasResolver(),
     sessionLock: inMemoryLock,
+    ...claimsSeams,
   });
 
   return { conductor, tools };
