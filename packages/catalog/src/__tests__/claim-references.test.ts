@@ -123,9 +123,9 @@ describe("claim-reference vocabularies", () => {
     expect(new Set(CLAIM_CLASS_REFERENCES).size).toBe(19)
   })
 
-  it("REGISTRY_CLAIM_TYPE_REFERENCES has the 17 live runtime registry types", () => {
-    expect(REGISTRY_CLAIM_TYPE_REFERENCES).toHaveLength(17)
-    expect(new Set(REGISTRY_CLAIM_TYPE_REFERENCES).size).toBe(17)
+  it("REGISTRY_CLAIM_TYPE_REFERENCES has the 21 live runtime registry types (17 + the post-train delivery + coupon pairs, 2026-07-26)", () => {
+    expect(REGISTRY_CLAIM_TYPE_REFERENCES).toHaveLength(21)
+    expect(new Set(REGISTRY_CLAIM_TYPE_REFERENCES).size).toBe(21)
   })
 
   it("keeps fulfillment-claimed in the vocabulary but unreferenced by any capability", () => {
