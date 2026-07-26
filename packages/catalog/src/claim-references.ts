@@ -129,6 +129,14 @@ export const REGISTRY_CLAIM_TYPE_REFERENCES = [
   "MENU_DIETARY",
   "STORE_INFO",
   "PURCHASE_COMPLETED",
+  // Post-train additions (merged 2026-07-26): the delivery-coverage pair
+  // (LE2 ticket 02 / NEW-007, PR #378) and the coupon-validity pair
+  // (LE2-019, PR #383) landed via the ops chain after this mirror was cut —
+  // caught by the both-directions equality gate on the merged tree.
+  "DELIVERY_COVERAGE",
+  "DELIVERY_NO_COVERAGE",
+  "COUPON_VALID",
+  "COUPON_INVALID",
 ] as const
 
 /** A registry claim TYPE name (the planner's closed selection enum). */

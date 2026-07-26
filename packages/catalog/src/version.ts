@@ -18,4 +18,4 @@
 // `catalogVersion === 1` comparisons, which is exactly the runtime authority
 // the catalog must never hold (Decision 13: "the catalog defines; it never
 // holds runtime authority").
-export const CATALOG_VERSION: number = 1
+export const CATALOG_VERSION: number = 2
