@@ -51,6 +51,15 @@ import {
   type CustomerPixDetailsSavePayload,
 } from "@ibatexas/pack-customer-onboarding";
 import { getAuditSink } from "@ibatexas/audit-sink";
+// LE2-019 — the ONE promotion-record validity predicate + the ONE store path,
+// shared with the grounded COUPON_VALID / COUPON_INVALID chat claim. PURE (no IO,
+// no clock), so importing it adds nothing to this route's transport surface: the
+// request below still goes through THIS module's own `medusaAdmin` shim.
+import {
+  evaluatePromotionRecord,
+  promotionByCodePath,
+  type PromotionListResponse,
+} from "../claustrum/promotion-validity.js";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 
@@ -2060,71 +2069,26 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       // checkout 422 stays authoritative): target/buy rules, stackability, and the
       // per-attribute budget types (use_by_attribute / spend_by_attribute — those
       // need the customer attribute and MUST NOT over-reject here).
+      //
+      // LE2-019 — the REJECTION CLASSES themselves now live in the shared, PURE
+      // `evaluatePromotionRecord` (claustrum/promotion-validity.ts), because the
+      // grounded COUPON_VALID / COUPON_INVALID chat claim answers the SAME
+      // question and the two must never disagree. Behaviour here is UNCHANGED,
+      // byte for byte, including the catch below: the DISPLAY side deliberately
+      // collapses an errored lookup to `valid: false` (a UI that shows no discount
+      // is harmless), which is exactly why that collapse stayed OUT of the shared
+      // predicate — the claims runtime must degrade the same case to an honest
+      // UNKNOWN instead (Inv 7).
       try {
-        const data = await medusaAdmin(`/admin/promotions?code=${encodeURIComponent(request.body.code)}&limit=1`) as {
-          promotions?: Array<{
-            id: string;
-            code: string;
-            status?: "draft" | "active" | "inactive";
-            limit?: number | null;
-            used?: number;
-            campaign?: {
-              starts_at?: string | null;
-              ends_at?: string | null;
-              budget?: {
-                type?: "spend" | "usage" | "use_by_attribute" | "spend_by_attribute";
-                limit?: number | null;
-                used?: number;
-              } | null;
-            } | null;
-            application_method?: {
-              value?: number;
-              type?: string;
-            };
-          }>;
-        };
+        const data = (await medusaAdmin(
+          promotionByCodePath(request.body.code),
+        )) as PromotionListResponse;
 
         const promo = data.promotions?.[0];
-        if (!promo) return reply.send({ valid: false });
+        const validity = evaluatePromotionRecord(promo, Date.now());
+        if (!validity.usable) return reply.send({ valid: false });
 
-        // status: the v2 lifecycle flag. Absent (unexpected) ⇒ treat as not active
-        // (display-side fail-closed: never show a discount we cannot substantiate).
-        if (promo.status !== "active") return reply.send({ valid: false });
-
-        // Campaign window (only when bounds are present — absent bound ⇒ no bound).
-        const now = Date.now();
-        const startsAt = promo.campaign?.starts_at ? Date.parse(promo.campaign.starts_at) : undefined;
-        const endsAt = promo.campaign?.ends_at ? Date.parse(promo.campaign.ends_at) : undefined;
-        if (startsAt !== undefined && Number.isFinite(startsAt) && startsAt > now) {
-          return reply.send({ valid: false });
-        }
-        if (endsAt !== undefined && Number.isFinite(endsAt) && endsAt < now) {
-          return reply.send({ valid: false });
-        }
-
-        // Promotion-level usage budget (limit/used on the promotion itself).
-        if (
-          typeof promo.limit === "number" &&
-          typeof promo.used === "number" &&
-          promo.used >= promo.limit
-        ) {
-          return reply.send({ valid: false });
-        }
-
-        // Campaign budget — ONLY the globally-evaluable types. Per-attribute types
-        // are skipped (evaluating them without the attribute would over-reject).
-        const budget = promo.campaign?.budget;
-        if (
-          budget &&
-          (budget.type === "usage" || budget.type === "spend") &&
-          typeof budget.limit === "number" &&
-          typeof budget.used === "number" &&
-          budget.used >= budget.limit
-        ) {
-          return reply.send({ valid: false });
-        }
-
-        const discount = promo.application_method?.value ?? 0;
+        const discount = promo?.application_method?.value ?? 0;
         return reply.send({ valid: true, discount });
       } catch {
         // Display-side fail-closed (unchanged from the previous behavior): an

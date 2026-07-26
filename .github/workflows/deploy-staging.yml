@@ -106,12 +106,65 @@ jobs:
   # explicit manual step is the contract.
 
   # ---------------------------------------------------------------------------
+  # 2b. PRE-DEPLOY GATE — external-reference reconciliation (LE2-018)
+  #
+  # This is where the live half of `ibx catalog check` actually runs. It cannot
+  # run in ci.yml: that workflow's runner has no Medusa and no database, so the
+  # check there would be either skipped-but-green or red on every commit.
+  # Here the stores exist — Medusa is public over HTTPS (the health-check job
+  # below already probes it) and the dev database is the one `migrate` just ran
+  # against — so the check is real.
+  #
+  # It is a GATE, not a report: `deploy` needs it. Every external reference the
+  # catalog declares (@ibatexas/catalog, src/external-references.ts — the
+  # welcome and loyalty coupons today) must exist in the store it names, or the
+  # deploy does not start. The api's boot gate is strict by owner decision
+  # (LE2 Implementation Decision 16) and would refuse to start on the far side
+  # of this deploy anyway; failing here costs a red pipeline instead of a dead
+  # container, and says exactly which coupon is missing.
+  #
+  # REQUIRED CONFIGURATION — this job fails, loudly and on purpose, until these
+  # exist. That failure is the gate working: it means the deployed environment
+  # has references nobody has verified.
+  #   secrets: STAGING_MEDUSA_ADMIN_EMAIL, STAGING_MEDUSA_ADMIN_PASSWORD,
+  #            STAGING_DIRECT_DATABASE_URL (already used by `migrate`)
+  #   vars:    STAGING_MEDUSA_URL, STAGING_WELCOME_CREDIT_COUPON_CODE,
+  #            STAGING_LOYALTY_REWARD_COUPON_CODE
+  # ---------------------------------------------------------------------------
+  catalog-live:
+    needs: [build, migrate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@5b4374b04084dc1f9032b52464284b769ac5059e # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ibatexas/domain db:generate
+      - name: Build the CLI and what it needs
+        run: pnpm turbo build --filter @ibatexas/cli
+
+      - name: External-reference reconciliation (LE2-018)
+        run: node packages/cli/dist/index.js catalog check --live
+        env:
+          MEDUSA_URL: ${{ vars.STAGING_MEDUSA_URL }}
+          MEDUSA_ADMIN_EMAIL: ${{ secrets.STAGING_MEDUSA_ADMIN_EMAIL }}
+          MEDUSA_ADMIN_PASSWORD: ${{ secrets.STAGING_MEDUSA_ADMIN_PASSWORD }}
+          DATABASE_URL: ${{ secrets.STAGING_DIRECT_DATABASE_URL }}
+          WELCOME_CREDIT_COUPON_CODE: ${{ vars.STAGING_WELCOME_CREDIT_COUPON_CODE }}
+          LOYALTY_REWARD_COUPON_CODE: ${{ vars.STAGING_LOYALTY_REWARD_COUPON_CODE }}
+
+  # ---------------------------------------------------------------------------
   # 3. Deploy to the dev EC2 host via SSM Run Command
   #    Replaces the ECS Fargate rolling update with a single `docker compose
   #    pull && up -d` on the single-VM dev stack.
   # ---------------------------------------------------------------------------
   deploy:
-    needs: [build, migrate]
+    needs: [build, migrate, catalog-live]
     runs-on: ubuntu-latest
     steps:
       - uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4

@@ -36,8 +36,21 @@
  *     projections, moved intact from `@ibatexas/packs-composed`.
  *   - `claim-references.ts` — the claim NAME SPACES definitions may point at
  *     (mirrors, pinned to the runtime originals by apps/api tests).
- *   - `build-gates/check-claim-references.ts` — cross-reference check v0,
- *     wired into `pnpm --filter @ibatexas/catalog build`.
+ *   - `external-references.ts` — the names the catalog depends on but does NOT
+ *     own: a promotion in Medusa, a zone row in the domain database (LE2-018).
+ *     The table declares which store holds each reference, which env var names
+ *     its key, and which code sites break without it. The catalog DECLARES;
+ *     the verification (and every byte of IO it needs) lives downstream in
+ *     `@ibatexas/tools`, the api's boot gate, and `ibx catalog check --live`.
+ *   - `compiler/` — the catalog compiler (LE2-016/018): five fail-closed
+ *     STATIC passes (referential integrity, slot dataflow, safety-implication
+ *     edges, terminal coverage, external references) over the authored data,
+ *     wired into `pnpm --filter @ibatexas/catalog build`, into CI, and into
+ *     `ibx catalog check`. Pure build tooling — a compiler, never a runtime
+ *     authority.
+ *   - `build-gates/check-claim-references.ts` — cross-reference check v0, now
+ *     a thin adapter over the compiler's referential-integrity edge table
+ *     (same API, same messages, one table).
  *
  * # Compatibility
  *
@@ -91,9 +104,53 @@ export {
 } from "./claim-references.js"
 
 export {
+  EXTERNAL_REFERENCE_STORES,
+  EXTERNAL_REFERENCES,
+  type ExternalReferenceConsumer,
+  type ExternalReferenceDeclaration,
+  type ExternalReferenceStore,
+} from "./external-references.js"
+
+export {
   assertClaimReferencesResolve,
   CatalogCrossReferenceError,
   findClaimReferenceDanglers,
   formatClaimReferenceReport,
   type ClaimReferenceDangler,
 } from "./build-gates/check-claim-references.js"
+
+export {
+  CAPABILITY_AUTH_LEVELS,
+  CAPABILITY_PACK_IDS,
+  CAPABILITY_SURFACES,
+  CAPABILITY_TIERS,
+  GUARD_PHASES,
+  GUARD_REF_PHASES,
+  type GuardRefPhase,
+} from "./capability-definitions/vocabularies.js"
+
+export {
+  assertCatalogCompiles,
+  CATALOG_PASS_IDS,
+  CATALOG_PASSES,
+  CatalogCompileError,
+  compileCatalog,
+  externalReferenceObjectName,
+  formatCatalogReport,
+  formatDiagnostic,
+  runExternalReferencesPass,
+  runReferentialIntegrityPass,
+  runSafetyImplicationEdgesPass,
+  runSlotDataflowPass,
+  runTerminalCoveragePass,
+  safetyMarkerOf,
+  sortDiagnostics,
+  type CatalogCompileResult,
+  type CatalogDiagnostic,
+  type CatalogDiagnosticSeverity,
+  type CatalogPass,
+  type CatalogPassId,
+  type CatalogPassResult,
+  type SafetyFamily,
+  type SafetyMarker,
+} from "./compiler/index.js"

@@ -133,7 +133,30 @@ function buildClaimDefinition(type: RegistryClaimType): ClaimDefinition {
   // (a member that omits them reads `undefined`, not a missing property) — the
   // same widening `selectCandidateClaim` uses in claim-registry.ts.
   const spec: RegistryClaimSpec = REGISTRY_SPECS[type];
-  const template = VALIDATED_TEMPLATES[type];
+  return assembleClaimDefinition({
+    type,
+    spec,
+    template: VALIDATED_TEMPLATES[type],
+    triadScoped: TRIAD_SCOPED_TYPES.has(type),
+  });
+}
+
+/**
+ * LE2-012 — the REGISTRY-AGNOSTIC half of {@link buildClaimDefinition}, extracted
+ * VERBATIM so a PLANE-SCOPED registry (`apps/api/src/ops/ops-claim-registry.ts`)
+ * assembles its `ClaimDefinition`s through the SAME code the customer registry
+ * uses and is validated by the SAME fail-closed inv.18 validator. No behaviour
+ * change: `buildClaimDefinition` now delegates here with the customer facets.
+ * Pure.
+ */
+export function assembleClaimDefinition(input: {
+  readonly type: string;
+  readonly spec: RegistryClaimSpec;
+  /** The type's `validated` render template, when it has one. */
+  readonly template?: { readonly slots: readonly CoreTemplateSlot[] };
+  readonly triadScoped: boolean;
+}): ClaimDefinition {
+  const { spec, template } = input;
 
   const renderTemplate: RenderTemplate | undefined =
     template === undefined
@@ -160,11 +183,11 @@ function buildClaimDefinition(type: RegistryClaimType): ClaimDefinition {
   }
 
   return {
-    type,
+    type: input.type,
     kind: spec.kind,
     requiredEvidence: spec.requiredEvidence,
     minSourceIntegrity: spec.minSourceIntegrity,
-    triadScoped: TRIAD_SCOPED_TYPES.has(type),
+    triadScoped: input.triadScoped,
     ...(spec.valueBinding === undefined ? {} : { valueBinding: spec.valueBinding }),
     ...(valueProjections === undefined ? {} : { valueProjections }),
     ...(renderTemplate === undefined ? {} : { renderTemplate }),

@@ -54,6 +54,35 @@ export { syncReviewStats } from "./intelligence/sync-review-stats.js"
 export { getAndConsumeWelcomeCredit } from "./intelligence/welcome-credit.js"
 export { PROFILE_TTL_SECONDS, RECENTLY_VIEWED_MAX } from "./intelligence/types.js"
 
+// ── External references (LE2-018) ─────────────────────────────────────────────
+// The catalog declares which promotions/zones the code depends on; this is
+// where a declaration meets a live store. Consumers call
+// `requireExternalReferenceKey`; the api's boot gate and `ibx catalog check
+// --live` call the reconciler.
+export {
+  assertExternalReferencesReconcile,
+  DEFAULT_EXTERNAL_REFERENCE_PROBES,
+  ExternalReferenceConfigError,
+  externalReferenceKey,
+  ExternalReferenceReconciliationError,
+  findExternalReference,
+  formatExternalReferenceMiss,
+  formatExternalReferenceReport,
+  probeDeliveryZone,
+  probeMedusaPromotion,
+  reconcileExternalReferences,
+  requireExternalReferenceKey,
+  type EnvLike,
+  type ExternalReferenceHit,
+  type ExternalReferenceMiss,
+  type ExternalReferenceMissReason,
+  type ExternalReferenceProbe,
+  type ExternalReferenceProbes,
+  type ExternalReferenceReconciliation,
+  type ProbeVerdict,
+  type ReconcileOptions,
+} from "./external-references/index.js"
+
 // ── Redis ──────────────────────────────────────────────────────────────────────
 export { getRedisClient, closeRedisClient } from "./redis/client.js"
 export { rk } from "./redis/key.js"
