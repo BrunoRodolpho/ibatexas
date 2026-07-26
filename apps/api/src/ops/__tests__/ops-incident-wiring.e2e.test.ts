@@ -60,6 +60,7 @@ vi.mock("@ibatexas/nats-client", async (importOriginal) => {
 });
 
 import {
+  OPS_DASHBOARD_CHANNEL,
   OPS_WHATSAPP_CHANNEL,
   incidentPolicyBundle,
   isOpsPlaneChannel,
@@ -310,15 +311,10 @@ describe("BKL-235 — the customer plane is unchanged (pins)", () => {
     expect(isOpsPlaneChannel("")).toBe(false);
   });
 
-  it("the ops channel is a distinct value, not a rename of a customer channel", () => {
+  it("the ops channels are distinct values, not a rename of a customer channel", () => {
     expect(OPS_WHATSAPP_CHANNEL).toBe("ops-whatsapp");
+    expect(OPS_DASHBOARD_CHANNEL).toBe("ops-dashboard");
     expect(isOpsPlaneChannel(OPS_WHATSAPP_CHANNEL)).toBe(true);
-  });
-
-  it("the UNWIRED ops dashboard is not silently claimed as covered", () => {
-    // Scope is ops-WhatsApp only. No constant is declared for the dashboard, so the
-    // predicate cannot overstate its coverage; if the dashboard is wired later this
-    // assertion is the reminder to add it deliberately.
-    expect(isOpsPlaneChannel("ops-dashboard")).toBe(false);
+    expect(isOpsPlaneChannel(OPS_DASHBOARD_CHANNEL)).toBe(true);
   });
 });

@@ -30,16 +30,20 @@
 // `admin:<staffId>` session id, and the field mapping (no Customer row, no PIX
 // side-channel). Both ops ingresses call THIS so the mapping exists once.
 //
-// ── SCOPE: ops-WhatsApp only (a deliberate, honest subset) ───────────────────
+// ── SCOPE: both ops ingresses, because the invariant spans them ──────────────
 //
-// The ops DASHBOARD (`admin/ops-chat.ts`) is NOT wired. It is synchronous HTTP: the
-// staff UI receives the empty `reply` in the 200 response, which is a different
-// failure surface from WhatsApp silence and wants its own product decision. The
-// consequence is stated rather than hidden: an ops incident opened from WhatsApp is
-// NOT self-healed by a subsequent dashboard reply. It closes on the staffer's next
-// delivered WhatsApp reply, or by a human in the admin Incidentes inbox.
+// WhatsApp (`ops-whatsapp-ingress.ts`) and the dashboard (`admin/ops-chat.ts`) are
+// two surfaces on ONE staff conversation: same `sessionId` (`admin:<staffId>`), same
+// parks, same ops-history thread. The per-session single-open-incident index therefore
+// spans them, so wiring only WhatsApp would MANUFACTURE STUCK-OPEN ROWS — a ghost on
+// WhatsApp then a recovery on the dashboard would never self-heal, and that stale open
+// row would absorb every later WhatsApp drop as a `dropCount` increment instead of
+// opening fresh (so no new staff ping). Both ingresses open, and both auto-close.
 //
-// There is also no `retry_exhausted` analog here. The customer webhook has an
+// The dashboard's response contract is untouched: it still returns 200 with whatever
+// `reply` the turn produced. Only the durable record is added.
+//
+// There is no `retry_exhausted` analog on either. The customer webhook has an
 // INGRESS-level second pass (`retryForMissedMessages`) that earns that cause; the ops
 // ingress has none. The responder's own empty-completion retries are already
 // exhausted by the time this seam sees blank text (it logs
@@ -50,11 +54,11 @@
 //
 // `conversation_incidents.channel` is a plain String explicitly so a new plane can
 // join without an `ALTER TYPE` ("agent plane later" — schema.prisma). Ops rows carry
-// `ops-whatsapp` (`OPS_WHATSAPP_CHANNEL` in @ibatexas/domain, alongside the taxonomy
-// it discriminates), set EXPLICITLY: `incident-subscriber.ts` defaults a missing
-// channel to `"whatsapp"`, so omitting it would actively MISLABEL an ops ghost as a
-// customer one. ZERO migrations: no new enum value, no new column, frozen migrations
-// untouched.
+// `ops-whatsapp` / `ops-dashboard` (`OPS_WHATSAPP_CHANNEL` / `OPS_DASHBOARD_CHANNEL`
+// in @ibatexas/domain, alongside the taxonomy they discriminate), set EXPLICITLY:
+// `incident-subscriber.ts` defaults a missing channel to `"whatsapp"`, so omitting it
+// would actively MISLABEL an ops ghost as a customer one. ZERO migrations: no new enum
+// value, no new column, frozen migrations untouched.
 //
 // The rows stay on the `no_reply` journal `kind` on purpose. An ops ghost has the
 // IDENTICAL lifecycle to a customer ghost — the staffer was owed a reply, got
@@ -72,21 +76,31 @@
 // plane relies on: repeat drops on one staff conversation fold into one row via
 // `dropCount++` (escalating severity) rather than storming the inbox.
 //
-// ── `customerImpacted` is FALSE by construction on this plane ────────────────
+// ── `customerImpacted` = `!fallbackDelivered` (the column's actual contract) ──
 //
-// The flag drives `deriveSeverity`'s `silêncio` branch, which is CUSTOMER-harm
-// weighting: `customerImpacted:true` plus any of aged / dropCount>=2 / re-open goes
-// straight to `high`. No customer is reachable on the ops plane, so claiming customer
-// impact would import that weighting into a staff-channel hiccup and outrank real
-// customer outages in the inbox. Ops rows therefore pass FALSE unconditionally, which
-// lands `low` while recent and `medium` once aged — a real signal that never
-// outranks a customer ghost.
+// The column is documented as "false when a canned holding message was delivered
+// (degraded, not a ghost)" — it tracks whether the person owed a reply ended up with
+// NOTHING, not whether that person was a paying customer. The WhatsApp catch path
+// already applies exactly this idiom for its canned apology
+// (`customerImpacted: !apologyDelivered`), so ops follows it: a landed fallback is
+// degraded (FALSE → `low` while recent), a failed one is a genuine total-silence
+// ghost (TRUE).
 //
-// Whether the honest fallback actually LANDED is still recorded, in `detail` (a
-// non-PII diagnostic) rather than by bending the severity flag — so forensics keeps
-// the "staffer got silence" vs "staffer got an honest error" distinction.
+// The consequence is deliberate and visible rather than hidden: because TRUE feeds
+// `deriveSeverity`'s `silêncio` branch, a total-silence ops row CAN reach `high` once
+// aged or repeated. That is the correct signal — the staffer got nothing at all — and
+// it is pinned by an explicit severity test alongside the delivered-fallback case, so
+// the weighting is reviewable instead of implicit.
+//
+// Whether the fallback landed is ALSO recorded in `detail` (a non-PII diagnostic), so
+// forensics keeps the distinction in plain text without having to infer it from a
+// boolean.
 
-import { OPS_WHATSAPP_CHANNEL, type IncidentCause } from "@ibatexas/domain";
+import {
+  OPS_DASHBOARD_CHANNEL,
+  OPS_WHATSAPP_CHANNEL,
+  type IncidentCause,
+} from "@ibatexas/domain";
 import {
   classifyCatchError,
   classifyTurnDelivery,
@@ -99,7 +113,7 @@ import {
 } from "../conversation/no-delivery.js";
 import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
 
-export { OPS_WHATSAPP_CHANNEL };
+export { OPS_DASHBOARD_CHANNEL, OPS_WHATSAPP_CHANNEL };
 
 /**
  * The ops conversation id — and therefore the incident `sessionId`.
@@ -146,7 +160,8 @@ export function classifyOpsReply(
 /** The per-ingress context every ops incident needs. */
 export interface OpsTurnContext {
   readonly staffId: string;
-  /** `OPS_WHATSAPP_CHANNEL` — set explicitly; never left to the subscriber default. */
+  /** `OPS_WHATSAPP_CHANNEL` | `OPS_DASHBOARD_CHANNEL` — set explicitly; never left
+   *  to `incident-subscriber.ts`'s `"whatsapp"` default. */
   readonly channel: string;
   /**
    * `capsule.turnId` — audit correlation + the dedup key's preferred component.
@@ -172,16 +187,16 @@ export interface OpsTurnContext {
 async function recordOpsDrop(
   ctx: OpsTurnContext,
   cause: IncidentCause,
+  customerImpacted: boolean,
   detail: string,
   decisionKind?: string | null,
 ): Promise<void> {
   const signal: NoDeliverySignal = {
     sessionId: opsSessionId(ctx.staffId),
     cause,
-    // FALSE by construction — no customer is reachable on this plane. See the header:
-    // claiming impact would import customer-harm severity weighting into a staff
-    // hiccup. The fallback-landed fact lives in `detail` instead.
-    customerImpacted: false,
+    // `!fallbackDelivered` — the column's documented contract (degraded vs ghost),
+    // the same idiom the WhatsApp catch path uses. See the header.
+    customerImpacted,
     channel: ctx.channel,
     // NO Customer row exists for a staffer. The ops ingresses bind
     // `customerId: staff:<staffId>` on the CAPSULE (a conductor-side marker), but
@@ -219,7 +234,7 @@ export async function recordOpsTurnDelivery(args: {
   readonly replyText: string | null | undefined;
   /** Did anything actually reach the staffer this turn? */
   readonly replyDelivered: boolean;
-  /** Did the honest `OPS_TURN_FAILED_PTBR` fallback land? Recorded in `detail`. */
+  /** Did the honest fallback land? Drives `customerImpacted` AND is recorded in `detail`. */
   readonly fallbackDelivered: boolean;
   /** `turn.decision.kind` — an ESCALATE handoff is never a drop. */
   readonly decisionKind?: string | null;
@@ -237,6 +252,7 @@ export async function recordOpsTurnDelivery(args: {
   await recordOpsDrop(
     ctx,
     classification.cause,
+    !fallbackDelivered,
     `[OPS] ${ctx.channel} turn left the staff member without a reply; honest fallback ${
       fallbackDelivered ? "delivered" : "ALSO failed (total silence)"
     }`,
@@ -283,6 +299,7 @@ export async function recordOpsTurnFailure(args: {
   await recordOpsDrop(
     ctx,
     cause === "timeout" ? "timeout" : "send_failed",
+    !fallbackDelivered,
     `[OPS] ${ctx.channel} turn threw before the staff member was served (${cause}); honest fallback ${
       fallbackDelivered ? "delivered" : "ALSO failed (total silence)"
     }`,

@@ -98,22 +98,25 @@ export const INCIDENT_SEVERITY_LABELS_PT: Record<IncidentSeverity, string> = {
 }
 
 /**
- * BKL-235 — the OPS-plane `channel` value.
+ * BKL-235 — the OPS-plane `channel` values.
  *
  * `conversation_incidents.channel` is a plain String precisely so a new plane can
  * join the journal without an `ALTER TYPE` (see the schema comment: "agent plane
- * later"). `ops-whatsapp` is the staff WhatsApp fork (`ops-whatsapp-ingress.ts`).
+ * later"). These are the two ops ingresses: the staff WhatsApp fork
+ * (`ops-whatsapp-ingress.ts`) and the dashboard route (`admin/ops-chat.ts`).
  *
- * It MUST be set explicitly at every producer. `incident-subscriber.ts` defaults a
+ * Both MUST be set explicitly at the producer. `incident-subscriber.ts` defaults a
  * missing `channel` to `"whatsapp"` — a CUSTOMER channel — so an omitted value does
- * not merely lose the distinction, it actively mislabels an ops ghost as a customer
+ * not merely lose the distinction, it actively MISLABELS an ops ghost as a customer
  * one. Never rely on the default.
  *
- * ONE ops ingress is wired: the ops DASHBOARD (`admin/ops-chat.ts`) is deliberately
- * NOT on this journal. It is synchronous HTTP — the staff UI receives the empty
- * response directly, a different failure surface from WhatsApp silence — so it gets
- * no channel value here until that surface is designed. Adding a constant nothing
- * writes would overstate this predicate's coverage.
+ * BOTH ingresses are wired, and that is load-bearing rather than tidiness: they share
+ * ONE staff conversation (`sessionId = admin:<staffId>`, plus the parks and the
+ * ops-history thread), so the per-session single-open-incident invariant spans them.
+ * Wiring only WhatsApp would MANUFACTURE STUCK-OPEN ROWS — a ghost on WhatsApp
+ * followed by a recovery on the dashboard would never self-heal, and that stale open
+ * row would then absorb every later WhatsApp drop as a `dropCount` increment (no
+ * fresh open ⇒ no staff ping). The dashboard close is what keeps the journal honest.
  *
  * Ops rows ride the SAME `no_reply` journal `kind` as the customer plane, and that
  * is deliberate: an ops ghost has the IDENTICAL lifecycle — the staffer was owed a
@@ -123,9 +126,11 @@ export const INCIDENT_SEVERITY_LABELS_PT: Record<IncidentSeverity, string> = {
  * OPPOSITE lifecycle (the shape that justified one for the attack-review journal).
  */
 export const OPS_WHATSAPP_CHANNEL = "ops-whatsapp"
+export const OPS_DASHBOARD_CHANNEL = "ops-dashboard"
 
 const OPS_PLANE_CHANNELS: ReadonlySet<string> = new Set<string>([
   OPS_WHATSAPP_CHANNEL,
+  OPS_DASHBOARD_CHANNEL,
 ])
 
 /**

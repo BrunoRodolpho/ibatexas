@@ -35,7 +35,11 @@ vi.mock("@ibatexas/nats-client", async (importOriginal) => {
   return { ...actual, publishNatsEvent: vi.fn(async () => {}) };
 });
 
-import { OPS_WHATSAPP_CHANNEL, deriveSeverity } from "@ibatexas/domain";
+import {
+  OPS_DASHBOARD_CHANNEL,
+  OPS_WHATSAPP_CHANNEL,
+  deriveSeverity,
+} from "@ibatexas/domain";
 import {
   classifyOpsReply,
   opsSessionId,
@@ -140,7 +144,21 @@ describe("recordOpsTurnDelivery", () => {
     expect(openIncidentFromEnvelope).not.toHaveBeenCalled();
   });
 
-  it("customerImpacted stays FALSE even when the fallback ALSO failed — never customer-harm weighting", async () => {
+  it("a DELIVERED fallback is degraded, not a ghost (customerImpacted false + detail)", async () => {
+    await recordOpsTurnDelivery({
+      ctx: ctx(),
+      replyText: "",
+      replyDelivered: false,
+      fallbackDelivered: true,
+    });
+
+    const payload = capturedPayload();
+    // The column's documented contract: false when a canned holding message landed.
+    expect(payload.customerImpacted).toBe(false);
+    expect(String(payload.detail)).toContain("honest fallback delivered");
+  });
+
+  it("a FAILED fallback IS a total-silence ghost (customerImpacted true + detail)", async () => {
     await recordOpsTurnDelivery({
       ctx: ctx(),
       replyText: "",
@@ -149,23 +167,26 @@ describe("recordOpsTurnDelivery", () => {
     });
 
     const payload = capturedPayload();
-    // No customer is reachable on this plane, so the flag cannot be true — even
-    // though this is the worst ops case (the staffer got total silence).
-    expect(payload.customerImpacted).toBe(false);
-    // …but the fact is NOT lost: it is recorded in the non-PII diagnostic instead of
-    // by bending the severity flag.
+    // The staffer got NOTHING — that is a real ghost and must read as one.
+    expect(payload.customerImpacted).toBe(true);
     expect(String(payload.detail)).toContain("ALSO failed (total silence)");
   });
 
-  it("records a delivered fallback distinctly in detail", async () => {
+  it("the DASHBOARD channel is distinguishable on the same staff session", async () => {
     await recordOpsTurnDelivery({
-      ctx: ctx(),
+      ctx: ctx(OPS_DASHBOARD_CHANNEL),
       replyText: "",
       replyDelivered: false,
-      fallbackDelivered: true,
+      fallbackDelivered: false,
     });
 
-    expect(String(capturedPayload().detail)).toContain("honest fallback delivered");
+    expect(capturedPayload()).toMatchObject({
+      channel: OPS_DASHBOARD_CHANNEL,
+      cause: "empty_completion",
+      // Same session as the WhatsApp ingress — that shared identity is why the
+      // dashboard must also auto-close (otherwise: stuck-open rows).
+      sessionId: "admin:staff_7",
+    });
   });
 
   it("always sets the ops channel explicitly — never left to the subscriber's 'whatsapp' default", async () => {
@@ -190,28 +211,33 @@ describe("recordOpsTurnDelivery", () => {
   });
 });
 
-describe("ops severity weighting (ruling 4 verification)", () => {
-  it("an ops row lands low/medium — never the customer-harm `high` branch", () => {
-    const openedAt = new Date("2026-07-26T12:00:00.000Z");
+describe("ops severity weighting — the consequence of !fallbackDelivered, made explicit", () => {
+  const openedAt = new Date("2026-07-26T12:00:00.000Z");
+  const aged = new Date(openedAt.getTime() + 60 * 60_000);
 
-    // Recent → low.
+  it("the ordinary ops case (fallback delivered) is low, and cannot outrank a customer ghost", () => {
+    // fallbackDelivered:true ⇒ customerImpacted:false ⇒ the degraded branch.
     expect(
       deriveSeverity({ customerImpacted: false, dropCount: 1, openedAt, now: openedAt }),
     ).toBe("low");
-
-    // The three escalators that would drive a CUSTOMER row to `high` — aged,
-    // repeat drops, and a re-open — top out at `medium` while customerImpacted is
-    // false, so a staff-channel hiccup can never outrank a real customer ghost.
-    const aged = new Date(openedAt.getTime() + 60 * 60_000);
+    // Even aged + repeated it tops out at medium while not impacted.
     expect(
       deriveSeverity({ customerImpacted: false, dropCount: 5, openedAt, now: aged }),
     ).toBe("medium");
+  });
 
-    // Contrast: the identical shape WITH customer impact is `high`. This is the
-    // weighting ops rows must not import.
+  it("a TOTAL-SILENCE ops row can reach high once aged/repeated — deliberate, not accidental", () => {
+    // fallbackDelivered:false ⇒ customerImpacted:true ⇒ the `silêncio` branch. This
+    // is the tradeoff of honouring the column's contract: a staffer who got NOTHING
+    // escalates like any other ghost. Pinned so the weighting is reviewable rather
+    // than a silent side effect.
     expect(
       deriveSeverity({ customerImpacted: true, dropCount: 5, openedAt, now: aged }),
     ).toBe("high");
+    // Recent + single drop is still only medium, so one blip does not cry wolf.
+    expect(
+      deriveSeverity({ customerImpacted: true, dropCount: 1, openedAt, now: openedAt }),
+    ).toBe("medium");
   });
 });
 
