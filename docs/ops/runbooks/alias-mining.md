@@ -62,6 +62,48 @@ the last run. Every report records the window it covered in its header, so a
 reader can tell "no ALIAS rows" (a finding) from "we only looked back seven days"
 (a window).
 
+### The labelled source only exists for windows where the obs stack was up
+
+Read this before planning a cadence around the labelled-event source, because the
+condition is stronger than "the data might be stale".
+
+VictoriaLogs ships in `docker-compose.observability.yml`, which is **not** part of
+the default `ibx dev` service set. The funnel emits its `funnel.tier` and
+`funnel.alias.resolved` records to the pino stream and nowhere else — a
+funnel-resolved turn writes no `turn_trace` row by design, so there is no database
+copy and no second channel.
+
+Put those two facts together and:
+
+> **Turns that happen while the observability stack is down produce no labelled
+> record at all. Those records are not late, not un-shipped, not pending — they
+> are never written.** No backfill, no reconciliation and no replay can recover
+> them, because nothing anywhere ever held them.
+
+**As of this writing that is the default state.** The standard dev workflow runs
+without the observability stack, so it produces **zero** labelled events; a mining
+run against such a period is not under-sampling the ALIAS tier, it is reading a
+source that is empty by construction. On the dev stack this was measured
+directly — zero `component:funnel` records over a 90-day window, against 263
+conductor turn lines in the same store.
+
+So the cadence above governs the **transcript** pass, which reads a durable
+Postgres table and behaves the way a cadence normally implies. The labelled pass
+is availability-gated on top of it:
+
+- Treat a report's labelled-event count of 0 as **"the channel was off"** until
+  you have checked otherwise — not as "customers hit no ambiguous surfaces". The
+  two are indistinguishable in the artifact, and the second is the more flattering
+  reading.
+- Before relying on labelled rows for a decision, confirm the stack was actually
+  up across the window: `docker compose -f docker-compose.observability.yml up -d victorialogs`
+  starts it, and its container uptime bounds how far back the source can possibly
+  reach — regardless of what `--since` asks for.
+- If you want the labelled source to be continuously available, that is a
+  standing-infrastructure change rather than a mining-cadence one. Tracked as
+  **BKL-266** (victorialogs in the default `ibx dev` set with an opt-out, plus a
+  loud api-boot warning when the funnel telemetry sink is absent).
+
 ---
 
 ## Running it
@@ -97,11 +139,15 @@ ibx alias mine --stdout | less
 - **Postgres** (`:5433`) — required. Supplies both the transcripts and the live
   roster. An unreachable roster is the one fatal error: classifying against an
   empty roster would report the entire catalog as missing.
-- **VictoriaLogs** (`:9428`) — optional. Supplies the labelled funnel events.
-  It ships in `docker-compose.observability.yml`, which is **not** part of the
-  default `ibx dev` stack; start it with
+- **VictoriaLogs** (`:9428`) — optional *for the run*, but decisive for what the
+  run can see. Supplies the labelled funnel events. It ships in
+  `docker-compose.observability.yml`, which is **not** part of the default
+  `ibx dev` stack; start it with
   `docker compose -f docker-compose.observability.yml up -d victorialogs`.
-  When it is down the report says so, per source, and carries on.
+  When it is down the report says so per source and carries on — but note that
+  starting it now does **not** recover anything: only turns that happen while it
+  is up are ever recorded. See "The labelled source only exists for windows where
+  the obs stack was up".
 - **Embedder** (`OLLAMA_EMBED_URL`, `OLLAMA_EMBED_MODEL`) — optional and
   advisory. See "Where embeddings are allowed" below.
 
