@@ -1,39 +1,50 @@
 /**
- * `@ibatexas/packs-composed/capability-definitions` — FE-4 EXPAND (FE-T19)
- * + MIGRATE 1/2 (FE-T20/T21) barrel. See `types.ts` for the field contract,
- * `definitions.ts` for the authored data (18 chat-tier + 48 identity-tier),
- * `guard-resolution.ts` for the boot assertion, and the `generate-*.ts`
- * modules for the two generated families:
- *   - Intent-identity (FE-T20): `generate-chat-drivable-tool-kinds.ts`
- *     (FE-T19's original exemplar), `generate-known-intent-kinds.ts`,
- *     `generate-pack-intent-kinds.ts`, `generate-planner-allowed-intents.ts`.
- *   - Tool/driving (FE-T21): `generate-capability-descriptions.ts`,
- *     `generate-tool-to-intent-map.ts`, `generate-mutating-tool-names.ts`.
- *   - Surface/claims/prompt (FE-T22): `generate-refusal-codes.ts`,
- *     `generate-success-claim-justified-by.ts` (surface/plane membership
- *     and prompt hints reuse `generate-chat-drivable-tool-kinds.ts` and
- *     `generate-capability-descriptions.ts` respectively — see FE-T22's
- *     PR body for why no new generator was needed for either).
- *   - Presentation (FE-T23): `generate-admin-labels.ts`,
- *     `generate-auth-levels.ts`. The legacy snake_case name map (the
- *     family's third named target) needed no new generator — fully covered
- *     by FE-T21's `generate-tool-to-intent-map.ts` /
- *     `generate-mutating-tool-names.ts` — see FE-T23's PR body.
- *   - Ops-boundary (FE-T24, the FINAL migrate batch): `generate-ops-
- *     boundary-kinds.ts` (`generateForeignAdvertisedKinds` +
- *     `generateOpsForbiddenDestructiveKinds`). `WA_EXCLUDED_OPS_KINDS` — a
- *     third ops-boundary set in the same source file — is traced but
- *     deliberately NOT generated; see that module's own doc for why.
+ * `@ibatexas/packs-composed/capability-definitions` — the COMPATIBILITY
+ * BARREL over `@ibatexas/catalog`, plus the guard-resolution boot assertion.
  *
- * # This module IS the boot assertion
+ * # What happened here (LE2-014, the catalog expand phase)
  *
- * `assertGuardRefsResolve` runs EAGERLY below, at module-evaluation time —
- * true boot-time semantics (FE-4.3: "a boot assertion that every guard
+ * The authored capability data and its twelve projection generators MOVED to
+ * `@ibatexas/catalog`, the single versioned root of business definition (LE2
+ * Implementation Decision 13). This barrel now re-exports them.
+ *
+ * That move was ACCRETION, not a rewrite: this module's export surface is
+ * byte-for-byte the same set of names it had before, in the same shapes, with
+ * the same eager side effect. Every existing import site —
+ * `claustrum-bootstrap.ts`, `register-ibatexas-tool-packs.ts`,
+ * `kernel-bootstrap.ts`, the admin freshness test, the ops drift tests, this
+ * package's own test suite — was left untouched, and should stay that way.
+ * New code SHOULD import from `@ibatexas/catalog` directly.
+ *
+ * See `@ibatexas/catalog`'s `src/capability-definitions/index.ts` for the
+ * per-generator documentation (which module feeds which generated family) and
+ * its README for the `CATALOG_VERSION` bump discipline.
+ *
+ * # What did NOT move, and why this file still exists
+ *
+ * `guard-resolution.ts` stayed, for two reasons that agree:
+ *
+ *   1. MECHANICAL — it imports `IBATEXAS_COMPOSED_PACKS` from this package's
+ *      root to verify guard refs against the live INSTALLED packs. Moving it
+ *      into the catalog would make `@ibatexas/catalog` depend on
+ *      `@ibatexas/packs-composed`, which depends on the catalog: a circular
+ *      turbo `build` graph, rejected outright (the same cycle FE-T26 hit and
+ *      documented in `../codegen/build-generated-region.ts`).
+ *   2. PRINCIPLED — and this is the real reason. Resolving a guard REFERENCE
+ *      to a real guard FUNCTION in an installed pack is a claim about the
+ *      RUNTIME, not about the definition. Decision 13 is explicit that "the
+ *      catalog defines; it never holds runtime authority". The catalog
+ *      authors the reference; this composition site proves it binds.
+ *
+ * # This module IS the boot assertion (unchanged)
+ *
+ * `assertGuardRefsResolve` still runs EAGERLY below, at module-evaluation
+ * time — true boot-time semantics (FE-4.3: "a boot assertion that every guard
  * reference resolves to a real function, so a generated bundle can never
- * silently ship as refuse-everything"). Any future consumer that imports
- * this module (directly or via a subpath) gets the check for free. FE-T20's
- * 48 identity-tier definitions carry no `guardRefs` (see types.ts) — the
- * assertion treats that as valid-by-absence, not a dangling reference (see
+ * silently ship as refuse-everything"). Any consumer that imports this module
+ * (directly or via the subpath) gets the check for free, exactly as before.
+ * The 48 identity-tier definitions carry no `guardRefs` — the assertion treats
+ * that as valid-by-absence, not a dangling reference (see
  * `guard-resolution.ts`).
  */
 
@@ -47,9 +58,27 @@ export type {
   ChatCapabilityDefinition,
   GuardPhase,
   IdentityCapabilityDefinition,
-} from "./types.js"
+} from "@ibatexas/catalog"
 
-export { CAPABILITY_DEFINITIONS } from "./definitions.js"
+export {
+  CAPABILITY_DEFINITIONS,
+  generateAdminLabels,
+  generateCapabilityDescriptions,
+  generateChatCapabilityAuthLevels,
+  generateChatDrivableToolKinds,
+  generateForeignAdvertisedKinds,
+  generateIntentKindsMirror,
+  generateJustifiedByForClaim,
+  generateKnownIntentKinds,
+  generateMutatingToolNames,
+  generateOpsForbiddenDestructiveKinds,
+  generatePackIntents,
+  generatePlannerAllowedIntents,
+  generateRefusalCodes,
+  generateToolToIntentMap,
+  type AdminLabelExternalInputs,
+  type KnownIntentKindsExternalInputs,
+} from "@ibatexas/catalog"
 
 export {
   assertGuardRefsResolve,
@@ -58,43 +87,7 @@ export {
   type ResolvedGuard,
 } from "./guard-resolution.js"
 
-export { generateChatDrivableToolKinds } from "./generate-chat-drivable-tool-kinds.js"
-
-export {
-  generateKnownIntentKinds,
-  type KnownIntentKindsExternalInputs,
-} from "./generate-known-intent-kinds.js"
-
-export {
-  generateIntentKindsMirror,
-  generatePackIntents,
-} from "./generate-pack-intent-kinds.js"
-
-export { generatePlannerAllowedIntents } from "./generate-planner-allowed-intents.js"
-
-export { generateCapabilityDescriptions } from "./generate-capability-descriptions.js"
-
-export { generateToolToIntentMap } from "./generate-tool-to-intent-map.js"
-
-export { generateMutatingToolNames } from "./generate-mutating-tool-names.js"
-
-export { generateRefusalCodes } from "./generate-refusal-codes.js"
-
-export { generateJustifiedByForClaim } from "./generate-success-claim-justified-by.js"
-
-export {
-  generateAdminLabels,
-  type AdminLabelExternalInputs,
-} from "./generate-admin-labels.js"
-
-export { generateChatCapabilityAuthLevels } from "./generate-auth-levels.js"
-
-export {
-  generateForeignAdvertisedKinds,
-  generateOpsForbiddenDestructiveKinds,
-} from "./generate-ops-boundary-kinds.js"
-
-import { CAPABILITY_DEFINITIONS } from "./definitions.js"
+import { CAPABILITY_DEFINITIONS } from "@ibatexas/catalog"
 import { assertGuardRefsResolve } from "./guard-resolution.js"
 
 assertGuardRefsResolve(CAPABILITY_DEFINITIONS)

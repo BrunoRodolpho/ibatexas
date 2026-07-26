@@ -22,6 +22,7 @@ import type {
 import { CompletionError } from "@claustrum/core";
 import { createAuditRedactor } from "@ibatexas/audit-sink";
 import { logger } from "../lib/logger.js";
+import { captureWireExchange } from "./wire-capture.js";
 
 // An OpenAI-compatible error body (esp. from a proxy/gateway in front of the
 // local model) can echo a fragment of the REQUEST — system prompt + the
@@ -56,12 +57,34 @@ interface HttpError extends Error {
 
 /**
  * FE-T01 (D4) — the FROZEN `OpenAIChatCompletionsBody` (from `@claustrum/openai`)
- * has no `response_format` field. This widens it for the ONE outbound `fetch`
- * call this relay makes; the frozen type itself is never touched.
+ * has no `response_format` field, and no `reasoning_effort` either. This widens
+ * it for the ONE outbound `fetch` call this relay makes; the frozen type itself
+ * is never touched.
  */
-type OllamaWireBody = OpenAIChatCompletionsBody & {
+export type OllamaWireBody = OpenAIChatCompletionsBody & {
   readonly response_format?: { readonly type: "json_object" };
+  readonly reasoning_effort?: "none";
 };
+
+/**
+ * The relay's outbound-body transform as a pure function (Wire Truth spec):
+ * exported so wire capture can store a request byte-identical to what this
+ * relay POSTs. Tool-bearing bodies gain Ollama's OpenAI-compat JSON mode;
+ * tool-less bodies (responder synthesis) gain `reasoning_effort: "none"`;
+ * `model` pins the served model when an override is configured. Any change to
+ * what this relay sends MUST go through this function — it is the single
+ * source of truth for the wire shape.
+ */
+export function toOllamaWireBody(
+  body: OpenAIChatCompletionsBody,
+  model?: string | undefined,
+): OllamaWireBody {
+  const modelPinned = model === undefined ? body : { ...body, model };
+  const wantsJsonMode = body.tools !== undefined && body.tools.length > 0;
+  return wantsJsonMode
+    ? { ...modelPinned, response_format: { type: "json_object" } }
+    : { ...modelPinned, reasoning_effort: "none" };
+}
 
 function httpError(status: number, body: string): HttpError {
   const err = new Error(`Ollama ${status}: ${body}`.slice(0, 500)) as HttpError;
@@ -120,13 +143,24 @@ export class OllamaFetchClient implements OpenAIClientLike {
    * (bodies carrying `tools`) is safe for the acceptance-critical path
    * (tool_calls emission + REFUSE-on-malformed/empty), at the cost of that
    * narrower, non-customer-facing quality hit.
+   *
+   * Tool-LESS bodies (the responder's pt-BR synthesis calls) instead get
+   * `reasoning_effort: "none"`. nemotron-3-nano:4b thinks by default and
+   * Ollama's `/v1` splits that pass into `message.reasoning`, which the FROZEN
+   * `@claustrum/openai` provider never reads — so on short prompts the answer
+   * either starves inside the thinking budget (`finish_reason: length`, empty
+   * `content`) or lands wholesale in `reasoning` (`finish_reason: stop`, empty
+   * `content`). Either way the responder sees an empty completion, and with
+   * temperature pinned to 0 (FE-T01) every regenerate-on-empty retry replays
+   * the identical result, exhausting to the customer-facing holding fallback.
+   * NOTE: Ollama's native `think: false` toggle is silently IGNORED on the
+   * `/v1` OpenAI-compat path — `reasoning_effort: "none"` is the honored
+   * spelling there (live-verified: the greeting reply arrives in ~12 tokens
+   * with an empty reasoning field). Scoped to tool-less bodies: the planner's
+   * tool-bearing wire keeps thinking enabled, unchanged.
    */
   private wireBody(body: OpenAIChatCompletionsBody): OllamaWireBody {
-    const modelPinned = this.model === undefined ? body : { ...body, model: this.model };
-    const wantsJsonMode = body.tools !== undefined && body.tools.length > 0;
-    return wantsJsonMode
-      ? { ...modelPinned, response_format: { type: "json_object" } }
-      : modelPinned;
+    return toOllamaWireBody(body, this.model);
   }
 
   readonly chat = {
@@ -164,7 +198,19 @@ export class OllamaFetchClient implements OpenAIClientLike {
           );
           throw httpError(res.status, errBody);
         }
-        return (await res.json()) as OpenAIChatCompletionResponse;
+        const parsed = (await res.json()) as OpenAIChatCompletionResponse;
+        // Wire Truth — record the exact exchange (post-enrichment request +
+        // the raw body the frozen provider will parse-and-discard) into the
+        // ambient turn context. No context (live-check, diagnostics) → no-op.
+        // The streaming path is deliberately uncaptured: nothing on the
+        // conductor turn path streams.
+        captureWireExchange({
+          model: wire.model,
+          request: wire,
+          response: parsed,
+          at: new Date().toISOString(),
+        });
+        return parsed;
       }) as OpenAIClientLike["chat"]["completions"]["create"],
     },
   };

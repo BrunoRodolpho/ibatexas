@@ -17,6 +17,41 @@ import type { AuditRecord } from "@adjudicate/core"
 import type { PayloadPredicate } from "../oracle/audit-trail-matcher.js"
 import type { ExpectPayload, FieldTrust, IrExpectation } from "./schema.js"
 
+/**
+ * The ONLY two fields `evaluateExpectPayload` ever reads off a record —
+ * widened (LE2-05) from the concrete `AuditRecord` so the OFFLINE eval
+ * harness (`eval-score.ts`) can score an artifact-derived envelope through
+ * this SAME evaluator instead of fabricating a whole AuditRecord (and thus
+ * a second, drifting copy of the expectation semantics). `AuditRecord`
+ * satisfies this structurally, so every existing caller type-checks and
+ * behaves byte-identically.
+ */
+export interface ExpectPayloadRecordLike {
+  readonly metadata?: unknown
+  readonly decision: { readonly kind: string }
+}
+
+/** Exact leaf comparison — the pre-LE2-05 behavior, and still the default. */
+function exactEquals(actual: unknown, expected: unknown): boolean {
+  return Object.is(actual, expected) || actual === expected
+}
+
+export interface EvaluateExpectPayloadOptions {
+  /**
+   * Leaf comparator for `payload` values. Default: {@link exactEquals} —
+   * byte-identical to the pre-LE2-05 behavior for every existing caller
+   * (the live accuracy runner and the oracle's compiled predicate).
+   *
+   * LE2-05 injects a STRUCTURAL comparator here (`structuralEquals` in
+   * `eval-score.ts`: `deepEqualArgs` over formatting-normalized values) so
+   * the offline harness tolerates formatting noise — casing, NFC form,
+   * padding/inner whitespace — while staying intolerant of a wrong slot
+   * value, and compares arrays/objects BY VALUE (the default comparator's
+   * reference equality can never match a structured expectation).
+   */
+  equals?: (actual: unknown, expected: unknown) => boolean
+}
+
 /** Structural mirror of `FieldProvenance` (apps/api language-engine/field-trust.ts). */
 interface FieldProvenanceLike {
   readonly trust?: unknown
@@ -35,7 +70,9 @@ interface LanguageEngineMetadataLike {
 }
 
 /** Read `record.metadata.languageEngine`, tolerating any absent/malformed shape. */
-function readLanguageEngineMetadata(record: AuditRecord): LanguageEngineMetadataLike | undefined {
+function readLanguageEngineMetadata(
+  record: ExpectPayloadRecordLike,
+): LanguageEngineMetadataLike | undefined {
   const metadata = record.metadata as { languageEngine?: unknown } | undefined
   const le = metadata?.languageEngine
   if (le === null || typeof le !== "object") return undefined
@@ -54,6 +91,7 @@ function evaluateIr(
   label: "extractionIR" | "hydratedIntentIR",
   expected: IrExpectation,
   actual: MaterializedIrLike | undefined,
+  equals: (actual: unknown, expected: unknown) => boolean,
 ): string[] {
   const failures: string[] = []
   if (actual === undefined) {
@@ -64,7 +102,7 @@ function evaluateIr(
 
   if (expected.payload !== undefined) {
     for (const [key, value] of Object.entries(expected.payload)) {
-      if (!Object.is(actualPayload[key], value) && actualPayload[key] !== value) {
+      if (!equals(actualPayload[key], value)) {
         failures.push(
           `${label}.payload.${key}: expected ${JSON.stringify(value)}, got ${JSON.stringify(actualPayload[key])}`,
         )
@@ -110,19 +148,28 @@ function evaluateIr(
 }
 
 /**
- * Evaluate an `ExpectPayload` against one `AuditRecord`, returning per-check
- * failures (empty when everything the case declared matches). Pure.
+ * Evaluate an `ExpectPayload` against one record — an `AuditRecord` from a
+ * live drive, or (LE2-05) any {@link ExpectPayloadRecordLike} the offline
+ * harness reconstructs from a pinned artifact — returning per-check failures
+ * (empty when everything the case declared matches). Pure.
  */
-export function evaluateExpectPayload(expected: ExpectPayload, record: AuditRecord): ExpectPayloadEvaluation {
+export function evaluateExpectPayload(
+  expected: ExpectPayload,
+  record: ExpectPayloadRecordLike,
+  options: EvaluateExpectPayloadOptions = {},
+): ExpectPayloadEvaluation {
+  const equals = options.equals ?? exactEquals
   const le = readLanguageEngineMetadata(record)
   if (le === undefined) {
     return { ok: false, failures: ["record.metadata.languageEngine is absent"] }
   }
 
-  const failures = [...evaluateIr("extractionIR", expected.extractionIR, le.extractionIR)]
+  const failures = [...evaluateIr("extractionIR", expected.extractionIR, le.extractionIR, equals)]
 
   if (expected.hydratedIntentIR !== undefined) {
-    failures.push(...evaluateIr("hydratedIntentIR", expected.hydratedIntentIR, le.hydratedIntentIR))
+    failures.push(
+      ...evaluateIr("hydratedIntentIR", expected.hydratedIntentIR, le.hydratedIntentIR, equals),
+    )
     if (expected.hydratedIntentIR.confirmationRequired !== undefined) {
       const actual = le.hydratedIntentIR?.confirmationRequired
       if (actual !== expected.hydratedIntentIR.confirmationRequired) {

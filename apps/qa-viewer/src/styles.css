@@ -556,6 +556,17 @@ code, pre { font-family: var(--mono); font-size: 12px; }
 .pipe__conn { flex: 1 1 auto; min-width: 14px; height: 2px; margin-top: 18px; background: var(--ok); opacity: 0.5; border-radius: 2px; }
 .pipe__conn--dim { background: none; border-top: 2px dashed var(--silent); height: 0; }
 
+/* pipeline drill-down (donut click → stage evidence) */
+.pipe__evidence { border-top: 1px solid var(--line-2); padding: 10px 16px 12px; display: flex; flex-direction: column; gap: 4px; }
+.pipe__evidence-hd { display: flex; align-items: center; gap: 9px; font-size: 11px; color: var(--ink-2); margin-bottom: 3px; }
+.pipe__evidence-hd b { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+.pipe__evidence-hd .hint { margin-left: auto; font-size: 10.5px; color: var(--ink-3); }
+.pipe__evidence-row { font-family: var(--mono); font-size: 11.5px; color: var(--ink); word-break: break-word; }
+
+/* live auto-refresh toolbar */
+.rca__toolbar { display: flex; align-items: center; gap: 9px; }
+.rca__toolbar .hint { font-size: 11px; color: var(--ink-3); }
+
 /* identifiers dock */
 .ids { display: flex; flex-direction: column; }
 .ids__row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line-2); }
@@ -676,6 +687,24 @@ code, pre { font-family: var(--mono); font-size: 12px; }
 .conv-tree__head .conv-tree__time { margin-left: auto; }
 .conv-tree__preview { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; font-style: italic; }
 
+/* LE2-031 — customer rows: the rail's new top level. Sessions nest under one
+   identity; ops threads are chip-labeled so a staff thread never reads as a
+   customer, and the explicit "unidentified" bucket is visually a bucket. */
+.conv-tree__cust { padding: 6px; border-radius: var(--r-sm); cursor: pointer; border: 1px solid transparent; font-size: 12px; color: var(--ink-2); }
+.conv-tree__cust:hover { background: var(--panel-2); }
+.conv-tree__cust--open { background: var(--panel-2); border-color: var(--line); }
+.conv-tree__cust--unidentified { border-style: dashed; border-color: var(--line); }
+.conv-tree__caret { color: var(--ink-3); font-size: 10px; width: 10px; }
+.conv-tree__cust-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 11.5px; color: var(--ink); }
+.conv-tree__cust-meta { font-size: 10.5px; color: var(--ink-3); margin: 2px 0 0 16px; }
+/* Sessions of one customer — indented, with a spine back to their row. */
+.conv-tree__sess { margin-left: 10px; padding-left: 8px; border-left: 1px solid var(--line); }
+.grp-chip { font-family: var(--mono); font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 5px; text-transform: uppercase; letter-spacing: 0.03em; background: var(--nt-neutral); color: var(--ink-2); }
+.grp-chip--customer { background: var(--nt-tool); color: var(--ok); }
+.grp-chip--ops { background: var(--dec-rewrite-bg); color: var(--dec-rewrite); }
+.grp-chip--unidentified { background: var(--silent-wash); color: var(--silent); }
+.grp-chip--ungrouped { background: var(--nt-neutral); color: var(--ink-3); }
+
 .degraded-chip { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 5px; background: var(--warn-wash); color: var(--warn); border: 1px dashed var(--warn); }
 
 .card__hd--wrap { flex-wrap: wrap; row-gap: 7px; }
@@ -686,6 +715,16 @@ code, pre { font-family: var(--mono); font-size: 12px; }
 .expand-hint { color: var(--ink-3); margin-left: 6px; font-size: 10px; }
 .trace-row--detail td { background: var(--panel-3); padding: 0; }
 .tl-detail { margin: 0; padding: 10px 14px 10px 46px; font-family: var(--mono); font-size: 11px; line-height: 1.55; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
+
+/* Wire Truth — the durable request/response sections in an LLM row expander */
+.wire-x { border-top: 1px solid var(--line); padding: 8px 14px 10px 46px; }
+.wire-x__head { font-family: var(--mono); font-size: 10px; color: var(--ink-3); letter-spacing: 0.4px; text-transform: uppercase; margin-bottom: 4px; }
+.wire-x__head--absent { padding: 8px 14px 8px 46px; text-transform: none; letter-spacing: 0; }
+.wire-x__params { font-family: var(--mono); font-size: 11px; color: var(--accent, var(--ink-1)); margin-bottom: 6px; word-break: break-word; }
+.wire-x__block { margin: 4px 0; }
+.wire-x__block > summary { cursor: pointer; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+.wire-x__block .tl-detail { padding-left: 14px; }
+.wire-x__role { display: inline-block; font-family: var(--mono); font-size: 10px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.4px; margin: 2px 0; }
 
 /* cross-surface jump chips (run trace → RCA, LLM call → Prompts) */
 .chip--mini { font-size: 9.5px; padding: 0 6px; margin-left: 8px; vertical-align: 1px; }

@@ -1,0 +1,50 @@
+{
+  "fixture": "slot-dataflow.missing-required-slot",
+  "targets": "slot-dataflow/missing-required-slot",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "slot-dataflow/missing-required-slot"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 24,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "missing-required-slot",
+      "severity": "error",
+      "object": "capability:conformance.slot.missing-required",
+      "field": "description",
+      "message": "required slot is absent on tier \"chat\". types.ts requires it; a consumer reading it gets `undefined` and has no honest fallback."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/missing-required-slot: capability:conformance.slot.missing-required · description — required slot is absent on tier \"chat\". types.ts requires it; a consumer reading it gets `undefined` and has no honest fallback."
+  ]
+}

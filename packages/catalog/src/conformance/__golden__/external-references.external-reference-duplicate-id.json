@@ -1,0 +1,61 @@
+{
+  "fixture": "external-references.external-reference-duplicate-id",
+  "targets": "external-references/external-reference-duplicate-id",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 2,
+  "rulesEmitted": [
+    "external-references/external-reference-duplicate-id"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 19,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 4,
+      "diagnostics": 2
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "external-references",
+      "rule": "external-reference-duplicate-id",
+      "severity": "error",
+      "object": "external-reference:promotion.conformance",
+      "field": "id",
+      "message": "\"promotion.conformance\" is declared by 2 entries (array positions 0, 1). The id is how the boot refusal, the --live report and every diagnostic address one reference; two rows sharing it means an operator told to fix one has no way to know which.",
+      "reference": "promotion.conformance"
+    },
+    {
+      "pass": "external-references",
+      "rule": "external-reference-duplicate-id",
+      "severity": "error",
+      "object": "external-reference:promotion.conformance",
+      "field": "id",
+      "message": "\"promotion.conformance\" is declared by 2 entries (array positions 0, 1). The id is how the boot refusal, the --live report and every diagnostic address one reference; two rows sharing it means an operator told to fix one has no way to know which.",
+      "reference": "promotion.conformance"
+    }
+  ],
+  "formatted": [
+    "external-references/external-reference-duplicate-id: external-reference:promotion.conformance · id — \"promotion.conformance\" is declared by 2 entries (array positions 0, 1). The id is how the boot refusal, the --live report and every diagnostic address one reference; two rows sharing it means an operator told to fix one has no way to know which.",
+    "external-references/external-reference-duplicate-id: external-reference:promotion.conformance · id — \"promotion.conformance\" is declared by 2 entries (array positions 0, 1). The id is how the boot refusal, the --live report and every diagnostic address one reference; two rows sharing it means an operator told to fix one has no way to know which."
+  ]
+}
