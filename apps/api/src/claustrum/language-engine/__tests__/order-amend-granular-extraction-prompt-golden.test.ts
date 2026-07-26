@@ -32,6 +32,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "../wire-schemas.js";
 import {
   computeOrderAmendGranularExtractionPromptFragment,
   type OrderAmendGranularExtractionPromptFragment,
@@ -55,21 +56,25 @@ describe("extraction-prompt golden byte-identity gate (order.amend.add_item/upda
     expect(canonicalize(fresh)).toBe(readGoldenRaw());
   });
 
-  it("exposes ONLY {item, quantity?} / {item, quantity} / {item} — never orderId/variantId/itemId/allergens", async () => {
+  // BKL-255a — this used to read each capability's payload schema back off the
+  // `express_intent` wire surface (the `allOf` clauses). Those are gone: the
+  // engine dropped them at decode (LE2-004), so the planner no longer sends
+  // them. The per-capability field inventory is still live and still
+  // load-bearing — `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY` derives the
+  // parse-seam filter from it — so this now reads the AUTHORED registry,
+  // keyed by the fragment's OWN capability list.
+  it("the authored schemas expose ONLY {item, quantity?} / {item, quantity} / {item} — never orderId/variantId/itemId/allergens", async () => {
     const fresh = await computeOrderAmendGranularExtractionPromptFragment();
-    const schema = fresh.expressIntentTool.inputSchema as {
-      allOf: Array<{
-        if: { properties: { capability: { const: string } } };
-        then: { properties: { payload: { properties: Record<string, unknown>; required?: string[] } } };
-      }>;
-    };
-    expect(schema.allOf).toHaveLength(3);
     const byCapability = new Map(
-      schema.allOf.map((clause) => [
-        clause.if.properties.capability.const,
-        clause.then.properties.payload,
+      fresh.capabilities.map((kind) => [
+        kind,
+        EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind) as {
+          properties: Record<string, unknown>;
+          required?: string[];
+        },
       ]),
     );
+    expect(byCapability.size).toBe(3);
     expect([...byCapability.keys()].sort()).toEqual([
       "order.amend.add_item",
       "order.amend.remove_item",
@@ -86,18 +91,18 @@ describe("extraction-prompt golden byte-identity gate (order.amend.add_item/upda
     expect(byCapability.get("order.amend.remove_item")!.required).toEqual(["item"]);
   });
 
-  it("RED: a mutated wire schema (an extra leaked field) is NOT byte-identical to the golden fixture", async () => {
+  it("RED: a mutated wire schema (an extra capability in the enum) is NOT byte-identical to the golden fixture", async () => {
     const fresh = await computeOrderAmendGranularExtractionPromptFragment();
     const mutated: OrderAmendGranularExtractionPromptFragment = JSON.parse(
       JSON.stringify(fresh),
     ) as OrderAmendGranularExtractionPromptFragment;
     const schema = mutated.expressIntentTool.inputSchema as {
-      allOf: Array<{ then: { properties: { payload: { properties: Record<string, unknown> } } } }>;
+      properties: { capability: { enum: string[] } };
     };
-    schema.allOf[0]!.then.properties.payload.properties.orderId = {
-      type: "string",
-      description: "x",
-    };
+    // BKL-255a — the payload sub-schema this used to mutate is no longer on the
+    // wire; the capability enum still is, and is still what a rollout slice
+    // drifts, so mutating it keeps this gate genuinely sensitive.
+    schema.properties.capability.enum.push("order.status.transition");
     expect(canonicalize(mutated)).not.toBe(readGoldenRaw());
   });
 

@@ -260,6 +260,42 @@ describe("handoff-subscriber", () => {
     expect(mockAppendPendingIntent).not.toHaveBeenCalled()
   })
 
+  // BKL-103 — the STAFF-VISIBILITY link for the customer paid-cancel. This
+  // projection is KIND-AGNOSTIC, so what was missing before BKL-103 was not this
+  // subscriber but the three park fields: `order.cancel` was not resumable, nothing
+  // parked, the event carried no `parkToken`, the `if (parkToken && intentHash &&
+  // intentKind)` guard was false — and therefore NO pendingIntents row existed for
+  // staff to act on. That is exactly the "escalates but surfaces nowhere
+  // actionable" hole. With the kind resumable the event carries all three and the
+  // row appears, keyed by the synthetic ORDER-scoped session the resolve route
+  // binds on.
+  it("projects a pendingIntents row for a parked order.cancel under the ORDER-keyed session (BKL-103)", async () => {
+    delete process.env.STAFF_NOTIFICATION_PHONE
+    const callback = await getRegisteredCallback()
+    await callback({
+      sessionId: "order-cancel:order_01",
+      reason:
+        "Cancelamento de pedido pago requer aprovação — pedido #42, reembolso de R$ 1500,00",
+      parkToken: "park-cancel-1",
+      intentHash: "sha256:cancel",
+      intentKind: "order.cancel",
+      summaryPtBr: "cancelamento do pedido order_01",
+    })
+
+    expect(mockAppendPendingIntent).toHaveBeenCalledWith(
+      // The session the Approve verb nests the token under.
+      "order-cancel:order_01",
+      expect.objectContaining({
+        token: "park-cancel-1",
+        intentHash: "sha256:cancel",
+        intentKind: "order.cancel",
+        // pt-BR (Hard Rule #4), never a bare kind string.
+        summaryPtBr: "cancelamento do pedido order_01",
+        status: "pending",
+      }),
+    )
+  })
+
   it("enriches the staff WhatsApp message with the pending-approval (OWNER) line", async () => {
     process.env.STAFF_NOTIFICATION_PHONE = "+5511999990005"
     const mockSendText = vi.fn().mockResolvedValue(undefined)

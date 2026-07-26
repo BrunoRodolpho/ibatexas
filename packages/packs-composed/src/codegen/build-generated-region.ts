@@ -43,7 +43,7 @@ import {
  *  Exported so the freshness test can locate the same region in the
  *  committed file without duplicating the literal marker strings. */
 export const GENERATED_BEGIN =
-  "// ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/packs-composed/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══"
+  "// ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══"
 export const GENERATED_END = "// ═══ END GENERATED REGION ═══"
 
 interface PackSpec {

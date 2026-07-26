@@ -57,6 +57,25 @@ export interface ParkedEscalationIntent {
   /** The parked `actor.role` — MUST round-trip so `staffRoleGuard` re-runs on resume. */
   readonly actorRole?: string;
   readonly taint: IntentEnvelope["taint"];
+  /**
+   * BKL-103 — the envelope's `resourceRefs`, which ARE part of the `intentHash`
+   * pre-image `(version, kind, payload, nonce, actor, taint, origin, resourceRefs)`.
+   *
+   * WHY THIS HAD TO BE ADDED. AUT-017's park/rebuild contract was built for the
+   * OPS plane, and an ops refund envelope carries NO `resourceRefs` — so dropping
+   * them was invisible. The CUSTOMER plane is different: `createIbatexasResolver`
+   * stamps `resourceRefs` on every ownership-gated order kind (034-F1, the kernel
+   * IDOR binding). Without round-tripping them the rebuilt envelope hashes
+   * DIFFERENTLY from the parked one, and `createEscalationApprovalEngine`'s FIX 3
+   * integrity check REFUSEs — so a customer-plane escalation could be parked and
+   * displayed but NEVER approved. Found by driving the real turn seam
+   * (`chat-cancel-escalate-approve.e2e.test.ts`); a renderer-level test would have
+   * shown a green park and a dead approve.
+   *
+   * Optional + canonical-drop-safe: absent ⇒ omitted from the rebuild ⇒ the refund
+   * path's hash is byte-identical to pre-BKL-103.
+   */
+  readonly resourceRefs?: IntentEnvelope["resourceRefs"];
   readonly requestedAt: string;
   /**
    * BKL-115 — the ESCALATE audit row's timestamp, threaded onto the resume
@@ -255,7 +274,7 @@ function readStampedString(
  * REQUIRES a matching {@link ESCALATION_PROPOSER_STAMPS} entry — the compiler
  * enforces it (BKL-113).
  */
-const RESUMABLE_KINDS = ["payment.refund.issue"] as const;
+const RESUMABLE_KINDS = ["payment.refund.issue", "order.cancel"] as const;
 
 /** The literal union of resumable kinds — the exhaustiveness key (BKL-113). */
 export type EscalationResumableKind = (typeof RESUMABLE_KINDS)[number];
@@ -272,6 +291,45 @@ export const ESCALATION_PROPOSER_STAMPS: Readonly<
     payloadField: "actorId",
     stampedBy:
       "ops/ops-resolver.ts resolveRefundTarget (`actorId: deps.staffId`, STOP-GATE B) + routes/admin/payments.ts; re-forced in ops-tool-registry.ts executeRefund",
+    readProposerId: (payload) => readStampedString(payload, "actorId"),
+  },
+  // BKL-103 — the >=R$1.000 PAID customer cancel. Unlike the refund (proposed by
+  // STAFF on the ops plane), a cancel is proposed by the CUSTOMER, so the stamped
+  // proposer is the authenticated CUSTOMER id and the approver is an OWNER staff id.
+  //
+  // ⚠ READ THIS BEFORE ADDING THE NEXT KIND — on `order.cancel` the self-approve
+  // gate's protection is STRUCTURAL, NOT ACTIVELY DISCRIMINATING. A customer id and
+  // an OWNER staff id are drawn from different namespaces, so
+  // `approverId !== payload.actorId` is essentially always true here: the gate is
+  // SATISFIED by construction rather than filtering a real population of
+  // self-approvals (the one case it would catch is an owner cancelling an order they
+  // placed as a customer). Contrast the refund, where proposer and approver are BOTH
+  // staff ids and the gate genuinely discriminates.
+  //
+  // The stamp is therefore NOT decorative, and must not be skipped on that
+  // reasoning. It is load-bearing three ways: (1) it is the comparand whose ABSENCE
+  // silently degrades the gate to `approverId !== undefined` — the BKL-113 hazard,
+  // and for this kind the pack overlay additionally refuses to convert at all
+  // without it (fail-closed); (2) it is the authenticated customer scope the resume
+  // re-projection reads (`escalationResumeSeedState`), because the conversational
+  // envelope's `actor.sessionId` is a CONVERSATION id; (3) it rides the inner
+  // refund's payload so THAT overlay's separation-of-duty check is a real
+  // inequality (approved-inner-refund.ts). A future kind whose proposer and approver
+  // share a namespace gets ACTIVE discrimination from the same field — which is why
+  // the contract keeps the declaration mandatory for every member.
+  //
+  // `actorId` reuses the refund's field NAME deliberately: it keeps the two pack
+  // overlays' gate expressions parallel, matches pack-orders' own
+  // `OrderStatusTransitionPayload.actorId` precedent, and — load-bearing — is
+  // ALREADY in `FORBIDDEN_EXTRACTION_FIELD_NAMES`
+  // (claustrum/language-engine/extraction-schema.ts), so no extraction schema can
+  // ever expose it to the model. That matters: a model-authored proposer could
+  // set a value that never matches the approver, making the gate trivially pass.
+  // Host-stamped Identity class only.
+  "order.cancel": {
+    payloadField: "actorId",
+    stampedBy:
+      "routes/order-actions.ts (both cancel envelope sites: POST /api/orders/:id/cancel and .../cancel/confirm — `actorId: customerId` off the authenticated customer) + claustrum/resolve-and-assemble.ts stampCancelProposer for the conversational plane",
     readProposerId: (payload) => readStampedString(payload, "actorId"),
   },
 };
@@ -331,6 +389,21 @@ export function summarizeEscalation(envelope: IntentEnvelope): string {
         : 0;
     return `reembolso de ${formatBrl(centavos)}`;
   }
+  // BKL-103 — the parked paid-cancel's staff one-liner. Only the ENVELOPE is in
+  // scope here, and `OrderCancelPayload` carries no amount (the refund-equivalent
+  // magnitude lives in the projected `state.ctx.totalInCentavos`, which the park
+  // seam never sees), so this names the ORDER. Staff get the human-readable
+  // display number + amount from the paired `support.handoff_requested` reason
+  // string that the same escalation publishes (routes/order-actions.ts
+  // `publishPaidCancelEscalation`, BKL-103's first slice) — the two surfaces are
+  // complementary, and this one must stay a pure envelope read.
+  if (String(envelope.kind) === "order.cancel") {
+    const orderId =
+      typeof payload.orderId === "string" && payload.orderId !== ""
+        ? payload.orderId
+        : "não identificado";
+    return `cancelamento do pedido ${orderId}`;
+  }
   return String(envelope.kind);
 }
 
@@ -373,6 +446,11 @@ export function buildEscalationParkInput(
     actorPrincipal: envelope.actor.principal,
     ...(role !== undefined ? { actorRole: role } : {}),
     taint: envelope.taint,
+    // BKL-103 — hash-bearing; see ParkedEscalationIntent.resourceRefs. Spread so an
+    // envelope WITHOUT refs (every ops refund) parks byte-identically to before.
+    ...(envelope.resourceRefs !== undefined
+      ? { resourceRefs: envelope.resourceRefs }
+      : {}),
     requestedAt: parkedAt,
     escalatedAt: parkedAt,
   };

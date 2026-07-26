@@ -1892,6 +1892,32 @@ async function threadResolvedIdsIntoPayload(
   ) {
     out = { ...out, customerId };
   }
+  // BKL-103 — the `order.cancel` PROPOSER stamp (Identity class, resolver-owned).
+  //
+  // `order.cancel` is a RESUMABLE escalation kind: a >=R$1.000 PAID cancel
+  // ESCALATEs, parks, and an OWNER may approve it, at which point
+  // `gatePaidCancel`'s overlay (`@ibatexas/pack-orders`) compares
+  // `approval.approverId !== payload.actorId`. That comparand only exists if the
+  // AUTHENTICATED write side stamps it — the HTTP plane does so in
+  // routes/order-actions.ts, and this is the conversational plane's equivalent.
+  // Without it the overlay refuses to convert (it requires a non-empty proposer),
+  // so an approved big-ticket cancel could never resume.
+  //
+  // Always OVERWRITTEN from the Capsule's authenticated `customerId`, never
+  // conditional on what arrived: `actorId` is in `FORBIDDEN_EXTRACTION_FIELD_NAMES`
+  // so no extraction schema can offer it to the model, and an unconditional
+  // overwrite means even a smuggled value cannot survive (the `allergens`
+  // provenance lesson above — a "fill only if absent" test is exactly what a
+  // well-formed adversarial completion defeats). A forged proposer would not grant
+  // a bypass (it makes the inequality trivially TRUE, i.e. it would let a
+  // self-approving owner convert), which is precisely why provenance is forced here.
+  //
+  // It doubles as the customer scope the resume re-projection reads
+  // (`escalationResumeSeedState`), because the conversational envelope's
+  // `actor.sessionId` is a CONVERSATION id, not a customer id.
+  if (kind === "order.cancel" && customerId) {
+    out = { ...out, actorId: customerId };
+  }
   // BKL-061 + BKL-067 + FE-T09: order.item.add (cart) / order.amend.add_item
   // (a placed order) — resolve a loose product name to the product (READ)
   // and inject variantId + the product's EXPLICIT allergens (pack-orders

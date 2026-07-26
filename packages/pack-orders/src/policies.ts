@@ -1055,6 +1055,63 @@ const gatePaidCancel: OrderGuard = (envelope, state) => {
     typeof refundEquivalentCentavos === "number" &&
     refundEquivalentCentavos >= ESCALATE_REFUND_THRESHOLD_CENTAVOS
   ) {
+    // ── BKL-103 / AUT-017 — ESCALATE→OWNER-approve→executable-resume overlay ──
+    //
+    // Before BKL-103 this ESCALATE was TERMINAL for the customer: they were told
+    // "um atendente vai avaliar" and the escalation was audit-row-only —
+    // `order.cancel` was absent from `ESCALATION_RESUMABLE_KINDS`, so nothing
+    // parked and no staff surface could ever ACT on it. `order.cancel` is now a
+    // resumable kind, which makes this overlay the seam that lets an approved
+    // cancel actually execute. Structural mirror of the refund escalate band
+    // (`@ibatexas/pack-payments` policies.ts) — same conditions, same monotonic
+    // posture:
+    //   - `intentHash === envelope.intentHash` — the approval is for THIS
+    //     envelope, not replayed onto a different one.
+    //   - `approverRole === "OWNER"` — only an owner approves a big-ticket paid
+    //     cancel (a MANAGER-approver marker leaves the ESCALATE intact).
+    //   - `approverId !== payload.actorId` — SEPARATION OF DUTY: the approver may
+    //     not be the party who PROPOSED the cancel (the authenticated write side
+    //     stamps the requester onto `payload.actorId`).
+    //
+    // DIVERGENCE FROM THE REFUND OVERLAY, deliberately STRICTER: the comparand is
+    // required to be a NON-EMPTY string before the marker may convert. The refund
+    // overlay's bare `approverId !== payload.actorId` is trivially TRUE when the
+    // write side never stamped a proposer — precisely the silent degradation
+    // BKL-113 made a compile error. Here an UNSTAMPED payload cannot convert at
+    // all: the ESCALATE stands, so a missing stamp fails SAFE (an escalation that
+    // stays escalated) instead of converting past an unenforced gate.
+    //
+    // The marker is ABSENT on every ordinary turn ⟹ byte-identical ESCALATE. This
+    // overlay is MONOTONIC — it converts only this band's OWN ESCALATE, and only
+    // DOWN to REQUEST_CONFIRMATION (friction), never rescuing a REFUSE. A
+    // receipt-less conversion stops at REQUEST_CONFIRMATION (a human still
+    // confirms) — friction, never a bypass.
+    const approval = state.ctx.escalationApproval
+    const proposerId = (envelope.payload as { actorId?: unknown }).actorId
+    if (
+      approval !== undefined &&
+      approval.intentHash === envelope.intentHash &&
+      approval.approverRole === "OWNER" &&
+      typeof proposerId === "string" &&
+      proposerId !== "" &&
+      approval.approverId !== proposerId
+    ) {
+      return decisionRequestConfirmation(
+        reais === null
+          ? `Cancelamento aprovado por ${approval.approverId}. Confirmar execução?`
+          : `Cancelamento com reembolso de R$ ${reais} aprovado por ${approval.approverId}. Confirmar execução?`,
+        [
+          basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+            reason: "paid_cancel_escalation_approved",
+            approvedBy: approval.approverId,
+            approverRole: approval.approverRole,
+            refundEquivalentCentavos,
+            escalateThreshold: ESCALATE_REFUND_THRESHOLD_CENTAVOS,
+            paymentStatus: ps,
+          }),
+        ],
+      )
+    }
     return decisionEscalate(
       "human",
       "paid_cancel_refund_above_escalate_threshold",

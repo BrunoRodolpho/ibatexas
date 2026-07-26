@@ -12,6 +12,10 @@
 import { describe, expect, it } from "vitest";
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import { natsHandoff } from "../claustrum-bootstrap.js";
+import {
+  ESCALATION_RESUMABLE_KINDS,
+  summarizeEscalation,
+} from "../escalation/escalation-park-store.js";
 
 function escalatedEnvelope(sessionId: string): IntentEnvelope {
   return buildEnvelope({
@@ -20,6 +24,25 @@ function escalatedEnvelope(sessionId: string): IntentEnvelope {
     actor: { principal: "llm", sessionId },
     taint: "UNTRUSTED",
     nonce: "n-handoff",
+  });
+}
+
+/**
+ * BKL-103 — a customer-plane escalatable kind that is NOT in
+ * `ESCALATION_RESUMABLE_KINDS` (an amend request escalates to a human but has no
+ * approve-and-execute loop). Used by the non-resumable negative control, which
+ * asserts this non-membership against the live registry so the control cannot
+ * silently rot the way `order.cancel` just did.
+ */
+const NON_RESUMABLE_KIND = "order.amend.request";
+
+function nonResumableEnvelope(sessionId: string): IntentEnvelope {
+  return buildEnvelope({
+    kind: NON_RESUMABLE_KIND,
+    payload: { orderId: "ord_900", changes: [] },
+    actor: { principal: "llm", sessionId },
+    taint: "UNTRUSTED",
+    nonce: "n-handoff-nonresumable",
   });
 }
 
@@ -139,7 +162,19 @@ describe("natsHandoff — AUT-017 ESCALATE park", () => {
     expect(published[0]!.payload.intentKind).toBe("payment.refund.issue");
   });
 
+  // BKL-103 — this negative control used to fire `order.cancel`, which is now a
+  // RESUMABLE kind (it parks by design). Re-pointed at a kind that is genuinely
+  // non-resumable, and the premise is now ASSERTED against the live registry
+  // rather than assumed: if `NON_RESUMABLE_KIND` ever joins
+  // `ESCALATION_RESUMABLE_KINDS`, the first expectation fails loudly instead of
+  // the test silently degrading into "a resumable kind parks" (i.e. proving
+  // nothing about the non-resumable branch).
   it("does NOT park a non-resumable kind — the event is byte-identical to the park-less path", async () => {
+    expect(
+      ESCALATION_RESUMABLE_KINDS.has(NON_RESUMABLE_KIND),
+      `${NON_RESUMABLE_KIND} became resumable — this negative control needs a different kind, or it proves nothing`,
+    ).toBe(false);
+
     const published: Array<{ payload: Record<string, unknown> }> = [];
     let parkCalls = 0;
     const port = natsHandoff(
@@ -154,14 +189,51 @@ describe("natsHandoff — AUT-017 ESCALATE park", () => {
       },
     );
 
-    await port.queue(escalatedEnvelope("cust_001"), "needs human judgment");
+    await port.queue(nonResumableEnvelope("cust_001"), "needs human judgment");
 
-    expect(parkCalls).toBe(0); // order.cancel is not resumable → never parked
+    expect(parkCalls).toBe(0); // not resumable → never parked
     expect(published[0]!.payload).not.toHaveProperty("parkToken");
     expect(published[0]!.payload).toMatchObject({
       sessionId: "cust_001",
       reason: "needs human judgment",
-      intentKind: "order.cancel",
+      intentKind: NON_RESUMABLE_KIND,
     });
+  });
+
+  // BKL-103 — the POSITIVE counterpart on the customer plane: a resumable
+  // `order.cancel` ESCALATE now DOES park, and the park fields ride the event.
+  it("DOES park a resumable order.cancel — the park token + pt-BR summary ride the event (BKL-103)", async () => {
+    const published: Array<{ payload: Record<string, unknown> }> = [];
+    const parked: IntentEnvelope[] = [];
+    const port = natsHandoff(
+      async (_event, payload) => {
+        published.push({ payload });
+      },
+      {
+        park: async (envelope) => {
+          parked.push(envelope);
+          return {
+            token: "park-cancel-1",
+            intentHash: envelope.intentHash,
+            summaryPtBr: summarizeEscalation(envelope),
+          };
+        },
+      },
+    );
+
+    await port.queue(escalatedEnvelope("conv_001"), "cancelamento acima do limite");
+
+    expect(parked).toHaveLength(1);
+    expect(published).toHaveLength(1);
+    expect(published[0]!.payload).toMatchObject({
+      sessionId: "conv_001",
+      intentKind: "order.cancel",
+      parkToken: "park-cancel-1",
+      // pt-BR (Hard Rule #4), never the bare kind string.
+      summaryPtBr: "cancelamento do pedido ord_900",
+    });
+    // The payload itself NEVER rides NATS — only the opaque token + hash + summary.
+    expect(published[0]!.payload).not.toHaveProperty("payload");
+    expect(published[0]!.payload.intentHash).toBeTruthy();
   });
 });
