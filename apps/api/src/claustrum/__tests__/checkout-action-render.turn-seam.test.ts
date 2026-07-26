@@ -396,6 +396,217 @@ describe("BKL-230 turn seam — a FAILED checkout tool result delivers NO succes
   });
 });
 
+// ── BKL-247 — the amend / reservation.modify failure gate, AT THE SEAM ──────────
+//
+// Same lesson as above (LE2-002): the renderer suite can be green while the
+// customer still receives the false claim, so this arm asserts DELIVERED text.
+// `amendOrder` returns `success:false` WITHOUT throwing (amend-order.ts:261,:320,
+// :361,:369,:389,:439) and `modifyReservation` likewise (modify-reservation.ts:139
+// kernel REFUSE, :168 catch-all), so both arrive here as `executed` carrying a
+// FAILED result — and pre-BKL-247 the seam delivered the full success line.
+//
+// Note rule 3b still returns `keep_draft` on these turns (it is kind-agnostic:
+// EXECUTE + ≥1 envelope). That is CORRECT and is why the gate has to live in the
+// render: the draft the lattice keeps is now the model's grounded failure prose,
+// not a deterministic success line.
+
+/** What the grounded model path says once the render abstains on a failed amend. */
+const AMEND_FAILURE_PROSE = 'Não encontrei "picanha" no seu pedido. Pode conferir o nome?';
+
+const AMEND_ADD_LINE = "Pronto! Adicionei 2 unidades ao seu pedido.";
+const AMEND_UPDATE_LINE = "Pronto! Atualizei a quantidade para 3 no seu pedido.";
+const AMEND_REMOVE_LINE = "Pronto! Removi o item do seu pedido.";
+const MODIFY_LINE = "Pronto! Sua reserva foi alterada para 6 pessoas.";
+
+/** Every deterministic success line this module can emit for the BKL-247 kinds —
+ *  none of them may be delivered on a reported failure. */
+const ALL_AMEND_LINES = [AMEND_ADD_LINE, AMEND_UPDATE_LINE, AMEND_REMOVE_LINE, MODIFY_LINE];
+
+function actedFor(kind: string, payload: unknown, result: unknown): unknown {
+  return { kind: "executed", envelope: { kind, payload }, result };
+}
+
+function planFor(kind: string): Plan {
+  return {
+    envelopes: [{ kind, payload: {} } as unknown as IntentEnvelope],
+  } as Plan;
+}
+
+/** Stage 6 on any committed customer dispatch (the checkout helpers above are
+ *  checkout-shaped; these kinds need their own envelope + plan). */
+async function respondToActed(
+  acted: unknown,
+  kind: string,
+  modelText = AMEND_FAILURE_PROSE,
+): Promise<{ text: string; modelCalls: number }> {
+  const { model, complete } = mockModel(modelText);
+  const responder = createIbatexasResponder({
+    model,
+    modelId: "m",
+    explainer,
+    readAnswer: CUSTOMER_READ_ANSWER,
+  });
+  const draft = await responder.respond({
+    cognition: cognition("sim"),
+    decision: EXECUTE,
+    plan: planFor(kind),
+    acted,
+  } as unknown as Parameters<ReturnType<typeof createIbatexasResponder>["respond"]>[0]);
+  return { text: draft.text, modelCalls: complete.mock.calls.length };
+}
+
+/** Stage 6 + 6a composed, as handleTurn composes them — what the CUSTOMER gets. */
+async function deliveredForActed(
+  acted: unknown,
+  kind: string,
+  modelText = AMEND_FAILURE_PROSE,
+): Promise<{ text: string; mechanism: string; modelCalls: number }> {
+  const draft = await respondToActed(acted, kind, modelText);
+  const verdict = decideRenderPrecedence({
+    decision: EXECUTE,
+    plan: planFor(kind),
+    claims: claimsResult("UNKNOWN"),
+    requestText: "sim",
+  });
+  return {
+    text: verdict.decision === "keep_draft" ? draft.text : DEGENERATE_RENDER,
+    mechanism: verdict.mechanism,
+    modelCalls: draft.modelCalls,
+  };
+}
+
+describe("BKL-247 turn seam — a FAILED amend delivers NO success claim", () => {
+  /** [label, kind, payload, the success line it used to deliver, the real failure]. */
+  const AMEND_FAILURES: ReadonlyArray<readonly [string, string, unknown, string, unknown]> = [
+    [
+      "remove_item — item not found (amend-order.ts:369)",
+      "order.amend.remove_item",
+      { orderId: "o1", itemTitle: "picanha" },
+      AMEND_REMOVE_LINE,
+      { success: false, message: 'Item "picanha" não encontrado no pedido.' },
+    ],
+    [
+      "remove_item — missing item name (amend-order.ts:320)",
+      "order.amend.remove_item",
+      { orderId: "o1" },
+      AMEND_REMOVE_LINE,
+      { success: false, message: "Nome do item necessário para remover." },
+    ],
+    [
+      "add_item — missing variantId (amend-order.ts:261)",
+      "order.amend.add_item",
+      { orderId: "o1", quantity: 2 },
+      AMEND_ADD_LINE,
+      { success: false, message: "ID da variante necessário para adicionar item." },
+    ],
+    [
+      "update_qty — missing name/quantity (amend-order.ts:361)",
+      "order.amend.update_qty",
+      { orderId: "o1", itemId: "i1", quantity: 3 },
+      AMEND_UPDATE_LINE,
+      { success: false, message: "Nome do item e quantidade necessários." },
+    ],
+    [
+      "reservation.modify — kernel REFUSE, returned not thrown (modify-reservation.ts:139)",
+      "reservation.modify",
+      { reservationId: "r1", newPartySize: 6 },
+      MODIFY_LINE,
+      { success: false, reservation: null, message: "Não foi possível modificar a reserva no momento." },
+    ],
+  ];
+
+  it.each(AMEND_FAILURES)(
+    "%s → the success line is NEVER delivered",
+    async (_label, kind, payload, successLine, failure) => {
+      const { text } = await deliveredForActed(actedFor(kind, payload, failure), kind);
+      expect(text).not.toBe(successLine);
+      for (const line of ALL_AMEND_LINES) expect(text).not.toBe(line);
+      // The false-claim shapes themselves, not just the exact strings.
+      expect(text).not.toMatch(/^Pronto! (?:Removi|Adicionei|Atualizei)/);
+      expect(text).not.toMatch(/Sua reserva foi (?:alterada|atualizada)/);
+    },
+  );
+
+  it.each(AMEND_FAILURES)(
+    "%s → the render abstains and the grounded MODEL path runs (the fall-through)",
+    async (_label, kind, payload, _successLine, failure) => {
+      const { text, modelCalls } = await respondToActed(actedFor(kind, payload, failure), kind);
+      expect(modelCalls).toBe(1);
+      expect(text).toBe(AMEND_FAILURE_PROSE);
+    },
+  );
+
+  it("rule 3b still keeps the draft — so what the customer receives is the FAILURE, voiced", async () => {
+    // The lattice is kind-agnostic (EXECUTE + ≥1 envelope), so it cannot be what
+    // stops the false claim; the render gate is. Pinned so a future reader does
+    // not "simplify" the gate away expecting 3b to cover it.
+    const { text, mechanism } = await deliveredForActed(
+      actedFor(
+        "order.amend.remove_item",
+        { itemTitle: "picanha" },
+        { success: false, message: 'Item "picanha" não encontrado no pedido.' },
+      ),
+      "order.amend.remove_item",
+    );
+    expect(mechanism).toBe("committed_mutation_action");
+    expect(text).toBe(AMEND_FAILURE_PROSE);
+    expect(text).not.toBe(DEGENERATE_RENDER);
+  });
+});
+
+describe("BKL-247 turn seam — the polarity's other half: absent success STILL delivers", () => {
+  // The pin-preservation case, at the seam. These are the exact result shapes the
+  // committed BKL-215/BKL-231 fixtures carry. Under checkout's `=== true` polarity
+  // every one of these would silently stop delivering — the regression BKL-247's
+  // `!== false` gate is chosen to avoid.
+  const NO_SUCCESS_FIELD: ReadonlyArray<readonly [string, string, unknown, unknown, string]> = [
+    ["add_item, result {ok:true}", "order.amend.add_item", { quantity: 2 }, { ok: true }, AMEND_ADD_LINE],
+    ["add_item, result {}", "order.amend.add_item", { quantity: 2 }, {}, AMEND_ADD_LINE],
+    [
+      "update_qty, result {ok:true}",
+      "order.amend.update_qty",
+      { quantity: 3 },
+      { ok: true },
+      AMEND_UPDATE_LINE,
+    ],
+    ["remove_item, result {}", "order.amend.remove_item", { itemId: "i1" }, {}, AMEND_REMOVE_LINE],
+    [
+      "reservation.modify, result {ok:true}",
+      "reservation.modify",
+      { reservationId: "r1", newPartySize: 6 },
+      { ok: true },
+      MODIFY_LINE,
+    ],
+  ];
+
+  it.each(NO_SUCCESS_FIELD)(
+    "%s → STILL delivers its deterministic line, model never called",
+    async (_label, kind, payload, result, expectedLine) => {
+      const { text, modelCalls } = await respondToActed(actedFor(kind, payload, result), kind);
+      expect(text).toBe(expectedLine);
+      expect(modelCalls).toBe(0);
+    },
+  );
+
+  it.each(NO_SUCCESS_FIELD)(
+    "%s → and rule 3b delivers it to the customer",
+    async (_label, kind, payload, result, expectedLine) => {
+      const { text, mechanism } = await deliveredForActed(actedFor(kind, payload, result), kind);
+      expect(mechanism).toBe("committed_mutation_action");
+      expect(text).toBe(expectedLine);
+    },
+  );
+
+  it("an EXPLICIT success:true delivers too (the gate is not accidentally inverted)", async () => {
+    const { text, modelCalls } = await respondToActed(
+      actedFor("order.amend.remove_item", { itemId: "i1" }, { success: true, message: "ok" }),
+      "order.amend.remove_item",
+    );
+    expect(text).toBe(AMEND_REMOVE_LINE);
+    expect(modelCalls).toBe(0);
+  });
+});
+
 // ── Scope guard: the seam is unchanged for every other customer kind ────────────
 
 describe("BKL-230 turn seam — no collateral change to other kinds", () => {

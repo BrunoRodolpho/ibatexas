@@ -158,12 +158,48 @@ function renderCheckoutCreate(result: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * BKL-247 — did the executor EXPLICITLY report failure? Like `createCheckout`,
+ * `amendOrder` (packages/tools/src/cart/amend-order.ts:261,:320,:361,:369,:389,
+ * :439 — e.g. "Item … não encontrado no pedido.") and `modifyReservation`
+ * (packages/tools/src/reservation/modify-reservation.ts:139 on a kernel REFUSE,
+ * :168 in its catch-all — its body never throws) RETURN `success:false` rather
+ * than throwing, and @claustrum's dispatcher decides `executed` vs `failed`
+ * purely on whether `tool.execute` THREW, so those land here as `executed`
+ * carrying a failed result. Pre-BKL-247 they rendered the full success line
+ * ("Pronto! Removi o item do seu pedido." on an item that was never found) —
+ * the same false-claim class BKL-230 killed for checkout.
+ *
+ * THE POLARITY IS DELIBERATELY THE INVERSE OF CHECKOUT'S, and both halves matter:
+ *   - Checkout gates on `success === true` (render only on PROVEN success)
+ *     because its render reads the RESULT (payment method, order id): with no
+ *     result there is nothing to say, so demanding proof costs nothing.
+ *   - Amend / reservation.modify gate on `success !== false` (render UNLESS
+ *     failure was REPORTED) because their render is grounded in the PAYLOAD, and
+ *     the committed BKL-215/BKL-231 fixtures pinned at the seam carry no `success`
+ *     field at all (`{ ok: true }`, `{}`). Checkout's `=== true` polarity would
+ *     silently stop rendering every one of them — a regression to the very
+ *     false-FAILURE this module was built to kill.
+ * That asymmetry is safe because `AmendOrderResult.success` and
+ * `ModifyReservationOutput.success` are both REQUIRED booleans: every real
+ * failure sets `success:false` explicitly, so `!== false` misses none, while
+ * absent-`success` legacy shapes keep rendering exactly as they do today.
+ */
+function executorReportedFailure(result: unknown): boolean {
+  return isRecord(result) && result.success === false;
+}
+
 /** Deterministic pt-BR success line for one committed mutation, grounded in the
  *  executed envelope kind (+ quantity / party-size, + the dispatch result for
- *  checkout), or `undefined` when the executed kind proved no success. No item
- *  name / order number / time is invented. */
+ *  checkout), or `undefined` when the executed kind proved no success (checkout)
+ *  or REPORTED failure (amend / reservation.modify — BKL-247). No item name /
+ *  order number / time is invented. */
 function renderAction(kind: string, payload: unknown, result: unknown): string | undefined {
   if (kind === CHECKOUT_CREATE) return renderCheckoutCreate(result);
+  // BKL-247: a reported failure falls through to `undefined` — the same
+  // fall-through the checkout branch uses, so the responder's grounded model
+  // path voices the executor's own failure message, as it does today.
+  if (executorReportedFailure(result)) return undefined;
   if (kind === RESERVATION_MODIFY) return renderReservationModify(payload);
   return renderAmend(kind, payload);
 }
@@ -190,7 +226,9 @@ function renderAmend(kind: string, payload: unknown): string {
 /**
  * Deterministic customer mutation-success reply, or `undefined` when NO rendered
  * kind committed this turn — or when the one that did PROVED no success (BKL-230
- * checkout). The responder then keeps its existing grounded model path for every
+ * checkout) or REPORTED failure (BKL-247 amend / reservation.modify): a kernel
+ * EXECUTE is never on its own evidence that the TOOL succeeded, on any kind here.
+ * The responder then keeps its existing grounded model path for every
  * other kind; a deferred/failed dispatch is NOT a success. When ≥1 rendered kind
  * committed with a proven outcome the return is ALWAYS a string built from the
  * executed envelope(s) + result(s); the model authors none of it. Multiple actions
