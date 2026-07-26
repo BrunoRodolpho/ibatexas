@@ -102,10 +102,12 @@ import {
   type ScheduleSignal,
 } from "./closed-hours.js";
 import type {
+  FunnelAliasSeam,
   FunnelParseMemoSeam,
   FunnelPlannerSeam,
   FunnelScopeSeam,
 } from "./funnel-tier.js";
+import { canonicalizeAliases } from "./alias-canonicalization.js";
 import {
   L2_SURFACE_VERSION,
   type CapabilityRetriever,
@@ -478,6 +480,12 @@ export interface IbatexasPlannerDeps {
   /** LE2-008 — the seam that stamps this turn's scope decision on the trace. The
    *  SAME funnel instance the other seams come from. */
   readonly scopeSeam?: FunnelScopeSeam;
+  /**
+   * LE2-025b — the alias layer's seam: files resolutions for the trace, and stamps
+   * the CLARIFY short-circuit when a declared-ambiguous surface has no context.
+   * Absent ⟹ no canonicalization at all ⟹ byte-identical to the pre-alias planner.
+   */
+  readonly aliasSeam?: FunnelAliasSeam;
 }
 
 /**
@@ -1027,6 +1035,56 @@ export function createIbatexasPlanner(
           readToolCalls: [],
         };
       }
+      // ── LE2-025b · ALIAS CANONICALIZATION · AT PARSE ENTRY ─────────────────
+      // Runs before ANYTHING reads the utterance: before retrieval builds its
+      // query, before the L1 key is digested, and before the message is composed
+      // for the model. All three must see the SAME text or L1's contract breaks
+      // (its key must digest every input the parse is a function of).
+      //
+      // `state.perception.text` is deliberately NOT mutated — the responder reads
+      // that field for prose synthesis, so rewriting it would let a canonical
+      // handle reach a customer-facing sentence. The canonical form is
+      // planner-local; the customer's own words survive everywhere else.
+      const aliasSeam = deps.aliasSeam;
+      const aliasResult =
+        aliasSeam === undefined ? undefined : canonicalizeAliases(state.perception.text);
+      if (aliasSeam !== undefined && aliasResult !== undefined && aliasResult.ambiguous.length > 0) {
+        // A declared-ambiguous surface with nothing in the utterance to choose.
+        // CLARIFY — never a nearest neighbour. The compile gate (LE2-025a) is what
+        // guarantees we can always RECOGNISE this case: a multi-entity surface
+        // whose edges declare no `disambiguatedBy` fails the build, so an
+        // unanswerable question can never reach here unlabelled.
+        const stage = aliasSeam.stampAliasClarify(state.turnId, aliasResult.ambiguous);
+        logger.info(
+          {
+            component: "planner",
+            event: "intents.proposed",
+            turnId: state.turnId,
+            envelopeCount: 0,
+            capabilities: [],
+            droppedOutOfPlan: [],
+            readToolCalls: [],
+            funnelTier: stage.tier,
+          },
+          "planner: alias ambiguity — clarifying instead of guessing; no model call",
+        );
+        // The SAME respond-only plan shape L0 returns, so every downstream consumer
+        // (SUBMIT's adjudicatePlan([]), the responder's funnel branch) sees a shape
+        // it already handles.
+        return {
+          envelopes: [],
+          rationale: `ibatexas-planner: funnel ALIAS (${stage.reason}) — clarifying "${aliasResult.ambiguous[0]?.surface ?? ""}", no model call`,
+          capabilities: [],
+          readToolCalls: [],
+        };
+      }
+      if (aliasResult !== undefined && aliasResult.resolutions.length > 0) {
+        aliasSeam?.recordAliases(state.turnId, aliasResult.resolutions);
+      }
+      /** The text the PARSE is a function of — canonical when aliases resolved,
+       *  byte-identical to the customer's words otherwise. */
+      const parseText = aliasResult?.text ?? state.perception.text;
+
       const derived = deps.deriveContext?.(state) ?? {
         state: { tenantId: state.tenantId, locale: state.locale },
         context: {},
@@ -1057,7 +1115,7 @@ export function createIbatexasPlanner(
       const scopeDecision: ScopeDecision | undefined =
         deps.retriever === undefined
           ? undefined
-          : await deps.retriever.scopeFor(state.perception.text, plan.allowedIntents);
+          : await deps.retriever.scopeFor(parseText, plan.allowedIntents);
       const scopedPlan: CapabilityPlan =
         scopeDecision?.scoped === true
           ? { ...plan, allowedIntents: [...scopeDecision.selected] }
@@ -1132,7 +1190,7 @@ export function createIbatexasPlanner(
         memo === undefined
           ? undefined
           : buildParseCacheKey({
-              utterance: state.perception.text,
+              utterance: parseText,
               modelId: deps.modelId,
               // The COMPOSED prompt, closed-hours note included — so a parse made
               // while the store was closed can never be served while it is open.
@@ -1148,7 +1206,7 @@ export function createIbatexasPlanner(
       if (memo !== undefined && memoKey !== undefined) {
         const cached = await memo.lookupParse(
           memoKey,
-          canonicalizeUtterance(state.perception.text),
+          canonicalizeUtterance(parseText),
         );
         if (cached !== undefined) {
           // RE-MINT, NEVER REPLAY (parse-memo.ts's central hazard note): the cached
@@ -1219,7 +1277,7 @@ export function createIbatexasPlanner(
           deps.model.complete({
             model: deps.modelId,
             system,
-            messages: [{ role: "user", content: state.perception.text }],
+            messages: [{ role: "user", content: parseText }],
             tools,
             maxTokens,
             temperature: PINNED_COMPLETION_TEMPERATURE,
@@ -1476,7 +1534,7 @@ export function createIbatexasPlanner(
               model: deps.modelId,
               system,
               messages: [
-                { role: "user", content: state.perception.text },
+                { role: "user", content: parseText },
                 { role: "assistant", content: assistantTurn },
                 { role: "user", content: enrichmentPrompt },
               ],

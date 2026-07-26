@@ -39,9 +39,15 @@
 // normally. That is the whole of AC #2.
 
 import type { CognitiveState } from "@claustrum/core";
+import { ALIAS_GAZETTEER, normalizeProseForm } from "@ibatexas/catalog";
 import { logger } from "../lib/logger.js";
 import { normalize } from "./interrogative-discriminator.js";
 import type { ScopeDecision } from "./capability-retrieval.js";
+import {
+  renderAliasClarify,
+  type AliasResolution,
+  type AmbiguousSurface,
+} from "./alias-canonicalization.js";
 import {
   createParseCacheTelemetry,
   PARSE_CACHE_TTL_SECONDS,
@@ -70,7 +76,7 @@ import {
  * call); L2 does not — it still parses, just against a narrower surface. So the planner
  * stamps L2 only after L1 has missed, and a turn can never carry two attributions.
  */
-export type FunnelTier = "L0" | "L1" | "L2";
+export type FunnelTier = "L0" | "L1" | "L2" | "ALIAS";
 
 /**
  * WHY a tier claimed the turn — the machine-stable join field for the trace.
@@ -82,7 +88,8 @@ export type FunnelReason =
   | "social_only"
   | "memoized_parse"
   | "scoped_parse"
-  | "full_roster_fallback";
+  | "full_roster_fallback"
+  | "alias_ambiguous";
 
 /**
  * The funnel's OBSERVABILITY CONTRACT — one stage record per funnel-resolved turn
@@ -400,6 +407,19 @@ export function closeFunnelTurn(turnId: string): void {
   turnStages.delete(turnId);
 }
 
+/**
+ * The declared disambiguating tokens for an ambiguous surface, read back from the
+ * catalog. Kept a lookup rather than stashed on the stage record because the
+ * record's `detail` is scalars-only by contract (it is logged and may be persisted
+ * verbatim), and the catalog is inert data available to any caller.
+ */
+function aliasDisambiguatorsFor(surface: string): readonly string[] {
+  const folded = normalizeProseForm(surface);
+  return ALIAS_GAZETTEER.filter((e) => normalizeProseForm(e.surface) === folded).map(
+    (e) => e.disambiguatedBy ?? "",
+  );
+}
+
 /** This turn's published context, or `undefined` when no ingress published one. */
 export function funnelTurnContext(turnId: string): FunnelTurnContext | undefined {
   return turnContexts.get(turnId);
@@ -502,6 +522,40 @@ export interface FunnelScopeSeam {
   scopeCounters(): ScopeCounters;
 }
 
+/** L2-025b — the alias layer's per-process counters. */
+export interface AliasCounters {
+  /** Turns where at least one surface form was canonicalized. */
+  readonly canonicalized: number;
+  /** Individual surface→canonical resolutions. */
+  readonly resolutions: number;
+  /** Turns that CLARIFIED because a declared-ambiguous surface had no context. */
+  readonly clarified: number;
+}
+
+/**
+ * The ALIAS seam the planner consumes (LE2-025b). Two jobs, kept apart because
+ * they land on different turns:
+ *
+ *  - `recordAliases` — a turn that RESOLVED aliases still parses normally, so this
+ *    only files the resolutions for the trace ("why did it read costela as
+ *    costela-bovina-defumada"). It does NOT stamp a tier: the turn's tier is still
+ *    whatever L1/L2 decide, and inventing an "alias tier" for it would double-count
+ *    against the funnel's one-tier-per-turn contract.
+ *  - `stampAliasClarify` — a declared-ambiguous surface with nothing to
+ *    disambiguate it. This one DOES claim the turn: no parse happens, the responder
+ *    renders the deterministic pt-BR question, and zero model calls are made.
+ */
+export interface FunnelAliasSeam {
+  recordAliases(turnId: string, resolutions: readonly AliasResolution[]): void;
+  stampAliasClarify(
+    turnId: string,
+    ambiguous: readonly AmbiguousSurface[],
+  ): FunnelStageRecord;
+  /** This turn's resolutions — the trace surface. */
+  aliasResolutions(turnId: string): readonly AliasResolution[];
+  aliasCounters(): AliasCounters;
+}
+
 /**
  * Build the L0 funnel seam. One instance per composition, shared by the planner and
  * the responder so both read the SAME stamped stage for a turn.
@@ -530,7 +584,7 @@ export function createParseFunnel(
     readonly now?: () => number;
     readonly parseCacheStore?: ParseCacheStore;
   } = {},
-): FunnelPlannerSeam & FunnelResponderSeam & FunnelScopeSeam & Partial<FunnelParseMemoSeam> {
+): FunnelPlannerSeam & FunnelResponderSeam & FunnelScopeSeam & FunnelAliasSeam & Partial<FunnelParseMemoSeam> {
   const now = opts.now ?? Date.now;
   const store = opts.parseCacheStore;
   const telemetry = createParseCacheTelemetry();
@@ -665,9 +719,77 @@ export function createParseFunnel(
     }),
   };
 
+  // ── ALIAS (LE2-025b) — resolutions for the trace + the clarify short-circuit ──
+  const turnAliases = new Map<string, readonly AliasResolution[]>();
+  let canonicalizedTurns = 0;
+  let resolutionCount = 0;
+  let clarifiedTurns = 0;
+  const aliasSeam: FunnelAliasSeam = {
+    recordAliases(turnId: string, resolutions: readonly AliasResolution[]): void {
+      if (resolutions.length === 0) return;
+      evictOldest(turnAliases);
+      turnAliases.set(turnId, resolutions);
+      canonicalizedTurns += 1;
+      resolutionCount += resolutions.length;
+      logger.info(
+        {
+          component: "funnel",
+          event: "funnel.alias.resolved",
+          turnId,
+          resolutions: resolutions.map((r) =>
+            r.disambiguatedBy === undefined
+              ? `${r.surface}=>${r.canonical}`
+              : `${r.surface}=>${r.canonical} (via ${r.disambiguatedBy})`,
+          ),
+        },
+        `funnel: canonicalized ${resolutions.length} alias surface(s)`,
+      );
+    },
+    stampAliasClarify(
+      turnId: string,
+      ambiguous: readonly AmbiguousSurface[],
+    ): FunnelStageRecord {
+      clarifiedTurns += 1;
+      const first = ambiguous[0];
+      const stage: FunnelStageRecord = {
+        tier: "ALIAS",
+        reason: "alias_ambiguous",
+        detail: {
+          surface: first?.surface ?? "",
+          candidates: (first?.candidates ?? []).join(","),
+          ambiguousSurfaces: ambiguous.length,
+        },
+        at: new Date(now()).toISOString(),
+      };
+      evictOldest(turnStages);
+      turnStages.set(turnId, stage);
+      logger.info(
+        {
+          component: "funnel",
+          event: "funnel.tier",
+          turnId,
+          tier: stage.tier,
+          reason: stage.reason,
+          surface: stage.detail.surface,
+          candidates: first?.candidates ?? [],
+          clarified: clarifiedTurns,
+        },
+        "funnel: ALIAS clarify — a declared-ambiguous surface had no disambiguating token; no model call this turn",
+      );
+      return stage;
+    },
+    aliasResolutions: (turnId: string) => turnAliases.get(turnId) ?? [],
+    aliasCounters: () => ({
+      canonicalized: canonicalizedTurns,
+      resolutions: resolutionCount,
+      clarified: clarifiedTurns,
+    }),
+  };
+
   return {
     ...(parseMemo ?? {}),
     ...scopeSeam,
+    ...aliasSeam,
     claim(state: CognitiveState): FunnelStageRecord | undefined {
       const verdict = decideL0({
         text: state.perception.text,
@@ -704,6 +826,17 @@ export function createParseFunnel(
       return funnelStage(turnId);
     },
     reply(stage: FunnelStageRecord): string | undefined {
+      if (stage.tier === "ALIAS") {
+        // Rebuilt from the stamped detail rather than held in a closure, so the
+        // reply is a pure function of the record the trace already shows.
+        const surface = String(stage.detail.surface ?? "");
+        const candidates = String(stage.detail.candidates ?? "")
+          .split(",")
+          .filter((c) => c.length > 0);
+        return renderAliasClarify([
+          { surface, candidates, disambiguators: aliasDisambiguatorsFor(surface) },
+        ]);
+      }
       if (stage.tier !== "L0") return undefined;
       const kind = stage.detail.socialKind;
       if (kind !== "greeting" && kind !== "thanks" && kind !== "farewell") {
