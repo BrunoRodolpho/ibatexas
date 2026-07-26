@@ -1,0 +1,273 @@
+# coupon.validity.check — LE2-019 / spec Decision 18.
+#
+# WHAT THIS CORPUS CALIBRATES, AND WHAT IT DELIBERATELY DOES NOT
+#
+# A coupon-validity question ("o cupom X1234 vale?") is a READ, not a mutating
+# capability: it produces no IntentEnvelope and no kernel decision, and it is
+# answered by the DETERMINISTIC claim path (COUPON_VALID / COUPON_INVALID —
+# apps/api/src/claustrum/claim-registry.ts) rendered through claim-gated
+# templates. `capability` here therefore names the READ-CLAIM FAMILY, not an
+# `IntentEnvelope` kind, and there is no live `extraction-accuracy` driver for it
+# (the same "not an IntentEnvelope kind" caveat delivery.coverage.check.yaml and
+# read-tool-corpus/schema.ts document). What the file IS is the authored,
+# independent-truth statement of what may be EXTRACTED from a coupon utterance —
+# and, far more importantly, what may NOT.
+#
+# THE ONE PROPERTY EVERY CASE PINS: the extractor may relay only the code the
+# customer LITERALLY SUPPLIED, and NOTHING else. `payloadExactKeys` (the
+# extractionIR default) is what makes that bite: a case whose expected payload is
+# `{}` FAILS if the model invented a `code` the utterance never contained. That is
+# the whole hazard of this feature — a hallucinated code would be looked up, come
+# back absent, and the customer would be told with full confidence that a coupon
+# they never mentioned "não está válido". Downstream, the resolver refuses to
+# guess: no extractable code (or two) produces the CLARIFY-for-code ask, never a
+# validity answer, and an UNREADABLE lookup produces an honest UNKNOWN rather than
+# the negative (Inv 7 — "could not check" is never "your coupon is invalid").
+#
+# The one model-relayed field and its trust:
+#   - `code` — UNTRUSTED customer free text. Verified downstream by the EXISTING
+#              promotion lookup (`GET /admin/promotions?code=`) plus the SHARED
+#              rejection classes the checkout's own gate mirrors; the extractor's
+#              job is to relay it verbatim, never to repair, complete or invent it.
+#
+# DECISION 14 IS PART OF THE PIN: this capability is a READ. There is no coupon
+# apply / price-adjustment path, so no case here may expect one — a request to
+# APPLY a coupon is a DIFFERENT capability (order.coupon.apply.yaml) and the
+# validity extraction must stay empty for it (see `refuse-apply-imperative`).
+#
+# There is no `hydratedIntentIR` block anywhere in this file: a read never
+# hydrates an intent, and asserting an empty one would be a fiction.
+#
+# N = 16 (the low-risk-tier sizing this repo uses for read-shaped corpora),
+# split 5 valid-code / 4 invalid-code / 4 must-CLARIFY / 3 must-refuse.
+capability: coupon.validity.check
+source: tickets/language-engine-2/issues/19-coupon-validity-read.md
+plane: customer
+cases:
+  # ── VALID-CODE asks: the utterance names a code that exists and is usable ────
+  # (the live welcome coupon — packages/tools/src/intelligence/welcome-credit.ts,
+  # the "hardcoded welcome-coupon literal" the spec names as the emblem of the
+  # identity problem). The extractor relays the code; the resolver looks it up and
+  # the turn renders the promotion record's OWN discount terms.
+
+  - id: valid-code-welcome
+    utterance: o cupom BEMVINDO15 vale?
+    note: >-
+      The canonical case. Direct register, upper-case code as the store writes
+      them. Expected turn branch: VALID, rendering the record's own terms
+      (R$ 15,00 de desconto) plus the checkout hint.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: BEMVINDO15
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  - id: valid-code-lowercase
+    utterance: esse cupom bemvindo15 ainda funciona?
+    note: >-
+      The SAME code typed in lower case. Relayed VERBATIM as typed — normalizing
+      is the resolver's job (it retries the upper-case form against Medusa's exact
+      `code` filter), never the model's. A model that "helpfully" upper-cased here
+      would be authoring a datum the customer did not type.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: bemvindo15
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  - id: valid-code-labelled
+    utterance: "cupom: FRETEGRATIS — ainda tá valendo?"
+    note: >-
+      Labelled/punctuated register ("cupom:" followed by the code). The code is
+      the token after the label, never the label itself.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: FRETEGRATIS
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  - id: valid-code-modal-question
+    utterance: dá pra usar o cupom BEMVINDO15 no meu pedido?
+    note: >-
+      MODAL question form — "can I use it" is precisely "is it valid", so this is
+      a validity READ, not an apply request. The mention of "meu pedido" is
+      context, not a second datum: only the code is relayed.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: BEMVINDO15
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  - id: valid-code-formal
+    utterance: Gostaria de confirmar se o código promocional PROMO2026 está válido.
+    note: >-
+      Formal/polite register, statement form, alphanumeric code. Same single
+      relayed field regardless of register.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: PROMO2026
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  # ── INVALID-CODE asks: the code is relayed identically ──────────────────────
+  # The extraction is the SAME for a code that turns out not to exist, to be in
+  # draft, to be outside its campaign window, or to be budget-exhausted — the
+  # extractor cannot and must not pre-judge validity. These cases exist to pin
+  # that: an unknown-looking code is relayed VERBATIM, never dropped and never
+  # "corrected" toward a code that does exist.
+
+  - id: invalid-code-nonexistent
+    utterance: o cupom XPTO123 vale?
+    note: >-
+      A code that exists nowhere. Expected turn branch: the VALIDATED honest NO
+      ("O cupom XPTO123 não está válido") plus the offer to check another — a
+      successful lookup that matched nothing is a FACT, not an UNKNOWN.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: XPTO123
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  - id: invalid-code-near-miss
+    utterance: o cupom BEMVINDO50 é válido?
+    note: >-
+      A NEAR MISS of a real code (BEMVINDO15). The extractor must relay what was
+      typed — "correcting" it to the code that exists would answer a question
+      nobody asked and hand the customer a discount they cannot use.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: BEMVINDO50
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  - id: invalid-code-expired
+    utterance: meu voucher NATAL2025 expirou?
+    note: >-
+      An EXPIRED-campaign code, asked with the expiry word. Only the code is
+      relayed — "expirou" is the question, not a datum, and the campaign window is
+      read off the promotion record downstream, never inferred from the wording.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: NATAL2025
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  - id: invalid-code-shouted
+    utterance: CUPOM SEGUNDAOFF SERVE?
+    note: >-
+      All-caps register. The coupon VOCABULARY ("CUPOM", "SERVE") is not a code;
+      only SEGUNDAOFF is. Relaying "CUPOM" here would look up a promotion named
+      after the word for promotion.
+    expectPayload:
+      extractionIR:
+        payload:
+          code: SEGUNDAOFF
+        payloadExactKeys: true
+        provenanceTrust:
+          code: untrusted
+
+  # ── MUST-CLARIFY cases: nothing extractable, so the turn asks for the code ──
+  # These are the anti-hallucination pins. An EMPTY payload under
+  # payloadExactKeys is the assertion: inventing a `code` here is exactly the
+  # failure that would produce a confident "não está válido" about a coupon the
+  # customer never named.
+
+  - id: clarify-no-code-given
+    utterance: esse cupom ainda vale?
+    note: >-
+      Coupon phrasing with a DEICTIC reference and no code anywhere. There is
+      nothing to extract; the turn asks for the code. The words "esse", "cupom"
+      and "vale" are the question, never the datum.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: clarify-bare-capability-question
+    utterance: vocês têm cupom de desconto?
+    note: >-
+      A generic "do you have coupons" question — no specific code, so no
+      extraction. Quoting any existing promotion's code here would be volunteering
+      a discount nobody asked about.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: clarify-code-i-was-sent
+    utterance: aquele código que me mandaram no WhatsApp ainda funciona?
+    note: >-
+      A reference to a code the customer did NOT reproduce. "WhatsApp" is a
+      channel name, not a coupon code — an extractor that relays it would look up
+      a promotion called WhatsApp. The payload stays empty and the turn asks.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: clarify-two-codes
+    utterance: o cupom BEMVINDO15 ou o PROMO2026, qual ainda vale?
+    note: >-
+      TWO codes, no way to pick one without guessing. The resolver refuses to
+      choose, so the turn asks WHICH — and the extraction must not silently pick
+      the first (or the last) as though the customer had named only one.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  # ── MUST-REFUSE / IRRELEVANT cases: not a coupon-validity question at all ────
+  # These guard the opposite failure from the ones above: a message that merely
+  # CONTAINS a code-shaped token (or coupon vocabulary) must not be mined for a
+  # validity subject.
+
+  - id: refuse-apply-imperative
+    utterance: aplica o cupom BEMVINDO15 no meu carrinho
+    note: >-
+      An APPLY IMPERATIVE — a MUTATION request belonging to order.coupon.apply,
+      not this READ. Decision 14 bounds this ticket to the read, so the validity
+      extraction must stay EMPTY here; answering "o cupom vale" would silently
+      drop what the customer actually asked for.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: refuse-order-code-is-not-a-coupon
+    utterance: qual o código do meu pedido ABC12345?
+    note: >-
+      An ORDER reference that is code-SHAPED. It carries the word "código" but
+      nothing about a coupon; relaying ABC12345 would silently answer a coupon
+      question nobody asked, off an identifier that is not a promotion at all.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: refuse-different-capability
+    utterance: vocês entregam no CEP 14815000?
+    note: >-
+      A delivery-COVERAGE question (delivery.coverage.check.yaml owns it). It
+      carries a digit run that is code-adjacent in shape only. The coupon
+      extraction must stay empty rather than mine any capability question that
+      happens to contain an identifier.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true

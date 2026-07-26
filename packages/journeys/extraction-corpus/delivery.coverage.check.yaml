@@ -1,0 +1,268 @@
+# delivery.coverage.check — LE2-002 / tracker NEW-007.
+#
+# WHAT THIS CORPUS CALIBRATES, AND WHAT IT DELIBERATELY DOES NOT
+#
+# A delivery-coverage question ("vocês entregam em Ibaté?") is a READ, not a
+# mutating capability: it produces no IntentEnvelope and no kernel decision, and
+# it is answered by the DETERMINISTIC claim path (DELIVERY_COVERAGE /
+# DELIVERY_NO_COVERAGE — apps/api/src/claustrum/claim-registry.ts) rendered
+# through claim-gated templates. `capability` here therefore names the
+# READ-CLAIM FAMILY, not an `IntentEnvelope` kind, and there is no live
+# `extraction-accuracy` driver for it (the same "not an IntentEnvelope kind"
+# caveat read-tool-corpus/schema.ts documents for the read tools). What the file
+# IS is the authored, independent-truth statement of what may be EXTRACTED from a
+# coverage utterance — and, far more importantly, what may NOT.
+#
+# THE ONE PROPERTY EVERY CASE PINS: the extractor may relay only what the
+# customer LITERALLY SUPPLIED — a CEP and/or a place name — and NOTHING else.
+# `payloadExactKeys` (the extractionIR default) is what makes that bite: a case
+# whose expected payload is `{}` FAILS if the model invented a `cep` or a
+# `placeName` the utterance never contained. That is exactly the failure mode
+# behind the 2026-07-20 wire: an ungrounded "Sim, entregamos em Ibate" produced
+# with no zone read behind it. Downstream, the resolver refuses to
+# nearest-neighbour an unrecognised place onto the closest zone, so an
+# unresolvable subject can only ever produce the CLARIFY-for-CEP ask or an honest
+# UNKNOWN — never a coverage answer.
+#
+# The two model-relayed fields and their trust:
+#   - `cep`       — UNTRUSTED customer free text. Verified downstream by the
+#                   EXISTING estimation tool (ViaCEP + the zone prefix match);
+#                   the extractor's job is to relay it verbatim, never to repair
+#                   or invent it.
+#   - `placeName` — UNTRUSTED customer free text. Grounded downstream by a
+#                   WHOLE-TOKEN match against the delivery-zones projection; an
+#                   unmatched name NEVER resolves to a nearby zone.
+#
+# There is no `hydratedIntentIR` block anywhere in this file: a read never
+# hydrates an intent, and asserting an empty one would be a fiction.
+#
+# N = 16 (the low-risk-tier sizing this repo uses for read-shaped corpora),
+# split 5 grounded-name / 4 CEP / 4 must-CLARIFY / 3 must-refuse.
+capability: delivery.coverage.check
+source: tickets/language-engine-2/issues/02-delivery-coverage-customer.md
+plane: customer
+cases:
+  # ── GROUNDED-NAME cases: the utterance names a real, active delivery zone ────
+  # (the seeded rows — packages/domain/src/seed-delivery.ts). The extractor
+  # relays the place name; the resolver grounds it against the projection and the
+  # turn renders the zone's own fee + ETA plus the soft checkout caveat.
+
+  - id: grounded-name-ibate
+    utterance: vocês entregam em Ibaté?
+    note: >-
+      The LIVE case from the 2026-07-20 wire. Direct register. Expected turn
+      branch: grounded YES off the Ibaté zone row (R$ 15,00 / ~50 min).
+    expectPayload:
+      extractionIR:
+        payload:
+          placeName: Ibaté
+        payloadExactKeys: true
+        provenanceTrust:
+          placeName: untrusted
+
+  - id: grounded-name-unaccented
+    utterance: voces entregam em ibate?
+    note: >-
+      The same question typed without accents or capitals — the zone match is
+      accent- and case-insensitive, so this must relay the place name identically
+      (verbatim as typed; normalization is the resolver's job, not the model's).
+    expectPayload:
+      extractionIR:
+        payload:
+          placeName: ibate
+        payloadExactKeys: true
+        provenanceTrust:
+          placeName: untrusted
+
+  - id: grounded-name-multiword
+    utterance: fazem entrega pra São Carlos?
+    note: >-
+      Colloquial register ("fazem entrega pra"), MULTI-WORD zone name. The whole
+      phrase is the subject — relaying only "Carlos" would not ground.
+    expectPayload:
+      extractionIR:
+        payload:
+          placeName: São Carlos
+        payloadExactKeys: true
+        provenanceTrust:
+          placeName: untrusted
+
+  - id: grounded-name-formal
+    utterance: Gostaria de saber se vocês realizam entregas em Araraquara Centro.
+    note: Formal/polite register, multi-word zone name, statement form.
+    expectPayload:
+      extractionIR:
+        payload:
+          placeName: Araraquara Centro
+        payloadExactKeys: true
+        provenanceTrust:
+          placeName: untrusted
+
+  - id: grounded-name-context-embedded
+    utterance: acabei de me mudar pra Ibaté, vocês entregam aí?
+    note: >-
+      Context-embedded register — the place is stated before the question and
+      referred to elliptically ("aí"). The subject is still Ibaté; the extractor
+      must resolve the ellipsis to the name the SAME message supplied, never to a
+      zone it did not.
+    expectPayload:
+      extractionIR:
+        payload:
+          placeName: Ibaté
+        payloadExactKeys: true
+        provenanceTrust:
+          placeName: untrusted
+
+  # ── CEP cases: the customer supplied the precise datum ──────────────────────
+  # Relayed verbatim to the EXISTING estimation tool. A CEP inside a zone renders
+  # the grounded YES; a CEP proven outside every zone renders the VALIDATED
+  # honest NO ("Ainda não entregamos no CEP …") — a definitive out-of-zone
+  # determination is a FACT, not an UNKNOWN.
+
+  - id: cep-bare-digits
+    utterance: entregam no CEP 14815000?
+    note: >-
+      Bare 8-digit form. Expected turn branch: grounded YES (14815 is the Ibaté
+      prefix). Relayed verbatim — never reformatted, never repaired.
+    expectPayload:
+      extractionIR:
+        payload:
+          cep: "14815000"
+        payloadExactKeys: true
+        provenanceTrust:
+          cep: untrusted
+
+  - id: cep-hyphenated
+    utterance: meu cep é 14815-000, dá pra entregar?
+    note: Hyphenated form + a question-form register ("dá pra…?").
+    expectPayload:
+      extractionIR:
+        payload:
+          cep: "14815-000"
+        payloadExactKeys: true
+        provenanceTrust:
+          cep: untrusted
+
+  - id: cep-out-of-every-zone
+    utterance: vocês entregam no 01001-000?
+    note: >-
+      A VALID CEP that falls outside every active zone. Expected turn branch: the
+      VALIDATED honest NO plus the pickup offer — NOT the generic "não localizei"
+      abstain, because the zone data positively settles it.
+    expectPayload:
+      extractionIR:
+        payload:
+          cep: "01001-000"
+        payloadExactKeys: true
+        provenanceTrust:
+          cep: untrusted
+
+  - id: cep-with-place-name
+    utterance: moro em Ibaté, cep 14815000 — entregam?
+    note: >-
+      BOTH data present. Both are relayed (each is literally supplied); the
+      resolver then prefers the CEP, which is the precise datum. This pins that
+      the extractor does not DROP the CEP just because a place name is nearer the
+      verb.
+    expectPayload:
+      extractionIR:
+        payload:
+          placeName: Ibaté
+          cep: "14815000"
+        payloadExactKeys: true
+        provenanceTrust:
+          cep: untrusted
+          placeName: untrusted
+
+  # ── MUST-CLARIFY cases: nothing groundable, so the turn asks for the CEP ────
+  # These are the anti-guessing pins. The extractor may relay the place name the
+  # customer typed, but it must NEVER substitute, correct, or approximate it to a
+  # zone that exists — and where no place was given at all, the payload must be
+  # EMPTY rather than a helpfully-invented one.
+
+  - id: clarify-unrecognised-place
+    utterance: vocês entregam em Matão?
+    note: >-
+      A real neighbouring city that is NOT an active zone. The name is relayed
+      verbatim; the resolver finds no zone and the turn asks for the CEP. The
+      extractor must NOT "correct" this to Ibaté or Araraquara.
+    expectPayload:
+      extractionIR:
+        payload:
+          placeName: Matão
+        payloadExactKeys: true
+        provenanceTrust:
+          placeName: untrusted
+
+  - id: clarify-bare-capability-question
+    utterance: vocês fazem entrega?
+    note: >-
+      No place, no CEP — nothing to extract. An EMPTY payload under
+      payloadExactKeys is the pin: inventing a `placeName` here is exactly the
+      hallucination that produced the ungrounded 2026-07-20 answer.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: clarify-my-neighbourhood
+    utterance: entregam aqui no meu bairro?
+    note: >-
+      A DEICTIC reference ("aqui", "meu bairro") with no antecedent anywhere in
+      the message. There is no place name to relay — the payload stays empty and
+      the turn asks for the CEP.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: clarify-fee-question-no-place
+    utterance: quanto custa a entrega?
+    note: >-
+      A FEE question with no address. The fee is zone-dependent, so there is
+      nothing to quote until the CEP is known — and nothing to extract. Quoting
+      any zone's fee here would be a guess dressed as an answer.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  # ── MUST-REFUSE / IRRELEVANT cases: not a coverage question at all ──────────
+  # The coverage extraction must yield NOTHING. These guard the opposite failure
+  # from the ones above: a message that merely CONTAINS delivery vocabulary (or
+  # none at all) must not be mined for a coverage subject.
+
+  - id: refuse-own-delivery-status
+    utterance: cadê minha entrega? já faz uma hora
+    note: >-
+      The customer's OWN in-flight delivery — an owner-scoped ORDER-STATUS
+      question, not a coverage question. It carries the word "entrega" and a
+      place-shaped nothing; the coverage extraction must stay EMPTY so the turn
+      keeps its owner-scoped order read.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: refuse-payment-methods
+    utterance: vocês aceitam vale-refeição?
+    note: >-
+      A different CAPABILITY question (payment methods). Same "vocês aceitam/…"
+      frame as a coverage ask, but nothing about delivery — the coverage
+      extraction must stay empty rather than pattern-match the frame.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: refuse-order-number-is-not-a-cep
+    utterance: qual o status do pedido 148150001?
+    note: >-
+      An ORDER DISPLAY NUMBER whose digits contain a CEP-shaped run. Relaying
+      "14815000" out of it would silently answer a delivery-coverage question
+      nobody asked, off a number that is not an address at all. The extraction
+      must stay empty.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true

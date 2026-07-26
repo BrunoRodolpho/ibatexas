@@ -37,6 +37,9 @@ import {
 // claimdef-compiler (./claimdefs/store-open-now.generated.ts — DO NOT EDIT). The
 // previously-handwritten closure entry + the marker regex collapse into these splices.
 import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
+// LE2-019 — the PURE coupon-code extractor (no IO; see promotion-validity.ts's
+// header for why it lives there and not in the resolver).
+import { detectCouponCodeInText } from "./promotion-validity.js";
 
 /**
  * A SPAN-CLASS — the coarse, CLOSED category a request span falls into (SDD §O#15;
@@ -73,6 +76,21 @@ export type SpanClass =
   | "MENU_OVERVIEW_Q"
   | "MENU_DIETARY_Q"
   | "STORE_INFO_Q"
+  // LE2-002 / NEW-007 — a DELIVERY-COVERAGE question ("vocês entregam em Ibaté?",
+  // "entregam no CEP 14815000?", "fazem entrega pra São Carlos?"). A CAPABILITY
+  // question about where the STORE delivers — deliberately DISJOINT from
+  // ORDER_STATUS_Q, which is about the customer's OWN in-flight delivery (the
+  // BKL-204 `capabilityQuestion` guard already keeps those two apart; this span is
+  // what finally gives the capability half a grounded answer instead of the prose
+  // path that shipped the ungrounded "Sim, entregamos em Ibate").
+  | "DELIVERY_COVERAGE_Q"
+  // LE2-019 / spec Decision 18 — a COUPON-VALIDITY question ("o cupom X1234
+  // vale?", "esse código BEMVINDO15 ainda funciona?"). A READ about the STORE's
+  // promotions — deliberately DISJOINT from any apply/use IMPERATIVE ("aplica o
+  // cupom X"), which is a mutation and must never ride a read span (the
+  // BKL-201/206 discipline, and Decision 14's negative space: no apply path
+  // exists for a read to be mistaken for).
+  | "COUPON_VALIDITY_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
@@ -147,6 +165,31 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // UNKNOWN; never demotes a co-occurring answer. Public (`not_applicable`) → never
   // Triad-scoped.
   STORE_INFO_Q: ["STORE_INFO"],
+  // LE2-002 / NEW-007 — a delivery-COVERAGE question requires the complementary
+  // PAIR, exactly like CART_CONTENTS_Q requires CART_CONTENTS + CART_EMPTY. The two
+  // read COMPLEMENTARY keys (`delivery:coverage` vs `delivery:no_coverage` — at most
+  // one is ever PRESENT), so exactly one can validate and the other resolves honest
+  // UNKNOWN and is dropped by the kernel's §D filter — never a rendered
+  // contradiction. Requiring both here is also what auto-enrols the pair into the
+  // classify-only candidate set and into the claim-planner's RELEVANCE_GOVERNED_TYPES
+  // (an over-proposed coverage claim is DEMOTED on a turn whose coverage span did not
+  // fire, KEPT when it did). PUBLIC (`not_applicable`) → never Triad-scoped, and no
+  // unrelated span force-requires either type.
+  DELIVERY_COVERAGE_Q: ["DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"],
+  // LE2-019 — a coupon-VALIDITY question requires the complementary PAIR, exactly
+  // like DELIVERY_COVERAGE_Q. The two read COMPLEMENTARY keys (`coupon:valid` vs
+  // `coupon:invalid` — at most one is ever PRESENT after a SUCCESSFUL lookup), so
+  // exactly one can validate and the other resolves honest UNKNOWN and is dropped
+  // by the kernel's §D filter — never a rendered contradiction. Requiring both
+  // here is also what auto-enrols the pair into the classify-only candidate set
+  // and into the claim-planner's RELEVANCE_GOVERNED_TYPES (an over-proposed coupon
+  // claim is DEMOTED on a turn whose coupon span did not fire, KEPT when it did).
+  // The pair is ALSO registered in PRESENCE_COMPLEMENT_PAIRS below — without that
+  // registration this very row would make §O#15 completeness STRUCTURALLY
+  // unsatisfiable (the LE2-002 defect; see the pair table's comment). PUBLIC
+  // (`not_applicable`) → never Triad-scoped, and no unrelated span force-requires
+  // either type.
+  COUPON_VALIDITY_Q: ["COUPON_VALID", "COUPON_INVALID"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -211,6 +254,131 @@ const ALLERGEN_FAMILY_RE =
 /** BKL-184 — does this request text carry allergen-family phrasing? Pure. */
 export function isAllergenFamilyAsk(text: string): boolean {
   return ALLERGEN_FAMILY_RE.test(text.toLowerCase());
+}
+
+/**
+ * A SELF-REFERENCE to the customer's OWN order/payment/delivery/reservation: a
+ * possessive attached to one of those NOUNS ("meu pedido", "minha entrega") or an
+ * explicit order display number. Hoisted to module scope (BKL-204 authored it
+ * inline) so the LE2-002 delivery-coverage net below reuses the SAME definition
+ * rather than a second, drifting copy — the two nets must agree on exactly one
+ * question: is this about the STORE's policy, or about THIS customer's resource?
+ *
+ * NOT any bare possessive ("minha região" is a coverage question, not the
+ * customer's order). A bare CEP is not an order number (no `#`, no "pedido nº"),
+ * so a coverage question carrying a CEP never trips the explicit-number arm. Pure.
+ */
+const SELF_RESOURCE_REFERENCE_RE =
+  /(?<![a-z])(meu|minha|meus|minhas)\s+(pedido|pagamento|entrega|reserva)/;
+const EXPLICIT_ORDER_NUMBER_RE = /(?<![a-z])pedido\s*n?[ºo°.]?\s*#?\d{2,}|#\d{2,}/;
+
+function isSelfResourceReference(lowerText: string): boolean {
+  return (
+    SELF_RESOURCE_REFERENCE_RE.test(lowerText) || EXPLICIT_ORDER_NUMBER_RE.test(lowerText)
+  );
+}
+
+/**
+ * LE2-002 / NEW-007 — the DETERMINISTIC delivery-COVERAGE net: does this text ask
+ * whether/where/at-what-cost the RESTAURANT delivers? The capability half of the
+ * BKL-204 delivery/order split, given its own span so it stops falling through to
+ * the lie-capable prose path (the 2026-07-20 ungrounded "Sim, entregamos em Ibate").
+ *
+ * FIRES on the phrasings customers actually use for coverage + fee + ETA:
+ *   · "vocês entregam …" / "vocês fazem entrega" / "fazem entrega em …"
+ *   · "entregam em/no/na/pra/para/até <lugar ou CEP>"
+ *   · "atendem em/no/na <lugar>" (the pt-BR synonym for serving an area)
+ *   · "área/região/zona de entrega", "onde vocês entregam"
+ *   · the fee/ETA asks: "taxa de entrega", "valor/preço do frete", "quanto custa a
+ *     entrega", "quanto tempo demora a entrega"
+ *
+ * DOES NOT FIRE on a SELF-REFERENCE ("cadê minha entrega?", "meu pedido saiu para
+ * entrega?") — that is an ORDER_STATUS question about the customer's own in-flight
+ * delivery and keeps its owner-scoped read, unchanged. This is the same guard
+ * BKL-204 uses in the opposite direction, sharing ONE definition.
+ *
+ * Over-firing is DEMOTE-ONLY safe: the resolver never guesses, so a false positive
+ * lands on the CLARIFY-for-CEP ask (or an honest UNKNOWN), never a wrong coverage
+ * answer. Pure; applies the classifier's own lowercase normalization.
+ */
+const DELIVERY_COVERAGE_ASK_RE =
+  /voc[êe]s\s+entregam|(?:faz|fazem)\s+entrega|entregam?\s+(?:em|no|na|nos|nas|pra|para|at[ée])(?![a-z])|(?:onde|at[ée]\s+onde)\s+(?:voc[êe]s\s+)?entregam|(?:[áa]rea|regi[õo]es?|regi[ãa]o|zona)\s+de\s+entrega|atende[m]?\s+(?:em|no|na|nos|nas)(?![a-z])|taxa\s+de\s+(?:entrega|frete)|(?:valor|pre[çc]o)\s+d[oa]\s+(?:entrega|frete)|quanto\s+(?:custa|fica|sai|[ée])\s+(?:a\s+entrega|o\s+frete)|quanto\s+tempo\s+(?:demora|leva)\s+(?:a\s+)?(?:entrega|pra\s+entregar)/;
+
+/** LE2-002 — does this request text ask about DELIVERY COVERAGE (not the
+ *  customer's own delivery)? Pure. Exported so the render seam can select the
+ *  CLARIFY-for-CEP ask without a second, drifting regex (the BKL-184 idiom). */
+export function isDeliveryCoverageAsk(text: string): boolean {
+  const t = text.toLowerCase();
+  if (isSelfResourceReference(t)) return false;
+  return DELIVERY_COVERAGE_ASK_RE.test(t);
+}
+
+/**
+ * LE2-019 / spec Decision 18 — the DETERMINISTIC COUPON-VALIDITY net: does this
+ * text ask whether a coupon / discount code WORKS? The read half of the coupon
+ * vocabulary, given its own span so a validity question is answered from a
+ * promotion lookup instead of the customer being told to try it and see.
+ *
+ * Structurally it is a CONJUNCTION — a coupon NOUN plus either validity phrasing
+ * or a code-shaped token — so the merely-coupon-adjacent ("ganhei um cupom, que
+ * legal") does not fire, and neither does a bare validity word.
+ *
+ * COUPON NOUN: "cupom/cupons/cupão", "voucher", or "código/codigo" QUALIFIED as a
+ * discount code ("código de desconto", "código promocional"). A bare "código" is
+ * deliberately NOT enough — "qual o código do meu pedido?" is an order question.
+ *
+ * DOES NOT FIRE on an APPLY/USE IMPERATIVE ("aplica o cupom X", "usa esse código
+ * no meu carrinho"): that is a MUTATION request, and answering it with a validity
+ * READ would silently drop what the customer actually asked for (the SCN-046
+ * failure shape). A MODAL question form ("posso usar o cupom X?", "dá pra usar o
+ * BEMVINDO15?") is a VALIDITY question, not an imperative, so the modal prefix
+ * DISABLES the apply guard — otherwise the most natural phrasing of the very
+ * question this ticket answers would be excluded.
+ *
+ * Over-firing is DEMOTE-ONLY safe: the resolver never guesses, so a false positive
+ * lands on the CLARIFY-for-code ask (or an honest UNKNOWN), never a wrong validity
+ * answer. Pure; applies the classifier's own lowercase normalization.
+ */
+// The extractor lives in the PURE `promotion-validity.ts` (no IO) precisely so
+// this module — which the render adapter and most of the claims layer import —
+// never gains a network client just to classify a span. See that module's header.
+const COUPON_NOUN_RE =
+  /(?<![a-z])(?:cupom|cupons|cup[ãa]o|vouchers?|c[óo]digos?\s+(?:de\s+)?(?:desconto|promo[çc][ãa]o|promocional))/;
+
+/** Validity/usability phrasing — "vale?", "é válido?", "ainda funciona?", "tá valendo?" */
+const COUPON_VALIDITY_PHRASE_RE =
+  /(?<![a-z])(?:vale(?:m|ndo)?|v[áa]lid[oa]s?|validade|funciona(?:m|ndo)?|serve|ativ[oa]|expir|venceu|vencid[oa]|caduc|est[áa]\s+ok|t[áa]\s+ok|confer(?:e|ir)|checa(?:r)?)/;
+
+/** An APPLY/USE IMPERATIVE aimed at a coupon — a MUTATION, never this read. */
+const COUPON_APPLY_IMPERATIVE_RE =
+  /(?<![a-z])(?:aplica(?:r|e)?|resgata(?:r)?|ativa(?:r)?|usa(?:r|e)?|coloca(?:r)?|p[õo]e|p[õo]r|adiciona(?:r)?|insere|inserir)\s+(?:o\s+|a\s+|esse\s+|este\s+|essa\s+|meu\s+|minha\s+)?(?:cupom|c[óo]digo|voucher|desconto)/;
+
+/** A MODAL/interrogative frame that makes an apply-shaped verb a QUESTION. */
+const COUPON_MODAL_QUESTION_RE =
+  /(?<![a-z])(?:posso|consigo|d[áa]\s+(?:pra|para)|ser[áa]\s+que|quero\s+saber|gostaria\s+de\s+saber|como\s+(?:fa[çc]o|uso|usar))/;
+
+/**
+ * LE2-019 — does this request text ask whether a COUPON is valid? Pure. Exported
+ * so the render seam can select the CLARIFY-for-code ask without a second,
+ * drifting regex (the BKL-184 / LE2-002 idiom).
+ */
+export function isCouponValidityAsk(text: string): boolean {
+  const t = text.toLowerCase();
+  if (!COUPON_NOUN_RE.test(t)) return false;
+  const applyShaped = COUPON_APPLY_IMPERATIVE_RE.test(t);
+  const modal = COUPON_MODAL_QUESTION_RE.test(t);
+  // An apply-shaped verb with NO modal frame is an IMPERATIVE — a mutation the
+  // customer asked for, which must keep its own path.
+  if (applyShaped && !modal) return false;
+  // …but the SAME verb inside a modal frame ("posso usar o cupom X?", "dá pra usar
+  // esse cupom ainda?") IS the validity question in its most natural pt-BR form:
+  // "can I use it" is precisely "is it valid". Treating it as a mutation would
+  // exclude the phrasing this ticket most exists to answer.
+  if (applyShaped && modal) return true;
+  if (COUPON_VALIDITY_PHRASE_RE.test(t)) return true;
+  // No validity word, but the customer named a CODE alongside the coupon noun
+  // ("cupom BEMVINDO15?") — that is a validity question in its shortest form.
+  return detectCouponCodeInText(text) !== undefined;
 }
 
 /**
@@ -366,6 +534,31 @@ export function classifyRequestSpans(text: string): SpanClass[] {
     classes.push("STORE_INFO_Q");
   }
 
+  // LE2-002 / NEW-007 — a delivery-COVERAGE question ("vocês entregam em Ibaté?",
+  // "entregam no CEP 14815000?", "qual a taxa de entrega?"). Gated on
+  // `!mutationImperative` like every other classify-only-eligible READ span (the
+  // BKL-201/206 read-vs-mutation split), and DISJOINT from ORDER_STATUS_Q by the
+  // shared self-reference guard inside `isDeliveryCoverageAsk` — "cadê MINHA
+  // entrega?" stays an owner-scoped order question and never fires this span.
+  // Over-inclusion is DEMOTE-ONLY safe: an unmatched place resolves to the
+  // CLARIFY-for-CEP ask, never a guessed coverage answer.
+  if (!mutationImperative && isDeliveryCoverageAsk(t)) {
+    classes.push("DELIVERY_COVERAGE_Q");
+  }
+
+  // LE2-019 / spec Decision 18 — a coupon-VALIDITY question ("o cupom X1234
+  // vale?"). Gated on `!mutationImperative` like every other classify-only-eligible
+  // READ span (the BKL-201/206 read-vs-mutation split — "tira o cupom do carrinho"
+  // stays a mutation), and `isCouponValidityAsk` applies its OWN apply-imperative
+  // guard on top, so "aplica o cupom X" never rides this read either. The two guards
+  // are complementary, not redundant: the shared net catches the cart-verb family,
+  // the coupon net catches the coupon-specific apply verbs it does not list.
+  // Over-inclusion is DEMOTE-ONLY safe: an unextractable code resolves to the
+  // CLARIFY-for-code ask, never a guessed validity answer.
+  if (!mutationImperative && isCouponValidityAsk(t)) {
+    classes.push("COUPON_VALIDITY_Q");
+  }
+
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —
   // do NOT regress to a coarse `/pedido|cad[êe]|status/` rule that misroutes a
   // payment "status" to ORDER-only).
@@ -385,9 +578,7 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // NOT any bare possessive ("minha região" is a coverage question, not the
   // customer's order). It disables the capability guard so a genuine self-status
   // ask with a dual token still fires.
-  const selfReference =
-    /(?<![a-z])(meu|minha|meus|minhas)\s+(pedido|pagamento|entrega|reserva)/.test(t) ||
-    /(?<![a-z])pedido\s*n?[ºo°.]?\s*#?\d{2,}|#\d{2,}/.test(t);
+  const selfReference = isSelfResourceReference(t);
   const capabilityQuestion =
     !selfReference &&
     /voc[êe]s\s+(entregam|aceit\w*|fazem)|fazem\s+entrega|entregam?\s+(em|no|na|pra|para|at[ée])|aceit\w*\s+(vale|ticket|refei|cart|pix|dinheiro|pagamento|d[ée]bito|cr[ée]dito)|quais?\s+(as\s+|os\s+)?(formas?|op[çc][õo]es)\s+de\s+pagamento|quanto\s+(custa|fica|sai|[ée]|vale)\s+(a\s+entrega|o\s+frete)|taxa\s+de\s+entrega|valor\s+d[oa]\s+(entrega|frete)/.test(
@@ -740,7 +931,35 @@ export interface RequiredCompletenessResult {
  */
 const PRESENCE_COMPLEMENT_PAIRS: ReadonlyArray<
   readonly [RegistryClaimType, RegistryClaimType]
-> = [["CART_CONTENTS", "CART_EMPTY"]];
+> = [
+  ["CART_CONTENTS", "CART_EMPTY"],
+  // LE2-013 — the DELIVERY pair belongs here and was MISSED by LE2-002, which
+  // built it "on the CART_CONTENTS/CART_EMPTY precedent" (its own commit message)
+  // and gave DELIVERY_COVERAGE_Q a closure row requiring BOTH members, but never
+  // registered the pair. The investigator records `delivery:coverage` only when a
+  // zone matched and `delivery:no_coverage` only on a POSITIVE out-of-zone
+  // determination, so exactly one can ever VALIDATE — which made completeness
+  // STRUCTURALLY unsatisfiable and degraded EVERY coverage turn RENDER→UNKNOWN.
+  // Byte-for-byte the BKL-163 cart bug, reproduced.
+  //
+  // WHY IT SURVIVED CI: LE2-002's turn-seam tests call `renderer-from-claims`
+  // `render(...)` DIRECTLY, which bypasses this gate — the gate lives one layer up
+  // in `claims-renderer-adapter.ts`. The defect only shows through the PRODUCTION
+  // adapter, which is what LE2-013's ops turn-seam suite drives, and is where it
+  // was caught. It is plane-NEUTRAL: the customer plane was equally affected, so
+  // the fix lands here rather than being forked onto ops.
+  ["DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"],
+  // LE2-019 — the COUPON pair, registered HERE IN THE SAME COMMIT that introduces
+  // it. `coupon:valid` is recorded only when a SUCCESSFUL promotion lookup found a
+  // usable record; `coupon:invalid` only when a SUCCESSFUL lookup positively
+  // determined the code is not usable — complementary by construction, so exactly
+  // one can ever VALIDATE and the COUPON_VALIDITY_Q closure row (which requires
+  // BOTH) is satisfiable only because of this line. Omitting it is precisely the
+  // LE2-002 latent defect documented above: every coupon turn, valid or invalid,
+  // would degrade RENDER→UNKNOWN through the §O#15 gate one layer up in
+  // `claims-renderer-adapter.ts` — invisible to any renderer-level test.
+  ["COUPON_VALID", "COUPON_INVALID"],
+];
 
 /** Partner lookup for {@link PRESENCE_COMPLEMENT_PAIRS} (symmetric). */
 function presenceComplementPartner(type: RegistryClaimType): RegistryClaimType | undefined {
