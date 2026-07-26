@@ -266,6 +266,7 @@ import {
 import {
   CAPABILITY_DEFINITIONS,
   CATALOG_VERSION,
+  WORKFLOW_DEFINITIONS,
   generateChatDrivableToolKinds,
   generateOpsForbiddenDestructiveKinds,
 } from "@ibatexas/catalog";
@@ -342,6 +343,7 @@ import {
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import {
   sessionTokenKey,
+  loadCartCtx,
   resolveAndAssemble,
   resolveCustomerOrderReference,
 } from "./claustrum/resolve-and-assemble.js";
@@ -370,6 +372,19 @@ import {
 // ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
 import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
 import { buildLanguageEngineAuditMetadata } from "./claustrum/language-engine/audit-metadata.js";
+import { registerWorkflowScopedTools } from "./tools/register-workflow-scoped-tools.js";
+import {
+  createWorkflowRuntime,
+  type WorkflowRuntime,
+} from "./claustrum/workflow/workflow-runtime.js";
+import {
+  installWorkflowRuntime,
+  observeWorkflowDecisions,
+} from "./claustrum/workflow/workflow-install.js";
+import {
+  currentWorkflowChannel,
+  currentWorkflowTurnId,
+} from "./claustrum/workflow/workflow-turn.js";
 import {
   composeOpsConductor,
   opsPlaneDriftProblems,
@@ -1791,6 +1806,95 @@ const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> =
 const IBATEXAS_POLICY_ROUTER = composePolicyRouter(IBATEXAS_POLICY_PACKS);
 
 /**
+ * Build the production WORKFLOW RUNTIME (LE2-021 — the first composition that
+ * wires it; LE2-020 shipped the runtime with production wiring deliberately
+ * absent).
+ *
+ * ── WHY EVERY SEAM IS THE REAL ONE ──────────────────────────────────────────
+ *
+ * A workflow activity must be indistinguishable from a directly-parsed mutation
+ * once it reaches the kernel, or "each activity is adjudicated individually"
+ * would be a claim about a private code path rather than about the system. So:
+ *
+ *   - `adjudicateActivity` is `adjudicateAndAudit` over `IBATEXAS_POLICY_ROUTER`
+ *     — the SAME composed router every other envelope meets — writing to the
+ *     SAME audit sink with the SAME metadata provider. An operator reading
+ *     `intent_audit` cannot tell a workflow activity from a parsed one, which is
+ *     the point.
+ *   - The per-activity SystemState is projected by `loadCartCtx`, the same
+ *     assembly the conductor's resolver runs, so an activity meets the same
+ *     grounded state a direct request would rather than a stub the workflow
+ *     layer chose for itself.
+ *   - `dispatchActivity` resolves through the REAL tool registry.
+ *
+ * The registry is a genuine forward reference — `dispatchActivity` needs it, and
+ * the registry's workflow wiring needs the runtime — so a holder object breaks
+ * the cycle without a reassignable binding, exactly as the e2e harness does.
+ */
+function buildWorkflowRuntime(deps: {
+  readonly auditSink: AuditSink;
+  readonly toolsRef: { current?: ReturnType<typeof createToolRegistry> };
+}): WorkflowRuntime {
+  /** Project the grounded state ONE activity is adjudicated against. */
+  const activityState = async (envelope: IntentEnvelope): Promise<unknown> => {
+    const actor = (envelope.actor ?? {}) as {
+      customerId?: string;
+      sessionId?: string;
+    };
+    const ctx = await loadCartCtx(
+      {
+        tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
+        // From the turn binding, NOT hardcoded. `adjudicateActivity` receives
+        // only an envelope and an `IntentActor` carries no channel, so without
+        // the binding this would have to guess — and `"web"` would silently
+        // adjudicate every WhatsApp workflow activity against the wrong channel
+        // (`requireCheckoutEligibility`'s `canCheckout` reads it). Falls back to
+        // "web" ONLY outside a bound turn, which no conversational path is.
+        channel: currentWorkflowChannel() ?? "web",
+        customerId: actor.customerId ?? null,
+        staffId: null,
+        isAuthenticated: (actor.customerId ?? null) !== null,
+      } as never,
+      {} as never,
+      actor.sessionId === undefined ? {} : { sessionId: actor.sessionId },
+    );
+    return { ctx };
+  };
+
+  return createWorkflowRuntime({
+    workflows: WORKFLOW_DEFINITIONS,
+    adjudicateActivity: async (envelope) =>
+      (
+        await adjudicateAndAudit(
+          envelope,
+          (await activityState(envelope)) as never,
+          IBATEXAS_POLICY_ROUTER as never,
+          { sink: deps.auditSink, metadataProvider: buildLanguageEngineAuditMetadata },
+        )
+      ).decision,
+    dispatchActivity: async (envelope, ctx) => {
+      const registry = deps.toolsRef.current;
+      if (registry === undefined) {
+        // Unreachable in a composed process: `registerWorkflowScopedTools`
+        // throws at boot for an activity kind with no handler. Kept because a
+        // silent no-op here would look like a successful step in the trace.
+        throw new Error(
+          `[workflow] no tool registry for activity kind ${String(envelope.kind)}`,
+        );
+      }
+      // `resolveTool`, NOT `list().find(...)`. The registry keeps every
+      // registration for a capability and `list()` returns them in insertion
+      // order, so a `find` takes the FIRST one registered while the conductor's
+      // own dispatch takes the last-write-wins winner. An activity must run the
+      // same implementation a directly-parsed mutation would, so it has to ask
+      // the same question the conductor asks.
+      const tool = registry.resolveTool(envelope.kind as never, ctx);
+      return tool.execute(envelope.payload, ctx);
+    },
+  });
+}
+
+/**
  * Resolve the concrete per-kind PolicyBundle for the explicit HTTP-route path
  * (RC-A1 Phase B). Routes that build their own `principal:"user"` envelope pass
  * the result to `runCustomerIntent`. Returns null for a kind no installed pack
@@ -3106,6 +3210,43 @@ export async function bootstrapClaustrum(
     );
   }
 
+  // ── LE2-021 · THE WORKFLOW RUNTIME, WIRED IN PRODUCTION ─────────────────────
+  //
+  // LE2-020 landed the runtime and deliberately wired NOTHING here, shipping an
+  // empty corpus so the wire stayed byte-identical. This is the composition that
+  // turns it on. Three seams, and the ORDER of the first two is the installation
+  // mechanism rather than a style choice:
+  //
+  //   1. `registerWorkflowScopedTools` FIRST. `installWorkflowRuntime` asserts
+  //      that every anchor has a registered tool and THROWS if one does not, and
+  //      a workflow-scoped activity needs its handler present before the runtime
+  //      could ever dispatch it. Registering the scoped handlers first is what
+  //      makes both true at once.
+  //   2. `installWorkflowRuntime` AFTER `registerIbatexasToolPacks` (above). The
+  //      registry is last-write-wins per capability, so registering the anchor
+  //      wrapper after the base roster IS how the wrapper gets installed.
+  //   3. The adjudicator decorator, so the runtime can quote the kernel's own
+  //      confirm sentence instead of re-deriving money.
+  //
+  // Placed AFTER both roster-drift gates so those gates still evaluate the
+  // pristine roster, and before the conductor is composed.
+  //
+  // INERT WHILE THE CORPUS IS EMPTY, structurally: `selectionCapabilities()` and
+  // `activityCapabilities()` are both empty for `WORKFLOW_DEFINITIONS = []`, so
+  // both calls are no-ops, `advertise()` returns nothing, `buildToolSurface`
+  // adds no `start_workflow` tool, and the wire is byte-identical to a boot
+  // without this block. Wiring it before the first workflow is authored is
+  // deliberate — it makes landing that workflow a catalog-data change with a
+  // composition already proven, rather than a data change plus untested plumbing.
+  const workflowToolsRef: { current?: ReturnType<typeof createToolRegistry> } = {};
+  const workflowRuntime = buildWorkflowRuntime({
+    auditSink,
+    toolsRef: workflowToolsRef,
+  });
+  registerWorkflowScopedTools(toolRegistry, workflowRuntime.activityCapabilities());
+  installWorkflowRuntime(toolRegistry, workflowRuntime);
+  workflowToolsRef.current = toolRegistry;
+
   // BKL-034 — embeddings provider/dimension boot gate. A configured provider whose
   // probe vector length differs from EMBEDDING_DIMENSION would silently poison every
   // Typesense upsert (dimension-mismatched vectors) — fail LOUD at boot instead. No
@@ -3324,6 +3465,11 @@ export async function bootstrapClaustrum(
       // deterministic catalog data with no external dependency (no embedder, no
       // engine), so there is nothing to degrade to and no reason to gate it.
       aliasSeam: funnel,
+      // LE2-021 — the workflow selection surface. The planner advertises the
+      // closed `start_workflow` enum for this turn's authorized roster and
+      // instantiates whatever the model selects from it. Empty corpus ⟹ nothing
+      // advertised ⟹ byte-identical wire.
+      workflowRuntime,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
@@ -3426,7 +3572,16 @@ export async function bootstrapClaustrum(
     },
   };
   _conductor = createConductor({
-    adjudicator,
+    // LE2-021 — the workflow decision observer. OBSERVE-ONLY by construction
+    // (every method returns the inner result unchanged), and it reads the turn
+    // from the AsyncLocalStorage binding the ingresses install around
+    // `handleTurn`, so concurrent turns never cross-bind their confirms. See
+    // claustrum/workflow/workflow-turn.ts.
+    adjudicator: observeWorkflowDecisions(
+      adjudicator,
+      workflowRuntime,
+      currentWorkflowTurnId,
+    ),
     memory,
     grounding,
     planner,

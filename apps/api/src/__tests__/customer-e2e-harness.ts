@@ -123,6 +123,10 @@ import {
   observeWorkflowDecisions,
 } from "../claustrum/workflow/workflow-install.js";
 import { closeWorkflowTurn } from "../claustrum/workflow/workflow-trace.js";
+import {
+  beginWorkflowTurn,
+  currentWorkflowTurnId,
+} from "../claustrum/workflow/workflow-turn.js";
 
 /** Fixed instant every park is stamped with, so park shapes are deterministic. */
 export const HARNESS_NOW = "2026-07-25T12:00:00.000Z";
@@ -742,13 +746,6 @@ export interface CustomerConductorDeps {
   readonly workflowRuntime?: WorkflowRuntime;
 }
 
-/**
- * The turn currently being driven — see the observer note in
- * `composeCustomerConductor`. Module-scoped because the conductor is composed
- * once and `runCustomerTurn` is the only writer.
- */
-let currentTurnId: string | undefined;
-
 export interface CustomerHarness {
   readonly conductor: Conductor;
   /** The real registry the conductor resolves tools from. */
@@ -836,16 +833,19 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
   // both when not requested and when ENABLE_CLAIMS_PIPELINE is off.
   const claimsSeams = deps.withClaims === true ? buildClaimsSeams({ planner }) : {};
 
-  // LE2-020 — the decision observer. `currentTurnId` is set by
-  // `runCustomerTurn` for the duration of one turn, which is sound HERE because
-  // this harness drives exactly one turn at a time (every caller awaits
-  // `runCustomerTurn`). A production ingress must bind the turn the same way it
-  // already binds the funnel context via `openFunnelTurn` — and in v0 nothing
-  // depends on it, because production loads no workflow.
+  // LE2-020 — the decision observer, reading the turn from the SAME
+  // AsyncLocalStorage binding production reads (LE2-021). The harness used to
+  // carry a module-scope `let` here, sound only because it drives one turn at a
+  // time; `beginWorkflowTurn` removes that caveat, so this composition and the
+  // production one now resolve the turn identically.
   const adjudicator =
     deps.workflowRuntime === undefined
       ? deps.adjudicator
-      : observeWorkflowDecisions(deps.adjudicator, deps.workflowRuntime, () => currentTurnId);
+      : observeWorkflowDecisions(
+          deps.adjudicator,
+          deps.workflowRuntime,
+          currentWorkflowTurnId,
+        );
 
   const conductor = createConductor({
     adjudicator,
@@ -933,10 +933,13 @@ export async function runCustomerTurn(
       confirmWindowOpen:
         (capsule.loadedSession?.pendingConfirmations?.length ?? 0) > 0,
     });
-    // LE2-020 — bind the turn for the workflow decision observer, the same
-    // ingress-seam shape `openFunnelTurn` uses one line above.
-    currentTurnId = capsule.turnId;
-    const turn = await handleTurn(capsule, message);
+    // LE2-021 — bind the turn for the workflow decision observer, wrapping
+    // `handleTurn` exactly as the production ingresses do (routes/chat.ts,
+    // routes/whatsapp-webhook.ts). The binding is the async call tree's, not the
+    // module's, so a caller driving two turns concurrently gets two bindings.
+    const turn = await beginWorkflowTurn({ turnId: capsule.turnId, channel: "web" }, () =>
+      handleTurn(capsule, message),
+    );
     return {
       decision: turn.decision as Decision,
       response: turn.response.text,
@@ -946,7 +949,6 @@ export async function runCustomerTurn(
     };
   } finally {
     closeFunnelTurn(capsule.turnId);
-    currentTurnId = undefined;
     await harness.conductor.closeCapsule(capsule);
   }
 }

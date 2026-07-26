@@ -42,6 +42,7 @@ import {
 } from "@adjudicate/core";
 import { getRedisClient, rk, atomicIncr, getLoyaltyBalance, getOrCreateCart } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
+import { beginWorkflowTurn } from "../claustrum/workflow/workflow-turn.js";
 import { getConductor } from "../claustrum-bootstrap.js";
 // LE2-007 — the funnel's per-turn context (the confirm-window fact only the ingress
 // can see). See funnel-tier.ts.
@@ -277,7 +278,16 @@ async function runConductorTurn(args: {
       confirmWindowOpen:
         (capsule.loadedSession?.pendingConfirmations?.length ?? 0) > 0,
     });
-    const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
+    // LE2-021 — bind this turn for the workflow decision observer (the web
+    // mirror is routes/chat.ts). This plane makes the concurrency argument
+    // concrete: webhook deliveries for different customers are handled in
+    // parallel in one process, so a module-scope binding would cross-bind their
+    // confirms. See workflow/workflow-turn.ts.
+    const turn = await beginWireTurn(() =>
+      beginWorkflowTurn({ turnId: capsule.turnId, channel: "whatsapp" }, () =>
+        handleTurn(capsule, inbound),
+      ),
+    );
     const pixData = extractPixData(turn.acted);
     // Classify the delivery outcome at the source (the only place that can tell
     // an empty completion from a whitespace-only one). The pause early-return
