@@ -32,8 +32,8 @@ import {
   CAPABILITY_DEFINITIONS,
   generateForeignAdvertisedKinds,
   generateOpsForbiddenDestructiveKinds,
-} from "../capability-definitions/index.js"
-import type { CapabilityDefinition } from "../capability-definitions/index.js"
+} from "@ibatexas/catalog"
+import type { CapabilityDefinition } from "@ibatexas/catalog"
 
 describe("generateForeignAdvertisedKinds — byte-identical to the real OPS_FOREIGN_ADVERTISED_* constants (FE-T24 target 1)", () => {
   const generated = generateForeignAdvertisedKinds(CAPABILITY_DEFINITIONS, "ibatexas/pack-ops")

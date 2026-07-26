@@ -60,8 +60,8 @@ import {
   generateChatCapabilityAuthLevels,
   generateMutatingToolNames,
   generateToolToIntentMap,
-} from "../capability-definitions/index.js"
-import type { CapabilityDefinition } from "../capability-definitions/index.js"
+} from "@ibatexas/catalog"
+import type { CapabilityDefinition } from "@ibatexas/catalog"
 
 // Repo root from this test file: packages/packs-composed/src/__tests__ → up 4
 // (same depth/pattern as packages/cli/src/__tests__/db-tables.drift.test.ts).

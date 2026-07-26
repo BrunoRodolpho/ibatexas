@@ -21,9 +21,9 @@ import { runCustomerIntent } from "../../routes/__shared__/customer-intent-gatew
 import {
   CAPABILITY_DEFINITIONS,
   generateKnownIntentKinds,
-  GuardRefResolutionError,
   type CapabilityDefinition,
-} from "@ibatexas/packs-composed/capability-definitions"
+} from "@ibatexas/catalog"
+import { GuardRefResolutionError } from "@ibatexas/packs-composed/capability-definitions"
 import {
   assertPackCoverage,
   PackCoverageError,

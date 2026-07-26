@@ -239,19 +239,21 @@ import {
 // OpsPlaneDriftProblems input `forbiddenOpsKinds` doc for the full contract,
 // and docs/architecture/design/fe4-drift-gates.md for the full per-gate
 // classification table across all four boot drift gates.
+// LE2-015 — the capability names below came through the packs-composed
+// compatibility barrel until that barrel's re-exports were deleted; they now
+// come from `@ibatexas/catalog`, the one root that owns them, alongside
+// CATALOG_VERSION (LE2-014 — the version stamped into every turn's trace, see
+// `flushTurnTraces`). Dropping the barrel import does not weaken the
+// guard-resolution boot check: the barrel's eager self-check only ever fired
+// for whichever process happened to import it, which is precisely why
+// kernel-bootstrap.ts calls `assertCapabilityGuardRefsWired()` unconditionally
+// at boot — see its doc comment.
 import {
   CAPABILITY_DEFINITIONS,
+  CATALOG_VERSION,
   generateChatDrivableToolKinds,
   generateOpsForbiddenDestructiveKinds,
-} from "@ibatexas/packs-composed/capability-definitions";
-// LE2-014 — the catalog version stamped into every turn's trace (see
-// `flushTurnTraces`). Imported from `@ibatexas/catalog` directly rather than
-// through the packs-composed compatibility barrel: the barrel exists to keep
-// PRE-EXISTING import sites working, not to route new ones. The capability
-// imports above stay on the barrel deliberately — moving them would be churn
-// with no behavior change, and the barrel also carries the eager
-// guard-resolution boot assertion this module depends on.
-import { CATALOG_VERSION } from "@ibatexas/catalog";
+} from "@ibatexas/catalog";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";

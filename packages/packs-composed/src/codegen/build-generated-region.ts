@@ -37,7 +37,7 @@ import {
   CAPABILITY_DEFINITIONS,
   generatePackIntents,
   type CapabilityPackId,
-} from "../capability-definitions/index.js"
+} from "@ibatexas/catalog"
 
 /** The sentinel markers `regenerate-intent-kinds.ts` splices between.
  *  Exported so the freshness test can locate the same region in the

@@ -19,7 +19,7 @@ import { CHAT_DRIVABLE_TOOL_KINDS } from "@ibatexas/packs-composed";
 import {
   CAPABILITY_DEFINITIONS,
   generateCapabilityDescriptions,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 import { listIbatexasToolPacks } from "../tools/register-ibatexas-tool-packs.js";
 
 describe("T1a-2 — chat-drivable roster drift", () => {
