@@ -72,7 +72,6 @@ export {
   INCIDENT_CAUSE_LABELS_PT,
   INCIDENT_SEVERITY_LABELS_PT,
   OPS_WHATSAPP_CHANNEL,
-  OPS_DASHBOARD_CHANNEL,
   isOpsPlaneChannel,
   type IncidentIntentKind,
   type IncidentPayload,

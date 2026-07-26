@@ -35,7 +35,7 @@ vi.mock("@ibatexas/nats-client", async (importOriginal) => {
   return { ...actual, publishNatsEvent: vi.fn(async () => {}) };
 });
 
-import { OPS_DASHBOARD_CHANNEL, OPS_WHATSAPP_CHANNEL } from "@ibatexas/domain";
+import { OPS_WHATSAPP_CHANNEL, deriveSeverity } from "@ibatexas/domain";
 import {
   classifyOpsReply,
   opsSessionId,
@@ -140,7 +140,7 @@ describe("recordOpsTurnDelivery", () => {
     expect(openIncidentFromEnvelope).not.toHaveBeenCalled();
   });
 
-  it("a FAILED fallback is a full ghost (customerImpacted true)", async () => {
+  it("customerImpacted stays FALSE even when the fallback ALSO failed — never customer-harm weighting", async () => {
     await recordOpsTurnDelivery({
       ctx: ctx(),
       replyText: "",
@@ -148,23 +148,70 @@ describe("recordOpsTurnDelivery", () => {
       fallbackDelivered: false,
     });
 
-    expect(capturedPayload()).toMatchObject({ customerImpacted: true });
+    const payload = capturedPayload();
+    // No customer is reachable on this plane, so the flag cannot be true — even
+    // though this is the worst ops case (the staffer got total silence).
+    expect(payload.customerImpacted).toBe(false);
+    // …but the fact is NOT lost: it is recorded in the non-PII diagnostic instead of
+    // by bending the severity flag.
+    expect(String(payload.detail)).toContain("ALSO failed (total silence)");
   });
 
-  it("the DASHBOARD channel is distinguishable and has no honest error surface to soften it", async () => {
+  it("records a delivered fallback distinctly in detail", async () => {
     await recordOpsTurnDelivery({
-      ctx: ctx(OPS_DASHBOARD_CHANNEL),
+      ctx: ctx(),
       replyText: "",
       replyDelivered: false,
-      fallbackDelivered: false,
+      fallbackDelivered: true,
     });
 
-    expect(capturedPayload()).toMatchObject({
-      channel: OPS_DASHBOARD_CHANNEL,
-      cause: "empty_completion",
-      customerImpacted: true,
-      sessionId: "admin:staff_7",
+    expect(String(capturedPayload().detail)).toContain("honest fallback delivered");
+  });
+
+  it("always sets the ops channel explicitly — never left to the subscriber's 'whatsapp' default", async () => {
+    await recordOpsTurnDelivery({
+      ctx: ctx(),
+      replyText: "",
+      replyDelivered: false,
+      fallbackDelivered: true,
     });
+
+    // incident-subscriber.ts:50 defaults a MISSING channel to "whatsapp", which would
+    // mislabel an ops ghost as a customer one. The value must be present here.
+    expect(capturedPayload().channel).toBe(OPS_WHATSAPP_CHANNEL);
+    expect(capturedPayload().channel).not.toBe("whatsapp");
+  });
+
+  it("the incident sessionId is the key intent_audit + turn_trace already use", () => {
+    // ibatexas-planner.ts:779 stamps the ops actor `sessionId: admin:<staffId>`, and
+    // turn_trace keys on that same conversation id — so an incident on this key joins
+    // its own turn's evidence. `ops:<staffId>` (the lock domain) is in neither store.
+    expect(opsSessionId("staff_7")).toBe("admin:staff_7");
+  });
+});
+
+describe("ops severity weighting (ruling 4 verification)", () => {
+  it("an ops row lands low/medium — never the customer-harm `high` branch", () => {
+    const openedAt = new Date("2026-07-26T12:00:00.000Z");
+
+    // Recent → low.
+    expect(
+      deriveSeverity({ customerImpacted: false, dropCount: 1, openedAt, now: openedAt }),
+    ).toBe("low");
+
+    // The three escalators that would drive a CUSTOMER row to `high` — aged,
+    // repeat drops, and a re-open — top out at `medium` while customerImpacted is
+    // false, so a staff-channel hiccup can never outrank a real customer ghost.
+    const aged = new Date(openedAt.getTime() + 60 * 60_000);
+    expect(
+      deriveSeverity({ customerImpacted: false, dropCount: 5, openedAt, now: aged }),
+    ).toBe("medium");
+
+    // Contrast: the identical shape WITH customer impact is `high`. This is the
+    // weighting ops rows must not import.
+    expect(
+      deriveSeverity({ customerImpacted: true, dropCount: 5, openedAt, now: aged }),
+    ).toBe("high");
   });
 });
 

@@ -98,27 +98,34 @@ export const INCIDENT_SEVERITY_LABELS_PT: Record<IncidentSeverity, string> = {
 }
 
 /**
- * BKL-235 — the OPS-plane `channel` values.
+ * BKL-235 — the OPS-plane `channel` value.
  *
  * `conversation_incidents.channel` is a plain String precisely so a new plane can
  * join the journal without an `ALTER TYPE` (see the schema comment: "agent plane
- * later"). These are the two ops ingresses, which share ONE staff conversation
- * (`sessionId = admin:<staffId>`): the staff WhatsApp fork
- * (`ops-whatsapp-ingress.ts`) and the dashboard route (`admin/ops-chat.ts`).
+ * later"). `ops-whatsapp` is the staff WhatsApp fork (`ops-whatsapp-ingress.ts`).
  *
- * Both ride the SAME `no_reply` journal `kind` as the customer plane, and that is
- * deliberate: an ops ghost has the IDENTICAL lifecycle — the staffer was owed a
+ * It MUST be set explicitly at every producer. `incident-subscriber.ts` defaults a
+ * missing `channel` to `"whatsapp"` — a CUSTOMER channel — so an omitted value does
+ * not merely lose the distinction, it actively mislabels an ops ghost as a customer
+ * one. Never rely on the default.
+ *
+ * ONE ops ingress is wired: the ops DASHBOARD (`admin/ops-chat.ts`) is deliberately
+ * NOT on this journal. It is synchronous HTTP — the staff UI receives the empty
+ * response directly, a different failure surface from WhatsApp silence — so it gets
+ * no channel value here until that surface is designed. Adding a constant nothing
+ * writes would overstate this predicate's coverage.
+ *
+ * Ops rows ride the SAME `no_reply` journal `kind` as the customer plane, and that
+ * is deliberate: an ops ghost has the IDENTICAL lifecycle — the staffer was owed a
  * reply, got silence, and the next delivered reply on the session is the recovery
  * proof, so it self-heals through the same auto-close seam. `channel` is therefore
  * the whole plane discriminator; a second `kind` would only be warranted by an
  * OPPOSITE lifecycle (the shape that justified one for the attack-review journal).
  */
 export const OPS_WHATSAPP_CHANNEL = "ops-whatsapp"
-export const OPS_DASHBOARD_CHANNEL = "ops-dashboard"
 
 const OPS_PLANE_CHANNELS: ReadonlySet<string> = new Set<string>([
   OPS_WHATSAPP_CHANNEL,
-  OPS_DASHBOARD_CHANNEL,
 ])
 
 /**

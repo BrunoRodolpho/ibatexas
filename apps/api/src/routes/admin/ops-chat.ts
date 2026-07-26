@@ -47,11 +47,6 @@ import {
   opsStaleResumeNotice,
   pruneExpiredOpsParks,
 } from "../../ops/ops-system-channel.js";
-import {
-  OPS_DASHBOARD_CHANNEL,
-  closeOpsIncidentOnDeliveredReply,
-  recordOpsTurnDelivery,
-} from "../../ops/ops-turn-incident.js";
 
 const OpsChatBody = z.object({
   message: z
@@ -95,14 +90,11 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
 
       const { message } = request.body;
       const conversationId = `admin:${staffId}`;
-      // BKL-235 — the per-inbound ref doubles as the incident dedup key, mirroring
-      // the customer webhook's `body.MessageSid`.
-      const turnRef = randomUUID();
       const inbound: ChannelMessage = {
         channel: "system",
         customerId: `staff:${staffId}`,
         conversationId,
-        externalId: turnRef,
+        externalId: randomUUID(),
         text: message,
         receivedAt: new Date().toISOString(),
         locale: "pt-BR",
@@ -149,23 +141,6 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
         },
         inbound,
       });
-
-      /**
-       * BKL-235 — every DELIVERED dashboard reply is recovery proof for an OPEN ops
-       * incident on this staff conversation, INCLUDING one opened from the WhatsApp
-       * ingress: both ingresses share `sessionId = admin:<staffId>`, so they are one
-       * conversation with two surfaces. Detached + fail-open + idempotent so it never
-       * gates the HTTP response — the same idiom the web chat seam uses.
-       */
-      const healOnDeliveredReply = (text: string): void => {
-        if (text.trim().length > 0 && capsule.turnId) {
-          void closeOpsIncidentOnDeliveredReply(
-            staffId,
-            capsule.turnId,
-            request.log,
-          ).catch(() => {});
-        }
-      };
 
       try {
         // FE-D13 — honest stale-resume. If this reply signals a resume of an ops
@@ -217,7 +192,6 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
           } catch (err) {
             request.log.warn(err, "[ops-chat] stale-notice history append failed (non-fatal)");
           }
-          healOnDeliveredReply(staleNotice);
           return reply.send({
             reply: staleNotice,
             decision: "STALE_PARK_EXPIRED",
@@ -251,7 +225,6 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
           } catch (err) {
             request.log.warn(err, "[ops-chat] soft-restate history append failed (non-fatal)");
           }
-          healOnDeliveredReply(softRestate);
           return reply.send({
             reply: softRestate,
             decision: "SOFT_AFFIRM_RESTATE",
@@ -302,7 +275,6 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
             } catch (err) {
               request.log.warn(err, "[ops-chat] decline-ack history append failed (non-fatal)");
             }
-            healOnDeliveredReply(OPS_NEGATIVE_DECLINE_ACK_PTBR);
             return reply.send({
               reply: OPS_NEGATIVE_DECLINE_ACK_PTBR,
               decision: "NEGATIVE_DECLINED_PARK",
@@ -321,30 +293,6 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
         } catch (err) {
           request.log.warn(err, "[ops-chat] assistant-reply history append failed (non-fatal)");
         }
-        const replyText = turn.response.text ?? "";
-        healOnDeliveredReply(replyText);
-        // BKL-235 — the governed ops incident. `fallbackDelivered:false` because
-        // this route has NO honest error surface for a blank completion: it returns
-        // 200 with an empty `reply`, so the staffer gets a blank bubble and nothing
-        // else. That is a genuine ghost (`customerImpacted:true`), and it is why the
-        // dashboard needs the journal as much as WhatsApp does. The response contract
-        // is deliberately UNCHANGED — this adds the durable record, not a new surface.
-        await recordOpsTurnDelivery({
-          ctx: {
-            staffId,
-            channel: OPS_DASHBOARD_CHANNEL,
-            turnId: capsule.turnId,
-            messageRef: turnRef,
-            // No addressable channel + no phone in scope on the dashboard ingress.
-            senderRef: null,
-            phoneHash: null,
-            log: request.log,
-          },
-          replyText,
-          replyDelivered: replyText.trim().length > 0,
-          fallbackDelivered: false,
-          decisionKind: turn.decision.kind,
-        });
         return reply.send({
           reply: turn.response.text,
           decision: turn.decision.kind,

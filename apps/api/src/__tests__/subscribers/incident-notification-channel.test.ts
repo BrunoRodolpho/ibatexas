@@ -40,7 +40,7 @@ vi.mock("@ibatexas/tools", () => ({
 vi.mock("../../subscribers/dedup.js", () => ({ isNewEvent: mockIsNewEvent }));
 vi.mock("../../subscribers/dlq.js", () => ({ pushToDlq: mockPushToDlq }));
 
-import { OPS_DASHBOARD_CHANNEL, OPS_WHATSAPP_CHANNEL } from "@ibatexas/domain";
+import { OPS_WHATSAPP_CHANNEL } from "@ibatexas/domain";
 import { startIncidentNotificationSubscriber } from "../../subscribers/incident-notification-subscriber.js";
 
 /** Deliver one `conversation.incident_opened` and return the pt-BR message sent. */
@@ -75,11 +75,12 @@ describe("BKL-235 — the staff incident ping names the right audience", () => {
     expect(body).not.toContain("ao cliente");
   });
 
-  it("an OPS-dashboard row reports the same staff-channel failure", async () => {
-    const body = await pingFor(OPS_DASHBOARD_CHANNEL);
+  it("PIN — the UNWIRED ops dashboard channel is NOT treated as ops copy", async () => {
+    // Scope is ops-WhatsApp only; nothing writes `ops-dashboard` today. If that
+    // changes, this flips and is the reminder to declare the constant deliberately.
+    const body = await pingFor("ops-dashboard");
 
-    expect(body).toContain("Incidente no canal operacional");
-    expect(body).not.toContain("ao cliente");
+    expect(body).toContain("Uma falha de resposta automática impediu a entrega ao cliente.");
   });
 
   it("PIN — a customer WhatsApp row keeps the original customer copy byte-for-byte", async () => {
