@@ -115,11 +115,14 @@ const Q3_POLAR_MODAL =
   /\b(tem|aceita|aceitam|posso|consigo|pode|podem|funciona|da pra|da para|e possivel|sera que|tem como)\b|\bvoces? (sao|estao|tem|fazem|faz|aceitam?)\b/;
 
 /**
- * Q4 — a NARROW info-imperative. Deliberately narrow so ACTION imperatives ("cancela
- * meu pedido", "quero um X-burguer") keep taking the intent path: only "me diz/fala/
- * informa/explica/conta …", "me passa/manda/envia/dá/repassa …" (BKL-250), "quero/
- * queria/gostaria … saber", and "confere/verifica/vê se …" count as asking for
- * information.
+ * Q4 — a NARROW info-imperative, carried by FOUR component nets (Q4a..Q4d below)
+ * whose UNION is the Q4 marker; {@link hasInfoQuestion} ORs them. They are separate
+ * literals only because the fused one scored 35 on Sonar's regex-complexity budget
+ * of 20 (S5843) — the matched-string set is unchanged, one alternative per family.
+ * Deliberately narrow so ACTION imperatives ("cancela meu pedido", "quero um
+ * X-burguer") keep taking the intent path: only "me diz/fala/informa/explica/conta …"
+ * (Q4a), "me passa/manda/envia/dá/repassa …" (Q4b, BKL-250), "quero/queria/gostaria …
+ * saber" (Q4c), and "confere/verifica/vê se …" (Q4d) count as asking for information.
  *
  * BKL-250 — the HAND-IT-OVER family ("me passa o endereço do cliente", "me manda o
  * telefone dele") is the same speech act as "me diz …" with a different verb, and it
@@ -137,8 +140,18 @@ const Q3_POLAR_MODAL =
  * and the subjunctive-imperative form are listed for each verb, mirroring the
  * existing diz|diga / informa|informe / conta|conte pairing.
  */
-const Q4_INFO_IMPERATIVE =
-  /\bme (diz|diga|fala|informa|informe|explica|explique|conta|conte|passa|passe|manda|mande|envia|envie|da|repassa|repasse)\b|\b(quero|queria|gostaria)\s+(de\s+)?saber\b|\b(confere|conferir|verifica|verificar|ve se)\b/;
+const Q4A_TELL_ME =
+  /\bme (diz|diga|fala|informa|informe|explica|explique|conta|conte)\b/;
+
+/** Q4b — the BKL-250 HAND-IT-OVER family. See the {@link Q4A_TELL_ME} block above. */
+const Q4B_HAND_IT_OVER =
+  /\bme (passa|passe|manda|mande|envia|envie|da|repassa|repasse)\b/;
+
+/** Q4c — the "quero/queria/gostaria (de) saber" family. */
+const Q4C_WANT_TO_KNOW = /\b(quero|queria|gostaria)\s+(de\s+)?saber\b/;
+
+/** Q4d — the "confere/verifica/vê se …" family. */
+const Q4D_CHECK_WHETHER = /\b(confere|conferir|verifica|verificar|ve se)\b/;
 
 /**
  * D2 — the minimal English honesty net. An English question must degrade honestly
@@ -159,7 +172,10 @@ export function hasInfoQuestion(text: string): boolean {
     Q1_QUESTION_MARK.test(t) ||
     Q2_WH.test(t) ||
     Q3_POLAR_MODAL.test(t) ||
-    Q4_INFO_IMPERATIVE.test(t) ||
+    Q4A_TELL_ME.test(t) ||
+    Q4B_HAND_IT_OVER.test(t) ||
+    Q4C_WANT_TO_KNOW.test(t) ||
+    Q4D_CHECK_WHETHER.test(t) ||
     D2_ENGLISH.test(t)
   );
 }

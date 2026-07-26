@@ -458,10 +458,17 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // horas vocês fecham?"), and `finalizad*` ("meu pedido foi finalizado?" — a
   // GENUINE order-status ask). What survives is the verb proper: fecha/fecho/fechar/
   // feche/fechei/fechem/fechando, finaliza/finalizo/finalizar/finalize/finalizei.
+  // The net is spelled as TWO literals — the CART-EDIT roots and the ORDER-LIFECYCLE
+  // roots — OR'd into the same `mutationImperative` boolean every span below gates
+  // on, because the fused literal scored 28 on Sonar's regex-complexity budget of 20
+  // (S5843). BOTH carry the same `(?<![a-z])` left guard, so the union of matched
+  // strings is exactly what the single literal matched.
+  const MUTATION_EDIT_ROOTS =
+    /(?<![a-z])(adicion|acrescent|remov|tir|coloc|p[õo]e|p[õo]r|mud|troc|limp|esvazi|aument|diminu)/;
+  const MUTATION_LIFECYCLE_ROOTS =
+    /(?<![a-z])(cancel|fech(?!ad|ament|ou|am)|finaliz(?!ad))/;
   const mutationImperative =
-    /(?<![a-z])(adicion|acrescent|remov|tir|coloc|p[õo]e|p[õo]r|mud|troc|limp|esvazi|aument|diminu|cancel|fech(?!ad|ament|ou|am)|finaliz(?!ad))/.test(
-      t,
-    );
+    MUTATION_EDIT_ROOTS.test(t) || MUTATION_LIFECYCLE_ROOTS.test(t);
 
   if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
   // inv.18 v2 — the STORE_OPEN_NOW_Q markers are GENERATED from the def source
