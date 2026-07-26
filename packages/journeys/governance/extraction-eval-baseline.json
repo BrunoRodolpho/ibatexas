@@ -1,0 +1,10 @@
+{
+  "passing": [
+    "eval.refusal:delivery-coverage-question",
+    "eval.refusal:store-open-question",
+    "order.cancel:bare-direct",
+    "order.cancel:escalate-exact-threshold-boundary",
+    "order.item.add:quero-uma-coca",
+    "whatsapp.handoff.request:no-reason-bare"
+  ]
+}
