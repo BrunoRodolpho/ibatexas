@@ -3,8 +3,16 @@ version: "0.5"
 environment:
   - "FORCE_COLOR=1"
 
-env_file:
-  - ".env"
+# BKL-249: there is deliberately NO top-level `env_file:` key here. It was dead
+# config that also broke every validator: process-compose SILENTLY IGNORES a
+# top-level env_file at runtime (verified v1.103.0 — a process reading $FOO from
+# an env_file-declared file sees empty), while `--dry-run` REJECTS the whole file
+# with "Unknown field 'env_file' in project file" — which is why nothing could
+# validate this profile end to end. The dev `.env` still reaches every process:
+# `process-compose up` defaults its env-file list to [.env] (the `-e` flag), and
+# that binds with no yaml key present. See process-compose.test.yaml's header for
+# the test profile's stricter in-command sourcing contract, and
+# packages/cli/src/__tests__/process-compose-validate.test.ts for the gate.
 
 log_level: info
 
