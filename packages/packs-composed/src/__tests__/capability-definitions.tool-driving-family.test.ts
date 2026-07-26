@@ -41,8 +41,8 @@ import {
   generateChatDrivableToolKinds,
   generateMutatingToolNames,
   generateToolToIntentMap,
-} from "../capability-definitions/index.js"
-import type { CapabilityDefinition, CapabilityPackId } from "../capability-definitions/index.js"
+} from "@ibatexas/catalog"
+import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 
 // ── Count assertions (ticket AC: "70 KNOWN / 18 CHAT_DRIVABLE", updated to
 // 20 CHAT_DRIVABLE by FE-T09 (D-a) — the amend inversion; KNOWN 70→65 (BKL-176

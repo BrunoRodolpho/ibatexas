@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import { CAPABILITY_DEFINITIONS, generateChatDrivableToolKinds } from "../capability-definitions/index.js"
-import type { CapabilityDefinition } from "../capability-definitions/index.js"
+import { CAPABILITY_DEFINITIONS, generateChatDrivableToolKinds } from "@ibatexas/catalog"
+import type { CapabilityDefinition } from "@ibatexas/catalog"
 
 // FE-4 CONTRACT (FE-T26) — RETIRED-AS-TAUTOLOGICAL: this describe block
 // used to be titled "codegen-freshness gate — CHAT_DRIVABLE_TOOL_KINDS

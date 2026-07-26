@@ -31,8 +31,8 @@ import {
   CAPABILITY_DEFINITIONS,
   generateJustifiedByForClaim,
   generateRefusalCodes,
-} from "../capability-definitions/index.js"
-import type { CapabilityDefinition } from "../capability-definitions/index.js"
+} from "@ibatexas/catalog"
+import type { CapabilityDefinition } from "@ibatexas/catalog"
 
 // ── basisCodes refusal mirror (family 3) ─────────────────────────────────
 
