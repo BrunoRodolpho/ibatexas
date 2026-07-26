@@ -239,19 +239,21 @@ import {
 // OpsPlaneDriftProblems input `forbiddenOpsKinds` doc for the full contract,
 // and docs/architecture/design/fe4-drift-gates.md for the full per-gate
 // classification table across all four boot drift gates.
+// LE2-015 — the capability names below came through the packs-composed
+// compatibility barrel until that barrel's re-exports were deleted; they now
+// come from `@ibatexas/catalog`, the one root that owns them, alongside
+// CATALOG_VERSION (LE2-014 — the version stamped into every turn's trace, see
+// `flushTurnTraces`). Dropping the barrel import does not weaken the
+// guard-resolution boot check: the barrel's eager self-check only ever fired
+// for whichever process happened to import it, which is precisely why
+// kernel-bootstrap.ts calls `assertCapabilityGuardRefsWired()` unconditionally
+// at boot — see its doc comment.
 import {
   CAPABILITY_DEFINITIONS,
+  CATALOG_VERSION,
   generateChatDrivableToolKinds,
   generateOpsForbiddenDestructiveKinds,
-} from "@ibatexas/packs-composed/capability-definitions";
-// LE2-014 — the catalog version stamped into every turn's trace (see
-// `flushTurnTraces`). Imported from `@ibatexas/catalog` directly rather than
-// through the packs-composed compatibility barrel: the barrel exists to keep
-// PRE-EXISTING import sites working, not to route new ones. The capability
-// imports above stay on the barrel deliberately — moving them would be churn
-// with no behavior change, and the barrel also carries the eager
-// guard-resolution boot assertion this module depends on.
-import { CATALOG_VERSION } from "@ibatexas/catalog";
+} from "@ibatexas/catalog";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
@@ -286,6 +288,9 @@ import { renderCustomerActionAnswer } from "./claustrum/customer-action-render.j
 // LE2 decision 6: the construction moved to `safe-unknown-gate.ts` so the ops
 // conductor composes the SAME object instead of forking one (D5 dissolved).
 import { createSafeUnknownGate } from "./claustrum/safe-unknown-gate.js";
+// LE2-007 — the parse funnel's L0 tier seam + the per-turn stage store the
+// once-per-turn telemetry stamp reads for tier attribution.
+import { createL0Funnel, funnelStage } from "./claustrum/funnel-tier.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -2370,12 +2375,34 @@ function fastifyTelemetry(
       // is wired we OMIT the text rather than risk shipping raw PII to the store.
       const clip = (t: string | undefined): string | undefined =>
         t && turnTrace ? turnTrace.redactCompletion(t).slice(0, 280) : undefined;
+      // LE2-007 — FUNNEL TIER ATTRIBUTION on the trace (spec user story 31: "every
+      // turn stamped with its catalog version and funnel-tier attribution").
+      //
+      // WHY HERE and not on `turn_trace`: turn_trace is ONE ROW PER MODEL CALL, and a
+      // funnel-resolved L0 turn makes zero calls — it has no row to stamp, and
+      // fabricating one (model "none", 0 tokens) would put an exchange that never
+      // happened into the replay corpus. This log line is, by its own SIGNAL-2
+      // contract above, "the one guaranteed stream-tagged per-turn record", so it is
+      // the only surface where EVERY turn — including a zero-call one — can carry its
+      // tier. Additive and absent-by-default: a turn no tier claimed omits the key
+      // entirely rather than reporting a tier it does not have.
+      //
+      // WHEN A MODEL-CALLING TIER LANDS (L1 replay / L2 scoped parse) those turns DO
+      // write turn_trace rows, and the same stage record is the source for an additive
+      // nullable `funnel_tier` column following LE2-014's exact precedent (appended
+      // LAST, `ALTER TABLE … ADD COLUMN IF NOT EXISTS` catch-up, params-redaction pin
+      // intact). Not added now: a column no code path can write is dead surface, and
+      // naming today's full-roster path a "tier" would pre-empt ticket 09's design.
+      const funnelTier = funnelStage(record.turnId);
       logger.info(
         {
           component: "conductor",
           event: "turn",
           correlationId: record.turnId,
           turnId: record.turnId,
+          ...(funnelTier === undefined
+            ? {}
+            : { funnelTier: funnelTier.tier, funnelReason: funnelTier.reason }),
           conversationId: record.conversationId,
           channel: record.channel,
           customerId: record.customerId,
@@ -3161,6 +3188,15 @@ export async function bootstrapClaustrum(
   // (the reads turn-reads.ts already makes) — one schedule load per turn, no
   // divergence window. resolveScheduleSignal stays: it feeds ONLY the
   // closed-hours prompt note (prompt-side, not a C6 value source).
+  // LE2-007 — the parse funnel's tier seam, ONE instance shared by the customer
+  // planner + responder so both read the same stamped stage for a turn. The ops /
+  // agent planes deliberately do not wire it (their compositions omit `funnel`, so
+  // they are byte-identical): L0 is a customer-plane decision, and the ops plane's
+  // small-talk posture is its own ratified surface (LE2-013's `retireRawProse`).
+  // The seam is inert until a customer INGRESS publishes the turn's funnel context
+  // (routes/chat.ts, routes/whatsapp-webhook.ts) — see funnel-tier.ts's fail-closed
+  // `decideL0`.
+  const funnel = createL0Funnel();
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -3172,6 +3208,7 @@ export async function bootstrapClaustrum(
       resolveScheduleSignal,
       // BKL-027 — activate the one-hop read-tool enrichment loop.
       readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
+      funnel,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
@@ -3206,6 +3243,10 @@ export async function bootstrapClaustrum(
       // `safe-unknown-gate.ts`; the customer plane keeps the closed-hours offer
       // (the default), the staff plane opts out of that customer copy.
       ...(claimsPipelineEnabled() ? { safeUnknown: createSafeUnknownGate() } : {}),
+      // LE2-007 — the responder half of the funnel seam (the SAME instance the
+      // planner got): an L0-stamped turn renders its pt-BR template instead of the
+      // conversational completion.
+      funnel,
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner

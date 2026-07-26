@@ -25,6 +25,7 @@ import {
   type IntentEnvelope,
 } from "@adjudicate/core";
 import {
+  createToolRegistry,
   handleTurn,
   type Adjudicator,
   type ChannelMessage,
@@ -36,6 +37,7 @@ import {
   type SessionPort,
   type TelemetryPort,
   type TenantResolver,
+  type ToolRegistry,
 } from "@claustrum/core";
 import { IBATEXAS_COMPOSED_PACKS } from "@ibatexas/packs-composed";
 import {
@@ -50,7 +52,10 @@ import {
 } from "../../claustrum/noop-memory-grounding.js";
 import { composeOpsConductor } from "../ops-conductor.js";
 import { createIbatexasPromptComposer } from "../../claustrum/prompts/ibatexas-prompts.js";
-import { createOpsToolRegistry } from "../ops-tool-registry.js";
+import {
+  createOpsToolRegistry,
+  listOpsToolDefinitions,
+} from "../ops-tool-registry.js";
 import { createOpsResolver } from "../ops-resolver.js";
 import type { OrderCandidate } from "../ops-order-resolution.js";
 
@@ -172,6 +177,31 @@ type FakeOpsOrder = {
   fulfillmentStatus: string | null;
 } | null;
 
+/** BKL-240 — what a failing-but-NOT-throwing ops executor hands the dispatcher. */
+const RETURNED_FAILURE = {
+  success: false,
+  message: "Não foi possível aplicar a alteração no catálogo.",
+};
+
+/** The ops registry with ONE capability's `execute` swapped for a RETURNED failure.
+ *  Everything else stays REAL — the composed router, the kernel, the resolver, the
+ *  conductor's responder wiring — so the only variable is the value the tool hands
+ *  back to @claustrum's dispatcher (which reports `executed`, since nothing threw). */
+function registryWithFailingExecute(
+  deps: Parameters<typeof createOpsToolRegistry>[0],
+  capability: string,
+): ToolRegistry {
+  const registry = createToolRegistry();
+  for (const def of listOpsToolDefinitions(deps)) {
+    registry.register(
+      String(def.capability) === capability
+        ? { ...def, execute: async () => RETURNED_FAILURE }
+        : def,
+    );
+  }
+  return registry;
+}
+
 function buildDeps(opts: {
   model: ModelProvider;
   medusaAdjudicated: ReturnType<typeof vi.fn>;
@@ -230,8 +260,13 @@ function buildDeps(opts: {
   /** SCN-127 — the injected clock the resolver reads for NL-date normalization
    *  + the today-or-future reference (defaults to the DET business day). */
   now?: () => Date;
+  /** BKL-240 — replace ONE registered tool's `execute` with a RETURNED
+   *  `{ success:false }` (never a throw). That is the exact case @claustrum's
+   *  dispatcher reports as `executed`, because it decides executed-vs-failed purely
+   *  on whether `tool.execute` threw. */
+  failingCapability?: string;
 }) {
-  const tools = createOpsToolRegistry({
+  const registryDeps = {
     medusaAdjudicated: opts.medusaAdjudicated as never,
     auditSink: {} as never,
     readProductBrlVariantIds: (async () => ["variant_1"]) as never,
@@ -291,7 +326,11 @@ function buildDeps(opts: {
     },
     invalidateScheduleCache:
       opts.invalidateScheduleCache ?? (vi.fn(async () => ({ ok: true })) as never),
-  });
+  };
+  const tools =
+    opts.failingCapability === undefined
+      ? createOpsToolRegistry(registryDeps)
+      : registryWithFailingExecute(registryDeps, opts.failingCapability);
   return {
     adjudicator: realKernelAdjudicator,
     memory: noopMemoryProvider(),
@@ -1837,5 +1876,107 @@ describe("ops conductor — Wire Truth: REFUSE recovery + trace manifests", () =
     expect(manifests[0]).toEqual(["ops/planner.persona"]);
     expect(manifests[manifests.length - 1]).toEqual(["ops/responder.persona"]);
     for (const m of manifests) expect(m).not.toEqual([]);
+  });
+});
+
+// ── BKL-240 at the SEAM — the staff reply a FAILED ops tool actually delivers ──
+//
+// The renderer suite pins `renderOpsActionAnswer` directly. Per the LE2-002 lesson
+// that a renderer-level suite can be green while the behaviour through the gate is
+// unchanged, this arm drives the REAL composed conductor + REAL composed router +
+// REAL kernel + REAL handleTurn and asserts the DELIVERED `turn.response.text`. The
+// pair below is a controlled comparison: identical turn, identical fakes — the ONLY
+// difference is whether the availability tool RETURNS `{success:false}` or its real
+// result.
+
+describe("BKL-240 seam — a RETURNED tool failure never delivers the ops success template", () => {
+  const AVAIL_SUCCESS_LINE = "Pronto — produto marcado como esgotado (86).";
+  /** What the grounded ops model path voices once the deterministic render abstains. */
+  const GROUNDED_FAILURE_PROSE =
+    "Não consegui aplicar essa alteração agora. Pode tentar de novo?";
+
+  it("the executor RETURNS success:false → the delivered reply is NOT the success line", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: { id: "prod_1" } }));
+    const { model } = scriptedModel([AVAIL_CALL], GROUNDED_FAILURE_PROSE);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: { id: "prod_1", status: "published" },
+      failingCapability: "product.availability.set",
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "acabou a picanha");
+    // The kernel DID authorize and the dispatch DID run — that is the whole point:
+    // EXECUTE + an `executed` dispatch is not evidence the executor committed.
+    expect(out.kind).toBe("EXECUTE");
+    expect(out.response).not.toBe(AVAIL_SUCCESS_LINE);
+    expect(out.response).not.toContain("Pronto —");
+    expect(out.response).not.toContain("(86)");
+    expect(out.response).not.toContain("esgotado");
+    // Falls through to the honest grounded path — never an empty/ghosted staff turn.
+    expect(out.response.length).toBeGreaterThan(0);
+  });
+
+  // The REACHABLE signal, end-to-end with the REAL executor: the alert-resolve
+  // SYSTEM-write layer adjudicates its inner envelope itself and its contract makes
+  // `result` OPTIONAL (ops-tool-registry.ts:199), so a non-EXECUTE inner decision
+  // returns no result and `executeAlertResolveStaff` coerces it to `status: null`
+  // (:732). Nothing threw ⇒ the dispatch is `executed` ⇒ pre-BKL-240 staff were told
+  // "Pronto — alerta operacional resolvido." about an alert that is still OPEN.
+  it("a SYSTEM write that returns NO result → the alert-resolved line is NOT delivered", async () => {
+    const resolveAlertFromEnvelope = vi.fn(
+      async (
+        _envelope: IntentEnvelope,
+        _state: unknown,
+      ): Promise<{ result: { status: string } | null }> => ({ result: null }),
+    );
+    const { model } = scriptedModel([ALERT_RESOLVE_CALL], GROUNDED_FAILURE_PROSE);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      alert: { id: "alert_1", status: "OPEN" },
+      resolveAlertFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "resolve o alerta alert_1");
+    // The staff verb WAS authorized and the executor DID run — only the inner
+    // SYSTEM adjudication declined, which is invisible to the dispatcher.
+    expect(out.kind).toBe("EXECUTE");
+    expect(resolveAlertFromEnvelope).toHaveBeenCalledTimes(1);
+    expect(out.response).not.toBe("Pronto — alerta operacional resolvido.");
+    expect(out.response).not.toContain("resolvido");
+    expect(out.response).not.toContain("Pronto —");
+    expect(out.response.length).toBeGreaterThan(0);
+  });
+
+  it("the same alert turn WITH a committed status still delivers the resolved line (control)", async () => {
+    const resolveAlertFromEnvelope = systemWriterSpy();
+    const { model } = scriptedModel([ALERT_RESOLVE_CALL], GROUNDED_FAILURE_PROSE);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      alert: { id: "alert_1", status: "OPEN" },
+      resolveAlertFromEnvelope,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "resolve o alerta alert_1");
+    expect(out.kind).toBe("EXECUTE");
+    expect(out.response).toBe("Pronto — alerta operacional resolvido.");
+  });
+
+  it("the SAME turn with the REAL executor still delivers the success line (control)", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: { id: "prod_1" } }));
+    const { model } = scriptedModel([AVAIL_CALL], GROUNDED_FAILURE_PROSE);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: { id: "prod_1", status: "published" },
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "acabou a picanha");
+    expect(out.kind).toBe("EXECUTE");
+    expect(out.response).toBe(AVAIL_SUCCESS_LINE);
   });
 });

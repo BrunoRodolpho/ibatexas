@@ -46,8 +46,8 @@ import {
   generateKnownIntentKinds,
   generatePackIntents,
   generatePlannerAllowedIntents,
-} from "../capability-definitions/index.js"
-import type { CapabilityDefinition, CapabilityPackId } from "../capability-definitions/index.js"
+} from "@ibatexas/catalog"
+import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 
 const ALL_PACKS: readonly CapabilityPackId[] = [
   "ibatexas/pack-orders",

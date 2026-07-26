@@ -9,7 +9,10 @@
 // - Envelope shape: kind="reservation.cancel", taint="UNTRUSTED", principal="llm"
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { cancelReservation } from "../cancel-reservation.js"
+import {
+  cancelReservation,
+  cancelReservationPreAdjudicated,
+} from "../cancel-reservation.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -17,6 +20,7 @@ const mockReservationFindUnique = vi.hoisted(() => vi.fn())
 const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn())
 const mockSvcGetById = vi.hoisted(() => vi.fn())
 const mockCancelFromEnvelope = vi.hoisted(() => vi.fn())
+const mockCancel = vi.hoisted(() => vi.fn())
 const mockPromoteWaitlist = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 const mockNotifyWaitlistSpotAvailable = vi.hoisted(() => vi.fn())
@@ -29,6 +33,7 @@ const mockCreateReservationService = vi.hoisted(() =>
   vi.fn((_options?: { auditSink?: unknown }) => ({
     getById: mockSvcGetById,
     cancelFromEnvelope: mockCancelFromEnvelope,
+    cancel: mockCancel,
     promoteWaitlist: mockPromoteWaitlist,
   })),
 )
@@ -251,5 +256,118 @@ describe("cancelReservation", () => {
     expect(mockCreateReservationService).toHaveBeenCalledOnce()
     const options = mockCreateReservationService.mock.calls[0]?.[0]
     expect(options?.auditSink).toBe(mockAuditSink)
+  })
+})
+
+// BKL-242 — the conductor-dispatch entry point. A single customer confirm on a
+// parked `reservation.cancel` produced TWO `reservation.cancel` EXECUTE rows
+// because this tool re-minted its own envelope and adjudicated it a second time
+// (live intent_audit pair 6712/6714 under one turn_trace, 5.23s apart). The
+// Conductor's decision is the authorization on that path, so the second
+// adjudication must not happen. The end-to-end proof is
+// `apps/api/src/__tests__/reservation-cancel-resume-dedup.e2e.test.ts`; this arm
+// pins the tool-level contract the fix rests on.
+describe("cancelReservationPreAdjudicated (BKL-242)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function setupPreAdjudicatedHappyPath() {
+    mockReservationFindUnique.mockResolvedValue(OWNERSHIP_RESERVATION)
+    mockSvcGetById.mockResolvedValue(RESERVATION_DTO)
+    mockCancel.mockResolvedValue({ timeSlotId: "ts_01", partySize: 4 })
+    mockPromoteWaitlist.mockResolvedValue({ promoted: null })
+    mockPublishNatsEvent.mockResolvedValue(undefined)
+    mockNotifyWaitlistSpotAvailable.mockResolvedValue(undefined)
+    mockSendReservationCancelled.mockResolvedValue(undefined)
+  }
+
+  it("writes via the bare service method and NEVER re-adjudicates", async () => {
+    setupPreAdjudicatedHappyPath()
+
+    const result = await cancelReservationPreAdjudicated({
+      customerId: "cus_01",
+      reservationId: "res_01",
+    })
+
+    // No second envelope, no second kernel run, no second audit record.
+    expect(mockCancelFromEnvelope).not.toHaveBeenCalled()
+    // The mutation still runs exactly once.
+    expect(mockCancel).toHaveBeenCalledExactlyOnceWith("res_01", "cus_01")
+    // Same success shape + side effects as the self-adjudicating entry point.
+    expect(result.success).toBe(true)
+    expect(result.message).toContain("cancelada")
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "reservation.cancelled",
+      expect.objectContaining({ eventType: "reservation.cancelled" }),
+    )
+  })
+
+  // The scouted gotcha: `svc.getById` is NOT state projection on this path — it
+  // supplies the slot date + start time `sendReservationCancelled` needs. Drop it
+  // as "kernel-only" and the customer silently stops being told their reservation
+  // was cancelled.
+  it("still reads the reservation and notifies the customer with its slot details", async () => {
+    setupPreAdjudicatedHappyPath()
+
+    await cancelReservationPreAdjudicated({
+      customerId: "cus_01",
+      reservationId: "res_01",
+    })
+
+    expect(mockSvcGetById).toHaveBeenCalledExactlyOnceWith("res_01", "cus_01")
+    expect(mockSendReservationCancelled).toHaveBeenCalledExactlyOnceWith(
+      "res_01",
+      "2026-03-15",
+      "19:30",
+    )
+  })
+
+  // The slot row exists ONLY to feed the kernel's `confirmLastMinuteCancel`
+  // guard. With no kernel run on this path it is a pure wasted read.
+  it("skips the kernel-only timeSlot hydration", async () => {
+    setupPreAdjudicatedHappyPath()
+
+    await cancelReservationPreAdjudicated({
+      customerId: "cus_01",
+      reservationId: "res_01",
+    })
+
+    expect(mockTimeSlotFindUnique).not.toHaveBeenCalled()
+  })
+
+  it("still promotes the waitlist and notifies the promoted customer", async () => {
+    setupPreAdjudicatedHappyPath()
+    mockPromoteWaitlist.mockResolvedValue({
+      promoted: {
+        id: "wl_01",
+        customerId: "cus_02",
+        partySize: 2,
+        date: "2026-03-15",
+        startTime: "19:30",
+      },
+    })
+
+    await cancelReservationPreAdjudicated({
+      customerId: "cus_01",
+      reservationId: "res_01",
+    })
+
+    expect(mockPromoteWaitlist).toHaveBeenCalledExactlyOnceWith("ts_01")
+    expect(mockNotifyWaitlistSpotAvailable).toHaveBeenCalledOnce()
+  })
+
+  it("still runs the SEC-002 ownership guard before any write", async () => {
+    mockReservationFindUnique.mockResolvedValue(OWNERSHIP_RESERVATION)
+
+    await expect(
+      cancelReservationPreAdjudicated({
+        customerId: "cus_WRONG",
+        reservationId: "res_01",
+      }),
+    ).rejects.toThrow("Acesso negado")
+
+    expect(mockCancel).not.toHaveBeenCalled()
+    expect(mockCancelFromEnvelope).not.toHaveBeenCalled()
   })
 })

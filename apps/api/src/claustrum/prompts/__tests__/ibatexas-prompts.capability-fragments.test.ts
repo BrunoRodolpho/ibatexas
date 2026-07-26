@@ -21,7 +21,7 @@ import { describe, expect, it } from "vitest";
 import {
   CAPABILITY_DEFINITIONS,
   generateCapabilityDescriptions,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 
 import { ibatexasPromptFragments, RESPONDER_GROUNDED_SURFACE } from "../ibatexas-prompts.js";
 

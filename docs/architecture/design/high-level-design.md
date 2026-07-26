@@ -174,10 +174,13 @@ invariant listed here is one that cannot be violated from outside the context.
 
 ### 4.2 Business Definition — **core, emerging**
 
-**Owner today:** `packages/packs-composed/src/capability-definitions/` — one authored
-`definitions.ts` plus twelve generators that compile it into rosters, auth levels, refusal codes,
-planner allow-lists and tool maps. `toolRosterDrift()` runs fail-closed at boot.
-**Owner after LE2:** `@ibatexas/catalog` (tickets 14–18, 25–26)
+**Owner today:** `@ibatexas/catalog` — one authored `definitions.ts` plus twelve generators
+that compile it into rosters, auth levels, refusal codes, planner allow-lists and tool maps.
+`toolRosterDrift()` runs fail-closed at boot. Moved out of
+`packages/packs-composed/src/capability-definitions/` by LE2-014 and made the sole import path
+by LE2-015; what packs-composed retains there is guard-ref resolution, which is runtime
+authority rather than definition.
+**Owner after LE2:** `@ibatexas/catalog` (remaining tickets 16–18, 25–26)
 
 | Aggregate | Root | Notes |
 |---|---|---|

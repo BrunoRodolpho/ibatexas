@@ -1,12 +1,16 @@
 /**
- * FE-T01 — wire-body assertions for OllamaFetchClient.
+ * FE-T01 / LE2-006 — wire-body assertions for OllamaFetchClient.
  *
- * Covers acceptance criterion 1 ("the outbound /v1 request body carries an
- * explicit temperature and a response_format/JSON-mode field, asserted by an
- * integration test on the wire payload") by stubbing `fetch` and inspecting
- * the EXACT JSON body this relay POSTs to Ollama's OpenAI-compat endpoint —
- * the same seam `@claustrum/openai`'s `OpenAIProvider` calls via
- * `chat.completions.create()`.
+ * Stubs `fetch` and inspects the EXACT JSON body this relay POSTs to Ollama's
+ * OpenAI-compat endpoint — the same seam `@claustrum/openai`'s `OpenAIProvider`
+ * calls via `chat.completions.create()`.
+ *
+ * FE-T01 pinned an explicit temperature on the outbound body, plus a JSON-mode
+ * `response_format` on tool-bearing bodies. LE2-006 (wire constraint V1) removed
+ * the latter on measured evidence, so `response_format` is now pinned ABSENT on
+ * BOTH branches: the assertions below are the standing guard that nothing
+ * re-adds it. Rationale + experiment pointers live on `wireBody`'s doc comment
+ * in ../ollama-fetch-client.ts.
  */
 
 import { describe, expect, it, vi, afterEach } from "vitest";
@@ -66,7 +70,7 @@ describe("OllamaFetchClient — wire body (FE-T01)", () => {
     expect(body.temperature).toBe(0);
   });
 
-  it("enriches a tool-bearing body with response_format: json_object", async () => {
+  it("sends a tool-bearing body UNCONSTRAINED — no response_format (LE2-006 V1)", async () => {
     const fetchMock = mockFetchOk(FAKE_COMPLETION);
     vi.stubGlobal("fetch", fetchMock);
     const client = new OllamaFetchClient({ baseUrl: "http://box:11434/v1" });
@@ -80,8 +84,31 @@ describe("OllamaFetchClient — wire body (FE-T01)", () => {
 
     const [, init] = fetchMock.mock.calls[0]!;
     const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.response_format).toBeUndefined();
     expect(body.tools).toEqual([EXPRESS_INTENT_TOOL]);
+  });
+
+  it("adds NO wire constraint of any spelling to a tool-bearing body (LE2-006 V1)", async () => {
+    const fetchMock = mockFetchOk(FAKE_COMPLETION);
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new OllamaFetchClient({ baseUrl: "http://box:11434/v1" });
+
+    const caller = {
+      model: "nemotron-3-nano:4b",
+      messages: [{ role: "user" as const, content: "refund cha-1" }],
+      tools: [EXPRESS_INTENT_TOOL],
+      temperature: 0,
+    };
+    await client.chat.completions.create(caller);
+
+    // The relay must forward the caller's body verbatim on this branch. Pinned
+    // as an exact key set rather than field-by-field absence: on this engine an
+    // unsupported constraint is accepted with a 200 and silently ignored, so a
+    // future `tool_choice`/`grammar`/`format` experiment left in by accident
+    // would never surface as an error — only as an unexplained behaviour shift.
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(Object.keys(body).sort()).toEqual(Object.keys(caller).sort());
   });
 
   it("does NOT add response_format when no tools are present (the responder's synthesis calls)", async () => {
@@ -166,10 +193,10 @@ describe("OllamaFetchClient — wire body (FE-T01)", () => {
     const [, init] = fetchMock.mock.calls[0]!;
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.reasoning_effort).toBeUndefined();
-    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.response_format).toBeUndefined();
   });
 
-  it("still pins the served model override alongside the new fields (pre-existing behavior preserved)", async () => {
+  it("still pins the served model override on a tool-bearing body (pre-existing behavior preserved)", async () => {
     const fetchMock = mockFetchOk(FAKE_COMPLETION);
     vi.stubGlobal("fetch", fetchMock);
     const client = new OllamaFetchClient({
@@ -187,6 +214,6 @@ describe("OllamaFetchClient — wire body (FE-T01)", () => {
     const [, init] = fetchMock.mock.calls[0]!;
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.model).toBe("nemotron-3-nano:4b");
-    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.response_format).toBeUndefined();
   });
 });

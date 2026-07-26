@@ -250,6 +250,13 @@ describe("BKL-230 turn seam — chat PIX checkout reaches the executor and mints
       success: true,
       paymentMethod: "pix",
       pixQrCode: "https://stripe.test/pix-qr.svg",
+      // BKL-241: a real QR from this seam carries the PaymentIntent id under
+      // its honest name, so the expiry monitor keys on the same id the Stripe
+      // webhook writes the `pix:paid:` marker under. `orderId` keeps the same
+      // `pi_…` value — it is the CLIENT tracking id and the Medusa order does
+      // not exist until the webhook completes the cart.
+      paymentIntentId: "pi_bkl230",
+      orderId: "pi_bkl230",
     });
     expect(String(result?.["message"])).not.toContain("obrigatórios");
 

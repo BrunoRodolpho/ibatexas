@@ -23,6 +23,7 @@
 import {
   EXTERNAL_REFERENCES,
   type ExternalReferenceDeclaration,
+  type ExternalReferenceStore,
 } from "@ibatexas/catalog"
 
 /** A readable environment — `process.env`, or a fake in a test. */
@@ -51,6 +52,24 @@ export function findExternalReference(
   declarations: readonly ExternalReferenceDeclaration[] = EXTERNAL_REFERENCES,
 ): ExternalReferenceDeclaration | undefined {
   return declarations.find((declaration) => declaration.id === id)
+}
+
+/**
+ * Every declared reference that must exist in `store`.
+ *
+ * The reconciler never needs this — it walks the whole table and lets each
+ * declaration name its own store. PROVISIONERS do: a seeder can only create
+ * references in the one store it can talk to, and the set it must create is
+ * "whatever the catalog declares for that store", never a list of its own.
+ * That is the difference between a seed that keeps up with the declarations
+ * and a seed that goes stale the day a third promotion is declared — and the
+ * boot gate turns stale into a refused start.
+ */
+export function externalReferencesForStore(
+  store: ExternalReferenceStore,
+  declarations: readonly ExternalReferenceDeclaration[] = EXTERNAL_REFERENCES,
+): readonly ExternalReferenceDeclaration[] {
+  return declarations.filter((declaration) => declaration.store === store)
 }
 
 /**

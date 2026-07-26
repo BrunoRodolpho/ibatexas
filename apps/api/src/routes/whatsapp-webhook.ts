@@ -43,6 +43,9 @@ import {
 import { getRedisClient, rk, atomicIncr, getLoyaltyBalance, getOrCreateCart } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { getConductor } from "../claustrum-bootstrap.js";
+// LE2-007 — the funnel's per-turn context (the confirm-window fact only the ingress
+// can see). See funnel-tier.ts.
+import { closeFunnelTurn, openFunnelTurn } from "../claustrum/funnel-tier.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
   normalizePhone,
@@ -121,6 +124,16 @@ interface WhatsAppTurn {
     pixCopyPaste?: string;
     pixQrCode?: string;
     pixExpiresAt?: string;
+    /**
+     * BKL-241 — the Stripe PaymentIntent id (`pi_…`) of this PIX attempt: the
+     * canonical key for the expiry monitor / `pix:paid:` marker pair.
+     */
+    paymentIntentId?: string;
+    /**
+     * `create_checkout`'s tracking id. For PIX this is the SAME `pi_…` id (the
+     * web order-read path resolves `pi_`-prefixed ids explicitly) — it is read
+     * only as a fallback for producers that do not surface `paymentIntentId`.
+     */
     orderId?: string;
   };
 }
@@ -153,9 +166,10 @@ function extractPixData(acted: unknown): WhatsAppTurn["pixData"] | undefined {
     const pixCopyPaste = typeof r.pixCopyPaste === "string" ? r.pixCopyPaste : undefined;
     const pixQrCode = typeof r.pixQrCode === "string" ? r.pixQrCode : undefined;
     const pixExpiresAt = typeof r.pixExpiresAt === "string" ? r.pixExpiresAt : undefined;
+    const paymentIntentId = typeof r.paymentIntentId === "string" ? r.paymentIntentId : undefined;
     const orderId = typeof r.orderId === "string" ? r.orderId : undefined;
     if (!pixCopyPaste && !pixQrCode) return undefined;
-    return { pixCopyPaste, pixQrCode, pixExpiresAt, orderId };
+    return { pixCopyPaste, pixQrCode, pixExpiresAt, paymentIntentId, orderId };
   };
 
   if (acted === null || typeof acted !== "object") return undefined;
@@ -251,6 +265,18 @@ async function runConductorTurn(args: {
     inbound,
   });
   try {
+    // LE2-007 — publish this turn's FUNNEL CONTEXT (the WhatsApp customer mirror of
+    // routes/chat.ts). The confirm-window fact is the one thing the funnel's L0 tier
+    // cannot see from inside the loop (`CognitiveState` carries no session), and
+    // FE-D32 says L0 must not fire at all while a confirmation is parked. This plane
+    // needs the gate MORE than web does, not less: its channel driver confirms on a
+    // bare "ok" by design (see web-confirm-channel.ts's header), so courtesy tokens
+    // during a park are load-bearing here. Absent this publish the tier is
+    // fail-closed (no L0), never fail-open.
+    openFunnelTurn(capsule.turnId, {
+      confirmWindowOpen:
+        (capsule.loadedSession?.pendingConfirmations?.length ?? 0) > 0,
+    });
     const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
     const pixData = extractPixData(turn.acted);
     // Classify the delivery outcome at the source (the only place that can tell
@@ -289,6 +315,8 @@ async function runConductorTurn(args: {
       ...(pixData ? { pixData } : {}),
     };
   } finally {
+    // LE2-007 — drop this turn's funnel state (LRU-capped store; this is hygiene).
+    closeFunnelTurn(capsule.turnId);
     await conductor.closeCapsule(capsule);
   }
 }
@@ -912,16 +940,28 @@ async function sendPixFollowUp(
       });
   }
 
-  // Schedule PIX expiry reminders (25min reminder + 30min expired)
-  const pixOrderId = pixData.orderId;
-  if (pixCopyPaste && (pixOrderId || session.customerId)) {
+  // Schedule PIX expiry reminders (25min reminder + 30min expired).
+  //
+  // BKL-241: keyed by the PaymentIntent id — the same id the Stripe webhook
+  // writes the `pix:paid:` marker under, so payment actually silences these
+  // jobs. The previous `|| session.customerId` fallback is GONE: a monitor
+  // keyed on a customer id can never match that marker, so it was guaranteed
+  // to tell a paying customer "O PIX expirou". With no id the paid-check is
+  // unanswerable, so we schedule nothing rather than schedule a false claim.
+  const pixPaymentIntentId = pixData.paymentIntentId ?? pixData.orderId;
+  if (pixCopyPaste && pixPaymentIntentId) {
     void schedulePixExpiryMonitor({
       phone,
       phoneHash: hash,
-      orderId: pixOrderId || session.customerId!,
+      paymentIntentId: pixPaymentIntentId,
     }).catch((err) => {
       log.warn({ error: String(err) }, "[whatsapp.pix.expiry_schedule_failed]");
     });
+  } else if (pixCopyPaste) {
+    log.warn(
+      { session: session.sessionId },
+      "[whatsapp.pix.expiry_schedule_skipped] PIX artifact carries no payment intent id",
+    );
   }
 
   return pixDelivered;

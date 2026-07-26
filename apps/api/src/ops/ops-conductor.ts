@@ -490,9 +490,8 @@ export function opsPlaneDriftProblems(input: {
    * DESTRUCTIVE_KINDS`, now deleted). Every caller must now state its
    * intent explicitly. The real chat-registry boot call (`apps/api/src/
    * claustrum-bootstrap.ts`) supplies `generateOpsForbiddenDestructiveKinds
-   * (CAPABILITY_DEFINITIONS)` from `@ibatexas/packs-composed/capability-
-   * definitions` — mirrors `toolRosterDrift`'s `chatSurfacedKinds` (FE-T22)
-   * threading pattern.
+   * (CAPABILITY_DEFINITIONS)` from `@ibatexas/catalog` — mirrors
+   * `toolRosterDrift`'s `chatSurfacedKinds` (FE-T22) threading pattern.
    */
   readonly forbiddenOpsKinds: ReadonlySet<string>;
 }): string[] {

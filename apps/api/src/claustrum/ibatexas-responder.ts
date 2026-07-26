@@ -53,6 +53,7 @@ import {
   closedHoursScheduledConfirmation,
   type ScheduleSignal,
 } from "./closed-hours.js";
+import type { FunnelStageRecord } from "./funnel-tier.js";
 
 // Re-export so existing importers (tests) keep their import site.
 export {
@@ -219,6 +220,22 @@ export interface IbatexasResponderDeps {
   readonly safeUnknown?: {
     gate(text: string): boolean;
     render(schedule: ScheduleSignal | undefined, userText: string): string;
+  };
+  /**
+   * LE2-007 — the parse funnel's tier seam, the RESPONDER half. The planner stamped
+   * this turn's stage record (handleTurn runs PLAN before SYNTHESIZE), so the
+   * responder does not re-classify anything: it reads the stamp and, for a tier that
+   * authors its own reply (L0 today), returns that deterministic pt-BR template with
+   * NO model call. Together with the planner + claim-path short-circuits that is the
+   * whole zero-completions guarantee for a social turn.
+   *
+   * ABSENT ⟹ byte-identical to the pre-funnel responder (ops plane, agent plane, unit
+   * tests). Wired on the customer plane only, from the same `createL0Funnel()`
+   * instance the planner got, so the two can never disagree about a turn.
+   */
+  readonly funnel?: {
+    stageFor(turnId: string): FunnelStageRecord | undefined;
+    reply(stage: FunnelStageRecord): string | undefined;
   };
 }
 
@@ -525,12 +542,34 @@ function executedKinds(acted: unknown): ReadonlySet<string> {
 
 /**
  * Whether the runtime ACCEPTED a scheduled-pickup order this turn (F6). True ONLY
- * when a checkout genuinely COMMITTED (`order.checkout.create` ∈ executedKinds — an
- * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER) AND the checkout output
- * flagged `scheduledPickup === true`. That flag is set ONLY for pickup (no
- * deliveryCep) placed while closed, so a delivery/immediate order accepted while
- * closed (the kernel does NOT gate closed-hours) is `accepted === false` and keeps
- * the SAFE closed-hours degrade — never a false pickup confirmation.
+ * when a checkout was DISPATCHED (`order.checkout.create` ∈ executedKinds — an
+ * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER), the executor did NOT
+ * REPORT failure (BKL-239), AND the checkout output flagged `scheduledPickup ===
+ * true`. That flag is set ONLY for pickup (no deliveryCep) placed while closed, so a
+ * delivery/immediate order accepted while closed (the kernel does NOT gate
+ * closed-hours) is `accepted === false` and keeps the SAFE closed-hours degrade —
+ * never a false pickup confirmation.
+ *
+ * BKL-239 — membership in `executedKinds` is DISPATCH MECHANICS, not a business
+ * outcome: @claustrum's dispatcher decides `executed` vs `failed` purely on whether
+ * `tool.execute` THREW (execution/dispatch.js — it never inspects the returned
+ * value), and `createCheckout` RETURNS `success:false` rather than throwing on its
+ * PIX legs (packages/tools/src/cart/create-checkout.ts:133 no QR data on the
+ * confirmed PaymentIntent, :188 the catch-all that converts EVERY throw in
+ * `confirmPixAndGetQrCode` into a returned failure) — and :611 spreads
+ * `scheduledPickup` ONTO that failure (`{ ...pixResult, scheduledPickup }`). So a
+ * FAILED closed-hours scheduled PIX checkout arrived here as fully `executed`
+ * carrying `{ success:false, paymentMethod:"pix", scheduledPickup:true }` and voiced
+ * `closedHoursScheduledConfirmation(..., true)` — telling a customer their order was
+ * registered and only the PIX payment was outstanding when NOTHING was placed. The
+ * same false-claim class BKL-230/BKL-247 killed on the action-render seam.
+ *
+ * Gated on `success !== false` — render UNLESS failure was REPORTED (the polarity
+ * ratified in BKL-247): an absent/non-boolean `success` keeps today's behaviour, so
+ * no committed fixture silently stops confirming. On THIS seam the two polarities
+ * coincide on any real result anyway (`CheckoutResult.success` is a REQUIRED boolean
+ * — create-checkout.ts:25 — and only `createCheckout` ever stamps `scheduledPickup`),
+ * so `!== false` misses no real failure while keeping both seams uniform.
  *
  * `awaitingPixPayment` reflects the QR-first-then-confirm PIX flow: a scheduled PIX
  * pickup EXECUTEs + generates the QR but payment is still pending. (A re-entry while
@@ -544,9 +583,12 @@ function acceptedScheduledPickup(
     return { accepted: false, awaitingPixPayment: false };
   }
   const result = summarizeActed(acted)?.result as
-    | { scheduledPickup?: unknown; paymentMethod?: unknown }
+    | { scheduledPickup?: unknown; paymentMethod?: unknown; success?: unknown }
     | undefined;
-  const accepted = result?.scheduledPickup === true;
+  // BKL-239 — the executor's OWN outcome gates the confirmation. A reported failure
+  // falls through to `accepted:false`, i.e. the SAFE closed-hours degrade the
+  // delivery/immediate path already takes (offer/disclosure), never a confirmation.
+  const accepted = result?.success !== false && result?.scheduledPickup === true;
   return { accepted, awaitingPixPayment: accepted && result?.paymentMethod === "pix" };
 }
 
@@ -1204,6 +1246,39 @@ export function createIbatexasResponder(
             const rendered = deps.readAnswer?.render(turnId);
             if (rendered !== undefined) {
               return { text: rendered };
+            }
+            // ── LE2-007 · L0 · the template reply, zero model calls ────────────
+            // The planner stamped this turn L0 (a social-only utterance, no confirm
+            // window) and skipped its extraction completion; the claim path skipped
+            // its own, so nothing validated and loop §6a cannot supersede this text.
+            // Render the deterministic pt-BR template and return — this is the third
+            // and last completion the tier removes.
+            //
+            // PLACEMENT: after the deterministic read render (a captured first-party
+            // read is strictly more informative than a template, and on an L0 turn
+            // there is none — so this ordering is a no-op today and the right
+            // precedence tomorrow), and BEFORE the SAFE_UNKNOWN gate + the raw-prose
+            // branch, which are the two model-facing paths this replaces.
+            //
+            // GUARDS: the text is a compile-time constant pinned by tests, not model
+            // output, so the model-text guards (`observedGuardDraft`'s unearned-success
+            // net, `clampUngroundedConversational`'s money clamp) have nothing to
+            // police — the template states no success and carries no digits. The
+            // closed-hours guard DOES run: it is the one guard that reads the
+            // STRUCTURED schedule signal rather than the draft's provenance, and
+            // running it makes "closed-hours behaviour preserved exactly" true BY
+            // CONSTRUCTION instead of by omission (the template asserts nothing about
+            // open/closed, so `closedHoursBackstop` is a proven no-op and the reply is
+            // byte-identical open or closed — pinned in the L0 e2e suite).
+            const funnelStage = deps.funnel?.stageFor(turnId);
+            const funnelReply =
+              funnelStage === undefined ? undefined : deps.funnel?.reply(funnelStage);
+            if (funnelReply !== undefined) {
+              return closedHoursDeliveryGuard(
+                { text: funnelReply },
+                scheduleSignal,
+                scheduled,
+              );
             }
             // BKL-078 — the QUESTION-SHAPE gate (BOTH planes since LE2 decision 6;
             // on the ops plane the deterministic `readAnswer.render` above still runs

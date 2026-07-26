@@ -57,33 +57,34 @@ interface HttpError extends Error {
 
 /**
  * FE-T01 (D4) — the FROZEN `OpenAIChatCompletionsBody` (from `@claustrum/openai`)
- * has no `response_format` field, and no `reasoning_effort` either. This widens
- * it for the ONE outbound `fetch` call this relay makes; the frozen type itself
- * is never touched.
+ * has no `reasoning_effort` field. This widens it for the ONE outbound `fetch`
+ * call this relay makes; the frozen type itself is never touched.
+ *
+ * LE2-006 narrowed this: it also carried `response_format?: {type:"json_object"}`
+ * until wire-constraint V1 removed the only site that set it. The field is gone
+ * from the type on purpose — the type states what this relay can send.
  */
 export type OllamaWireBody = OpenAIChatCompletionsBody & {
-  readonly response_format?: { readonly type: "json_object" };
   readonly reasoning_effort?: "none";
 };
 
 /**
  * The relay's outbound-body transform as a pure function (Wire Truth spec):
  * exported so wire capture can store a request byte-identical to what this
- * relay POSTs. Tool-bearing bodies gain Ollama's OpenAI-compat JSON mode;
- * tool-less bodies (responder synthesis) gain `reasoning_effort: "none"`;
- * `model` pins the served model when an override is configured. Any change to
- * what this relay sends MUST go through this function — it is the single
- * source of truth for the wire shape.
+ * relay POSTs. Tool-bearing bodies (the planner's extraction calls) are sent
+ * UNCONSTRAINED — see `wireBody` for the LE2-006 evidence; tool-less bodies
+ * (responder synthesis) gain `reasoning_effort: "none"`; `model` pins the
+ * served model when an override is configured. Any change to what this relay
+ * sends MUST go through this function — it is the single source of truth for
+ * the wire shape.
  */
 export function toOllamaWireBody(
   body: OpenAIChatCompletionsBody,
   model?: string | undefined,
 ): OllamaWireBody {
   const modelPinned = model === undefined ? body : { ...body, model };
-  const wantsJsonMode = body.tools !== undefined && body.tools.length > 0;
-  return wantsJsonMode
-    ? { ...modelPinned, response_format: { type: "json_object" } }
-    : { ...modelPinned, reasoning_effort: "none" };
+  const toolBearing = body.tools !== undefined && body.tools.length > 0;
+  return toolBearing ? modelPinned : { ...modelPinned, reasoning_effort: "none" };
 }
 
 function httpError(status: number, body: string): HttpError {
@@ -115,36 +116,44 @@ export class OllamaFetchClient implements OpenAIClientLike {
   }
 
   /**
-   * Pin the served model when a model override was configured, and (FE-T01,
-   * D4) enrich a tool-bearing body with Ollama's OpenAI-compat JSON mode.
+   * Pin the served model when a model override was configured, and disable
+   * thinking on tool-less bodies. Tool-bearing bodies are sent UNCONSTRAINED.
    *
-   * `@claustrum/openai`'s `OpenAIChatCompletionsBody` (the FROZEN wire type)
-   * has no `response_format` field, so this in-repo relay is the only seam
-   * that can add it. Scoped to bodies carrying `tools` (extraction/tool-call
-   * requests) — never the responder's tool-less synthesis calls, which must
-   * stay free-form pt-BR prose.
+   * WIRE CONSTRAINT V1 (LE2-006, adopted 2026-07-26) — this relay no longer
+   * adds `response_format: { type: "json_object" }` to tool-bearing bodies.
+   * FE-T01 (D4) added it to push the planner's extraction calls toward JSON;
+   * two measured experiments on the pinned engine showed it bought nothing on
+   * the path that matters and cost real damage on the path beside it:
    *
-   * LIVE-VERIFIED against nemotron-3-nano:4b (192.168.1.80): when the model
-   * DOES call a tool, `response_format: json_object` is a no-op — identical
-   * `tool_calls` id/name/arguments and `finish_reason` with or without it.
-   * When the model does NOT call a tool (the planner's tool-bearing calls
-   * legitimately hit this on every no-intent/small-talk turn — see
-   * `ibatexas-planner.ts`), `response_format: json_object` does NOT break
-   * tool-call emission, but it visibly degrades that branch: the model can no
-   * longer emit free-form `content`, and on this model that manifests as a
-   * fabricated tool-call-shaped JSON blob in `content` instead of prose (e.g.
-   * a plain "Oi, bom dia!" greeting produced `{"capability":"pix.refund",
-   * "payload":{"chargeId":"","amountCents":0}}` in `content` with NO
-   * `tool_calls` populated). That text never reaches the customer (the
-   * responder's synthesis call carries no `tools`, so it is unaffected) and
-   * never becomes an envelope (`toolCalls` stays empty either way), but it is
-   * real degradation of the planner's internal read-loop re-prompt context.
-   * Reported as a residual in the FE-T01 PR — applying this per the ticket
-   * (bodies carrying `tools`) is safe for the acceptance-critical path
-   * (tool_calls emission + REFUSE-on-malformed/empty), at the cost of that
-   * narrower, non-customer-facing quality hit.
+   *   - LE2-001 emission baseline (338 drives, 4 passes,
+   *     `scratch/language-engine-2/results/01-emission-baseline-2026-07-25.md`):
+   *     under json_object the model cannot emit free-form `content`, so on a
+   *     no-action turn it emits a capability-shaped JSON blob instead of prose
+   *     — 12.2% of no-action turns, ALL of them fabricated (a plain "Oi"
+   *     greeting produced a stranded `order.note.add`; a delivery-coverage
+   *     question produced a stranded `order.cart.ensure`).
+   *   - LE2-004 wire-constraint probe (434 exchanges,
+   *     `…/results/04-wire-constraint-probe-2026-07-25.md`): removing it drives
+   *     stranded capability-JSON and prose-smuggled JSON both 6.5% → 0.0%,
+   *     while action-turn `tool_calls` payloads stay BYTE-IDENTICAL. That last
+   *     part is structural, not luck: `response_format` governs the content
+   *     channel, which the model only uses when it emits no tool call.
    *
-   * Tool-LESS bodies (the responder's pt-BR synthesis calls) instead get
+   * So the constraint was inert whenever the planner did its job and harmful
+   * whenever it correctly declined to. The debris was never customer-visible
+   * (`…/results/06-gate1-leak-path-audit-2026-07-25.md` proves planner text has
+   * no carrier to a reply — `Plan` has no text field, `TurnOutcome` has no
+   * planner field, and the customer sentence is a different model call), but it
+   * did poison the planner's own pass-2 re-prompt, which replays pass-1's text
+   * in the assistant slot. Under V1 that slot receives ordinary prose.
+   *
+   * The after-measure is in `…/results/06-adoption-after-measure-2026-07-26.md`.
+   * NOTE for anyone reaching for a different constraint here: on this engine
+   * `tool_choice` is silently INERT in every spelling (even a nonsense value
+   * returns 200), and unsupported constraints never error — so a wire
+   * constraint can only be validated by BEHAVIOUR, never by status code.
+   *
+   * Tool-LESS bodies (the responder's pt-BR synthesis calls) get
    * `reasoning_effort: "none"`. nemotron-3-nano:4b thinks by default and
    * Ollama's `/v1` splits that pass into `message.reasoning`, which the FROZEN
    * `@claustrum/openai` provider never reads — so on short prompts the answer

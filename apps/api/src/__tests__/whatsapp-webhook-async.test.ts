@@ -579,11 +579,15 @@ describe("handleMessageAsync — conductor turn", () => {
       response: { text: "Pedido confirmado! Aqui está o pagamento." },
       acted: {
         kind: "executed",
+        // The real `createCheckout` PIX return shape: `orderId` is the CLIENT
+        // tracking id and holds the same `pi_…` value, because the Medusa order
+        // is created later by the Stripe webhook.
         result: {
           pixCopyPaste: "00020126PIX-COPIA-E-COLA-CODE",
           pixQrCode: "data:image/png;base64,QR",
           pixExpiresAt: "2026-06-28T23:59:00Z",
-          orderId: "ord-42",
+          paymentIntentId: "pi_3Rpix42",
+          orderId: "pi_3Rpix42",
         },
       },
       decision: { kind: "EXECUTE" },
@@ -594,8 +598,10 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(res.statusCode).toBe(200);
 
     await vi.waitFor(() => {
+      // BKL-241: scheduled under the PaymentIntent id — the id the Stripe
+      // webhook writes the `pix:paid:` marker under, so payment silences it.
       expect(mockSchedulePixExpiryMonitor).toHaveBeenCalledWith(
-        expect.objectContaining({ phone: PHONE, phoneHash: HASH, orderId: "ord-42" }),
+        expect.objectContaining({ phone: PHONE, phoneHash: HASH, paymentIntentId: "pi_3Rpix42" }),
       );
     }, { timeout: 4000 });
 
@@ -626,6 +632,63 @@ describe("handleMessageAsync — conductor turn", () => {
       mintRenderedReply("QR Code PIX"),
       CORR,
     );
+  }, 15000);
+
+  it("BKL-241: a regenerated PIX is monitored under its NEW PaymentIntent id", async () => {
+    // `regeneratePix` surfaces only `paymentIntentId` (it has no client tracking
+    // id to return), so this is the shape that used to fall through to the
+    // customer-id fallback and produce an unsilenceable monitor.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Novo PIX gerado!" },
+      acted: {
+        kind: "executed",
+        result: {
+          pixCopyPaste: "00020126PIX-REGENERATED",
+          pixExpiresAt: "2026-06-28T23:59:00Z",
+          paymentIntentId: "pi_3Rregen99",
+        },
+      },
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_REGEN&From=whatsapp%3A%2B5511999999999&Body=novo+pix");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockSchedulePixExpiryMonitor).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_3Rregen99" }),
+      );
+    }, { timeout: 4000 });
+  }, 15000);
+
+  it("BKL-241: schedules NOTHING when the PIX artifact carries no payment intent id", async () => {
+    // The session has customerId "cus-1". The old code fell back to it, keying
+    // the monitor on an id the `pix:paid:` marker can never carry — so the job
+    // was guaranteed to tell a paying customer "O PIX expirou". Silence beats a
+    // reminder that cannot be silenced.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Aqui está o PIX." },
+      acted: {
+        kind: "executed",
+        result: { pixCopyPaste: "00020126PIX-NO-ID" },
+      },
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_NOID&From=whatsapp%3A%2B5511999999999&Body=pagar");
+    expect(res.statusCode).toBe(200);
+
+    // The copia-e-cola still reaches the customer — only the monitor is skipped.
+    await vi.waitFor(() => {
+      expect(mockSendText).toHaveBeenCalledWith(
+        `whatsapp:${PHONE}`,
+        textContaining("Código PIX (copia e cola)"),
+        CORR,
+      );
+    }, { timeout: 4000 });
+    expect(mockSchedulePixExpiryMonitor).not.toHaveBeenCalled();
   }, 15000);
 
   it("on turn failure: sends the pt-BR fallback and RELEASES the claim so Twilio retries", async () => {

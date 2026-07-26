@@ -39,13 +39,21 @@
 // `redis`, and global `fetch` are shared across the whole graph and do reach
 // inside.
 //
-// Responder/explainer/memory/grounding/telemetry are inert stubs: per the
-// governing ruling this harness asserts on `decision` / `acted` / park state, not
-// on rendered text (render precedence is another worker's surface), and the
-// claims seams are deliberately omitted so a render degrade cannot interfere.
+// Explainer/memory/grounding/telemetry are inert stubs, and the claims seams
+// default OFF so a render degrade cannot interfere — BKL-234 makes them OPT-IN
+// REAL (`withClaims: true`, the same `buildClaimsSeams` composition as
+// claustrum-bootstrap). The RESPONDER defaults
+// to an inert stub for the same original reason — this harness asserted on `decision`
+// / `acted` / park state, not on rendered text, because render precedence was another
+// worker's surface — and LE2-007 makes it OPT-IN REAL (`realResponder: true`), because
+// a funnel tier's whole deliverable IS its deterministic template: there is no model
+// prose for precedence to arbitrate, so asserting the text is asserting the feature.
 //
-// SCOPE: checkout-turn needs ONLY. No speculative ports, no fixtures for other
-// intent kinds. Expected to grow as later tickets extend the customer funnel.
+// SCOPE: checkout-turn needs, plus the funnel's L0 tier (LE2-007 — `funnel`,
+// `realResponder`, `scheduleSignal`, `throwingModel`, and the per-turn funnel context
+// `runCustomerTurn` publishes like the production ingresses), plus the opt-in claims
+// seams (BKL-234 — `withClaims`). No speculative ports.
+// Expected to keep growing as later tickets extend the customer funnel.
 
 import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
@@ -87,7 +95,15 @@ import { buildIbatexasPolicyPacks, type ErasedPack } from "../claustrum/compose-
 import { composePolicyRouter } from "../claustrum/capability-policy.js";
 import { createIbatexasPlanner } from "../claustrum/ibatexas-planner.js";
 import { buildClaimsSeams } from "../claustrum/claims-pipeline.js";
+import { createIbatexasResponder } from "../claustrum/ibatexas-responder.js";
 import { createIbatexasResolver } from "../claustrum/ibatexas-resolver.js";
+import {
+  closeFunnelTurn,
+  openFunnelTurn,
+  type FunnelPlannerSeam,
+  type FunnelResponderSeam,
+} from "../claustrum/funnel-tier.js";
+import type { ScheduleSignal } from "../claustrum/closed-hours.js";
 import { WebConfirmChannel } from "../claustrum/web-confirm-channel.js";
 import { buildLanguageEngineAuditMetadata } from "../claustrum/language-engine/audit-metadata.js";
 import { registerIbatexasToolPacks } from "../tools/register-ibatexas-tool-packs.js";
@@ -153,6 +169,29 @@ export function scriptedModel(
     embed: async () => {
       throw new Error("embed unused");
     },
+  };
+}
+
+/**
+ * A model that THROWS on every surface — the wire-proof instrument (LE2-007).
+ *
+ * The harness's contract is that a fake must fail loudly rather than degrade quietly
+ * (see `makeMedusaFetchFake`'s unrouted-egress throw), and a ZERO-MODEL-CALL claim can
+ * only be proven by an instrument that cannot be satisfied: if any seam — the planner's
+ * extraction pass, the claim planner, the responder's synthesis — reaches the model, the
+ * turn fails instead of quietly costing a completion. A counting spy would let a
+ * regression pass with a wrong number nobody asserted.
+ */
+export function throwingModel(label = "L0 zero-call proof"): ModelProvider {
+  const boom = (surface: string): never => {
+    throw new Error(
+      `[customer-e2e-harness] model.${surface}() was called — ${label} requires ZERO model calls on this turn`,
+    );
+  };
+  return {
+    complete: vi.fn(async () => boom("complete")),
+    stream: () => boom("stream"),
+    embed: async () => boom("embed"),
   };
 }
 
@@ -549,6 +588,36 @@ export interface CustomerConductorDeps {
    * so an opting-in test must set that env var too.
    */
   readonly withClaims?: boolean;
+  /**
+   * LE2-007 — the parse funnel's tier seam, wired into BOTH real seams (planner +
+   * responder) exactly as `bootstrapClaustrum` wires one instance into both. Omitted ⟹
+   * no funnel ⟹ every pre-existing harness turn is byte-identical.
+   */
+  readonly funnel?: FunnelPlannerSeam & FunnelResponderSeam;
+  /**
+   * LE2-007 — replace the inert responder with the REAL production responder
+   * (`createIbatexasResponder` over the same model). Required by any test that asserts
+   * on the reply TEXT: the file header's "asserts on decision/acted, never text" rule
+   * was scoped to render precedence being another worker's surface, and an L0 turn's
+   * whole deliverable IS its deterministic template — there is no model prose to
+   * arbitrate. Omitted ⟹ the inert responder ⟹ byte-identical.
+   */
+  readonly realResponder?: boolean;
+  /**
+   * LE2-007 — the structured open/closed signal the real responder resolves once per
+   * turn (the closed-hours soft note + deterministic backstop read it). Omitted ⟹ no
+   * schedule wired ⟹ no closed-hours behaviour, exactly as in the unit suites.
+   */
+  readonly scheduleSignal?: ScheduleSignal;
+  /**
+   * LE2-007 — replace the no-op telemetry. `emitTurn` is the loop's ONCE-PER-TURN
+   * seam, and it is where production stamps funnel-tier attribution onto the
+   * guaranteed per-turn trace line (claustrum-bootstrap's `emitTurn` reads
+   * `funnelStage(turnId)`). A test that wires its own telemetry can therefore assert
+   * tier attribution at the exact seam production writes it, rather than at a
+   * synthetic probe. Omitted ⟹ `noopTelemetry` ⟹ byte-identical.
+   */
+  readonly telemetry?: TelemetryPort;
 }
 
 export interface CustomerHarness {
@@ -571,7 +640,26 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     modelId: "mock-model",
     capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
     deriveContext: deriveCustomerPlannerContext,
+    ...(deps.funnel ? { funnel: deps.funnel } : {}),
   });
+
+  // LE2-007 — the REAL production responder, opt-in. Composed like the customer
+  // plane's `buildResponder`: the same explainer shape, the same funnel instance the
+  // planner got, and the schedule signal (when the test wires one) so the closed-hours
+  // layers are armed. Claims seams stay absent per the file header, so a REFUSE on an
+  // empty plan reaches the conversational branch exactly as it does in production
+  // with the claims pipeline off.
+  const responder: ResponderPort = deps.realResponder
+    ? createIbatexasResponder({
+        model: deps.model,
+        modelId: "mock-model",
+        explainer: { render: (r) => r.userFacing },
+        ...(deps.funnel ? { funnel: deps.funnel } : {}),
+        ...(deps.scheduleSignal !== undefined
+          ? { resolveScheduleSignal: () => deps.scheduleSignal }
+          : {}),
+      })
+    : inertResponder();
 
   const webChannel = new WebConfirmChannel({
     gatewaySigningKey: "harness-web-signing-key",
@@ -589,10 +677,10 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     memory: customerMemory(),
     grounding: emptyGrounding(),
     planner,
-    responder: inertResponder(),
+    responder,
     explainer: { render: (r) => r.userFacing },
     handoff: { async queue() {} },
-    telemetry: noopTelemetry,
+    telemetry: deps.telemetry ?? noopTelemetry,
     session: deps.session,
     tools,
     channels: [webChannel],
@@ -628,6 +716,9 @@ export interface CustomerTurnResult {
   response: string;
   acted: unknown;
   plan: unknown;
+  /** The conductor-minted turn id — the key every per-turn trace surface (funnel
+   *  stage record, turn_trace rows) is written under. */
+  turnId: string;
 }
 
 /**
@@ -655,14 +746,28 @@ export async function runCustomerTurn(
     inbound: message,
   });
   try {
+    // LE2-007 — publish the turn's FUNNEL CONTEXT exactly as the production customer
+    // ingresses do (routes/chat.ts, routes/whatsapp-webhook.ts): the confirm-window
+    // fact read from the authoritative `capsule.loadedSession`, keyed on this turn's
+    // id. Inlined here for the same reason `deriveCustomerPlannerContext` is —
+    // importing the route would drag the whole composition root into a unit test —
+    // and it is what makes the FE-D32 confirm-window gate reachable through the REAL
+    // seam instead of a synthetic probe. Harmless when no funnel is wired: nothing
+    // reads the context.
+    openFunnelTurn(capsule.turnId, {
+      confirmWindowOpen:
+        (capsule.loadedSession?.pendingConfirmations?.length ?? 0) > 0,
+    });
     const turn = await handleTurn(capsule, message);
     return {
       decision: turn.decision as Decision,
       response: turn.response.text,
       acted: turn.acted,
       plan: turn.plan,
+      turnId: capsule.turnId,
     };
   } finally {
+    closeFunnelTurn(capsule.turnId);
     await harness.conductor.closeCapsule(capsule);
   }
 }

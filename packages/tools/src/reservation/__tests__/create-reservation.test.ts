@@ -9,12 +9,16 @@
 // - Envelope shape: kind="reservation.create", taint="UNTRUSTED", principal="llm"
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { createReservation } from "../create-reservation.js"
+import {
+  createReservation,
+  createReservationPreAdjudicated,
+} from "../create-reservation.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn())
 const mockCreateFromEnvelope = vi.hoisted(() => vi.fn())
+const mockCreate = vi.hoisted(() => vi.fn())
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 const mockSendReservationConfirmation = vi.hoisted(() => vi.fn())
 // BKL-046: sentinel audit sink returned by the mocked `getAuditSink()`; the
@@ -24,6 +28,7 @@ const mockGetAuditSink = vi.hoisted(() => vi.fn(() => mockAuditSink))
 const mockCreateReservationService = vi.hoisted(() =>
   vi.fn((_options?: { auditSink?: unknown }) => ({
     createFromEnvelope: mockCreateFromEnvelope,
+    create: mockCreate,
   })),
 )
 
@@ -222,5 +227,70 @@ describe("createReservation", () => {
     expect(mockCreateReservationService).toHaveBeenCalledOnce()
     const options = mockCreateReservationService.mock.calls[0]?.[0]
     expect(options?.auditSink).toBe(mockAuditSink)
+  })
+})
+
+// BKL-243 — the conductor-dispatch entry point. Registry dispatch runs on a
+// kernel EXECUTE the Conductor already audited and ledger-claimed; re-minting an
+// envelope here adjudicated the same `reservation.create` intent a second time.
+// Same class and same fix shape as BKL-232 (`reservation.modify`, PR #386).
+describe("createReservationPreAdjudicated (BKL-243)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function setupPreAdjudicatedHappyPath() {
+    mockCreate.mockResolvedValue({
+      reservation: makeReservationDTO(),
+      tableLocation: TABLE_LOCATION,
+    })
+    mockPublishNatsEvent.mockResolvedValue(undefined)
+    mockSendReservationConfirmation.mockResolvedValue(undefined)
+  }
+
+  it("writes via the bare service method and NEVER re-adjudicates", async () => {
+    setupPreAdjudicatedHappyPath()
+
+    const result = await createReservationPreAdjudicated(BASE_INPUT)
+
+    // No second envelope, no second kernel run, no second audit record.
+    expect(mockCreateFromEnvelope).not.toHaveBeenCalled()
+    // The mutation still runs exactly once, with the customerId carried in the
+    // payload (the reservation handlers assert ownership themselves).
+    expect(mockCreate).toHaveBeenCalledExactlyOnceWith({
+      customerId: "cus_01",
+      timeSlotId: "ts_01",
+      partySize: 4,
+      specialRequests: [],
+    })
+    // Same success shape + side effects as the self-adjudicating entry point.
+    expect(result.confirmed).toBe(true)
+    expect(result.reservationId).toBe("res_01")
+    expect(result.confirmationMessage).toContain("Reserva confirmada")
+    expect(mockSendReservationConfirmation).toHaveBeenCalledOnce()
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "reservation.created",
+      expect.objectContaining({ eventType: "reservation.created" }),
+    )
+  })
+
+  // The slot row exists ONLY to feed the pack's `requireSlotWithCapacity` /
+  // `requireSlotInFuture` guards. With no kernel run on this path it is a pure
+  // wasted read — `svc.create` re-reads the slot FOR UPDATE regardless.
+  it("skips the kernel-only slot hydration", async () => {
+    setupPreAdjudicatedHappyPath()
+
+    await createReservationPreAdjudicated(BASE_INPUT)
+
+    expect(mockTimeSlotFindUnique).not.toHaveBeenCalled()
+  })
+
+  it("propagates a write failure instead of reporting a reservation that never committed", async () => {
+    mockCreate.mockRejectedValue(new Error("Horário esgotado."))
+
+    await expect(createReservationPreAdjudicated(BASE_INPUT)).rejects.toThrow(
+      "Horário esgotado.",
+    )
+    expect(mockSendReservationConfirmation).not.toHaveBeenCalled()
   })
 })

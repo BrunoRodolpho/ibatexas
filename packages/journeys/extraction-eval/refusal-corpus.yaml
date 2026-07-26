@@ -36,7 +36,10 @@ cases:
       A bare greeting proposes no mutation. Anything the parser emits here is
       invented from nothing — the purest possible false positive, and the exact
       case LE2's L0 social tier (decision 8) is meant to answer with zero model
-      calls.
+      calls. LE2-001 observed B1_STRANDED_UNAMBIGUOUS here (a fabricated
+      order.note.add, 3/3 passes) — this case now also scores the LE2-001
+      re-drive artifacts; its companion export case `le2001-cus-hist-ghost-b`
+      was dropped as a duplicate join key (see the LE2-006 block below).
 
   - id: store-open-question
     utterance: "Vocês estão abertos?"
@@ -44,7 +47,9 @@ cases:
     note: >-
       A question about store state is a READ, answered from projections; it is
       never a mutating capability. Parsing it into one would put an
-      unadjudicated verb behind a purely informational turn.
+      unadjudicated verb behind a purely informational turn. LE2-001 observed
+      A2_STRUCTURED_READ_ONLY here; its companion export case
+      `le2001-ops-hist-open` was dropped as a duplicate join key.
 
   - id: delivery-coverage-question
     utterance: "Vocês entregam em Ibate?"
@@ -53,3 +58,109 @@ cases:
       A delivery-coverage question is answered by the grounded coverage claim
       (P0 decision 4), not by a mutating capability. Pinned here so the coverage
       work cannot regress the parse side while improving the answer side.
+      LE2-001 observed C2a_NULL_ABSTENTION here; its companion export case
+      `le2001-cus-hist-scare` was dropped as a duplicate join key. NOTE the
+      unaccented "Ibate" — this is the BYTE-EXACT historical flagged utterance,
+      and `normalizeUtterance` does NOT strip accents, so it is a DIFFERENT join
+      key from `le2001-cus-ctl-coverage-01`'s "vocês entregam em Ibaté?".
+
+  # ── LE2-001 emission-baseline companions (added by LE2-006) ────────────────
+  #
+  # The ∅-class cases exported alongside fixtures/wire-le2-001-redrive-
+  # 2026-07-25.json by apps/api/src/claustrum/le2-001-corpus-export.ts on branch
+  # exp/le2-001-emission-baseline. Every utterance below requests NO mutation,
+  # so a capability envelope for any of them is a false positive.
+  # `expectCapability: null` is AUTHORED from the utterance, never derived from
+  # the model under test.
+  #
+  # The export carried 11 cases; 3 are recorded above instead of here. Their
+  # utterances normalize to join keys the original three cases already own, and
+  # a second case on the same key would double-weight that utterance in the
+  # ∅-class confusion matrix (the schema enforces unique case IDS, not unique
+  # utterances, so nothing would have flagged it). The export's own merge note
+  # caught only the "Oi" collision; "Vocês estão abertos?" and "Vocês entregam
+  # em Ibate?" collide too. Their LE2-001 observations are folded into the
+  # original notes, so no provenance is lost.
+  #
+  # The `Observed class` labels below are what the V0 (json_object) baseline
+  # produced — they are evidence about the engine, NOT expectations. The
+  # expectation is `null` in every case, in every regime.
+
+  # DELIBERATELY NOT ADDED — `le2001-cus-ctl-coverage-01`, utterance
+  # "vocês entregam em Ibaté?". The export generated it, and it is WRONG here.
+  # That exact join key is already claimed by an authored extraction-corpus
+  # case, `delivery.coverage.check:grounded-name-ibate`
+  # (extraction-corpus/delivery.coverage.check.yaml), which asserts the
+  # utterance SHOULD parse — to the grounded coverage READ capability of P0
+  # decision 4. Both cases would be scored against the same artifacts and could
+  # never both pass.
+  #
+  # The root cause is a predicate conflation in the mechanical export, worth
+  # knowing before generating more of these: the LE2-001 sweep's
+  # `expected: null` means "this utterance requests no MUTATION" (it is a
+  # control label), whereas the harness's `expectCapability: null` means "NO
+  # capability at all may be parsed". For a coverage question those differ —
+  # `delivery.coverage.check` is a capability, and it is the RIGHT answer.
+  # Abstaining would be the defect, not the fix. The extraction corpus is the
+  # reviewed source of truth and wins.
+  #
+  # The V1 improvement on this utterance is not lost by omitting the case: it
+  # is visible on the parse case instead, which LE2-006's after-measure records
+  # as still failing for a different and pre-existing reason (see
+  # results/06-adoption-after-measure-2026-07-26.md §"the one newly-visible
+  # failure").
+
+  - id: le2001-cus-ctl-coverage-02
+    utterance: "entrega em Araraquara?"
+    expectCapability: null
+    note: >-
+      Coverage question for an out-of-area city, customer plane. Observed class
+      in the LE2-001 V0 baseline: C2a_NULL_ABSTENTION.
+
+  - id: le2001-cus-ctl-smalltalk-01
+    utterance: "Oi, bom dia!"
+    expectCapability: null
+    note: >-
+      Greeting — the FE-T01 residual repro. Observed class in the LE2-001 V0
+      baseline: C2b_TEXT_SMUGGLED.
+
+  - id: le2001-cus-ctl-hours-01
+    utterance: "vocês estão abertos agora?"
+    expectCapability: null
+    note: >-
+      Hours question, customer plane. Distinct join key from
+      `store-open-question` (the trailing "agora"). Observed class in the
+      LE2-001 V0 baseline: C2b_TEXT_SMUGGLED.
+
+  - id: le2001-ops-ctl-coverage-01
+    utterance: "entregamos em Ibaté?"
+    expectCapability: null
+    note: >-
+      Flagged-turn class (coverage question), OPS plane — the first-person
+      phrasing a staff member uses. Observed class in the LE2-001 V0 baseline:
+      C2a_NULL_ABSTENTION.
+
+  - id: le2001-ops-ctl-coverage-02
+    utterance: "a gente entrega em Araraquara?"
+    expectCapability: null
+    note: >-
+      Coverage question, ops plane. Observed class in the LE2-001 V0 baseline:
+      A2_STRUCTURED_READ_ONLY.
+
+  - id: le2001-ops-ctl-status-q-01
+    utterance: "como foi o dia hoje?"
+    expectCapability: null
+    note: >-
+      Read-shaped end-of-day question, ops plane. Observed class in the LE2-001
+      V0 baseline: A2_STRUCTURED_READ_ONLY.
+
+  - id: le2001-ops-hist-ghost-a
+    utterance: "Oi boa noite"
+    expectCapability: null
+    note: >-
+      VERBATIM ghost turn A 6935339a (turn_trace, 2026-07-21T01:26:46Z) — a
+      greeting that stranded a fabricated order.note.add. Observed class in the
+      LE2-001 V0 baseline: B1_STRANDED_UNAMBIGUOUS, reproducible 3/3 passes.
+      One of the four utterances LE2-006 tracked per-utterance across the V1
+      adoption. Distinct join key from `bare-greeting-oi` (no comma, and the
+      trailing "boa noite").

@@ -23,7 +23,7 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
-    "@ibatexas/packs-composed": "workspace:*",
+    "@ibatexas/catalog": "workspace:*",
     "@tailwindcss/postcss": "^4.2.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",

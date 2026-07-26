@@ -24,6 +24,7 @@ import { subscribeNatsEvent } from "@ibatexas/nats-client";
 import {
   INCIDENT_CAUSE_LABELS_PT,
   INCIDENT_SEVERITY_LABELS_PT,
+  isOpsPlaneChannel,
   type IncidentCause,
   type IncidentSeverity,
 } from "@ibatexas/domain";
@@ -93,7 +94,7 @@ export async function startIncidentNotificationSubscriber(
       } catch (err) {
         // Without Redis we cannot rate-limit; send the individual ping anyway
         // (badge remains source of truth) rather than dropping the signal.
-        await sendIncidentPing(sender, staffPhone, { sessionId, cause, severity }, payload, log);
+        await sendIncidentPing(sender, staffPhone, { sessionId, cause, severity, channel }, payload, log);
         log?.warn({ incident_id: incidentId, error: String(err) }, "[incident-notification] redis unavailable — sent ping without rate-limit");
         return;
       }
@@ -110,7 +111,7 @@ export async function startIncidentNotificationSubscriber(
       } catch { /* best-effort — fall through to individual ping */ }
 
       if (hourly <= hourlyCap()) {
-        await sendIncidentPing(sender, staffPhone, { sessionId, cause, severity }, payload, log);
+        await sendIncidentPing(sender, staffPhone, { sessionId, cause, severity, channel }, payload, log);
         return;
       }
 
@@ -169,7 +170,7 @@ async function deliverStaffMessage(
 async function sendIncidentPing(
   sender: SenderLike,
   staffPhone: string,
-  fields: { sessionId?: string; cause?: string; severity?: string },
+  fields: { sessionId?: string; cause?: string; severity?: string; channel?: string },
   payload: unknown,
   log?: FastifyBaseLogger,
 ): Promise<void> {
@@ -179,20 +180,31 @@ async function sendIncidentPing(
   const sevLine = fields.severity
     ? `\nGravidade: ${INCIDENT_SEVERITY_LABELS_PT[fields.severity as IncidentSeverity] ?? fields.severity}`
     : "";
+  // BKL-235 — the ops plane joined this journal, so the ping must not assert WHO was
+  // ghosted without checking. "impediu a entrega ao cliente" is FLATLY FALSE for an
+  // ops-channel row: no customer was involved — a staff member's own operational
+  // command went unanswered. Sending the customer wording for an ops ghost would tell
+  // the owner their customers are being dropped during a staff-channel outage, which
+  // is a factually wrong outage alert (the same class of error that made the
+  // attack-review journal suppress this ping entirely). The channel is already on the
+  // payload; this reads it.
+  const isOps = isOpsPlaneChannel(fields.channel);
   await deliverStaffMessage(
     sender,
     staffPhone,
     payload,
     {
       lines: [
-        `🚨 *Incidente no atendimento*`,
+        isOps ? `🚨 *Incidente no canal operacional*` : `🚨 *Incidente no atendimento*`,
         ``,
-        `Uma falha de resposta automática impediu a entrega ao cliente.`,
+        isOps
+          ? `Uma falha de resposta automática deixou um comando da equipe sem resposta.`
+          : `Uma falha de resposta automática impediu a entrega ao cliente.`,
         `Sessão: ${fields.sessionId ?? "desconhecida"}${causeLine}${sevLine}`,
         ``,
         `Verifique o painel de Incidentes.`,
       ],
-      logCtx: { session_id: fields.sessionId },
+      logCtx: { session_id: fields.sessionId, channel: fields.channel ?? null },
       successMsg: "[incident-notification] staff notified via WhatsApp",
       failureMsg: "[incident-notification] failed to send WhatsApp ping",
       successLevel: "info",

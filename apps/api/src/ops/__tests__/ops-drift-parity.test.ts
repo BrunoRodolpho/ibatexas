@@ -10,7 +10,7 @@ import { composedIntentKinds } from "@ibatexas/packs-composed";
 import {
   CAPABILITY_DEFINITIONS,
   generateOpsForbiddenDestructiveKinds,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 import { opsPlaneDriftProblems } from "../ops-conductor.js";
 import {
   listOpsToolDefinitions,
