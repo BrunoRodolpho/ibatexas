@@ -118,10 +118,10 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
   publishPaymentStatusChanged: async () => {},
   appendRefundEventLog: async () => {},
   opsAlertSvc: {
-    resolveAlertFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
+    writeAdjudicatedAlertResolve: async () => ({ status: "RESOLVED" }),
   },
   incidentSvc: {
-    closeIncidentFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
+    writeAdjudicatedIncidentClose: async () => ({ status: "RESOLVED" }),
   },
   scheduleSvc: { upsertOverride: async () => ({ date: "2026-07-10", isOpen: false }) },
   invalidateScheduleCache: async () => ({ ok: true }),

@@ -1,4 +1,10 @@
-// tool-dispatch-self-readjudication — the BKL-242/243 CLASS gate.
+// tool-dispatch-self-readjudication — the BKL-242/243/260 CLASS gate.
+//
+// TWO planes, one class. The first half of this file gates the CUSTOMER registry
+// (`IBATEXAS_TOOLS`, BKL-242/243); the second half gates the OPS registry
+// (`listOpsToolDefinitions`, BKL-260). Same defect, same rule: an executor the
+// Conductor dispatches on a kernel decision must not produce a SECOND decision
+// for that one action.
 //
 // # The class
 //
@@ -74,6 +80,8 @@
 // belongs in the behavioral e2e tests, not here.
 
 import { describe, expect, it, vi } from "vitest";
+import { listOpsToolDefinitions } from "../ops/ops-tool-registry.js";
+import type { OpsToolRegistryDeps } from "../ops/ops-tool-registry.js";
 import { listIbatexasToolPacks } from "../tools/register-ibatexas-tool-packs.js";
 import { makeCartFixture } from "./customer-e2e-harness.js";
 
@@ -423,13 +431,14 @@ interface ProbeResult {
 async function probe(
   tool: { intentKind: unknown; execute: (i: unknown, c: unknown) => Promise<unknown> },
   input: unknown,
+  ctx: unknown = CAPSULE,
 ): Promise<ProbeResult> {
   const intentKind = String(tool.intentKind);
   mintedKinds.length = 0;
   effects.length = 0;
   let threw: string | null = null;
   try {
-    await tool.execute(input, CAPSULE as never);
+    await tool.execute(input, ctx as never);
   } catch (err) {
     threw = (err as Error).message;
   }
@@ -574,5 +583,320 @@ describe("BKL-242/243 — no dispatched tool re-adjudicates its own intent kind"
       "medusa.store.cart.line_item.add",
     );
     expect(byKind.get("order.cancel")?.minted).toContain("medusa.admin.order.cancel");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BKL-260 — the SAME class on the OPS registry.
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The ops registry (apps/api/src/ops/ops-tool-registry.ts) is a SEPARATE
+// `@claustrum/core` ToolRegistry, dispatched by the ops Conductor on a kernel
+// EXECUTE the composed ops router already produced at SUBMIT. The BKL-243 audit
+// that closed the class on the customer registry never scoped it, and two of its
+// nine executors had re-grown the defect:
+//
+//   - `ops.alert.resolve.staff` BUILT a SYSTEM `ops.alert.resolve` envelope and
+//     ran it through `resolveAlertFromEnvelope` → `withAdjudicate`.
+//   - `incident.ticket.close.staff` did the same for `incident.ticket.close`.
+//
+// # Why the customer arm's same-kind rule does not catch it
+//
+// The re-minted kind is not IDENTICAL to the dispatched one — it is the base kind
+// under the `.staff` suffix. `selfMints` (kind === intentKind) is therefore blind
+// to it. The rule this arm enforces is stronger and does not depend on the naming
+// relationship: an ops executor may mint NO envelope at all unless that mint is
+// DECLARED in `OPS_DECLARED_MINTS` with a reason, and the observed map must EQUAL
+// the declared one. A new mint cannot silently appear, and a declared entry that
+// gets fixed cannot silently persist.
+//
+// # Why deleting the inner adjudication strictly TIGHTENS
+//
+// Measured against dev @ fd55a6cc, the inner runs adjudicated a strict guard
+// SUBSET of the outer decision:
+//
+//   - `opsAlertPolicyBundle` / `incidentPolicyBundle` both carry
+//     `stateGuards: []` and `authGuards: []`. Their only guards are a SYSTEM
+//     taint floor and a frozen-cause check scoped to the `.open` kind, then a
+//     blanket `executeAll`.
+//   - The taint floor is satisfied BY CONSTRUCTION: the executor itself built the
+//     envelope with `taint: "SYSTEM"` one line earlier. It cannot fail.
+//   - The state argument was `{}` — no guard reads it, but nothing structural
+//     said so.
+//
+// So the inner decision was a CONSTANT EXECUTE, while the outer decision carried
+// `adminSessionOnlyGuard` + `staffRoleGuard` {OWNER,MANAGER} + the actionability
+// guard against REAL resolver-projected state. Removing the inner run removes a
+// vacuous decision, not a check.
+//
+// # Mock posture
+//
+// The ops registry takes every side effect as an INJECTED dep, so this arm needs
+// none of the leaf fakes above — it drives the REAL `listOpsToolDefinitions` with
+// recording spies. The `@adjudicate/core` interception at the top of this file is
+// what makes a mint visible: `buildSystemEnvelope` (apps/api) calls the same
+// `buildEnvelope`.
+
+/**
+ * Envelope kinds each OPS executor is permitted to mint ITSELF, with the reason.
+ *
+ * EMPTY BY DESIGN. Every ops verb reaches its executor on a decision the composed
+ * ops router already produced, so there is nothing left to adjudicate. The one
+ * legitimate SECOND governance layer on this plane — the D10 Medusa admin egress
+ * (`medusa.admin.product.update`) — is performed by the INJECTED
+ * `medusaAdjudicated` wrapper over a different system, not by an inline mint, and
+ * is asserted separately below so removing it cannot go unnoticed.
+ *
+ * An entry added here is a design decision that must be argued in review; an
+ * entry that becomes obsolete must be deleted or this gate fails.
+ */
+const OPS_DECLARED_MINTS: Readonly<Record<string, readonly string[]>> = {};
+
+/** One probe input per ops `intentKind` — enough to get past input handling. */
+const OPS_PROBE_INPUTS: Readonly<Record<string, unknown>> = {
+  "product.availability.set": { productId: "prod_1", available: false },
+  "product.price.set": { productId: "prod_1", priceCentavos: 8900 },
+  "menu.special.set": { productId: "prod_1", date: "2026-08-01" },
+  "order.note.add": { orderId: "order_1", content: "sem cebola" },
+  "order.status.transition": { orderId: "order_1", newStatus: "ready" },
+  "payment.refund.issue": {
+    paymentId: "pay_1",
+    refundAmountCentavos: 5_000,
+    reason: "produto errado",
+  },
+  "ops.alert.resolve.staff": { alertId: "alert_1" },
+  "incident.ticket.close.staff": { incidentId: "inc_1" },
+  "schedule.override.set": { date: "2026-08-01", isOpen: false },
+};
+
+/** The ops Capsule shape — `actor.staffId` is the AUTHORITATIVE staff identity. */
+const OPS_CAPSULE = {
+  channel: "ops-whatsapp",
+  conversationId: "ops:staff_9",
+  turnId: "turn_ops_1",
+  actor: {
+    principal: "staff",
+    role: "MANAGER",
+    sessionId: "admin:staff_9",
+    staffId: "staff_9",
+  },
+};
+
+/** Every `intentKind` the injected D10 egress wrapper was asked to adjudicate. */
+const opsEgressKinds: string[] = [];
+
+/**
+ * Recording deps for the whole ops registry. Every method pushes into `effects`
+ * so the depth assertion is real, exactly as the customer arm's leaf fakes do.
+ */
+function makeRecordingOpsDeps(): OpsToolRegistryDeps {
+  const note = (name: string) => {
+    effects.push(`ops:${name}`);
+  };
+  return {
+    medusaAdjudicated: (async (args: { intentKind?: string }) => {
+      note("medusaAdjudicated");
+      opsEgressKinds.push(String(args.intentKind));
+      return { product: { id: "prod_1" } };
+    }) as never,
+    auditSink: { emit: async () => {} } as never,
+    readProductBrlVariantIds: async () => (
+      note("readProductBrlVariantIds"), ["variant_1"]
+    ),
+    orderCmdSvc: {
+      writeAdjudicatedNote: async () => (
+        note("writeAdjudicatedNote"), { noteId: "note_1", orderId: "order_1" }
+      ),
+      writeAdjudicatedStatusTransition: async () => (
+        note("writeAdjudicatedStatusTransition"),
+        {
+          version: 3,
+          previousStatus: "preparing",
+          newStatus: "ready",
+          displayId: 4242,
+          customerId: "cus_1",
+        }
+      ),
+    },
+    dailySpecialSvc: {
+      list: async () => (note("dailySpecial.list"), []),
+      create: async () => (note("dailySpecial.create"), { id: "special_1" }),
+      update: async () => (note("dailySpecial.update"), { id: "special_1" }),
+    },
+    paymentCmdSvc: {
+      writeAdjudicatedRefund: async () => (
+        note("writeAdjudicatedRefund"),
+        {
+          version: 5,
+          previousStatus: "paid",
+          newStatus: "refunded",
+          totalRefundedCentavos: 5_000,
+          refundAmountCentavos: 5_000,
+          orderId: "order_1",
+          method: "pix",
+        }
+      ),
+    },
+    // BKL-260 — the POST-adjudication writes. These deliberately expose ONLY the
+    // non-adjudicating methods: an executor that reaches back for a
+    // `*FromEnvelope` entry point throws here, and a throw is never depth, so the
+    // "no vacuous passes" arm turns red even before the mint arm does.
+    opsAlertSvc: {
+      writeAdjudicatedAlertResolve: async () => (
+        note("writeAdjudicatedAlertResolve"), { status: "RESOLVED" }
+      ),
+    } as never,
+    incidentSvc: {
+      writeAdjudicatedIncidentClose: async () => (
+        note("writeAdjudicatedIncidentClose"), { status: "RESOLVED" }
+      ),
+    } as never,
+    scheduleSvc: {
+      upsertOverride: async (date: string, data: { isOpen: boolean }) => (
+        note("upsertOverride"), { date, isOpen: data.isOpen }
+      ),
+    } as never,
+    invalidateScheduleCache: async () => (
+      note("invalidateScheduleCache"), { ok: true }
+    ),
+    publishPaymentStatusChanged: async () => {
+      note("publishPaymentStatusChanged");
+    },
+    appendRefundEventLog: async () => {
+      note("appendRefundEventLog");
+    },
+    publishOrderStatusChanged: async () => {
+      note("publishOrderStatusChanged");
+    },
+  } as OpsToolRegistryDeps;
+}
+
+async function opsProbeAll(): Promise<ProbeResult[]> {
+  opsEgressKinds.length = 0;
+  const deps = makeRecordingOpsDeps();
+  const results: ProbeResult[] = [];
+  for (const tool of listOpsToolDefinitions(deps)) {
+    const kind = String(tool.intentKind);
+    const input = OPS_PROBE_INPUTS[kind];
+    expect(
+      input,
+      `No OPS_PROBE_INPUTS entry for newly registered ops tool "${kind}" — add one so it cannot skip this gate.`,
+    ).toBeDefined();
+    results.push(
+      await probe(
+        tool as unknown as Parameters<typeof probe>[0],
+        input,
+        OPS_CAPSULE,
+      ),
+    );
+  }
+  return results;
+}
+
+describe("BKL-260 — no dispatched OPS executor adjudicates a second time", () => {
+  it("mints exactly the DECLARED set of envelopes and nothing more", async () => {
+    const results = await opsProbeAll();
+
+    const observed: Record<string, readonly string[]> = {};
+    for (const r of results) {
+      if (r.minted.length > 0) observed[r.intentKind] = [...r.minted].sort();
+    }
+
+    expect(
+      observed,
+      "An ops executor MINTED an envelope. Every ops verb arrives on a decision " +
+        "the composed ops router already produced, so a mint here is a SECOND " +
+        "decision for one staff action — the BKL-232/242/243/260 class. Note the " +
+        "re-minted kind need not equal the dispatched one: `ops.alert.resolve" +
+        ".staff` re-minted the BASE kind `ops.alert.resolve`, which the same-kind " +
+        "rule above is blind to. Fix it the way BKL-260 did: call a " +
+        "`writeAdjudicated*` domain write under the Conductor's decision, and " +
+        "leave the self-adjudicating `*FromEnvelope` entry point for the admin " +
+        "HTTP routes and watchdog jobs that have no decision behind them.",
+    ).toEqual(OPS_DECLARED_MINTS);
+  });
+
+  it("no ops executor mints an envelope of its own registered intentKind", async () => {
+    const results = await opsProbeAll();
+    const offenders = results
+      .filter((r) => r.selfMints.length > 0)
+      .map((r) => `${r.intentKind} (minted its own kind ${r.selfMints.length}x)`);
+
+    expect(offenders).toEqual([]);
+  });
+
+  // Anti-vacuity — the probes reach a leaf effect, so the mint assertion is not
+  // passing because nine executors died at their first input check.
+  it("every probed ops tool reaches a leaf effect (no vacuous passes)", async () => {
+    const results = await opsProbeAll();
+    const shallow = results
+      .filter((r) => !reachedDepth(r))
+      .map((r) => `${r.intentKind}${r.threw ? ` (threw: ${r.threw})` : ""}`)
+      .sort();
+
+    expect(shallow).toEqual([]);
+  });
+
+  // The roster this arm covers, pinned. A tool deleted from the ops registry
+  // would otherwise shrink the gate's coverage silently.
+  it("covers all nine governed ops executors", async () => {
+    const results = await opsProbeAll();
+    expect(results.map((r) => r.intentKind).sort()).toEqual([
+      "incident.ticket.close.staff",
+      "menu.special.set",
+      "ops.alert.resolve.staff",
+      "order.note.add",
+      "order.status.transition",
+      "payment.refund.issue",
+      "product.availability.set",
+      "product.price.set",
+      "schedule.override.set",
+    ]);
+  });
+
+  // The complement: the D10 Medusa admin egress is a DISTINCT governance layer
+  // over a different system and must survive. Pinning it here means "no ops
+  // executor mints" can never be satisfied by deleting the egress instead.
+  it("still routes the D10 Medusa admin egress for the two catalog verbs", async () => {
+    await opsProbeAll();
+    expect(opsEgressKinds).toEqual([
+      "medusa.admin.product.update",
+      "medusa.admin.product.update",
+    ]);
+  });
+
+  // The detector reaches ops-side code specifically — `buildSystemEnvelope` is an
+  // apps/api module, a different import path from the `@ibatexas/tools` dist the
+  // customer arm exercises. If interception stopped covering it, every ops
+  // assertion above would pass for the wrong reason.
+  it("the detector reports an ops-shaped handler that DOES adjudicate again", async () => {
+    const { buildSystemEnvelope } = await import(
+      "../subscribers/__shared__/system-actor-envelope.js"
+    );
+
+    const reAdjudicating = {
+      intentKind: "ops.alert.resolve.staff",
+      execute: async (input: { alertId: string }) => {
+        buildSystemEnvelope({
+          kind: "ops.alert.resolve",
+          payload: { id: input.alertId, resolvedBy: "staff:1", resolutionType: "STAFF" },
+          sourceSubject: "ops.alert.ops_staff_resolve",
+          eventId: `${input.alertId}:resolve:synthetic`,
+        });
+        return { alertId: input.alertId };
+      },
+    };
+
+    const result = await probe(
+      reAdjudicating as unknown as Parameters<typeof probe>[0],
+      { alertId: "alert_1" },
+      OPS_CAPSULE,
+    );
+
+    // The same-kind rule misses it (base kind ≠ `.staff` kind) — which is exactly
+    // why the declared-mint rule above is the one that carries this plane.
+    expect(result.selfMints).toEqual([]);
+    expect(result.minted).toEqual(["ops.alert.resolve"]);
+    expect(reachedDepth(result)).toBe(true);
   });
 });

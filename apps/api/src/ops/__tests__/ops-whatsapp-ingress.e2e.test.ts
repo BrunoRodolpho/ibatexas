@@ -180,8 +180,8 @@ function buildPartADeps(opts: {
     paymentCmdSvc: { writeAdjudicatedRefund: opts.writeAdjudicatedRefund },
     publishPaymentStatusChanged: vi.fn(),
     appendRefundEventLog: vi.fn(),
-    opsAlertSvc: { resolveAlertFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
-    incidentSvc: { closeIncidentFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
+    opsAlertSvc: { writeAdjudicatedAlertResolve: vi.fn(async () => ({ status: "RESOLVED" })) },
+    incidentSvc: { writeAdjudicatedIncidentClose: vi.fn(async () => ({ status: "RESOLVED" })) },
     scheduleSvc: { upsertOverride: vi.fn(async () => ({ date: "2026-07-10", isOpen: false })) },
     invalidateScheduleCache: vi.fn(async () => ({ ok: true })),
   });
@@ -466,8 +466,8 @@ function buildPartBDeps(model: ModelProvider, session: SessionPort) {
     paymentCmdSvc: { writeAdjudicatedRefund },
     publishPaymentStatusChanged: vi.fn(),
     appendRefundEventLog: vi.fn(),
-    opsAlertSvc: { resolveAlertFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
-    incidentSvc: { closeIncidentFromEnvelope: vi.fn(async () => ({ result: { status: "RESOLVED" } })) },
+    opsAlertSvc: { writeAdjudicatedAlertResolve: vi.fn(async () => ({ status: "RESOLVED" })) },
+    incidentSvc: { writeAdjudicatedIncidentClose: vi.fn(async () => ({ status: "RESOLVED" })) },
     scheduleSvc: { upsertOverride: vi.fn(async () => ({ date: "2026-07-10", isOpen: false })) },
     invalidateScheduleCache: vi.fn(async () => ({ ok: true })),
   });
