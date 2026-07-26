@@ -10,15 +10,18 @@
 import { describe, expect, it } from "vitest"
 import {
   buildLinks,
+  buildWireSections,
   derivePipeline,
   mergeTimeline,
   personaPhase,
   promptIdForPersona,
+  stageFacts,
   type AdjDecision,
   type InvestigationContext,
   type LlmCall,
   type RcaTurnDetail,
   type VlLine,
+  type WireExchange,
 } from "../rcaClient"
 
 // ── fixture builders ────────────────────────────────────────────────────────
@@ -83,7 +86,7 @@ function adj(over: Partial<AdjDecision> = {}): AdjDecision {
 }
 
 function D(over: Partial<RcaTurnDetail> = {}): RcaTurnDetail {
-  return { context: ctx(), llm: [], adj: [], vl: [], degraded: { adj: false, vl: false }, ...over }
+  return { context: ctx(), llm: [], adj: [], vl: [], wire: [], degraded: { adj: false, vl: false, wire: false }, ...over }
 }
 
 // ── persona classification (NEVER positional) ───────────────────────────────
@@ -148,7 +151,7 @@ describe("derivePipeline — kernel stage", () => {
   })
 
   it("reads silent (not 'no envelopes') when the ADJ lane degraded", () => {
-    const d = D({ degraded: { adj: true, vl: false } })
+    const d = D({ degraded: { adj: true, vl: false, wire: false } })
     expect(stage(d, "kernel")).toMatchObject({ state: "silent", sub: "ADJ degraded" })
   })
 
@@ -174,7 +177,7 @@ describe("derivePipeline — claims stage", () => {
   it("reads silent when engaged but the VL lane degraded", () => {
     const d = D({
       llm: [call({ persona: "ibatexas/claim-planner.persona@b" })],
-      degraded: { adj: false, vl: true },
+      degraded: { adj: false, vl: true, wire: false },
     })
     expect(stage(d, "claims")).toMatchObject({ state: "silent", sub: "engaged · VL degraded" })
   })
@@ -202,7 +205,7 @@ describe("derivePipeline — send stage (reply.sent is the verdict)", () => {
   })
 
   it("whatsapp with a degraded VL lane reads silent — never 'no send event'", () => {
-    const d = D({ degraded: { adj: false, vl: true } })
+    const d = D({ degraded: { adj: false, vl: true, wire: false } })
     expect(stage(d, "send")).toMatchObject({ state: "silent", sub: "VL degraded" })
   })
 
@@ -235,7 +238,7 @@ describe("mergeTimeline", () => {
   })
 
   it("suppresses the GAP when the VL lane degraded — absence is only a signal when the lane answered", () => {
-    const d = D({ llm: [call()], degraded: { adj: false, vl: true } })
+    const d = D({ llm: [call()], degraded: { adj: false, vl: true, wire: false } })
     expect(mergeTimeline(d).some((e) => e.source === "GAP")).toBe(false)
   })
 
@@ -260,6 +263,75 @@ describe("mergeTimeline", () => {
   })
 })
 
+// ── stage attribution (the donut drill-down filter) ─────────────────────────
+
+describe("mergeTimeline — stage attribution", () => {
+  it("tags LLM rows by persona phase — claim-planner lands under the claims donut", () => {
+    const d = D({
+      llm: [
+        call({ callIndex: 0, persona: "ibatexas/planner.persona@a" }),
+        call({ callIndex: 1, persona: "ibatexas/claim-planner.persona@b" }),
+        call({ callIndex: 2, persona: "ibatexas/responder.grounded@c" }),
+      ],
+    })
+    const stages = mergeTimeline(d)
+      .filter((e) => e.source === "LLM")
+      .map((e) => e.stage)
+    expect(stages).toEqual(["planner", "claims", "responder"])
+  })
+
+  it("tags ADJ rows kernel vs archive — archiver bookkeeping is not a kernel mutation", () => {
+    const d = D({
+      adj: [adj({ kind: "order.item.add" }), adj({ kind: "conversation.message.append" })],
+      vl: [vl({ fields: { event: "reply.sent", deliveredText: "true" } })],
+    })
+    const byKind = new Map(mergeTimeline(d).filter((e) => e.source === "ADJ").map((e) => [e.text.split(" ")[0], e.stage]))
+    expect(byKind.get("order.item.add")).toBe("kernel")
+    expect(byKind.get("conversation.message.append")).toBe("archive")
+  })
+
+  it("tags reply.sent VL lines and the GAP ghost as the send stage", () => {
+    const sent = D({ llm: [call()], vl: [vl({ fields: { event: "reply.sent", deliveredText: "true" } })] })
+    expect(mergeTimeline(sent).find((e) => e.source === "VL")?.stage).toBe("send")
+    const ghost = D({ llm: [call()] })
+    expect(mergeTimeline(ghost).find((e) => e.source === "GAP")?.stage).toBe("send")
+  })
+})
+
+// ── stageFacts (the donut's evidence panel) ─────────────────────────────────
+
+describe("stageFacts", () => {
+  it("kernel: lists real envelopes with decision + refusal, excludes archiver rows", () => {
+    const d = D({
+      adj: [
+        adj({ kind: "order.cancel", decisionKind: "REQUEST_CONFIRMATION" }),
+        adj({ kind: "conversation.message.append" }),
+      ],
+    })
+    const facts = stageFacts(d, "kernel")
+    expect(facts).toHaveLength(1)
+    expect(facts[0]).toContain("order.cancel → REQUEST_CONFIRMATION")
+  })
+
+  it("kernel: a degraded ADJ lane reads degraded, never 'no envelopes'", () => {
+    const d = D({ degraded: { adj: true, vl: false, wire: false } })
+    expect(stageFacts(d, "kernel")[0]).toContain("degraded")
+  })
+
+  it("responder: carries the reply text; send: surfaces the reply.sent fields", () => {
+    const d = D({
+      llm: [call({ persona: "ibatexas/responder.grounded@c", completion: "olá!" })],
+      vl: [vl({ fields: { event: "reply.sent", disposition: "delivered", deliveredText: "true" } })],
+    })
+    expect(stageFacts(d, "responder").some((f) => f.startsWith("reply: olá!"))).toBe(true)
+    expect(stageFacts(d, "send")).toEqual(["disposition: delivered", "deliveredText: true"])
+  })
+
+  it("returns [] for an unknown stage key — never throws", () => {
+    expect(stageFacts(D(), "nope")).toEqual([])
+  })
+})
+
 // ── buildLinks ──────────────────────────────────────────────────────────────
 
 describe("buildLinks", () => {
@@ -270,5 +342,111 @@ describe("buildLinks", () => {
 
   it("drops the adjudicate console link when the conversation is unknown", () => {
     expect(buildLinks(ctx({ conversationId: null })).adjConsole).toBeNull()
+  })
+})
+
+// ── Wire Truth — wire attachment + section building ─────────────────────────
+
+function wx(over: Partial<WireExchange> = {}): WireExchange {
+  return {
+    seq: 0,
+    callIndex: 0,
+    model: "nemotron-3-nano:4b",
+    request: {
+      model: "nemotron-3-nano:4b",
+      temperature: 0,
+      max_tokens: 1024,
+      reasoning_effort: "none",
+      messages: [
+        { role: "system", content: "Você é um atendente." },
+        { role: "user", content: "oi" },
+      ],
+    },
+    response: { choices: [{ message: { content: "", reasoning: "Vou responder." }, finish_reason: "stop" }] },
+    requestHash: "a".repeat(64),
+    requestTruncated: false,
+    responseTruncated: false,
+    recordedAt: T1,
+    ...over,
+  }
+}
+
+describe("mergeTimeline — wire attachment", () => {
+  it("attaches a call's wire attempts (retries included) to its LLM row", () => {
+    const d = D({
+      llm: [call({ callIndex: 0 })],
+      wire: [wx({ seq: 0, callIndex: 0 }), wx({ seq: 1, callIndex: 0 })],
+    })
+    const ev = mergeTimeline(d).find((e) => e.source === "LLM")
+    expect(ev?.wire).toHaveLength(2)
+    expect(ev?.text).toContain("wire×2")
+    // An LLM row with wire is expandable even when the completion is empty.
+    expect(ev?.detail).toBeDefined()
+  })
+
+  it("surfaces an unmatched wire attempt as its own row — never silently dropped", () => {
+    const d = D({ llm: [call({ callIndex: 0 })], wire: [wx({ seq: 5, callIndex: 3 })] })
+    const rows = mergeTimeline(d).filter((e) => e.source === "LLM")
+    expect(rows).toHaveLength(2)
+    const orphan = rows.find((e) => e.text.includes("unmatched"))
+    expect(orphan?.wire).toHaveLength(1)
+  })
+
+  it("tolerates a pre-capture API response with no wire lane", () => {
+    const d = D({ llm: [call()] })
+    // simulate the previous wire shape from a not-yet-restarted API
+    delete (d as { wire?: unknown }).wire
+    expect(() => mergeTimeline(d)).not.toThrow()
+    expect(mergeTimeline(d).find((e) => e.source === "LLM")?.wire).toBeUndefined()
+  })
+})
+
+describe("buildWireSections", () => {
+  it("splits an OpenAI-shaped request into params / messages / response", () => {
+    const s = buildWireSections(wx())
+    expect(s.params).toContain("model=nemotron-3-nano:4b")
+    expect(s.params).toContain("reasoning_effort=none")
+    expect(s.params).toContain("max_tokens=1024")
+    expect(s.messages).toEqual([
+      { role: "system", content: "Você é um atendente." },
+      { role: "user", content: "oi" },
+    ])
+    expect(s.tools).toEqual([])
+    expect(s.response).toContain("Vou responder.")
+    expect(s.truncated).toEqual({ request: false, response: false })
+  })
+
+  it("lists the tool roster with per-tool schemas", () => {
+    const s = buildWireSections(
+      wx({
+        request: {
+          model: "m",
+          messages: [{ role: "user", content: "refund" }],
+          tools: [
+            {
+              type: "function",
+              function: { name: "express_intent", parameters: { type: "object" } },
+            },
+          ],
+          response_format: { type: "json_object" },
+        },
+      }),
+    )
+    expect(s.tools).toEqual([{ name: "express_intent", schema: JSON.stringify({ type: "object" }, null, 2) }])
+    expect(s.params).toContain('response_format={"type":"json_object"}')
+  })
+
+  it("degrades a truncation marker to raw JSON with the flag surfaced", () => {
+    const s = buildWireSections(
+      wx({
+        request: { __truncated: true, originalBytes: 99999, head: "{...}" },
+        requestTruncated: true,
+      }),
+    )
+    expect(s.truncated.request).toBe(true)
+    expect(s.messages).toEqual([])
+    // Non-standard bodies go to the scroll-capped raw block, never the params line.
+    expect(s.params).toBe("(non-standard request body)")
+    expect(s.raw).toContain("__truncated")
   })
 })

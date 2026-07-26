@@ -568,7 +568,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       const startedAt = iso(h.started_at);
       const endedAt = iso(h.ended_at);
 
-      const degraded = { adj: false, vl: false };
+      const degraded = { adj: false, vl: false, wire: false };
 
       // 2) [LLM] the model calls, then [ADJ] via this turn's intent hashes —
       //    the [LLM]→[ADJ] chain, the [VL] fetch, and the context enrichment
@@ -666,7 +666,46 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
         }
       })();
 
-      const [{ llm, adj }, vl, enrich] = await Promise.all([llmAdjBranch, vlBranch, enrichBranch]);
+      // [WIRE] Wire Truth — the durable request/response exchanges captured at
+      // the model relay (llm_wire, one row per ATTEMPT: retries share a
+      // call_index across ascending seq). Fail-safe to empty + flagged, so a
+      // pre-capture turn (or a DB without the table yet) reads as explicit
+      // absence, never as breakage.
+      const wireBranch = (async () => {
+        try {
+          const wireRes = await pool().query(
+            `SELECT seq, call_index, model, request_jsonb, response_jsonb, request_hash,
+                    request_truncated, response_truncated, recorded_at
+             FROM llm_wire WHERE turn_id = $1 ORDER BY seq`,
+            [turnId],
+          );
+          return wireRes.rows.map((r) => {
+            const row = r as Record<string, unknown>;
+            return {
+              seq: num(row.seq) ?? 0,
+              callIndex: num(row.call_index),
+              model: str(row.model),
+              request: row.request_jsonb ?? null,
+              response: row.response_jsonb ?? null,
+              requestHash: str(row.request_hash),
+              requestTruncated: row.request_truncated === true,
+              responseTruncated: row.response_truncated === true,
+              recordedAt: iso(row.recorded_at),
+            };
+          });
+        } catch (err) {
+          degraded.wire = true;
+          logger.warn({ component: "qa-rca", err: (err as Error).message }, "[WIRE] read degraded to empty");
+          return [];
+        }
+      })();
+
+      const [{ llm, adj }, vl, enrich, wire] = await Promise.all([
+        llmAdjBranch,
+        vlBranch,
+        enrichBranch,
+        wireBranch,
+      ]);
       const channel = enrich.channel;
       const chatCuid = enrich.chatCuid;
       const phoneHash: string | null = null;
@@ -722,6 +761,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
             msg: str(l._msg),
             fields: vlFields(l),
           })),
+          wire,
           degraded,
         },
       };

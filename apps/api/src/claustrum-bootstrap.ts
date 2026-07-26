@@ -290,6 +290,11 @@ import {
   createTurnTraceWriter,
   type TurnTraceWriter,
 } from "./claustrum/turn-trace-writer.js";
+import {
+  createLlmWireWriter,
+  flushWireExchanges,
+  type LlmWireWriter,
+} from "./claustrum/llm-wire-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import {
   sessionTokenKey,
@@ -2232,8 +2237,17 @@ async function flushTurnTraces(
   record: TurnRecord,
   turnTrace: TurnTraceWriter | undefined,
   pendingTraces: Map<string, LLMTrace[]>,
+  llmWire?: LlmWireWriter,
 ): Promise<void> {
   if (turnTrace === undefined) return;
+  // Wire Truth — persist this turn's sealed wire exchanges (llm_wire)
+  // alongside the trace rows. Claim-and-write is fail-open and runs even if
+  // the trace writes below fail: the exchanges are already attributed
+  // (callIndex sealed at emit time), and an unclaimed buffer would only
+  // TTL-expire.
+  if (llmWire !== undefined) {
+    await flushWireExchanges(llmWire, record.turnId, record.conversationId);
+  }
   const traces = pendingTraces.get(record.turnId);
   pendingTraces.delete(record.turnId);
   if (traces === undefined || traces.length === 0) return;
@@ -2290,6 +2304,7 @@ function fastifyTelemetry(
   usageStore: TokenUsageStore,
   turnTrace?: TurnTraceWriter,
   tokenUsageSink?: TokenUsageSink,
+  llmWire?: LlmWireWriter,
 ): TelemetryPort {
   // C1/C2 — per-turn LLMTrace buffer. The planner/responder emit an LLMTrace
   // per model call DURING the turn (emitLLMTrace); that trace carries turnId but
@@ -2437,7 +2452,7 @@ function fastifyTelemetry(
       }
       // C2 — flush this turn's buffered LLM-call traces to the REDACTED
       // turn_trace store, attaching the conversationId only available here.
-      await flushTurnTraces(record, turnTrace, pendingTraces);
+      await flushTurnTraces(record, turnTrace, pendingTraces, llmWire);
     },
     async emitLLMTrace(trace) {
       // C1 — buffer the per-model-call trace for the emitTurn flush (which
@@ -3002,6 +3017,12 @@ export async function bootstrapClaustrum(
   const promptComposer = createIbatexasPromptComposer();
   const turnTraceWriter: TurnTraceWriter = createTurnTraceWriter(pgPool);
   await turnTraceWriter.ensureTable(); // best-effort (writer swallows failures)
+  // Wire Truth — the durable llm_wire store (request/response per model call).
+  // Same pool, same fail-open posture, writer-owned DDL (the canonical
+  // turn_trace migration lives in the frozen audit-postgres package; llm_wire
+  // is an in-repo concern). Pinned in packages/cli's KERNEL_TABLES registry.
+  const llmWireWriter: LlmWireWriter = createLlmWireWriter(pgPool);
+  await llmWireWriter.ensureTable(); // best-effort
   // ERDS-059 — durable token→USD sink (llm_token_usage). Best-effort; the sink
   // swallows write failures so cost telemetry never breaks a turn.
   const tokenUsageSink = createPostgresTokenUsageSink(prisma);
@@ -3009,6 +3030,7 @@ export async function bootstrapClaustrum(
     tokenUsageStore,
     turnTraceWriter,
     tokenUsageSink,
+    llmWireWriter,
   );
   // fix B (Stage 1) — the per-turn structured closed-hours signal. Sourced from
   // the Redis read-through schedule cache (loadSchedule) + the env timezone, it

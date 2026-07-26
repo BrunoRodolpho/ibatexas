@@ -189,7 +189,126 @@ describe("qa-rca — merged turn view", () => {
       },
     ]);
     // VL is stubbed unreachable in tests → the lane degrades AND is flagged.
-    expect(res.json().turn.degraded).toEqual({ adj: false, vl: true });
+    expect(res.json().turn.degraded).toEqual({ adj: false, vl: true, wire: false });
+    await app.close();
+  });
+
+  it("surfaces the turn's wire exchanges with attempt-level rows (Wire Truth)", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at, max(recorded_at) AS ended_at")) {
+        return {
+          rows: [
+            {
+              conversation_id: "conv-abc",
+              started_at: "2026-07-21T02:35:48.000Z",
+              ended_at: "2026-07-21T02:36:03.000Z",
+            },
+          ],
+        };
+      }
+      if (sql.includes("FROM llm_wire")) {
+        return {
+          rows: [
+            {
+              seq: 0,
+              call_index: 0,
+              model: "nemotron-3-nano:4b",
+              request_jsonb: {
+                model: "nemotron-3-nano:4b",
+                messages: [{ role: "user", content: "oi" }],
+                reasoning_effort: "none",
+              },
+              response_jsonb: { choices: [{ message: { content: "" } }] },
+              request_hash: "a".repeat(64),
+              request_truncated: false,
+              response_truncated: false,
+              recorded_at: "2026-07-21T02:35:50.000Z",
+            },
+            // A retry attempt of the same logical call — same call_index, next seq.
+            {
+              seq: 1,
+              call_index: 0,
+              model: "nemotron-3-nano:4b",
+              request_jsonb: {
+                model: "nemotron-3-nano:4b",
+                messages: [{ role: "user", content: "oi" }],
+                reasoning_effort: "none",
+              },
+              response_jsonb: { choices: [{ message: { content: "Oi! Tudo bem?" } }] },
+              request_hash: "a".repeat(64),
+              request_truncated: false,
+              response_truncated: true,
+              recorded_at: "2026-07-21T02:35:52.000Z",
+            },
+          ],
+        };
+      }
+      if (sql.includes("call_index")) return { rows: [] };
+      return { rows: [] };
+    };
+
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/turns/turn-123",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn.wire).toEqual([
+      {
+        seq: 0,
+        callIndex: 0,
+        model: "nemotron-3-nano:4b",
+        request: {
+          model: "nemotron-3-nano:4b",
+          messages: [{ role: "user", content: "oi" }],
+          reasoning_effort: "none",
+        },
+        response: { choices: [{ message: { content: "" } }] },
+        requestHash: "a".repeat(64),
+        requestTruncated: false,
+        responseTruncated: false,
+        recordedAt: "2026-07-21T02:35:50.000Z",
+      },
+      {
+        seq: 1,
+        callIndex: 0,
+        model: "nemotron-3-nano:4b",
+        request: {
+          model: "nemotron-3-nano:4b",
+          messages: [{ role: "user", content: "oi" }],
+          reasoning_effort: "none",
+        },
+        response: { choices: [{ message: { content: "Oi! Tudo bem?" } }] },
+        requestHash: "a".repeat(64),
+        requestTruncated: false,
+        responseTruncated: true,
+        recordedAt: "2026-07-21T02:35:52.000Z",
+      },
+    ]);
+    expect(res.json().turn.degraded.wire).toBe(false);
+    await app.close();
+  });
+
+  it("degrades to an empty wire lane when the llm_wire table is unavailable (pre-capture turns/DBs)", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at, max(recorded_at) AS ended_at")) {
+        return { rows: [{ conversation_id: "conv-abc", started_at: null, ended_at: null }] };
+      }
+      if (sql.includes("FROM llm_wire")) {
+        throw new Error('relation "llm_wire" does not exist');
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/turns/turn-123",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn.wire).toEqual([]);
+    expect(res.json().turn.degraded.wire).toBe(true);
     await app.close();
   });
 

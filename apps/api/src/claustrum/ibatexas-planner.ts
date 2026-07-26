@@ -322,6 +322,15 @@ export interface IbatexasPlannerDeps {
   readonly staffEnvelopeActor?: StaffEnvelopeActor;
   /** Override the system prompt (defaults to the pt-BR semantic-parser prompt). */
   readonly system?: string;
+  /**
+   * Wire Truth — the prompt-catalog id of an injected `system` (the ops plane
+   * bypasses the fragment graph with a raw persona string, which used to leave
+   * the trace's prompt manifest empty — the workbench's `persona ?`). When both
+   * are set, the trace carries this id as a single-tag manifest (bare — the
+   * catalog owns it, not the fragment graph). Absent → the pre-existing empty
+   * manifest, byte-identical.
+   */
+  readonly systemPromptId?: string;
   readonly maxTokens?: number;
   /**
    * Per-envelope nonce source (T3-2). The nonce is the kernel's replay key:
@@ -944,7 +953,10 @@ export function createIbatexasPlanner(
       // DEFAULT_SYSTEM_PROMPT, so the recorded golden surfaces stay green; the
       // composed fragmentManifest (id@hash) feeds the turn trace.
       let system = deps.system ?? DEFAULT_SYSTEM_PROMPT;
-      let fragmentManifest: ReadonlyArray<string> = [];
+      let fragmentManifest: ReadonlyArray<string> =
+        deps.system !== undefined && deps.systemPromptId !== undefined
+          ? [deps.systemPromptId]
+          : [];
       if (deps.system === undefined && deps.promptComposer !== undefined) {
         const composed = await deps.promptComposer.composer.compose(
           { cognition: state, extra: { surface: PLANNER_SURFACE } },
