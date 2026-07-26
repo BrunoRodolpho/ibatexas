@@ -608,6 +608,46 @@ describe("LE2-021 — reorder-last, selected and confirmed against the real proj
     expect(userFacingOf(turn.decision)).toContain("Ainda não encontrei nenhum pedido anterior");
     expect(executed(sink, "order.reorder")).toBe(0);
   });
+
+  it("is NOT offered to a GUEST — the authentication matcher is load-bearing", async () => {
+    // The workflow's matchers are conjunctive: `order.cart.ensure` (the
+    // always-proposable cart floor) AND `order.checkout.create` (the orders
+    // planner's `if (isAuthenticated)` branch). Without the second conjunct a
+    // guest would be offered a route whose anchor must REFUSE at
+    // `requireAuthenticated`, which teaches a customer the system offers things
+    // it will not do.
+    //
+    // Asserted on the WIRE rather than on the outcome: an unoffered workflow
+    // and a refused one look the same from the reply, and only one of them is
+    // what this matcher buys.
+    const { harness, model } = buildHarness();
+    const scripted = model as unknown as { complete: { mock: { calls: unknown[][] } } };
+
+    await runCustomerTurn(harness, {
+      customerId: "guest:le2021-anon",
+      conversationId: "conv_le2021_guest",
+      text: SELECT_UTTERANCE,
+    });
+
+    const plannerCall = scripted.complete.mock.calls
+      .map(
+        (c) =>
+          c[0] as {
+            tools?: ReadonlyArray<{
+              name: string;
+              description: string;
+              inputSchema: unknown;
+            }>;
+          },
+      )
+      .find((req) => (req.tools?.length ?? 0) > 0);
+
+    expect(plannerCall).toBeDefined();
+    expect(plannerCall?.tools?.some((t) => t.name === "start_workflow")).toBe(false);
+    // The control: the guest DOES get a surface, so the assertion above is
+    // about the matcher and not about an empty tool array.
+    expect(plannerCall?.tools?.some((t) => t.name === "express_intent")).toBe(true);
+  });
 });
 
 describe("LE2-021 — the reorder-last anchor is never on the capability wire", () => {
