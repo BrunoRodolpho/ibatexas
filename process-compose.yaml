@@ -259,13 +259,41 @@ processes:
       timeout_seconds: 5
 
   # ── Stripe webhook listener ─────────────────────────────────────────────────
+  # This forwarder is the ONLY path for Stripe events into the dev api — PIX
+  # checkout's `payment_intent.succeeded` included — and it used to run with
+  # `restart: "no"`, so ANY exit killed webhook delivery for the rest of the
+  # session while every other process still reported healthy. Two distinct
+  # silent-death modes, both reproduced against stripe CLI v1.39.0:
+  #   • expired/invalid key → `stripe listen` exits 1 in <1 s with a `level=
+  #     fatal` 401 on stderr, which scrolls away behind the other processes.
+  #   • NO credentials at all → it does not exit; it drops into an INTERACTIVE
+  #     `stripe login` pairing prompt and hangs forever, so process-compose
+  #     reports it Running while nothing is ever forwarded.
+  # Hence the preflight below: both permanent conditions fail fast with an
+  # actionable message instead of hanging or being restart-looped. An EXPIRED
+  # key is deliberately not preflighted — `stripe config --list` exits 0 and
+  # still prints the stale key, so detecting it needs a network round-trip;
+  # that case is covered by the listener's own fatal stderr plus the banner.
+  # The listener is NOT exec'd, so the wrapper outlives it and prints that
+  # banner with the exit code. process-compose signals the whole process group
+  # on shutdown, so the wrapper dies with the listener on a deliberate stop —
+  # the banner only fires on an unexpected death, never on `ibx dev stop`.
   stripe:
-    command: "stripe listen --forward-to localhost:3001/api/webhooks/stripe"
+    command: |
+      command -v stripe >/dev/null 2>&1 || { echo "✖ stripe CLI not installed — brew install stripe/stripe-cli/stripe" >&2; exit 1; }
+      [ -n "$STRIPE_API_KEY" ] || stripe config --list 2>/dev/null | grep -q "api_key" || { echo "✖ stripe CLI has no credentials — run 'stripe login' (or set STRIPE_API_KEY). Not starting: 'stripe listen' would hang on an interactive pairing prompt and forward nothing." >&2; exit 1; }
+      stripe listen --forward-to localhost:3001/api/webhooks/stripe
+      rc=$?
+      echo "✖✖✖ 'stripe listen' EXITED (code $rc) — Stripe webhooks are NO LONGER reaching localhost:3001/api/webhooks/stripe." >&2
+      echo "✖✖✖ Check the fatal line above (expired key → run 'stripe login'). The rest of the dev stack is unaffected and will not warn you again." >&2
+      exit $rc
     depends_on:
       api:
         condition: process_healthy
     availability:
-      restart: "no"
+      restart: on_failure
+      max_restarts: 3
+      backoff_seconds: 10
     shutdown:
       signal: 15
       timeout_seconds: 5
