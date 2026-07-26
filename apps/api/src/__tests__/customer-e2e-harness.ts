@@ -107,7 +107,9 @@ import {
   type FunnelParseMemoSeam,
   type FunnelPlannerSeam,
   type FunnelResponderSeam,
+  type FunnelScopeSeam,
 } from "../claustrum/funnel-tier.js";
+import type { CapabilityRetriever } from "../claustrum/capability-retrieval.js";
 import type { ScheduleSignal } from "../claustrum/closed-hours.js";
 import { WebConfirmChannel } from "../claustrum/web-confirm-channel.js";
 import { buildLanguageEngineAuditMetadata } from "../claustrum/language-engine/audit-metadata.js";
@@ -704,6 +706,14 @@ export interface CustomerConductorDeps {
     render: (turnId: string) => string | undefined;
     renderAction: (acted: unknown, turnId: string) => string | undefined;
   };
+  /**
+   * LE2-008 — the funnel's L2 tier: the capability retriever that narrows this
+   * turn's advertised roster, and the seam that stamps its decision on the trace.
+   * Normally the retriever plus the SAME funnel instance passed as `funnel`.
+   * Omitted ⟹ no retrieval ⟹ the full roster, byte-identical to pre-L2.
+   */
+  readonly retriever?: CapabilityRetriever;
+  readonly scopeSeam?: FunnelScopeSeam;
 }
 
 export interface CustomerHarness {
@@ -728,6 +738,8 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     deriveContext: deriveCustomerPlannerContext,
     ...(deps.funnel ? { funnel: deps.funnel } : {}),
     ...(deps.parseMemo ? { parseMemo: deps.parseMemo } : {}),
+    ...(deps.retriever ? { retriever: deps.retriever } : {}),
+    ...(deps.scopeSeam ? { scopeSeam: deps.scopeSeam } : {}),
   });
 
   // LE2-007 — the REAL production responder, opt-in. Composed like the customer

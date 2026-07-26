@@ -41,6 +41,7 @@
 import type { CognitiveState } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
 import { normalize } from "./interrogative-discriminator.js";
+import type { ScopeDecision } from "./capability-retrieval.js";
 import {
   createParseCacheTelemetry,
   PARSE_CACHE_TTL_SECONDS,
@@ -58,12 +59,16 @@ import {
  * Which funnel tier RESOLVED a turn — the trace's tier attribution (spec: "every turn
  * stamped with its catalog version and funnel-tier attribution").
  *
- * `L1` (byte-identical repeat → memoized parse) and `L2` (parse scoped to K plausible
- * capabilities) are DECLARED here but never emitted yet: they are their own tickets.
- * Declaring them is the extensibility this ticket owes them — a later tier adds its
- * member and its {@link FunnelStageRecord} detail keys, and every consumer (the
- * planner short-circuit, the responder, the per-turn telemetry stamp) keeps working
+ * All three are LIVE: `L0` social short-circuit (LE2-007), `L1` byte-identical
+ * repeat → memoized parse (LE2-009), `L2` parse scoped to K plausible capabilities
+ * (LE2-008). The extensibility LE2-007 designed for held: each tier added its own
+ * member and its own {@link FunnelStageRecord} detail keys, and no consumer (the
+ * planner short-circuit, the responder, the per-turn telemetry stamp) needed a change,
  * because none of them switches on the tier value.
+ *
+ * EXACTLY ONE TIER PER TURN. L0 and L1 CLAIM a turn (they resolve it without a model
+ * call); L2 does not — it still parses, just against a narrower surface. So the planner
+ * stamps L2 only after L1 has missed, and a turn can never carry two attributions.
  */
 export type FunnelTier = "L0" | "L1" | "L2";
 
@@ -73,7 +78,11 @@ export type FunnelTier = "L0" | "L1" | "L2";
  * byte-identical repeat whose parse was replayed from the cache). L2 appends its
  * own ("scoped_parse", "full_roster_fallback") when it lands.
  */
-export type FunnelReason = "social_only" | "memoized_parse";
+export type FunnelReason =
+  | "social_only"
+  | "memoized_parse"
+  | "scoped_parse"
+  | "full_roster_fallback";
 
 /**
  * The funnel's OBSERVABILITY CONTRACT — one stage record per funnel-resolved turn
@@ -467,6 +476,32 @@ export interface FunnelParseMemoSeam {
   counters(): ParseCacheCounters;
 }
 
+/** L2's per-process counters — the fallback RATE the ticket requires be visible. */
+export interface ScopeCounters {
+  readonly scoped: number;
+  readonly fallback: number;
+  /** Of the fallbacks, how many were a genuine low-confidence decision (rather
+   *  than an unavailable retriever or a roster already at/below K) — the number
+   *  that actually says something about retrieval quality. */
+  readonly lowConfidence: number;
+}
+
+/**
+ * The L2 seam the PLANNER consumes (LE2-008) — scoped parse attribution.
+ *
+ * L2 does NOT claim a turn: unlike L0 (template) and L1 (replay) it still calls
+ * the model, it just calls it with a narrower surface. So this is a STAMP, not a
+ * `claim()`, and the planner must call it only AFTER L1 has missed — otherwise a
+ * turn that L1 resolved would carry an L2 attribution and the trace would name
+ * two tiers for one turn. Exactly one tier per turn is the contract.
+ */
+export interface FunnelScopeSeam {
+  /** Stamp this turn's scope decision (scoped or fallback) and count it. */
+  stampScope(turnId: string, decision: ScopeDecision): FunnelStageRecord;
+  /** The scoped/fallback split for this process. */
+  scopeCounters(): ScopeCounters;
+}
+
 /**
  * Build the L0 funnel seam. One instance per composition, shared by the planner and
  * the responder so both read the SAME stamped stage for a turn.
@@ -495,7 +530,7 @@ export function createParseFunnel(
     readonly now?: () => number;
     readonly parseCacheStore?: ParseCacheStore;
   } = {},
-): FunnelPlannerSeam & FunnelResponderSeam & Partial<FunnelParseMemoSeam> {
+): FunnelPlannerSeam & FunnelResponderSeam & FunnelScopeSeam & Partial<FunnelParseMemoSeam> {
   const now = opts.now ?? Date.now;
   const store = opts.parseCacheStore;
   const telemetry = createParseCacheTelemetry();
@@ -575,8 +610,64 @@ export function createParseFunnel(
           counters: () => telemetry.snapshot(),
         };
 
+  // ── L2 (LE2-008) — scoped-parse attribution + the fallback rate ──────────────
+  let scopedCount = 0;
+  let fallbackCount = 0;
+  let lowConfidenceCount = 0;
+  const scopeSeam: FunnelScopeSeam = {
+    stampScope(turnId: string, decision: ScopeDecision): FunnelStageRecord {
+      if (decision.scoped) scopedCount += 1;
+      else {
+        fallbackCount += 1;
+        if (decision.reason === "low_confidence") lowConfidenceCount += 1;
+      }
+      const stage: FunnelStageRecord = {
+        tier: "L2",
+        reason: decision.scoped ? "scoped_parse" : "full_roster_fallback",
+        detail: {
+          // The RETRIEVER SELECTION the ticket requires in the trace. Capability
+          // kinds are internal ids, never customer text, so recording them verbatim
+          // carries no PII — and the ordered list is what makes a bad scope
+          // diagnosable from the trace alone rather than by re-running retrieval.
+          selected: decision.selected.join(","),
+          k: decision.selected.length,
+          confidence: Number(decision.confidence.toFixed(6)),
+          scopeReason: decision.reason,
+        },
+        at: new Date(now()).toISOString(),
+      };
+      evictOldest(turnStages);
+      turnStages.set(turnId, stage);
+      logger.info(
+        {
+          component: "funnel",
+          event: "funnel.tier",
+          turnId,
+          tier: stage.tier,
+          reason: stage.reason,
+          selected: decision.selected,
+          confidence: stage.detail.confidence,
+          scopeReason: decision.reason,
+          scoped: scopedCount,
+          fallback: fallbackCount,
+          lowConfidence: lowConfidenceCount,
+        },
+        decision.scoped
+          ? `funnel: L2 scoped parse — ${decision.selected.length} of the roster advertised`
+          : `funnel: L2 full-roster fallback (${decision.reason})`,
+      );
+      return stage;
+    },
+    scopeCounters: () => ({
+      scoped: scopedCount,
+      fallback: fallbackCount,
+      lowConfidence: lowConfidenceCount,
+    }),
+  };
+
   return {
     ...(parseMemo ?? {}),
+    ...scopeSeam,
     claim(state: CognitiveState): FunnelStageRecord | undefined {
       const verdict = decideL0({
         text: state.perception.text,

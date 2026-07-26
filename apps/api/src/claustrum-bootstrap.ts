@@ -312,6 +312,11 @@ import {
   type FunnelParseMemoSeam,
 } from "./claustrum/funnel-tier.js";
 import { createRedisParseCacheStore } from "./claustrum/parse-memo.js";
+// LE2-008 — the L2 tier's retriever over the catalog conversation projection.
+import {
+  createCapabilityRetriever,
+  createOllamaEmbedder,
+} from "./claustrum/capability-retrieval.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -3278,6 +3283,22 @@ export async function bootstrapClaustrum(
   // lookup to a miss and every write to a no-op, so the turn path is unchanged
   // when the cache is down — it just costs a completion again.
   const funnel = createParseFunnel({ parseCacheStore: createRedisParseCacheStore() });
+  // LE2-008 — the L2 retriever, wired ONLY when the ratified local embedder is
+  // configured (OLLAMA_EMBED_URL / OLLAMA_EMBED_MODEL). Absent ⟹ no retriever ⟹
+  // the planner advertises the full roster exactly as it did pre-L2. That is the
+  // honest degrade, not a flag: a stack with no embedder provisioned should keep
+  // today's coverage rather than scope on nothing. The retriever itself is
+  // fail-safe on top of that (see capability-retrieval.ts) — every error path,
+  // including an unreachable embedder mid-turn, returns the full roster.
+  const l2Embedder = createOllamaEmbedder();
+  const capabilityRetriever =
+    l2Embedder === undefined ? undefined : createCapabilityRetriever({ embedder: l2Embedder });
+  if (capabilityRetriever === undefined) {
+    logger.info(
+      { component: "funnel", event: "funnel.l2.disabled" },
+      "funnel L2: no local embedder configured (OLLAMA_EMBED_URL/OLLAMA_EMBED_MODEL) — full-roster surface",
+    );
+  }
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
     createIbatexasPlanner({
       model,
@@ -3293,6 +3314,12 @@ export async function bootstrapClaustrum(
       // LE2-009 — the L1 half of the same instance (see IbatexasPlannerDeps.parseMemo
       // for why the two seams are passed separately rather than as one object).
       ...(funnel.lookupParse !== undefined ? { parseMemo: funnel as FunnelParseMemoSeam } : {}),
+      // LE2-008 — the L2 seams: the retriever plus the SAME funnel instance that
+      // carries L0/L1, so all three tiers stamp into one per-turn stage store and
+      // the trace can never name two tiers for one turn.
+      ...(capabilityRetriever === undefined
+        ? {}
+        : { retriever: capabilityRetriever, scopeSeam: funnel }),
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
