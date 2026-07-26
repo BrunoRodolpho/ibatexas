@@ -182,14 +182,126 @@ export function getEscalationParkStore(): EscalationParkStore {
 
 // ── ESCALATE-park wiring helpers (used by the HandoffPort at park time) ───────
 
+// ── BKL-113 — the resumable-kind PROPOSER-STAMP contract ─────────────────────
+//
+// The pack overlay's escalate-band self-approve gate is STRUCTURAL: it converts
+// the ESCALATE only when `approval.approverId !== payload.actorId`
+// (pack-payments/src/policies.ts, the AUT-017 overlay). That comparand is a
+// PAYLOAD field — so it only gates when the write side actually STAMPED the
+// authenticated proposer onto it. If a kind is added to
+// `ESCALATION_RESUMABLE_KINDS` WITHOUT such a stamp, `payload.actorId` is
+// `undefined`, `approverId !== undefined` is trivially true, and the deepest
+// separation-of-duty gate SILENTLY degrades to the route JWT + engine checks
+// only — no failing test, no compile error, just a weaker gate. (The park's own
+// `proposerId` would fall back to the session-derived id, which is the shallower
+// engine-level gate, not the pack's.)
+//
+// This block makes that contract MECHANICAL instead of prose:
+//
+//   1. `RESUMABLE_KINDS` is the SINGLE declaration site of the resumable set —
+//      `ESCALATION_RESUMABLE_KINDS` is DERIVED from it, so there is no set
+//      literal to sneak a kind into.
+//   2. `ESCALATION_PROPOSER_STAMPS` is typed `Record<EscalationResumableKind, …>`
+//      ⇒ EXHAUSTIVE over that tuple. Adding a kind without declaring its
+//      proposer stamp is a COMPILE error at this file, not a review miss.
+//   3. `buildEscalationParkInput` READS the proposer through the registry, so a
+//      declaration is load-bearing rather than decorative, and
+//      `escalation-approval.ts`'s `REQUIRED_ESCALATION_APPROVAL_BASIS` is
+//      exhaustive over the SAME union (a second required declaration).
+//   4. The behavioural half lives in
+//      `__tests__/escalation-actor-stamp-contract.test.ts`: it drives EVERY
+//      member kind through the REAL composed policy router and proves the gate
+//      actually reads the declared field (including a stamp-stripped negative
+//      control that reproduces the degradation above).
+//
+// Gates BKL-103's future `order.cancel` expansion.
+
+/**
+ * A resumable kind's PROPOSER-STAMP declaration: WHICH payload field carries the
+ * authenticated proposer, WHERE it is stamped, and HOW to read it. Every member
+ * of {@link ESCALATION_RESUMABLE_KINDS} must have one.
+ */
+export interface EscalationProposerStamp {
+  /**
+   * The canonical payload field carrying the proposer id — the SAME field the
+   * pack overlay's self-approve gate compares the approver against.
+   */
+  readonly payloadField: string;
+  /** The authenticated stamping site(s). Documentation for the reviewer. */
+  readonly stampedBy: string;
+  /**
+   * Structural reader: the proposer id from a canonical (stamped) payload, or
+   * null when the field is absent/blank (⇒ the park falls back to the
+   * session-derived id, which never equals a real approver id).
+   */
+  readonly readProposerId: (
+    payload: Readonly<Record<string, unknown>>,
+  ) => string | null;
+}
+
+/** Read a non-empty string payload field, else null. */
+function readStampedString(
+  payload: Readonly<Record<string, unknown>>,
+  field: string,
+): string | null {
+  const value = payload[field];
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
 /**
  * The intent kinds whose ESCALATE is RESUMABLE — parked here so an OWNER can
  * approve-and-execute it. Today: only the above-threshold staff refund. Adding a
- * kind here is a deliberate governance decision (a resumable money verb).
+ * kind here is a deliberate governance decision (a resumable money verb) AND
+ * REQUIRES a matching {@link ESCALATION_PROPOSER_STAMPS} entry — the compiler
+ * enforces it (BKL-113).
  */
-export const ESCALATION_RESUMABLE_KINDS: ReadonlySet<string> = new Set([
-  "payment.refund.issue",
-]);
+const RESUMABLE_KINDS = ["payment.refund.issue"] as const;
+
+/** The literal union of resumable kinds — the exhaustiveness key (BKL-113). */
+export type EscalationResumableKind = (typeof RESUMABLE_KINDS)[number];
+
+/**
+ * BKL-113 — per resumable kind, the proposer stamp its self-approve gate depends
+ * on. EXHAUSTIVE over {@link EscalationResumableKind} by type: a kind added to
+ * `RESUMABLE_KINDS` without an entry here does not compile.
+ */
+export const ESCALATION_PROPOSER_STAMPS: Readonly<
+  Record<EscalationResumableKind, EscalationProposerStamp>
+> = {
+  "payment.refund.issue": {
+    payloadField: "actorId",
+    stampedBy:
+      "ops/ops-resolver.ts resolveRefundTarget (`actorId: deps.staffId`, STOP-GATE B) + routes/admin/payments.ts; re-forced in ops-tool-registry.ts executeRefund",
+    readProposerId: (payload) => readStampedString(payload, "actorId"),
+  },
+};
+
+/**
+ * DERIVED from {@link ESCALATION_PROPOSER_STAMPS}' declaration tuple — kept as
+ * `ReadonlySet<string>` so the `String(envelope.kind)` call sites are unchanged.
+ */
+export const ESCALATION_RESUMABLE_KINDS: ReadonlySet<string> = new Set<string>(
+  RESUMABLE_KINDS,
+);
+
+/** Narrow an arbitrary kind string to a declared resumable kind (BKL-113). */
+export function isEscalationResumableKind(
+  kind: string,
+): kind is EscalationResumableKind {
+  return Object.hasOwn(ESCALATION_PROPOSER_STAMPS, kind);
+}
+
+/**
+ * The proposer stamp declared for `kind`, or undefined when the kind is not a
+ * declared resumable kind (fail-closed: callers then have NO stamped proposer).
+ */
+export function escalationProposerStampFor(
+  kind: string,
+): EscalationProposerStamp | undefined {
+  return isEscalationResumableKind(kind)
+    ? ESCALATION_PROPOSER_STAMPS[kind]
+    : undefined;
+}
 
 /** ISO-free deterministic pt-BR BRL formatter (no ICU dependency): 150000 → "R$ 1.500,00". */
 function formatBrl(centavos: number): string {
@@ -224,18 +336,24 @@ export function summarizeEscalation(envelope: IntentEnvelope): string {
 
 /**
  * Extract the park record (rebuild inputs + projection metadata) from an
- * IntentEnvelope at ESCALATE time. `proposerId` is read from the DB-stamped
- * `payload.actorId` (the ops resolver stamps the authenticated proposer's
- * staffId there) with a fallback to the session-derived id.
+ * IntentEnvelope at ESCALATE time. `proposerId` is read through the kind's
+ * BKL-113 {@link ESCALATION_PROPOSER_STAMPS} declaration — for
+ * `payment.refund.issue` that is the DB-stamped `payload.actorId` (the ops
+ * resolver stamps the authenticated proposer's staffId there), byte-identical to
+ * the pre-BKL-113 read — with a fallback to the session-derived id. Reading via
+ * the registry is what makes the declaration load-bearing: an undeclared kind
+ * has no stamped proposer here and falls straight through to the (shallower)
+ * session fallback, exactly as the pack overlay's gate would.
  */
 export function buildEscalationParkInput(
   envelope: IntentEnvelope,
 ): Omit<ParkedEscalationIntent, "token"> {
   const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+  const stampedProposerId =
+    escalationProposerStampFor(String(envelope.kind))?.readProposerId(payload) ??
+    null;
   const proposerId =
-    typeof payload.actorId === "string" && payload.actorId !== ""
-      ? payload.actorId
-      : stripStaffPrefix(envelope.actor.sessionId) || null;
+    stampedProposerId ?? (stripStaffPrefix(envelope.actor.sessionId) || null);
   const role = (envelope.actor as { role?: string }).role;
   // BKL-115 — the park-time instant. It is BOTH the projection `requestedAt` and
   // the best-available ESCALATE-time predecessor (`escalatedAt`) threaded onto the
