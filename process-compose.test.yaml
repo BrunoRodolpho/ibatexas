@@ -3,7 +3,8 @@ version: "0.5"
 # process-compose.test.yaml — T1a-11b app-boot test profile (journey-test stack).
 #
 # Boots ONLY @ibatexas/api (:3001) + commerce/Medusa (:9000) against the
-# T1a-11a ephemeral infra (docker-compose.test.yml — bring it up FIRST).
+# T1a-11a ephemeral infra (docker-compose.test.yml — bring it up FIRST), with a
+# `seed-promotions` one-shot between them (BKL-263 — LE2-018's boot gate).
 # web/admin are deliberately excluded until T2-7 needs them. Medusa is NOT
 # containerized (plan-v2 §5: explicitly not undertaken) — it boots here as a
 # process, mirroring the dev profile (process-compose.yaml).
@@ -93,6 +94,33 @@ processes:
       signal: 15
       timeout_seconds: 10
 
+  # ── Declared external references (one-shot — BKL-263) ─────────────────────
+  # LE2-018 put a refuse-to-start gate on the declared promotion references, and
+  # a per-run ephemeral Medusa has none of them: without this step the api dies
+  # inside bootstrapClaustrum() before server.listen, and the launcher reports
+  # `api (:3001) not ready after 600s` because the port never binds.
+  #
+  # This is a DEPENDENCY EDGE, not a seed step, which is why it lives here and
+  # not in test-stack-up.sh's [4/4] seed phase: process-compose starts `api` the
+  # moment `commerce` turns healthy, so anything the launcher ran between those
+  # two events would be racing the api's boot. Gating `api` on
+  # `process_completed_successfully` makes the ordering structural — the api
+  # cannot start until the promotions are in the store. `restart: "no"`: a seed
+  # that failed is a fact to report, and a retry loop would just hide it behind
+  # the same 600s timeout (test-stack-up.sh dumps this process's log on a
+  # readiness failure).
+  #
+  # Idempotent (find-or-create by exact code), so a warm store is a clean no-op.
+  seed-promotions:
+    command: "test -f .env.test || { echo 'missing .env.test — run ./scripts/gen-env-test.sh' >&2; exit 1; }; set -a && . ./.env.test && set +a && exec pnpm --filter @ibatexas/commerce db:seed:promotions"
+    depends_on:
+      commerce:
+        condition: process_healthy
+      build-packages:
+        condition: process_completed_successfully
+    availability:
+      restart: "no"
+
   # ── API (Fastify, TEST_API_PORT — default :3001) ───────────────────────────
   # /health is the deep check (Redis/Postgres critical → 503 until both are
   # reachable), so readiness here implies the test infra is actually wired.
@@ -105,6 +133,11 @@ processes:
     depends_on:
       commerce:
         condition: process_healthy
+      # BKL-263: the LE2-018 boot gate reconciles the declared promotions
+      # against Medusa and refuses the boot on a miss — so they must exist
+      # BEFORE this process starts, not merely before the suite runs.
+      seed-promotions:
+        condition: process_completed_successfully
       build-packages:
         condition: process_completed_successfully
     readiness_probe:

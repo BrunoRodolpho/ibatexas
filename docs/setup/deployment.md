@@ -239,10 +239,42 @@ references nobody has verified is exactly what it exists to catch:
 | var | `STAGING_WELCOME_CREDIT_COUPON_CODE` |
 | var | `STAGING_LOYALTY_REWARD_COUPON_CODE` |
 
+#### Ephemeral stacks provision the references themselves (BKL-263)
+
+Staging and dev have stores somebody administers by hand. The **ephemeral test
+stack** — `scripts/test-stack-up.sh`, used by `e2e-smoke` on every PR and by
+`journeys-nightly` — builds a brand-new Medusa per run, so it has to *create*
+the references before the api boots or the gate refuses to start. It is the same
+gate with no human in the loop, and it needs **both halves**:
+
+| Half | Where |
+|------|-------|
+| the config variables | `.env.test.example` → `.env.test` (`gen-env-test.sh`) |
+| the promotions themselves | `process-compose.test.yaml`'s `seed-promotions` one-shot → `ibx db seed:promotions` |
+
+The seeding step is a **dependency edge, not a seed-phase step**: `api`
+`depends_on` `seed-promotions` with `process_completed_successfully`, because
+process-compose starts the api the moment `commerce` turns healthy, so anything
+the launcher ran between those two events would race the boot gate.
+`ibx db seed:promotions` (`apps/commerce/src/seed-promotions.ts`) is idempotent
+find-or-create by exact code and reads the declaration table through
+`externalReferencesForStore("promotion")`, so it seeds whatever the catalog
+declares rather than a list of its own.
+
+> **The failure mode to recognize.** A missing reference kills the api inside
+> `bootstrapClaustrum()`, *before* `server.listen` — so the port never binds and
+> the launcher reports `api (:3001) not ready after 600s`, naming nothing. That
+> timeout is the gate's signature on this stack. `test-stack-up.sh` now dumps the
+> stuck process's own log (and `seed-promotions`') on a readiness failure, where
+> the refusal report actually is.
+
 Adding a reference is: declare it in `packages/catalog/src/external-references.ts`,
-add its variable to `.env.example` and to the environment's secrets/vars, and
-create the thing itself in its store. The compiler will tell you if the
-declaration is malformed; `--live` will tell you if the thing is missing.
+add its variable to `.env.example`, to `.env.test.example` and to the
+environment's secrets/vars, give it an amount in `seed-promotions.ts`'s
+`SEED_AMOUNTS_BRL` (a declared promotion with no amount fails that script by
+name rather than seeding a R$0 coupon), and create the thing itself in every
+store an operator owns. The compiler will tell you if the declaration is
+malformed; `--live` will tell you if the thing is missing.
 
 ---
 

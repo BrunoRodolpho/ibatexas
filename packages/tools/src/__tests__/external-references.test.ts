@@ -17,6 +17,7 @@ import {
   ExternalReferenceConfigError,
   externalReferenceKey,
   ExternalReferenceReconciliationError,
+  externalReferencesForStore,
   formatExternalReferenceReport,
   reconcileExternalReferences,
   requireExternalReferenceKey,
@@ -306,5 +307,30 @@ describe("key resolution — the config half", () => {
     expect(() =>
       requireExternalReferenceKey("promotion.invented", { declarations: [WELCOME], env: {} }),
     ).toThrow(/no such external reference is declared/)
+  })
+})
+
+describe("externalReferencesForStore — what a provisioner must create (BKL-263)", () => {
+  it("selects one store's declarations and excludes the others", () => {
+    // A seeder can only create references in the store it can talk to, and the
+    // Medusa seeder creating a delivery zone is not a partial success.
+    expect(externalReferencesForStore("promotion", [WELCOME, ZONE])).toEqual([WELCOME])
+    expect(externalReferencesForStore("delivery-zone", [WELCOME, ZONE])).toEqual([ZONE])
+  })
+
+  it("is empty for a store nothing declares — a provisioner with nothing to do", () => {
+    expect(externalReferencesForStore("delivery-zone", [WELCOME])).toEqual([])
+  })
+
+  it("defaults to the AUTHORED table, so a new declaration reaches the seeder", () => {
+    // The reason the seeder calls this instead of holding its own list: declare
+    // a third promotion and it gets provisioned, with no second edit. A stale
+    // list would surface as the api refusing to boot.
+    const promotions = externalReferencesForStore("promotion")
+    expect(promotions.map((declaration) => declaration.id)).toEqual([
+      "promotion.welcome-credit",
+      "promotion.loyalty-reward",
+    ])
+    expect(promotions.every((declaration) => declaration.store === "promotion")).toBe(true)
   })
 })
