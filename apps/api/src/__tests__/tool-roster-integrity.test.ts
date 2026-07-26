@@ -25,7 +25,7 @@ import {
 import {
   CAPABILITY_DEFINITIONS,
   generateChatDrivableToolKinds,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 import {
   agentCtxFromCapsule,
   listIbatexasToolPacks,

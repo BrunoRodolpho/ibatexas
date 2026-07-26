@@ -101,6 +101,7 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
+import type { FunnelPlannerSeam } from "./funnel-tier.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
 import { resolveDeliveryCoverage } from "./delivery-coverage-resolver.js";
@@ -428,6 +429,19 @@ export interface IbatexasPlannerDeps {
   readonly readToolExecutors?: Readonly<
     Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
   >;
+  /**
+   * LE2-007 — the parse funnel's tier seam. When present, `propose` asks it FIRST
+   * whether a tier resolves this turn without the model; an L0 (social-only) claim
+   * returns the respond-only plan with ZERO completions on the wire, and
+   * `proposeClaims` stays off the wire for the same turn.
+   *
+   * ABSENT ⟹ byte-identical to the pre-funnel planner — which is how the ops plane,
+   * the agent plane and every unit test opt out. The seam itself is fail-closed: it
+   * only claims a turn whose ingress published a funnel context (see
+   * `funnel-tier.ts`'s `decideL0`), so a composition that wires the seam but an
+   * ingress that does not publish simply never reaches L0.
+   */
+  readonly funnel?: FunnelPlannerSeam;
 }
 
 /**
@@ -956,6 +970,30 @@ export function createIbatexasPlanner(
 
   return {
     async propose(state: CognitiveState): Promise<Plan> {
+      // ── LE2-007 · L0 · THE FUNNEL'S FIRST QUESTION ─────────────────────────
+      // Asked BEFORE the tool surface is built and before any completion: does a
+      // funnel tier resolve this turn with no model call? An L0 claim (a social-only
+      // utterance, outside any confirm window — see funnel-tier.ts) means the answer
+      // is a deterministic pt-BR template the responder renders off the SAME stamped
+      // stage record, so the correct plan here is the respond-only plan the
+      // "nothing proposable" branch below already produces: zero envelopes, nothing
+      // to adjudicate, and — the point of the tier — zero bytes on the wire.
+      //
+      // The plan shape is deliberately IDENTICAL to that branch's (envelopes: [],
+      // capabilities: [], readToolCalls: []) so every downstream consumer (SUBMIT's
+      // adjudicatePlan([]), the responder's REFUSE-on-empty-plan branch, the
+      // extraction corpus's ∅ class) sees exactly the shape a no-capability turn has
+      // always had; only the `rationale` (trace-only, never user-facing) names the
+      // tier. Absent seam ⟹ this whole block is skipped ⟹ byte-identical planner.
+      const l0Stage = deps.funnel?.claim(state);
+      if (l0Stage !== undefined) {
+        return {
+          envelopes: [],
+          rationale: `ibatexas-planner: funnel ${l0Stage.tier} (${l0Stage.reason}) — no model call`,
+          capabilities: [],
+          readToolCalls: [],
+        };
+      }
       const derived = deps.deriveContext?.(state) ?? {
         state: { tenantId: state.tenantId, locale: state.locale },
         context: {},
@@ -1459,6 +1497,28 @@ export function createIbatexasPlanner(
       state: CognitiveState,
       auth?: ClaimAuthContext,
     ): Promise<ClaimPlan> {
+      // ── LE2-007 · L0 · the CLAIM path stays off the wire too ───────────────
+      // `propose` already stamped this turn's stage (handleTurn runs PLAN before
+      // CLAIMS-VALIDATE), so an L0 turn is known here — and a second completion for
+      // it would defeat the whole tier. Return the EMPTY claim plan: an empty
+      // candidate set with no forced terminal is exactly what @claustrum/core's
+      // CLAIMS-VALIDATE reads as "nothing to claim" (claims-validate.ts case (a)) →
+      // no claims result → step 6a never supersedes the L0 template. This is also
+      // the shape that closed BKL-110, where the 4B OVER-proposed a schedule claim
+      // on "oi, tudo bem?" and the UNKNOWN terminal clobbered the greeting; L0
+      // removes the over-proposal at its source instead of filtering it after.
+      //
+      // SAFETY (why skipping the §O#9 router is sound here, not just cheap): the
+      // §O#9 closed-taxonomy safety net and the P4 completeness wall both act on
+      // REQUEST SPANS, and an L0 turn has none — every token of a social-only
+      // utterance is in the closed social/neutral lexicon, so a medical-emergency
+      // marker ("passando mal", "alergia") or any other content span is a residual
+      // token that makes `classifySocialOnly` return null and L0 never fire. There
+      // is no span here for a wall to be denied.
+      const l0ClaimStage = deps.funnel?.stageFor(state.turnId);
+      if (l0ClaimStage !== undefined) {
+        return { candidates: [], completeness: [], droppedClaimTypes: [] };
+      }
       // LE2-012 — THIS plane's claim-type scope. The enum below, the
       // constrained-generation wall, the owner-scope subject resolution and the P4
       // completeness wall all read this ONE object, so a plane can never advertise

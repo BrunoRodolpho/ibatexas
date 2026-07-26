@@ -443,10 +443,32 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // read spans (gated below), not just the cart/menu reads. A how-to interrogative
   // ("como cancelo meu pedido?") also matches and routes to the model path, where
   // it gets a helpful answer — the fail-SAFE direction (model, never a wrong read).
+  // BKL-238 — the CHECKOUT roots (`fech`/`finaliz`) join the net for the same reason
+  // BKL-206 added `cancel`: "quero fechar o pedido e pagar com pix" is a checkout
+  // MUTATION, but `pagar` is a STRONG payment-status token (and a bare `pix` pushes
+  // too), so it fired PAYMENT_STATUS_Q → the unsatisfiable PAYMENT_STATUS closure →
+  // RENDER degraded to UNKNOWN on every checkout turn (live-caught as SCN-049).
+  // `pedido` did the same to ORDER_STATUS_Q. Both status spans are gated below, so
+  // recognising the checkout verb is the whole fix — the mutation then takes the
+  // model/intent path that actually closes the order.
+  // The two roots carry a NEGATIVE lookahead (the `reserv(?!at)` idiom used below)
+  // because their non-verb families are exactly the READ vocabulary this net must
+  // NOT capture: `fechad*` ("vocês estão fechados?" — and `fechadura`), `fechament*`
+  // ("horário de fechamento"), `fechou`/`fecham*` ("o restaurante já fechou?", "que
+  // horas vocês fecham?"), and `finalizad*` ("meu pedido foi finalizado?" — a
+  // GENUINE order-status ask). What survives is the verb proper: fecha/fecho/fechar/
+  // feche/fechei/fechem/fechando, finaliza/finalizo/finalizar/finalize/finalizei.
+  // The net is spelled as TWO literals — the CART-EDIT roots and the ORDER-LIFECYCLE
+  // roots — OR'd into the same `mutationImperative` boolean every span below gates
+  // on, because the fused literal scored 28 on Sonar's regex-complexity budget of 20
+  // (S5843). BOTH carry the same `(?<![a-z])` left guard, so the union of matched
+  // strings is exactly what the single literal matched.
+  const MUTATION_EDIT_ROOTS =
+    /(?<![a-z])(adicion|acrescent|remov|tir|coloc|p[õo]e|p[õo]r|mud|troc|limp|esvazi|aument|diminu)/;
+  const MUTATION_LIFECYCLE_ROOTS =
+    /(?<![a-z])(cancel|fech(?!ad|ament|ou|am)|finaliz(?!ad))/;
   const mutationImperative =
-    /(?<![a-z])(adicion|acrescent|remov|tir|coloc|p[õo]e|p[õo]r|mud|troc|limp|esvazi|aument|diminu|cancel)/.test(
-      t,
-    );
+    MUTATION_EDIT_ROOTS.test(t) || MUTATION_LIFECYCLE_ROOTS.test(t);
 
   if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
   // inv.18 v2 — the STORE_OPEN_NOW_Q markers are GENERATED from the def source

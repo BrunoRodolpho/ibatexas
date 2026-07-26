@@ -39,7 +39,10 @@ import {
   PROPOSE_CLAIM_TOOL,
   createIbatexasPlanner,
 } from "../../claustrum/ibatexas-planner.js";
-import { OPS_CLAIM_PLANNER_PERSONA } from "../../claustrum/prompts/personas.js";
+import {
+  CLAIM_PLANNER_PERSONA,
+  OPS_CLAIM_PLANNER_PERSONA,
+} from "../../claustrum/prompts/personas.js";
 import { renderRenderables } from "../../claustrum/renderer-from-claims.js";
 import {
   SAFE_TEMPLATES,
@@ -402,6 +405,42 @@ describe("LE2-013 delivery pair — PLANE-SHARED by the superset, not duplicated
     for (const type of DELIVERY_PAIR) expect(advertised.has(type)).toBe(true);
     expect(OPS_CLAIM_PLANNER_PERSONA).toContain("DELIVERY_COVERAGE");
     expect(OPS_CLAIM_PLANNER_PERSONA).toContain("DELIVERY_NO_COVERAGE");
+  });
+
+  // BKL-234 — the hours mapping must name the PAIR on BOTH planes. Naming only
+  // STORE_HOURS is the defect: the §O#15 span STORE_OPEN_NOW_Q fires on every hours
+  // phrasing and REQUIRES the companion, so an hours-only proposal degrades a claim
+  // that already VALIDATED. The pt-BR schedule lines are shared verbatim
+  // (SCHEDULE_CLAIM_MAPPING_LINES), so this pins that they stay identical rather than
+  // drifting to a plane-specific hours vocabulary.
+  it("BOTH claim-planner personas map an hours question to the STORE_HOURS pair", async () => {
+    const advertised = new Set(await proposeClaimEnum(OPS_CLAIM_SCOPE));
+    expect(advertised.has("STORE_HOURS")).toBe(true);
+    expect(advertised.has("STORE_OPEN_NOW")).toBe(true);
+
+    for (const persona of [OPS_CLAIM_PLANNER_PERSONA, CLAIM_PLANNER_PERSONA]) {
+      expect(persona).toContain("STORE_HOURS");
+      expect(persona).toContain("STORE_OPEN_NOW");
+      // The hours phrasings BKL-233/234 were registered from must be reachable.
+      expect(persona).toContain("qual o horário de funcionamento");
+      expect(persona).toContain("até que horas fica aberto");
+      // The pair instruction itself (the DELIVERY_COVERAGE "proponha TAMBÉM" idiom).
+      expect(persona).toContain("proponha");
+    }
+  });
+
+  it("the shared schedule mapping is BYTE-IDENTICAL on both planes (no drift)", () => {
+    const scheduleBlock = (persona: string): string => {
+      const lines = persona.split("\n");
+      const start = lines.findIndex((l) => l.includes("STORE_OPEN_NOW"));
+      const end = lines.findIndex((l) => l.includes("STORE_HOURS_FOR_DATE"));
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      return lines.slice(start, end + 1).join("\n");
+    };
+    expect(scheduleBlock(OPS_CLAIM_PLANNER_PERSONA)).toBe(
+      scheduleBlock(CLAIM_PLANNER_PERSONA),
+    );
   });
 });
 

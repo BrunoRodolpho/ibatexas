@@ -771,3 +771,46 @@ describe("schedule.override.set executor — domain-service write + cache invali
     expect((ctx as { staffId?: string }).staffId).toBe("staff_1");
   });
 });
+
+// ── BKL-240 — menu.special.set must not report a phantom specialId ─────────────
+//
+// `OpsDailySpecialWriter.update` is ROW-OR-NULL (the domain service's `mutateOrNull`,
+// packages/domain/src/services/daily-special.service.ts:67 — a missing id returns
+// `null`, it does NOT throw). The executor used to DISCARD that null and report
+// `existing.id` regardless, so a row deleted between the day's `list` and the
+// `update` still produced a truthy id — and the ops action render announced a special
+// that does not exist. The null is now the executor's committed-shape failure signal.
+
+describe("menu.special.set executor — the ROW-OR-NULL update is propagated (BKL-240)", () => {
+  const SPECIAL_PAYLOAD = { productId: "prod_1", date: "2026-07-11" };
+
+  function withUpdate(update: ReturnType<typeof vi.fn>) {
+    return makeDeps({
+      dailySpecialSvc: {
+        list: vi.fn(async () => [{ id: "special_1", medusaProductId: "prod_1" }]),
+        create: vi.fn(async () => ({ id: "special_new" })),
+        update,
+      },
+    }).deps;
+  }
+
+  it("update → null (row vanished) yields specialId:null, never the requested id", async () => {
+    const deps = withUpdate(vi.fn(async () => null));
+    const out = (await toolByKind(deps, "menu.special.set").execute(
+      SPECIAL_PAYLOAD,
+      capsule("staff_1"),
+    )) as { specialId: string | null; created: boolean };
+    expect(out.specialId).toBeNull();
+    expect(out.created).toBe(false);
+  });
+
+  it("update → the row yields the committed specialId (unchanged behaviour)", async () => {
+    const deps = withUpdate(vi.fn(async () => ({ id: "special_1" })));
+    const out = (await toolByKind(deps, "menu.special.set").execute(
+      SPECIAL_PAYLOAD,
+      capsule("staff_1"),
+    )) as { specialId: string | null; created: boolean };
+    expect(out.specialId).toBe("special_1");
+    expect(out.created).toBe(false);
+  });
+});

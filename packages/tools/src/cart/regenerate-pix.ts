@@ -40,6 +40,13 @@ interface RegeneratePixOutput {
   pixCopyPaste?: string;
   pixQrCode?: string;
   pixExpiresAt?: string;
+  /**
+   * BKL-241 — the NEW Stripe PaymentIntent id backing this QR. The WhatsApp
+   * route keys the expiry monitor on it; without it a regenerated PIX was
+   * monitored under the customer id, a key the `pix:paid:` marker can never
+   * match, so paying the new QR did not stop "O PIX expirou".
+   */
+  paymentIntentId?: string;
   message: string;
 }
 
@@ -211,6 +218,7 @@ export async function regeneratePix(
       pixCopyPaste: pixData.data,
       pixQrCode: pixData.image_url_svg,
       pixExpiresAt: pixExpiresAt ?? undefined,
+      paymentIntentId: newPi.id,
       message: "Novo PIX gerado! Use o código abaixo para pagar.",
     };
   });

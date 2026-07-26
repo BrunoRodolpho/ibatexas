@@ -31,7 +31,7 @@ import { describe, expect, it } from "vitest";
 import {
   CAPABILITY_DEFINITIONS,
   generateJustifiedByForClaim,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 
 import { SUCCESS_CLAIM_CLASSES } from "../ibatexas-responder.js";
 

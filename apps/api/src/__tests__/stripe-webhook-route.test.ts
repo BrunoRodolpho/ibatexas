@@ -1804,14 +1804,25 @@ describe("POST /api/webhooks/stripe — PIX leg carries the RAW Medusa order id 
     });
   });
 
-  it("passes the RAW order id to the reconcile fallback lookup and to markPixPaid", async () => {
+  it("passes the RAW order id to the reconcile fallback lookup", async () => {
     const res = await fire("evt_pix_bkl230_reconcile");
 
     expect(res.statusCode).toBe(200);
     // T2-1 fallback: the Payment row is found by ORDER id when the PI is unknown.
     expect(mockGetActiveByOrderId).toHaveBeenCalledWith(RAW_ORDER_ID);
-    // The PIX-paid flag keys off the order id too.
-    expect(mockMarkPixPaid).toHaveBeenCalledWith(RAW_ORDER_ID);
+  });
+
+  it("BKL-241: marks PIX paid under the PaymentIntent id, never the order id", async () => {
+    const res = await fire("evt_pix_bkl241_markpaid");
+
+    expect(res.statusCode).toBe(200);
+    // The expiry monitor is scheduled at QR-mint time, when this order does not
+    // exist yet — so `pi_pix_bkl230` is the only id both sides hold. Marking
+    // under RAW_ORDER_ID wrote a key isPixPaid never reads, and the customer who
+    // had just paid still received "O PIX expirou".
+    expect(mockMarkPixPaid).toHaveBeenCalledTimes(1);
+    expect(mockMarkPixPaid).toHaveBeenCalledWith("pi_pix_bkl230");
+    expect(mockMarkPixPaid).not.toHaveBeenCalledWith(RAW_ORDER_ID);
   });
 
   it("locks the capture on the RAW order id", async () => {
@@ -1885,8 +1896,9 @@ describe("POST /api/webhooks/stripe — PIX leg carries the RAW Medusa order id 
     expect(placed).toHaveLength(1);
     expect(placed[0]?.[1]).toMatchObject({ orderId: RAW_ORDER_ID });
     // And the PIX-paid flag past the publish is reached too (the old early
-    // return skipped everything below the no-op branch).
-    expect(mockMarkPixPaid).toHaveBeenCalledWith(RAW_ORDER_ID);
+    // return skipped everything below the no-op branch). BKL-241 moved the
+    // argument to the PaymentIntent id; the reachability claim is unchanged.
+    expect(mockMarkPixPaid).toHaveBeenCalledWith("pi_pix_bkl230");
   });
 
   it("still short-circuits to the already-processed no-op when capturePayment yields null", async () => {

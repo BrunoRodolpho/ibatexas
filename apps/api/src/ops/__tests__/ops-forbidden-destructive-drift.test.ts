@@ -23,7 +23,7 @@ import { composedIntentKinds } from "@ibatexas/packs-composed";
 import {
   CAPABILITY_DEFINITIONS,
   generateOpsForbiddenDestructiveKinds,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 import {
   opsCapabilityPlanner,
   OPS_ALERT_RESOLVE_STAFF_KIND,

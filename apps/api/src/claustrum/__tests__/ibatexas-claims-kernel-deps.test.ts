@@ -15,6 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  checkConsistency,
   DEFAULT_CONSISTENCY_TABLE,
   EvidenceLedger,
   runClaimsKernel,
@@ -28,7 +29,9 @@ import {
   buildOwns,
   createIbatexasClaimsKernelDeps,
   createPerTurnClaimsKernelDeps,
+  IBATEXAS_CONSISTENCY_TABLE,
   PROVABLY_EMPTY_KIND,
+  SCHEDULE_CLUSTER_COMPATIBLE,
 } from "../ibatexas-claims-kernel-deps.js";
 
 // ── Fail-closed defaults ─────────────────────────────────────────────────────
@@ -43,9 +46,21 @@ describe("ibatexas-claims-kernel-deps — fail-closed defaults", () => {
     expect(typeof deps.soundness.now).toBe("number");
   });
 
-  it("defaults the consistency table to the published DEFAULT_CONSISTENCY_TABLE", () => {
+  it("defaults the consistency table to IBATEXAS_CONSISTENCY_TABLE", () => {
     const deps = createIbatexasClaimsKernelDeps();
-    expect(deps.consistency?.table).toBe(DEFAULT_CONSISTENCY_TABLE);
+    expect(deps.consistency?.table).toBe(IBATEXAS_CONSISTENCY_TABLE);
+  });
+
+  // BKL-234 — the repo table EXTENDS the published one; it never edits or drops a
+  // published constraint (that would silently re-relate a pair the kernel foundation
+  // already reviewed).
+  it("carries every published constraint VERBATIM, plus the schedule-cluster additions", () => {
+    for (const published of DEFAULT_CONSISTENCY_TABLE) {
+      expect(IBATEXAS_CONSISTENCY_TABLE).toContainEqual(published);
+    }
+    expect(IBATEXAS_CONSISTENCY_TABLE).toHaveLength(
+      DEFAULT_CONSISTENCY_TABLE.length + SCHEDULE_CLUSTER_COMPATIBLE.length,
+    );
   });
 });
 
@@ -536,5 +551,126 @@ describe("activeResourcesFromLedger — BKL-079 provable-empty PAYMENT sentinel"
     expect(refs).toContainEqual(orderSentinel);
     expect(refs).toContainEqual(paymentSentinel);
     expect(refs).toHaveLength(2);
+  });
+});
+
+// ── BKL-234 — the schedule-cluster co-render declarations ─────────────────────
+//
+// STRUCTURAL pins over the P2 table. These complement the ops turn-seam suite
+// (ops-hours-read.e2e.test.ts): that one proves the operator gets the hours, these
+// prove the declaration is exactly as narrow as its justification — every pair inside
+// the cluster is declared, and nothing outside it is.
+
+describe("BKL-234 — SCHEDULE_CLUSTER_COMPATIBLE", () => {
+  const CLUSTER = ["STORE_OPEN_NOW", "STORE_HOURS", "STORE_HOURS_FOR_DATE"] as const;
+
+  it("declares EVERY unordered pair inside the cluster, all COMPATIBLE", () => {
+    // 3 types ⇒ C(3,2) = 3 pairs. A cluster member added without its pairs would
+    // silently fall back to §O#1 default-deny on the turn that co-renders it.
+    expect(SCHEDULE_CLUSTER_COMPATIBLE).toHaveLength(
+      (CLUSTER.length * (CLUSTER.length - 1)) / 2,
+    );
+    for (const c of SCHEDULE_CLUSTER_COMPATIBLE) {
+      expect(c.relation).toBe("COMPATIBLE");
+    }
+    const pairKeys = new Set(
+      SCHEDULE_CLUSTER_COMPATIBLE.map((c) => [c.typeA, c.typeB].sort().join("|")),
+    );
+    for (let i = 0; i < CLUSTER.length; i++) {
+      for (let j = i + 1; j < CLUSTER.length; j++) {
+        expect(pairKeys).toContain(
+          [CLUSTER[i] as string, CLUSTER[j] as string].sort().join("|"),
+        );
+      }
+    }
+  });
+
+  it("declares ONLY schedule types — the narrowing of §O#1 reaches nothing else", () => {
+    for (const c of SCHEDULE_CLUSTER_COMPATIBLE) {
+      expect(CLUSTER).toContain(c.typeA);
+      expect(CLUSTER).toContain(c.typeB);
+      // A self-pair would be meaningless: SAME-type consistency is decided by the
+      // kernel's SAME_TYPE_VALUE_CONFLICT arm, which this table cannot reach.
+      expect(c.typeA).not.toBe(c.typeB);
+    }
+  });
+
+  it("leaves an OFF-CLUSTER same-subject pair UNDECLARED (still default-deny)", () => {
+    // The safety property that makes this change reviewable: a schedule type paired
+    // with anything outside the cluster is NOT relieved of §O#1, so an un-reviewed
+    // co-render still fails safe.
+    const pairKey = (a: string, b: string): string => [a, b].sort().join("|");
+    const declared = new Set(
+      IBATEXAS_CONSISTENCY_TABLE.map((c) => pairKey(c.typeA, c.typeB)),
+    );
+
+    expect(declared).not.toContain(pairKey("STORE_HOURS", "MENU_OVERVIEW"));
+    expect(declared).not.toContain(pairKey("STORE_HOURS", "CART_CONTENTS"));
+    expect(declared).not.toContain(pairKey("STORE_OPEN_NOW", "PAYMENT_STATUS"));
+  });
+});
+
+// ── BKL-234 — the P2 verdict the declaration changes, proven both ways ────────
+//
+// The consistency table is PLANE-INDEPENDENT (both conductors compose these deps),
+// so the co-render property belongs at the kernel, not in one plane's turn seam. This
+// drives the REAL published `checkConsistency` over two same-subject VALIDATED
+// schedule claims and pins the BEFORE (default-deny ESCALATE) against the AFTER
+// (co-render), which is the whole of the BKL-234 fix in one assertion pair.
+
+describe("BKL-234 — same-subject schedule claims co-render under the repo table", () => {
+  /** Two VALIDATED schedule claims on ONE subject — what the persona now produces. */
+  const scheduleClaims = [
+    { subject: "loja", type: "STORE_HOURS", verdict: "VALIDATED" as const, value: { hoursText: "11h–15h / 18h–23h" } },
+    { subject: "loja", type: "STORE_OPEN_NOW", verdict: "VALIDATED" as const, value: { mealPeriod: "dinner" } },
+  ];
+
+  it("BEFORE (published table): §O#1 default-deny suppresses BOTH → ESCALATE", () => {
+    const result = checkConsistency(scheduleClaims, { table: DEFAULT_CONSISTENCY_TABLE });
+
+    // The exact live symptom: two grounded facts annihilate each other.
+    expect(result.terminal).toBe("ESCALATE");
+    expect(result.renderable).toHaveLength(0);
+    expect(result.suppressions.length).toBeGreaterThan(0);
+    expect(result.suppressions[0]?.reason).toBe("UNMODELLED_SAME_SUBJECT");
+  });
+
+  it("AFTER (repo table): both render, no suppression", () => {
+    const result = checkConsistency(scheduleClaims, { table: IBATEXAS_CONSISTENCY_TABLE });
+
+    expect(result.terminal).not.toBe("ESCALATE");
+    expect(result.renderable).toHaveLength(2);
+    expect(result.suppressions).toHaveLength(0);
+  });
+
+  // The declaration must not become a blanket "schedule claims never conflict": two
+  // VALIDATED claims of the SAME type with DIFFERENT values are still a P2 violation,
+  // decided by the kernel's SAME_TYPE_VALUE_CONFLICT arm that no table can relax.
+  it("still suppresses two CONTRADICTORY same-type hours claims", () => {
+    const result = checkConsistency(
+      [
+        { subject: "loja", type: "STORE_HOURS", verdict: "VALIDATED", value: { hoursText: "11h–15h" } },
+        { subject: "loja", type: "STORE_HOURS", verdict: "VALIDATED", value: { hoursText: "18h–23h" } },
+      ],
+      { table: IBATEXAS_CONSISTENCY_TABLE },
+    );
+
+    expect(result.terminal).toBe("ESCALATE");
+    expect(result.suppressions[0]?.reason).toBe("SAME_TYPE_VALUE_CONFLICT");
+  });
+
+  // …and a schedule type paired with an OFF-CLUSTER type still default-denies, so the
+  // narrowing is genuinely scoped to the reviewed cluster.
+  it("still default-denies a schedule type paired with an OFF-CLUSTER type", () => {
+    const result = checkConsistency(
+      [
+        { subject: "loja", type: "STORE_HOURS", verdict: "VALIDATED", value: { hoursText: "11h–15h" } },
+        { subject: "loja", type: "MENU_OVERVIEW", verdict: "VALIDATED", value: { overviewText: "..." } },
+      ],
+      { table: IBATEXAS_CONSISTENCY_TABLE },
+    );
+
+    expect(result.terminal).toBe("ESCALATE");
+    expect(result.suppressions[0]?.reason).toBe("UNMODELLED_SAME_SUBJECT");
   });
 });
