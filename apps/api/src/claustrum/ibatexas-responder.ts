@@ -53,6 +53,7 @@ import {
   closedHoursScheduledConfirmation,
   type ScheduleSignal,
 } from "./closed-hours.js";
+import type { FunnelStageRecord } from "./funnel-tier.js";
 
 // Re-export so existing importers (tests) keep their import site.
 export {
@@ -219,6 +220,22 @@ export interface IbatexasResponderDeps {
   readonly safeUnknown?: {
     gate(text: string): boolean;
     render(schedule: ScheduleSignal | undefined, userText: string): string;
+  };
+  /**
+   * LE2-007 — the parse funnel's tier seam, the RESPONDER half. The planner stamped
+   * this turn's stage record (handleTurn runs PLAN before SYNTHESIZE), so the
+   * responder does not re-classify anything: it reads the stamp and, for a tier that
+   * authors its own reply (L0 today), returns that deterministic pt-BR template with
+   * NO model call. Together with the planner + claim-path short-circuits that is the
+   * whole zero-completions guarantee for a social turn.
+   *
+   * ABSENT ⟹ byte-identical to the pre-funnel responder (ops plane, agent plane, unit
+   * tests). Wired on the customer plane only, from the same `createL0Funnel()`
+   * instance the planner got, so the two can never disagree about a turn.
+   */
+  readonly funnel?: {
+    stageFor(turnId: string): FunnelStageRecord | undefined;
+    reply(stage: FunnelStageRecord): string | undefined;
   };
 }
 
@@ -1229,6 +1246,39 @@ export function createIbatexasResponder(
             const rendered = deps.readAnswer?.render(turnId);
             if (rendered !== undefined) {
               return { text: rendered };
+            }
+            // ── LE2-007 · L0 · the template reply, zero model calls ────────────
+            // The planner stamped this turn L0 (a social-only utterance, no confirm
+            // window) and skipped its extraction completion; the claim path skipped
+            // its own, so nothing validated and loop §6a cannot supersede this text.
+            // Render the deterministic pt-BR template and return — this is the third
+            // and last completion the tier removes.
+            //
+            // PLACEMENT: after the deterministic read render (a captured first-party
+            // read is strictly more informative than a template, and on an L0 turn
+            // there is none — so this ordering is a no-op today and the right
+            // precedence tomorrow), and BEFORE the SAFE_UNKNOWN gate + the raw-prose
+            // branch, which are the two model-facing paths this replaces.
+            //
+            // GUARDS: the text is a compile-time constant pinned by tests, not model
+            // output, so the model-text guards (`observedGuardDraft`'s unearned-success
+            // net, `clampUngroundedConversational`'s money clamp) have nothing to
+            // police — the template states no success and carries no digits. The
+            // closed-hours guard DOES run: it is the one guard that reads the
+            // STRUCTURED schedule signal rather than the draft's provenance, and
+            // running it makes "closed-hours behaviour preserved exactly" true BY
+            // CONSTRUCTION instead of by omission (the template asserts nothing about
+            // open/closed, so `closedHoursBackstop` is a proven no-op and the reply is
+            // byte-identical open or closed — pinned in the L0 e2e suite).
+            const funnelStage = deps.funnel?.stageFor(turnId);
+            const funnelReply =
+              funnelStage === undefined ? undefined : deps.funnel?.reply(funnelStage);
+            if (funnelReply !== undefined) {
+              return closedHoursDeliveryGuard(
+                { text: funnelReply },
+                scheduleSignal,
+                scheduled,
+              );
             }
             // BKL-078 — the QUESTION-SHAPE gate (BOTH planes since LE2 decision 6;
             // on the ops plane the deterministic `readAnswer.render` above still runs
