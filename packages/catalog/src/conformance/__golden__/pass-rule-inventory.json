@@ -1,0 +1,71 @@
+{
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "sources": [
+        "passes/referential-integrity.ts"
+      ],
+      "rules": [
+        "ambiguous-legacy-name",
+        "claim-reference-dangling",
+        "duplicate-capability-kind",
+        "pack-reference-dangling"
+      ]
+    },
+    {
+      "pass": "slot-dataflow",
+      "sources": [
+        "passes/slot-dataflow.ts"
+      ],
+      "rules": [
+        "blank-required-slot",
+        "blank-slot-entry",
+        "duplicate-slot-entry",
+        "empty-optional-slot",
+        "malformed-guard-ref",
+        "missing-required-slot",
+        "orphan-slot",
+        "slot-enum-violation",
+        "slot-type-mismatch",
+        "unknown-slot"
+      ]
+    },
+    {
+      "pass": "safety-implication-edges",
+      "sources": [
+        "passes/safety-implication-edges.ts"
+      ],
+      "rules": [
+        "safety-restricted-claim-edge",
+        "unrecognized-safety-marker-conservatively-denied"
+      ]
+    },
+    {
+      "pass": "terminal-coverage",
+      "sources": [
+        "passes/terminal-coverage.ts"
+      ],
+      "rules": [
+        "divergent-pack-guard-chain",
+        "divergent-pack-refusal-terminal",
+        "missing-refusal-terminal",
+        "refusal-terminal-without-chain",
+        "unreachable-guard-phase"
+      ]
+    },
+    {
+      "pass": "external-references",
+      "sources": [
+        "passes/external-references.ts"
+      ],
+      "rules": [
+        "external-reference-consumer-dangling",
+        "external-reference-duplicate-id",
+        "external-reference-malformed-key-source",
+        "external-reference-no-consumer",
+        "external-reference-unknown-store"
+      ]
+    }
+  ],
+  "ruleCount": 26
+}

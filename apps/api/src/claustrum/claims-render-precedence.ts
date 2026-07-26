@@ -36,6 +36,7 @@ export type RenderPrecedenceMechanism =
   | "live_action_decision" // rule 2 — the deterministic kernel reply wins
   | "validated_render" // rule 3 — never withhold a validated fact
   | "committed_mutation_action" // rule 3b — a committed mutation's action reply wins over a degenerate render
+  | "deterministic_read_render" // rule 3c — a deterministic READ render wins over a degenerate render
   | "safe_degrade" // rule 4 — a question degrades honestly
   | "conversational_prose"; // rule 4 — a statement's prose stands
 
@@ -60,6 +61,29 @@ function isLiveActionDecision(ctx: RenderPrecedenceContext): boolean {
     decision.kind === "ESCALATE" ||
     (decision.kind === "REFUSE" && plan.envelopes.length >= 1)
   );
+}
+
+/**
+ * PLANE SIGNALS the lattice cannot derive from the published seam context. Optional
+ * and absent by default — an omitted signal set leaves every verdict BYTE-IDENTICAL
+ * to the pre-LE2 lattice (the customer plane passes nothing).
+ */
+export interface RenderPrecedenceSignals {
+  /**
+   * TRUE iff the responder's draft for THIS turn is a DETERMINISTIC read render
+   * rather than model prose — the BKL-100 ops read-answer governor
+   * (`readAnswer.render`), which answers a staff read from the ACTUAL captured read
+   * result with no model call.
+   *
+   * LE2 decision 6 (ops convergence) needs it: once the ops conductor wires
+   * `claimsRenderer`, an ops read turn whose claims happen to DEGRADE would have its
+   * grounded, first-party read answer clobbered by the proposition-free UNKNOWN
+   * copy — a strict LOSS of true information. This signal is the READ analog of
+   * rule 3b (`committed_mutation_action`), and like it, it only ever protects a
+   * draft from a DEGENERATE render: rule 1 (no-leak) and rule 3 (validated render)
+   * are both checked first, so a genuinely VALIDATED claim still supersedes.
+   */
+  readonly deterministicReadRender?: boolean;
 }
 
 /**
@@ -91,6 +115,7 @@ function isLiveActionDecision(ctx: RenderPrecedenceContext): boolean {
  */
 export function decideRenderPrecedence(
   ctx: RenderPrecedenceContext,
+  signals: RenderPrecedenceSignals = {},
 ): RenderPrecedenceVerdict {
   const { claims, requestText } = ctx;
 
@@ -132,6 +157,20 @@ export function decideRenderPrecedence(
     ctx.plan.envelopes.length >= 1
   ) {
     return { decision: "keep_draft", mechanism: "committed_mutation_action" };
+  }
+
+  // Rule 3c (LE2 decision 6) — the READ analog of 3b: a DETERMINISTIC read render is
+  // the turn's deliverable and must WIN over a DEGENERATE (non-RENDER) claims render.
+  // The ops plane's BKL-100 read-answer governor answers a staff read from the ACTUAL
+  // captured read (no model call, no authored number); replacing that grounded answer
+  // with "Não localizei essa informação confirmada agora" because an UNRELATED claim
+  // candidate failed would DESTROY true information — the mirror image of the
+  // confabulation the pipeline exists to stop. Rule 1 (suppression/ESCALATE) and rule
+  // 3 (validated read) are already peeled off above, so this only ever fires on the
+  // safe degenerate-render case, and a genuinely VALIDATED claim still supersedes.
+  // Absent signal (customer plane) → skipped → byte-identical.
+  if (signals.deterministicReadRender === true) {
+    return { decision: "keep_draft", mechanism: "deterministic_read_render" };
   }
 
   // Rule 4 — a conversational degrade: the request SHAPE decides render-safe vs prose.

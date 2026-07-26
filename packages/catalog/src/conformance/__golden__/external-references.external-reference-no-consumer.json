@@ -1,0 +1,50 @@
+{
+  "fixture": "external-references.external-reference-no-consumer",
+  "targets": "external-references/external-reference-no-consumer",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 1,
+  "rulesEmitted": [
+    "external-references/external-reference-no-consumer"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 19,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 1,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "external-references",
+      "rule": "external-reference-no-consumer",
+      "severity": "error",
+      "object": "external-reference:promotion.conformance",
+      "field": "declaredBy",
+      "message": "no code site declares it consumes this reference. A declaration with no consumer can still REFUSE THE BOOT, and the refusal would name nothing an operator could act on — it is a hostage, not a gate. Either name the consuming site(s) or delete the declaration."
+    }
+  ],
+  "formatted": [
+    "external-references/external-reference-no-consumer: external-reference:promotion.conformance · declaredBy — no code site declares it consumes this reference. A declaration with no consumer can still REFUSE THE BOOT, and the refusal would name nothing an operator could act on — it is a hostage, not a gate. Either name the consuming site(s) or delete the declaration."
+  ]
+}

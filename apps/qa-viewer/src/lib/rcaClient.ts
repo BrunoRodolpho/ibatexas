@@ -21,6 +21,75 @@ export interface RcaConversation {
   lastText: string | null // last archived message (server-redacted)
   lastRole: string | null
   turnCount: number
+  // LE2-031 identity columns — both opaque (a cuid and a salted hash), null
+  // when the session could not be attributed. OPTIONAL on the wire: an older
+  // API build sends neither.
+  customerId?: string | null
+  phoneHash?: string | null
+}
+
+/** LE2-031 — how a rail group's identity was established. `ungrouped` is the
+ *  CLIENT-side fallback for an API build that does not group at all: it asserts
+ *  nothing about identity (unlike `unidentified`, which is a server finding). */
+export type RcaGroupKind = "customer" | "ops" | "unidentified" | "ungrouped"
+
+/** One top-level rail row: a customer (or a staff operator, or the explicit
+ *  unidentified bucket) with its sessions as sub-rows. Built server-side
+ *  (apps/api/src/routes/qa-rca-grouping.ts) so the identity ladder and the
+ *  ordering are pinned in one place. */
+export interface RcaConversationGroup {
+  /** Stable identity — a pure function of the session's identity fields, so a
+   *  live refresh never re-keys (and therefore never collapses) an open group. */
+  groupKey: string
+  kind: RcaGroupKind
+  label: string
+  customerId: string | null
+  phoneHash: string | null
+  staffId: string | null
+  /** Sessions of this group, most-recent-first — the rail's sub-rows. */
+  sessionIds: string[]
+  channels: string[]
+  sessionCount: number
+  turnCount: number
+  startedAt: string | null
+  lastAt: string | null
+}
+
+/** The rail's payload: the grouped view plus the flat rows it is built from
+ *  (the sub-rows, the channel facet counts and the previews all read those). */
+export interface RcaConversationPage {
+  conversations: RcaConversation[]
+  groups: RcaConversationGroup[]
+  /** true = this API build did not group; `groups` is the one-row-per-session
+   *  fallback below, NOT a claim that every session is unidentifiable. */
+  ungrouped: boolean
+}
+
+/** Server groups when the API sent them; otherwise ONE group per session,
+ *  explicitly marked `ungrouped`. Pure — the rail then has a single code path,
+ *  and a stale API degrades the VIEW without inventing customer identities. */
+export function groupsOrFallback(
+  conversations: ReadonlyArray<RcaConversation>,
+  groups: RcaConversationGroup[] | undefined,
+): { groups: RcaConversationGroup[]; ungrouped: boolean } {
+  if (groups !== undefined) return { groups, ungrouped: false }
+  return {
+    ungrouped: true,
+    groups: conversations.map((c) => ({
+      groupKey: `session:${c.sessionId}`,
+      kind: "ungrouped" as const,
+      label: c.sessionId,
+      customerId: null,
+      phoneHash: null,
+      staffId: null,
+      sessionIds: [c.sessionId],
+      channels: [c.channel],
+      sessionCount: 1,
+      turnCount: c.turnCount,
+      startedAt: c.startedAt,
+      lastAt: c.lastAt,
+    })),
+  }
 }
 
 export interface RcaTurnSummary {
@@ -48,6 +117,16 @@ export interface InvestigationContext {
   startedAt: string | null
   endedAt: string | null
   durationMs: number | null
+  // LE2-014 — the @ibatexas/catalog version this turn ran under
+  // (max(turn_trace.catalog_version); the value is identical on every row of
+  // the turn). Together with the prompt manifest this is the replay key: a
+  // historical turn is re-runnable against exactly the catalog it saw.
+  //
+  // OPTIONAL on the wire, and nullable, for two independent reasons: turns
+  // traced before the column existed have no value, and older API builds do
+  // not send the field at all. Displayed as "—" in both cases — never
+  // defaulted to a version number, which would misattribute the turn.
+  catalogVersion?: number | null
 }
 
 export interface LlmCall {
@@ -113,6 +192,26 @@ export interface WireExchange {
   recordedAt: string | null
 }
 
+/** LE2-030 — Twilio delivery confirmation for ONE outbound reply part
+ *  (`whatsapp_delivery`, keyed by the message SID captured at send time).
+ *
+ *  `status === null` means no delivery callback has arrived yet — the honest
+ *  "pending" state, NOT an error. Every other value is Twilio's own
+ *  `MessageStatus` verbatim (sent / delivered / read / failed / undelivered …). */
+export interface DeliveryRecord {
+  messageSid: string | null
+  partIndex: number
+  status: string | null
+  sentAt: string | null
+  statusAt: string | null
+  errorCode: string | null
+  errorMessage: string | null
+  /** How many callbacks Twilio has posted for this SID (0 = pure silence). */
+  callbackCount: number
+  /** Call-site tag: "send" (text part) | "sendMedia". */
+  source: string | null
+}
+
 export interface RcaTurnDetail {
   context: InvestigationContext
   llm: LlmCall[]
@@ -121,10 +220,14 @@ export interface RcaTurnDetail {
   /** Wire Truth lane — absent on pre-capture turns (degraded.wire then says
    *  whether the store was unreachable vs the turn predating capture). */
   wire: WireExchange[]
+  /** LE2-030 delivery lane — one row per outbound reply part whose SID was
+   *  captured at send. OPTIONAL on the wire: an older API build sends no field
+   *  at all, and a turn that predates SID capture legitimately has no rows. */
+  delivery?: DeliveryRecord[]
   /** Fail-safe lanes flag their outages — an empty degraded lane means "the
    *  store was unreachable", NOT "nothing happened" (absence-is-signal only
    *  holds when the lane actually answered). */
-  degraded: { adj: boolean; vl: boolean; wire: boolean }
+  degraded: { adj: boolean; vl: boolean; wire: boolean; delivery?: boolean }
 }
 
 // ── Fetchers ────────────────────────────────────────────────────────────────
@@ -139,17 +242,23 @@ export interface ConversationFilter {
   limit?: number
 }
 
-export const fetchConversations = (cfg: QaConfig, f: ConversationFilter): Promise<RcaConversation[]> => {
+/** The rail read. Returns the grouped view AND the flat rows: grouping is a
+ *  server concern (one identity ladder, one ordering, pinned once), the client
+ *  only renders it. */
+export const fetchConversationPage = (
+  cfg: QaConfig,
+  f: ConversationFilter,
+): Promise<RcaConversationPage> => {
   const p = new URLSearchParams()
   p.set("limit", String(f.limit ?? 40))
   if (f.q) p.set("q", f.q)
   if (f.from) p.set("from", f.from)
   if (f.to) p.set("to", f.to)
   if (f.channels !== undefined && f.channels.length > 0) p.set("channel", f.channels.join(","))
-  return authedGetJson<{ conversations: RcaConversation[] }>(
+  return authedGetJson<{ conversations: RcaConversation[]; groups?: RcaConversationGroup[] }>(
     cfg,
     `/internal/qa/rca/conversations?${p.toString()}`,
-  ).then((r) => r.conversations)
+  ).then((r) => ({ conversations: r.conversations, ...groupsOrFallback(r.conversations, r.groups) }))
 }
 
 export const fetchTurns = (
@@ -296,6 +405,58 @@ function deliveryVerdict(vl: VlLine[]): DeliveryVerdict | null {
  *  only appears if the emitter gains them; kept as a cheap extra signal). */
 function hasLegacySend(vl: VlLine[]): boolean {
   return vl.some((l) => (l.msg ?? "").includes("[whatsapp.send]"))
+}
+
+// ── Derived: Twilio delivery confirmation (LE2-030) ─────────────────────────
+//
+// `reply.sent` proves only that our process handed the message to Twilio. The
+// delivery lane carries what Twilio's own status callbacks reported, so it
+// outranks the local verdict wherever it has rows.
+
+export type DeliveryState = "delivered" | "failed" | "pending"
+
+/** Twilio statuses that mean the message reached the handset. */
+const DELIVERED_STATUSES = new Set(["delivered", "read"])
+/** Twilio statuses that mean it did not, and never will. */
+const FAILED_STATUSES = new Set(["failed", "undelivered", "canceled"])
+
+/** Classify ONE part's latest status. `null` (no callback yet) and the
+ *  in-flight statuses (queued/sending/sent) are both "pending" — Twilio has
+ *  accepted the message but not yet confirmed the hop. Pending is never an
+ *  error: it is the normal state of a reply sent seconds ago. */
+export function deliveryState(status: string | null): DeliveryState {
+  if (status === null) return "pending"
+  if (DELIVERED_STATUSES.has(status)) return "delivered"
+  if (FAILED_STATUSES.has(status)) return "failed"
+  return "pending"
+}
+
+export interface DeliveryRollup {
+  total: number
+  delivered: number
+  failed: number
+  pending: number
+  /** Worst state across the parts: one failed part fails the whole reply, and
+   *  an unconfirmed part keeps it pending. Only all-delivered is delivered. */
+  state: DeliveryState
+}
+
+/** Roll the per-part rows up to one verdict for the turn. `null` when the turn
+ *  has no delivery rows at all (a pre-capture turn, a web turn, or a turn that
+ *  genuinely sent nothing) — the caller then falls back to the VL verdict. */
+export function rollupDelivery(rows: ReadonlyArray<DeliveryRecord>): DeliveryRollup | null {
+  if (rows.length === 0) return null
+  let delivered = 0
+  let failed = 0
+  let pending = 0
+  for (const r of rows) {
+    const s = deliveryState(r.status)
+    if (s === "delivered") delivered++
+    else if (s === "failed") failed++
+    else pending++
+  }
+  const state: DeliveryState = failed > 0 ? "failed" : pending > 0 ? "pending" : "delivered"
+  return { total: rows.length, delivered, failed, pending, state }
 }
 
 /** Attribute one VL line to a pipeline stage for the donut drill-down —
@@ -612,14 +773,43 @@ export function derivePipeline(d: RcaTurnDetail): PipelineStage[] {
     return { key: "claims", label: "Claims", state: "ok" as StageState, sub: "engaged" }
   })()
 
-  // Send: the reply.sent delivery verdict beats any substring heuristic.
+  // Send: the reply.sent delivery verdict beats any substring heuristic — and
+  // LE2-030's Twilio confirmation beats reply.sent, which only ever proved that
+  // the Twilio API ACCEPTED the message.
   const verdict = deliveryVerdict(d.vl)
+  const rollup = rollupDelivery(d.delivery ?? [])
   const send: PipelineStage = (() => {
     const label = isWhatsapp ? "WhatsApp" : "Send"
-    if (verdict !== null) {
-      if (verdict.disposition === "suppressed_paused") {
-        return { key: "send", label, state: "ok" as StageState, sub: "paused · designed silence" }
+    // A paused turn deliberately sends nothing, so it has no SIDs to confirm —
+    // designed silence is judged before the delivery lane.
+    if (verdict?.disposition === "suppressed_paused") {
+      return { key: "send", label, state: "ok" as StageState, sub: "paused · designed silence" }
+    }
+    if (rollup !== null) {
+      const parts = rollup.total > 1 ? ` (${rollup.total} parts)` : ""
+      if (rollup.state === "failed") {
+        return {
+          key: "send",
+          label,
+          state: "fail" as StageState,
+          sub: `failed · ${rollup.failed}/${rollup.total} not delivered`,
+        }
       }
+      if (rollup.state === "delivered") {
+        return { key: "send", label, state: "ok" as StageState, sub: `delivered${parts}` }
+      }
+      // Pending: Twilio accepted it, no confirmation yet. Absence of a callback
+      // is NOT a failure — the normal state of a reply sent moments ago.
+      return {
+        key: "send",
+        label,
+        state: "silent" as StageState,
+        sub: `pending · ${rollup.pending}/${rollup.total} unconfirmed`,
+      }
+    }
+    // No delivery rows: a web turn, or a whatsapp turn from before SID capture
+    // existed. Fall back to the pre-LE2-030 verdict, unchanged.
+    if (verdict !== null) {
       if (verdict.delivered) return { key: "send", label, state: "ok" as StageState, sub: "delivered" }
       return { key: "send", label, state: "fail" as StageState, sub: `not delivered (${verdict.disposition ?? "?"})` }
     }
@@ -715,9 +905,35 @@ export function stageFacts(d: RcaTurnDetail, key: string): string[] {
       return [...callFacts(c), ...(callEmpty(c) ? [] : [`reply: ${(c.completion ?? "").slice(0, 200)}`])]
     }
     case "send": {
+      // LE2-030 — Twilio's per-part delivery confirmation leads the evidence:
+      // it is the only fact here that speaks about the HANDSET rather than
+      // about our own process. reply.sent follows as the local view.
+      const rows = d.delivery ?? []
+      const deliveryFacts: string[] = []
+      if (rows.length > 0) {
+        const r = rollupDelivery(rows)!
+        deliveryFacts.push(
+          `delivery: ${r.delivered} delivered · ${r.failed} failed · ${r.pending} pending (${r.total} parts)`,
+          ...rows.map((row) => {
+            const state = deliveryState(row.status)
+            const err =
+              row.errorCode !== null || row.errorMessage !== null
+                ? ` — ${row.errorCode ?? "?"}${row.errorMessage !== null ? `: ${row.errorMessage}` : ""}`
+                : ""
+            const at = row.statusAt ?? row.sentAt ?? "?"
+            return `part ${row.partIndex} [${row.source ?? "send"}] ${row.messageSid ?? "?"}: ${state}${
+              row.status !== null ? ` (${row.status})` : " — no callback yet"
+            } @ ${at}${err}`
+          }),
+        )
+      } else if (d.degraded?.delivery === true) {
+        deliveryFacts.push("delivery lane degraded — absence is not a signal here")
+      }
+
       const ev = d.vl.find((l) => l.fields?.event === "reply.sent")
-      if (ev !== undefined) return fieldFacts(ev)
-      if (hasLegacySend(d.vl)) return ["legacy [whatsapp.send] line present"]
+      if (ev !== undefined) return [...deliveryFacts, ...fieldFacts(ev)]
+      if (hasLegacySend(d.vl)) return [...deliveryFacts, "legacy [whatsapp.send] line present"]
+      if (deliveryFacts.length > 0) return deliveryFacts
       return [d.degraded?.vl === true ? "VL lane degraded — absence is not a signal here" : "no send event"]
     }
     case "archive": {

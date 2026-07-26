@@ -10,13 +10,13 @@
 // Requires the dev bridge (VITE_QA_CONTROL_BASE/_TOKEN); without it the section
 // shows a configuration hint and the viewer stays a pure artifact browser.
 
-import { Fragment, useEffect, useMemo, useState, type KeyboardEvent } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { currentRoute, navigate, replaceRoute } from "../lib/nav"
 import {
   buildLinks,
   buildWireSections,
   derivePipeline,
-  fetchConversations,
+  fetchConversationPage,
   fetchStatus,
   fetchTranscript,
   fetchTurn,
@@ -26,6 +26,7 @@ import {
   rcaConfigured,
   stageFacts,
   type RcaConversation,
+  type RcaConversationGroup,
   type RcaFindHit,
   type RcaStatus,
   type RcaTranscript,
@@ -114,6 +115,9 @@ interface PersistedState {
   selConv?: string | null
   selTurn?: string | null
   live?: boolean
+  /** LE2-031 — which customer rows the investigator left expanded. Keyed by
+   *  the server's stable groupKey, so a restore lands on the same rows. */
+  openGroups?: string[]
 }
 function loadPersisted(): PersistedState {
   try {
@@ -142,8 +146,13 @@ export function RcaWorkbench() {
   const [toLocal, setToLocal] = useState(saved.toLocal ?? "")
   const [channelSel, setChannelSel] = useState<ReadonlySet<string>>(new Set(saved.channels ?? []))
 
-  // navigation
+  // navigation — the rail reads as CUSTOMERS (groups, server-built) whose
+  // sub-rows are the sessions of `convs`; the flat list still feeds the
+  // previews and the channel facet counts.
   const [convs, setConvs] = useState<RcaConversation[]>([])
+  const [groups, setGroups] = useState<RcaConversationGroup[]>([])
+  const [ungrouped, setUngrouped] = useState(false)
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set(saved.openGroups ?? []))
   const [convErr, setConvErr] = useState<string | null>(null)
   const [selConv, setSelConv] = useState<string | null>(
     hashHasSel ? (hashRoute.conv ?? null) : (saved.selConv ?? null),
@@ -197,13 +206,14 @@ export function RcaWorkbench() {
       selConv,
       selTurn,
       live,
+      openGroups: [...openGroups],
     }
     try {
       sessionStorage.setItem(STORE_KEY, JSON.stringify(s))
     } catch {
       /* storage full/blocked — persistence is best-effort */
     }
-  }, [q, fromLocal, toLocal, preset, channelSel, selConv, selTurn, live])
+  }, [q, fromLocal, toLocal, preset, channelSel, selConv, selTurn, live, openGroups])
 
   // Deep-link plumbing: reflect the selection into the URL (replace — no
   // history spam; replaceState never fires hashchange, so no listener loop),
@@ -242,14 +252,18 @@ export function RcaWorkbench() {
   const toIso = useMemo(() => (preset === "custom" ? dtLocalToIso(toLocal) : null), [preset, toLocal])
 
   // conversations (debounced on filters)
+  const applyPage = (p: { conversations: RcaConversation[]; groups: RcaConversationGroup[]; ungrouped: boolean }) => {
+    setConvs(p.conversations)
+    setGroups(p.groups)
+    setUngrouped(p.ungrouped)
+    setConvErr(null)
+  }
+
   useEffect(() => {
     if (cfg === null) return
     const t = setTimeout(() => {
-      fetchConversations(cfg, { q, from: fromIso, to: toIso, channels: [...channelSel] })
-        .then((c) => {
-          setConvs(c)
-          setConvErr(null)
-        })
+      fetchConversationPage(cfg, { q, from: fromIso, to: toIso, channels: [...channelSel] })
+        .then(applyPage)
         .catch((e: unknown) => setConvErr((e as Error).message))
     }, 200)
     return () => clearTimeout(t)
@@ -311,11 +325,8 @@ export function RcaWorkbench() {
           .then(setTurns)
           .catch(() => {})
       } else {
-        fetchConversations(cfg, { q, from: fromIso, to: toIso, channels: [...channelSel] })
-          .then((c) => {
-            setConvs(c)
-            setConvErr(null)
-          })
+        fetchConversationPage(cfg, { q, from: fromIso, to: toIso, channels: [...channelSel] })
+          .then(applyPage)
           .catch(() => {})
       }
     }
@@ -330,6 +341,25 @@ export function RcaWorkbench() {
     const conv = detail.context.conversationId
     if (conv !== null) setSelConv((prev) => (prev === conv ? prev : conv))
   }, [detail])
+
+  // LE2-031 — reveal the selection: a deep link (or a find-hit jump) addresses
+  // a SESSION, which now lives one level down, so open its customer row. Once
+  // per selection (a ref, not a groups dependency) — the 5s live tick hands us
+  // a fresh groups array every time, and re-running would fight the
+  // investigator every time they collapse a row.
+  const revealedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (selConv === null || revealedFor.current === selConv) return
+    const g = groups.find((x) => x.sessionIds.includes(selConv))
+    if (g === undefined) return // groups not loaded yet — retry on the next page
+    revealedFor.current = selConv
+    setOpenGroups((prev) => {
+      if (prev.has(g.groupKey)) return prev
+      const next = new Set(prev)
+      next.add(g.groupKey)
+      return next
+    })
+  }, [selConv, groups])
 
   // preflight probes — on mount and on every manual refresh
   useEffect(() => {
@@ -422,6 +452,20 @@ export function RcaWorkbench() {
     setDetail(null)
     setTurnsErr(null)
   }
+
+  // Session lookup for the sub-rows — the group carries the ids, the flat list
+  // carries the previews. Openness is the investigator's alone (the reveal
+  // effect above opens the row a deep link lands in, and they can close it
+  // again); the disclosure state never overrides what is selected.
+  const convById = new Map(convs.map((c) => [c.sessionId, c]))
+  const groupOpen = (g: RcaConversationGroup): boolean => openGroups.has(g.groupKey)
+  const toggleGroup = (groupKey: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupKey)) next.delete(groupKey)
+      else next.add(groupKey)
+      return next
+    })
 
   const rail = (
     <>
@@ -526,69 +570,112 @@ export function RcaWorkbench() {
           searches archived message content, both roles · honors the time range above
         </p>
       </RailSection>
-      <RailSection title="Conversations">
+      {/* LE2-031 — the rail reads as CUSTOMERS: one row per identity, its
+          sessions as expandable sub-rows, its turns one level below that. Rows
+          are keyed by data identity at every level (groupKey / sessionId /
+          turnId), never by index, so a live tick that reorders or inserts rows
+          cannot shift what is open or what is selected. */}
+      <RailSection title="Customers">
         {convErr !== null && <div className="rail__empty">error: {convErr}</div>}
+        {ungrouped && convs.length > 0 && (
+          <p className="rail__note">
+            this API build does not group — one row per session (not a claim that they are
+            unidentified)
+          </p>
+        )}
         <div className="conv-tree">
-          {convs.map((c) => (
-            <div key={c.sessionId}>
-              <div
-                className={`conv-tree__conv ${selConv === c.sessionId ? "conv-tree__conv--sel" : ""}`}
-                role="button"
-                tabIndex={0}
-                onClick={() => selectConv(c.sessionId)}
-                onKeyDown={keyActivate(() => selectConv(c.sessionId))}
-                style={{ cursor: "pointer" }}
-              >
-                <div className="conv-tree__head">
-                  <b>{c.channel}</b> · {c.turnCount} turn(s)
-                  <span className="conv-tree__time">{shortDateTime(c.lastAt)}</span>
-                </div>
-                <div className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
-                  {c.sessionId.slice(0, 20)}…
-                </div>
-                {c.lastText != null && (
-                  <div className="conv-tree__preview" title={c.lastText}>
-                    {c.lastRole !== null ? `${c.lastRole}: ` : ""}
-                    {c.lastText}
+          {groups.map((g) => {
+            const open = groupOpen(g)
+            return (
+              <div key={g.groupKey}>
+                <div
+                  className={`conv-tree__cust conv-tree__cust--${g.kind} ${open ? "conv-tree__cust--open" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={open}
+                  onClick={() => toggleGroup(g.groupKey)}
+                  onKeyDown={keyActivate(() => toggleGroup(g.groupKey))}
+                  title={`${g.groupKey} · ${g.sessionCount} session(s)`}
+                >
+                  <div className="conv-tree__head">
+                    <span className="conv-tree__caret">{open ? "▾" : "▸"}</span>
+                    <span className={`grp-chip grp-chip--${g.kind}`}>{g.kind}</span>
+                    <b className="conv-tree__cust-label">{g.label}</b>
+                    <span className="conv-tree__time">{shortDateTime(g.lastAt)}</span>
                   </div>
-                )}
-              </div>
-              {selConv === c.sessionId && turnsErr !== null && (
-                <div className="rail__empty">turns error: {turnsErr}</div>
-              )}
-              {selConv === c.sessionId &&
-                turns.map((t) => (
-                  <div
-                    key={t.turnId}
-                    className={`conv-tree__turn ${selTurn === t.turnId ? "conv-tree__turn--sel" : ""}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelTurn(t.turnId)}
-                    onKeyDown={keyActivate(() => setSelTurn(t.turnId))}
-                  >
-                    <span
-                      className="conv-tree__dot"
-                      style={{
-                        background: t.responderEmpty ? "var(--warn)" : "var(--ok)",
-                      }}
-                    />
-                    <span className="conv-tree__label">
-                      <span className="tid">
-                        {t.turnId.slice(0, 12)}
-                        {t.decision != null && (
-                          <span className={`dec-chip dec-chip--${t.decision}`}>{t.decision}</span>
+                  <div className="conv-tree__cust-meta">
+                    {g.sessionCount} session(s) · {g.turnCount} turn(s) · {g.channels.join(", ")}
+                  </div>
+                </div>
+                {open &&
+                  g.sessionIds.map((sid) => {
+                    const c = convById.get(sid)
+                    return (
+                      <div key={sid} className="conv-tree__sess">
+                        <div
+                          className={`conv-tree__conv ${selConv === sid ? "conv-tree__conv--sel" : ""}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => selectConv(sid)}
+                          onKeyDown={keyActivate(() => selectConv(sid))}
+                          style={{ cursor: "pointer" }}
+                        >
+                          <div className="conv-tree__head">
+                            <b>{c?.channel ?? "?"}</b> · {c?.turnCount ?? 0} turn(s)
+                            <span className="conv-tree__time">{shortDateTime(c?.lastAt)}</span>
+                          </div>
+                          <div className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
+                            {sid.slice(0, 20)}…
+                          </div>
+                          {c?.lastText != null && (
+                            <div className="conv-tree__preview" title={c.lastText}>
+                              {c.lastRole !== null ? `${c.lastRole}: ` : ""}
+                              {c.lastText}
+                            </div>
+                          )}
+                        </div>
+                        {selConv === sid && turnsErr !== null && (
+                          <div className="rail__empty">turns error: {turnsErr}</div>
                         )}
-                      </span>
-                      <span className="txt" title={t.userText ?? undefined}>
-                        {t.userText ?? `${t.callCount} call(s)`}
-                      </span>
-                    </span>
-                    <span className="conv-tree__time">{shortDateTime(t.startedAt)}</span>
-                  </div>
-                ))}
-            </div>
-          ))}
-          {convs.length === 0 && convErr === null && (
+                        {selConv === sid &&
+                          turns.map((t) => (
+                            <div
+                              key={t.turnId}
+                              className={`conv-tree__turn ${selTurn === t.turnId ? "conv-tree__turn--sel" : ""}`}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => setSelTurn(t.turnId)}
+                              onKeyDown={keyActivate(() => setSelTurn(t.turnId))}
+                            >
+                              <span
+                                className="conv-tree__dot"
+                                style={{
+                                  background: t.responderEmpty ? "var(--warn)" : "var(--ok)",
+                                }}
+                              />
+                              <span className="conv-tree__label">
+                                <span className="tid">
+                                  {t.turnId.slice(0, 12)}
+                                  {t.decision != null && (
+                                    <span className={`dec-chip dec-chip--${t.decision}`}>
+                                      {t.decision}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="txt" title={t.userText ?? undefined}>
+                                  {t.userText ?? `${t.callCount} call(s)`}
+                                </span>
+                              </span>
+                              <span className="conv-tree__time">{shortDateTime(t.startedAt)}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )
+                  })}
+              </div>
+            )
+          })}
+          {groups.length === 0 && convErr === null && (
             <div className="rail__empty">no conversations</div>
           )}
         </div>
@@ -691,6 +778,15 @@ export function RcaWorkbench() {
                       duration <b>{detail.context.durationMs}ms</b>
                     </span>
                   )}
+                  {/* LE2-014 — the catalog version this turn ran under. Read-only,
+                      and rendered UNCONDITIONALLY (unlike duration above): when a
+                      turn has no stamp, "catalog —" is itself the finding — either
+                      the turn predates the stamp or the writer never resolved a
+                      catalog. Hiding the chip would make an unreplayable turn look
+                      identical to a replayable one. */}
+                  <span title="@ibatexas/catalog version this turn ran under (turn_trace.catalog_version)">
+                    catalog <b>{detail.context.catalogVersion ?? "—"}</b>
+                  </span>
                   {detail.degraded?.adj === true && <span className="degraded-chip">ADJ lane degraded</span>}
                   {detail.degraded?.vl === true && <span className="degraded-chip">VL lane degraded</span>}
                   {detail.degraded?.wire === true && <span className="degraded-chip">WIRE lane degraded</span>}

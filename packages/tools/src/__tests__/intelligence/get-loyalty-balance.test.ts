@@ -74,12 +74,17 @@ describe("getLoyaltyBalance", () => {
     expect(mockGetBalance).not.toHaveBeenCalled()
   })
 
-  it("returns reward message when stampsNeeded=0", async () => {
+  it("returns reward message with the CONFIGURED coupon when stampsNeeded=0", async () => {
+    // LE2-018: `FIEL20` was a literal in this pt-BR sentence with nothing
+    // checking the promotion existed. It is now the declared external
+    // reference `promotion.loyalty-reward`, and the message tracks config.
+    vi.stubEnv("LOYALTY_REWARD_COUPON_CODE", "CONFIGURED_LOYALTY_CODE")
     mockGetBalance.mockResolvedValue({ stamps: 0, stampsNeeded: 0, totalEarned: 10, redeemed: 0 })
 
     const result = await getLoyaltyBalance({}, makeCtx())
 
-    expect(result.message).toContain("FIEL20")
+    expect(result.message).toContain("CONFIGURED_LOYALTY_CODE")
     expect(result.message).toContain("desconto")
+    vi.unstubAllEnvs()
   })
 })

@@ -50,6 +50,7 @@ import {
   RUN_BOOTSTRAP_HARNESS,
   setupClaustrumBootstrapHarness,
   type ClaustrumBootstrapTestHarness,
+  TEST_EXTERNAL_REFERENCE_PROBES,
 } from "../helpers/claustrum-bootstrap-harness.js";
 import {
   createScriptedModelProvider,
@@ -212,6 +213,9 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       conductor = await bootstrapClaustrum({
         modelProvider: provider,
         resolveScheduleSignal: () => undefined,
+        // LE2-018 boot gate — no live Medusa in this suite; the gate still runs
+        // over the real declaration table (see the harness helper's note).
+        externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
       });
 
       // Drive every fixture ONCE up front (the check is the canonical
