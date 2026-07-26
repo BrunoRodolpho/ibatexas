@@ -6,8 +6,11 @@
 // createIbatexasResponder (keeping every other responder export real) to read the
 // deps the genuine boot handed the customer responder.
 //
-// The ops-plane half of D5 (ops NEVER wires it) is pinned cheaply, without infra,
-// in ops/__tests__/ops-conductor-safe-unknown.test.ts.
+// The ops-plane half of D5 ("ops NEVER wires it") is DISSOLVED by LE2 Implementation
+// Decision 6 — the ops conductor now composes the SAME gate. Its replacement pin is
+// ops/__tests__/ops-claims-convergence.test.ts (composition, no infra) plus the
+// turn-seam proof in ops/__tests__/ops-store-open-claims.e2e.test.ts. This file keeps
+// the CUSTOMER half unchanged: the gate is still flag-gated and still absent when OFF.
 //
 // Zero Anthropic tokens: a refuse-all scripted ModelProvider means the SDK client
 // is never built and no turn runs — the dep is asserted at COMPOSITION.

@@ -282,14 +282,10 @@ import {
 } from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { renderCustomerActionAnswer } from "./claustrum/customer-action-render.js";
-// BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate (flag-gated in
-// buildResponder): the pure discriminator + the safe template render source.
-import { shouldDegradeToSafeUnknown } from "./claustrum/interrogative-discriminator.js";
-import {
-  renderPropositionFreeText,
-  SAFE_TEMPLATES,
-} from "./claustrum/slot-grammar.js";
-import { asksAboutStoreState, closedHoursDisclosure } from "./claustrum/closed-hours.js";
+// BKL-078 — the question-shape SAFE-UNKNOWN gate (flag-gated in buildResponder).
+// LE2 decision 6: the construction moved to `safe-unknown-gate.ts` so the ops
+// conductor composes the SAME object instead of forking one (D5 dissolved).
+import { createSafeUnknownGate } from "./claustrum/safe-unknown-gate.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -3187,33 +3183,13 @@ export async function bootstrapClaustrum(
       // Closes the `prose_preserved` hallucination leak on the conversational
       // fallback: a non-smalltalk info-question that produced no validated claim
       // degrades to the deterministic proposition-free SAFE_UNKNOWN reply instead of
-      // a model-authored prose draft. The ops conductor NEVER wires this (D5,
-      // ops-conductor.ts). Flag-OFF → omitted → byte-identical.
-      ...(claimsPipelineEnabled()
-        ? {
-            safeUnknown: {
-              gate: (text: string) => shouldDegradeToSafeUnknown(text),
-              render: (
-                schedule: ScheduleSignal | undefined,
-                userText: string,
-              ): string => {
-                const base = renderPropositionFreeText(SAFE_TEMPLATES.unknown);
-                // D3 (relevance-gated) — append the closed-hours disclosure ONLY when
-                // the degraded question is about ordering / hours / availability. On a
-                // topically-unrelated question the scheduled-pickup offer is
-                // unsolicited noise, so the bare epistemic SAFE_UNKNOWN ships alone.
-                const orderingOrHours =
-                  asksAboutStoreState(userText) ||
-                  /\b(pedid|pedir|encomend|entreg|retirad|agend|compr|reserv|cardapio|card[aá]pio|menu)/i.test(
-                    userText,
-                  );
-                return schedule?.isClosed && orderingOrHours
-                  ? `${base} ${closedHoursDisclosure(schedule)}`
-                  : base;
-              },
-            },
-          }
-        : {}),
+      // a model-authored prose draft. Flag-OFF → omitted → byte-identical.
+      //
+      // LE2 decision 6 — the OPS conductor now composes this SAME gate (D5, "ops
+      // never wires safe-unknown", is DISSOLVED). The construction lives in
+      // `safe-unknown-gate.ts`; the customer plane keeps the closed-hours offer
+      // (the default), the staff plane opts out of that customer copy.
+      ...(claimsPipelineEnabled() ? { safeUnknown: createSafeUnknownGate() } : {}),
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
