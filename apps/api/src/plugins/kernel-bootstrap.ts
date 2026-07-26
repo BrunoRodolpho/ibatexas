@@ -90,12 +90,21 @@ import { whatsappPack } from "@ibatexas/pack-whatsapp"
 import { KNOWN_INTENT_KINDS, LOYALTY_INTENT_KINDS } from "@ibatexas/intent-kinds"
 // FE-T19 — the FE-4 EXPAND CapabilityDefinition registry's guard-ref boot
 // assertion. See `assertCapabilityGuardRefsWired()` below.
+//
+// LE2-015: the two halves come from the two packages that own them. The
+// authored definitions and their projections live in `@ibatexas/catalog`, the
+// single root of business definition. Guard-ref RESOLUTION stays in
+// `@ibatexas/packs-composed` — binding a reference to a live guard function in
+// an installed Pack is a claim about the runtime, which the catalog never
+// holds.
 import {
-  assertGuardRefsResolve,
   CAPABILITY_DEFINITIONS,
   generateKnownIntentKinds,
-  GuardRefResolutionError,
   type CapabilityDefinition,
+} from "@ibatexas/catalog"
+import {
+  assertGuardRefsResolve,
+  GuardRefResolutionError,
 } from "@ibatexas/packs-composed/capability-definitions"
 // WS5: the NX-park quota-exceeded hook setter MUST come from the same park-nx
 // module instance the live park calls go through — now the apps/api copy

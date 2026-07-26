@@ -70,7 +70,7 @@ import type {
 import {
   CAPABILITY_DEFINITIONS,
   generateCapabilityDescriptions,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 import { isGuestCustomerId } from "./guest-identity.js";
 import { resolvePixPayerIdentity } from "./pix-payer-identity.js";
 
