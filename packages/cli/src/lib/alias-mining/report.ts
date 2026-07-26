@@ -66,12 +66,39 @@ export function scrubUtterance(text: string): string {
     : out
 }
 
+/**
+ * The limits of what the LABELLED-EVENT source can see. Stated in every report
+ * rather than fixed here: correcting either would mean changing what the runtime
+ * emits, which is a runtime change and outside an offline miner's remit.
+ */
+export const MEASUREMENT_LIMITS: readonly string[] = [
+  "**Only the FIRST ambiguous surface of a turn is logged.** `stampAliasClarify` " +
+    "records `detail.ambiguousSurfaces` (the count) on the stage but does not put it on " +
+    "the log line, and emits only `ambiguous[0]`. A turn where a customer used two " +
+    "unresolvable words contributes one, and nothing downstream can tell that from a " +
+    "turn that used one. Evidence counts on ALIAS-tier rows are therefore a LOWER BOUND.",
+  "**Labelled events are log lines only** — a zero-call turn writes no `turn_trace` row " +
+    "by design, so there is no database copy to reconcile against and no way to " +
+    "reconstruct a missed surface after the fact.",
+  "**No backfill exists.** The log retention window IS the entire historical record. A " +
+    "clarify-miss older than the window is gone permanently, not merely un-queried — " +
+    "which is why the cadence in the runbook is a floor, not a suggestion.",
+]
+
 /** Everything the header has to state for the report to be auditable. */
 export interface ReportContext {
   /** ISO timestamp — injected, never read from a clock in here. */
   readonly generatedAt: string
   /** Which ranking signals were available. */
   readonly mode: RankMode
+  /**
+   * The labelled-event query window (a LogsQL duration like `30d`).
+   *
+   * Recorded prominently because logs are the only copy: a report says what it
+   * covered, so a reader can tell "no ALIAS rows" (a finding) from "we looked
+   * back seven days" (a window).
+   */
+  readonly window: string
   /** Human description of each source that was queried, and what it returned. */
   readonly sources: readonly SourceReport[]
   /** The gazetteer's declared edge count at mining time. */
@@ -163,7 +190,15 @@ function renderRow(c: RankedCandidate): string {
       : c.targets.length > 0
         ? ` → ${c.targets.map((t) => `\`${t}\``).join(" | ")}`
         : ""
-  lines.push(`#### ${c.rank}. \`${c.display}\`${arrow}`)
+  // The surface is scrubbed too, not just the example utterances. A candidate
+  // surface is raw customer text on BOTH paths: the transcript path lifts it out
+  // of an utterance, and on the labelled path `surface` / `resolutions` are
+  // customer words the runtime's pino redact list cannot reach (it redacts by
+  // field name, and these fields hold free text). Scrubbing only the examples
+  // would have put an unredacted customer word in the row heading and in the
+  // approve/reject tokens — the two places a reader is guaranteed to look.
+  const display = scrubUtterance(c.display)
+  lines.push(`#### ${c.rank}. \`${display}\`${arrow}`)
   lines.push("")
   lines.push(`- **evidence:** ${c.evidence} distinct utterance${c.evidence === 1 ? "" : "s"}`)
   lines.push(`- **source:** ${c.sources.join(", ")}`)
@@ -179,7 +214,7 @@ function renderRow(c: RankedCandidate): string {
     lines.push(`  - "${scrubUtterance(ex)}"`)
   }
   lines.push("- **decision:**")
-  lines.push(checkbox(c.display))
+  lines.push(checkbox(display))
   lines.push("")
   return lines.join("\n")
 }
@@ -196,6 +231,7 @@ export function renderReport(
   out.push(`# Alias mining report — ${ctx.generatedAt.slice(0, 10)}`)
   out.push("")
   out.push(`**Schema:** v${REPORT_SCHEMA_VERSION} · **Generated:** ${ctx.generatedAt}`)
+  out.push(`**Labelled-event window:** \`${ctx.window}\` — see "What this report could not see"`)
   out.push(`**Ranking mode:** \`${ctx.mode}\` · **Embedder:** ${ctx.embedder}`)
   out.push(
     `**Measured against:** ${ctx.rosterProducts} live products, ` +
@@ -260,6 +296,17 @@ export function renderReport(
       "*nearest canonical* line; they cannot change a row's type, add a row or remove one, so the " +
       "report's content is identical with the embedder up or down.",
   )
+  out.push("")
+  out.push(
+    "Every surface and every example utterance printed below is scrubbed — the surfaces too, not " +
+      "just the examples. On the labelled path `surface` and `resolutions` are free customer text " +
+      "that the runtime's field-name-based redact list does not reach.",
+  )
+  out.push("")
+
+  out.push(`## What this report could not see (labelled-event window: \`${ctx.window}\`)`)
+  out.push("")
+  for (const limit of MEASUREMENT_LIMITS) out.push(`- ${limit}`)
   out.push("")
 
   out.push("## Summary")

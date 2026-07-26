@@ -46,6 +46,22 @@ Not on a cron, and not in CI. The output needs a human decision to be worth
 anything, so scheduling it faster than an owner reviews it only produces stale
 worksheets.
 
+### The cadence is a floor, because there is no backfill
+
+**Labelled clarify-misses live only in the logs, and the log retention window is
+the entire historical record.** There is no database copy: a funnel-resolved turn
+makes zero model calls and so writes no `turn_trace` row by design — the absence
+is the optimization. Nothing reconstructs a `funnel.tier` record after its log
+line ages out.
+
+The practical consequence: **a clarify-miss older than the retention window is
+gone permanently, not merely un-queried.** Miss a cycle and you do not get a
+bigger report next time — you get the same report minus everything that expired.
+Run at least once per retention window, and check `--since` covers the gap since
+the last run. Every report records the window it covered in its header, so a
+reader can tell "no ALIAS rows" (a finding) from "we only looked back seven days"
+(a window).
+
 ---
 
 ## Running it
@@ -192,9 +208,27 @@ one.
 - **Plurals are matched by stripping a trailing `-s`.** Deliberately blunt. It is
   confined to *matching*; an approved row still writes the surface the customer
   actually typed.
-- **A labelled event carries no utterance.** The funnel logs surfaces and
-  handles, never customer prose, so those rows show the surface form as their own
-  evidence. Real, and shown as such rather than padded with invented context.
+- **A labelled event carries no utterance of its own.** The funnel logs surfaces
+  and handles, never customer prose. The miner recovers context by joining to the
+  conductor's per-turn `turn` line on `turnId`, whose `inbound` field is the
+  turn's inbound text (already clipped and run through the turn_trace PII
+  redactor). Where that join misses, the surface stands as its own evidence
+  rather than being padded with invented context.
+- **ALIAS-tier evidence counts are a LOWER BOUND.** `stampAliasClarify` emits
+  only `ambiguous[0]` — the first unresolvable surface of a turn — and puts
+  `detail.ambiguousSurfaces` (the count) on the stage record but **not** on the
+  log line. A turn where a customer used two unresolvable words is
+  indistinguishable from one where they used one. Fixing this means changing what
+  the runtime emits, which is outside an offline miner's remit; it is a flagged
+  follow-up, not a defect in the report.
+- **`resolutions` is a pre-formatted string.** The miner parses it on the
+  ` (via ` and last-`=>` anchors rather than the first `=>`, because the surface
+  half is raw customer text and may contain a literal `=>` while the kebab-case
+  canonical between the anchors cannot.
+- **Surfaces are customer text and are scrubbed like utterances.** `surface` and
+  `resolutions` hold free customer words that the runtime's pino redact list
+  cannot reach — it redacts by field name, and these fields hold prose. The report
+  scrubs the surfaces, not only the examples.
 
 ---
 

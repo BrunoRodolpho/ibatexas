@@ -24,7 +24,13 @@ import {
   type Roster,
 } from "../lib/alias-mining/classify.js"
 import { cosineSimilarity, rankCandidates } from "../lib/alias-mining/rank.js"
-import { renderReport, scrubUtterance, type ReportContext } from "../lib/alias-mining/report.js"
+import {
+  MEASUREMENT_LIMITS,
+  renderReport,
+  scrubUtterance,
+  type ReportContext,
+} from "../lib/alias-mining/report.js"
+import { assertValidWindow, parseResolutionSurface } from "../lib/alias-mining/sources.js"
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -396,10 +402,54 @@ describe("scrubUtterance", () => {
   })
 })
 
+// ── Labelled-event parsing ───────────────────────────────────────────────────
+
+describe("parseResolutionSurface", () => {
+  it("reads the surface half of a plain resolution", () => {
+    expect(parseResolutionSurface("coca=>refrigerante")).toBe("coca")
+  })
+
+  it("drops the ` (via …)` disambiguation suffix", () => {
+    expect(parseResolutionSurface("costela=>costela-bovina-defumada (via bovina)")).toBe("costela")
+  })
+
+  it("REGRESSION: a literal '=>' inside the surface does not truncate it", () => {
+    // The surface half is raw customer text; the canonical between the anchors
+    // is a kebab-case handle and cannot contain either anchor. Splitting on the
+    // FIRST "=>" — the obvious implementation — silently yielded "a".
+    expect(parseResolutionSurface("a=>b=>refrigerante")).toBe("a=>b")
+    expect(parseResolutionSurface("a=>b=>refrigerante (via lata)")).toBe("a=>b")
+  })
+
+  it("returns empty for a string with no arrow, rather than guessing", () => {
+    expect(parseResolutionSurface("no arrow here")).toBe("")
+  })
+})
+
+describe("assertValidWindow", () => {
+  it("accepts LogsQL durations", () => {
+    for (const w of ["30d", "12h", "45m", "90s"]) {
+      expect(() => assertValidWindow(w)).not.toThrow()
+    }
+  })
+
+  it("REFUSES a malformed window instead of substituting a default", () => {
+    // buildLogsQL silently falls back to "1h"; with logs as the only historical
+    // record, silently covering less than the operator asked for is the
+    // expensive failure.
+    for (const w of ["", "1 day", "yesterday", "30", "d30"]) {
+      expect(() => assertValidWindow(w)).toThrow(/LogsQL duration/)
+    }
+  })
+})
+
+// ── Report ───────────────────────────────────────────────────────────────────
+
 describe("renderReport", () => {
   const ctx: ReportContext = {
     generatedAt: "2026-07-26T00:00:00.000Z",
     mode: "frequency-only",
+    window: "30d",
     sources: [
       { name: "labelled-event", query: "_time:30d component:=\"funnel\"", records: 0 },
       { name: "transcript", query: "SELECT DISTINCT user_text …", records: 602 },
@@ -448,5 +498,38 @@ describe("renderReport", () => {
   it("renders every section even when empty", () => {
     expect(rendered).toContain("## Propose alias (0)")
     expect(rendered).toContain("## Catalog gap — no product to alias (1)")
+  })
+
+  it("records the labelled-event window it covered", () => {
+    // "no ALIAS rows" and "we looked back seven days" are different claims, and
+    // with no backfill available a reader must be able to tell them apart.
+    expect(rendered).toContain("**Labelled-event window:** `30d`")
+  })
+
+  it("states the measurement limits it cannot fix", () => {
+    expect(rendered).toContain("What this report could not see")
+    for (const limit of MEASUREMENT_LIMITS) {
+      expect(rendered).toContain(limit)
+    }
+    expect(rendered).toContain("LOWER BOUND")
+  })
+
+  it("REGRESSION: scrubs the SURFACE, not only the example utterances", () => {
+    // On the labelled path `surface` is free customer text the runtime's
+    // field-name-based redact list never reaches. Scrubbing only the examples
+    // put an unredacted customer word in the row heading and in both
+    // approve/reject tokens.
+    const dirty = renderReport(
+      rankCandidates(
+        classifyAll(
+          [mention("pedido 947310", "adiciona o pedido 947310 ao carrinho")],
+          ROSTER,
+          GAZETTEER,
+        ),
+      ),
+      ctx,
+    )
+    expect(dirty).not.toContain("947310")
+    expect(dirty).toContain("- [ ] **approve** `pedido [num]`")
   })
 })

@@ -20,8 +20,15 @@ import { ALIAS_GAZETTEER, normalizeAliasSurface } from "@ibatexas/catalog"
 import { ROOT } from "../utils/root.js"
 import { classifyAll, type KnownAlias } from "../lib/alias-mining/classify.js"
 import { cosineSimilarity, rankCandidates, type NearestCanonical, type RankMode } from "../lib/alias-mining/rank.js"
-import { renderReport, type ReportContext, type SourceReport } from "../lib/alias-mining/report.js"
 import {
+  REPORT_SCHEMA_VERSION,
+  renderReport,
+  scrubUtterance,
+  type ReportContext,
+  type SourceReport,
+} from "../lib/alias-mining/report.js"
+import {
+  assertValidWindow,
   embedAll,
   embedderDescription,
   readLabelledEvents,
@@ -96,11 +103,52 @@ interface MineOptions {
   out?: string
   embed: boolean
   stdout: boolean
+  json: boolean
+}
+
+/**
+ * The machine-readable projection of a report.
+ *
+ * Sorted by rank and free of the generation timestamp, so two runs over
+ * unchanged stores diff cleanly — the repo's convention for a tool artifact
+ * something else might consume. The markdown report keeps the timestamp,
+ * because a worksheet a human marks up should say when it was taken.
+ */
+function toJson(
+  ranked: readonly { rank: number; surface: string; rowType: string; target?: string; targets: readonly string[]; evidence: number; sources: readonly string[] }[],
+  ctx: ReportContext,
+): string {
+  return `${JSON.stringify(
+    {
+      schemaVersion: REPORT_SCHEMA_VERSION,
+      window: ctx.window,
+      mode: ctx.mode,
+      roster: { products: ctx.rosterProducts, categories: ctx.rosterCategories },
+      gazetteerSize: ctx.gazetteerSize,
+      sources: ctx.sources,
+      candidates: [...ranked]
+        .sort((a, b) => a.rank - b.rank)
+        .map((c) => ({
+          rank: c.rank,
+          surface: scrubUtterance(c.surface),
+          rowType: c.rowType,
+          ...(c.target === undefined ? {} : { target: c.target }),
+          targets: c.targets,
+          evidence: c.evidence,
+          sources: c.sources,
+        })),
+    },
+    null,
+    2,
+  )}\n`
 }
 
 async function mine(opts: MineOptions): Promise<void> {
   const minEvidence = Number.parseInt(opts.minEvidence, 10)
   const limit = Number.parseInt(opts.limit, 10)
+  // Refuse a malformed window rather than silently substituting one — the log
+  // retention window is the only historical record there is.
+  assertValidWindow(opts.since)
   if (!Number.isFinite(minEvidence) || minEvidence < 1) {
     throw new Error("--min-evidence must be a positive integer")
   }
@@ -170,6 +218,7 @@ async function mine(opts: MineOptions): Promise<void> {
   const ctx: ReportContext = {
     generatedAt,
     mode,
+    window: opts.since,
     sources,
     gazetteerSize: ALIAS_GAZETTEER.length,
     rosterProducts: roster.products.length,
@@ -178,17 +227,18 @@ async function mine(opts: MineOptions): Promise<void> {
       ? embedderDescription(nearest.size > 0)
       : "disabled (`--no-embed`) — ranking by frequency",
   }
-  const markdown = renderReport(ranked, ctx)
+  const markdown = opts.json ? toJson(ranked, ctx) : renderReport(ranked, ctx)
 
   if (opts.stdout) {
     process.stdout.write(markdown)
     return
   }
 
+  const ext = opts.json ? "json" : "md"
   const outPath =
     opts.out !== undefined
       ? path.resolve(opts.out)
-      : path.join(defaultOutDir(), `26-alias-mining-${generatedAt.slice(0, 10)}.md`)
+      : path.join(defaultOutDir(), `26-alias-mining-${generatedAt.slice(0, 10)}.${ext}`)
   fs.mkdirSync(path.dirname(outPath), { recursive: true })
   fs.writeFileSync(outPath, markdown, "utf8")
 
@@ -221,6 +271,7 @@ export function registerAliasCommands(group: Command): void {
     .option("--out <path>", `report path (default: ${defaultOutDir()}/26-alias-mining-<date>.md)`)
     .option("--no-embed", "skip the advisory embedder and rank by frequency alone")
     .option("--stdout", "print the report instead of writing it", false)
+    .option("--json", "emit the machine-readable projection instead of the worksheet", false)
     .action(async (opts: MineOptions) => {
       try {
         await mine(opts)

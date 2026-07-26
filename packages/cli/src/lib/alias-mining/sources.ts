@@ -29,11 +29,17 @@
 // inputs are two live stores — which is the strongest available form of the
 // guarantee: the boundary holds because the code has no path to cross it.
 
-import { Client } from "pg"
 import { queryLogs, VICTORIALOGS_URL, type LogEntry } from "../logs-query.js"
 import { labelledMention, mentionsFrom, type CandidateMention } from "./extract.js"
 import type { Roster, RosterCategory, RosterProduct } from "./classify.js"
 import type { SourceReport } from "./report.js"
+
+/** Minimal surface of the `pg` client this module uses. */
+interface PgClientLike {
+  connect(): Promise<void>
+  query<R>(text: string, values?: readonly unknown[]): Promise<{ rows: R[] }>
+  end(): Promise<void>
+}
 
 /** What one source read produced: its mentions plus its audit row. */
 export interface SourceResult {
@@ -41,22 +47,49 @@ export interface SourceResult {
   readonly report: SourceReport
 }
 
-/** Connection string for the shared dev Postgres. */
-function databaseUrl(): string {
-  return (
-    process.env.DATABASE_URL ??
-    "postgresql://ibatexas:ibatexas@localhost:5433/ibatexas"
-  )
-}
-
-/** Run one read-only query and always close the client. */
-async function withPg<T>(fn: (c: Client) => Promise<T>): Promise<T> {
-  const client = new Client({ connectionString: databaseUrl() })
+/**
+ * Run one read-only query and always close the client.
+ *
+ * `DATABASE_URL` with NO fallback: CLAUDE.md hard rule 3 ("always from
+ * `process.env` — never hardcode values in code"), and a hardcoded dev
+ * connection string is the specific way that rule gets broken by accident. An
+ * unset variable is a clear error here rather than a silent connection to
+ * whatever happens to be on :5433. `pg` is imported lazily, matching
+ * `ibx obs undelivered`, so the module loads in environments without it.
+ */
+async function withPg<T>(fn: (c: PgClientLike) => Promise<T>): Promise<T> {
+  const connectionString = process.env.DATABASE_URL
+  if (connectionString === undefined || connectionString.length === 0) {
+    throw new Error("DATABASE_URL is not set — alias mining reads the live stores")
+  }
+  const { default: pg } = await import("pg" as string).catch(() => {
+    throw new Error("module `pg` not found — run `pnpm install`")
+  })
+  const client = new pg.Client({ connectionString }) as PgClientLike
   await client.connect()
   try {
     return await fn(client)
   } finally {
-    await client.end()
+    await client.end().catch(() => undefined)
+  }
+}
+
+/** LogsQL duration shape, the same one `buildLogsQL` accepts. */
+const WINDOW_RE = /^\d+[smhd]$/
+
+/**
+ * Validate a caller-supplied time window before it reaches a query string.
+ *
+ * `buildLogsQL` regex-checks its own `since` and silently falls back to "1h";
+ * this miner builds a compound query directly, so it does the check itself and
+ * REFUSES rather than substituting. A window the operator did not ask for would
+ * silently change what the report covered — and with logs as the entire
+ * historical record (see the retention note in the runbook), "silently covered
+ * less than you think" is the expensive failure.
+ */
+export function assertValidWindow(since: string): void {
+  if (!WINDOW_RE.test(since)) {
+    throw new Error(`--since must be a LogsQL duration like 30d, 12h, 45m (got "${since}")`)
   }
 }
 
@@ -78,12 +111,15 @@ async function withPg<T>(fn: (c: Client) => Promise<T>): Promise<T> {
  *     load-bearing, and because a resolution the owner disagrees with is only
  *     visible if it is reported.
  *
- * The utterance itself is deliberately NOT in these records (the funnel logs
- * surfaces and handles, never customer prose), so the mention's `utterance` is
- * the surface form itself. That is a real evidence limit and the report shows it
- * as such rather than fabricating context.
+ * The funnel records carry surfaces and handles but never customer prose, so the
+ * utterance comes from a JOIN: the conductor's per-turn `turn` line carries
+ * `inbound`, the turn's inbound text, already clipped and run through the
+ * turn_trace PII redactor. Where the join misses, the surface stands as its own
+ * evidence rather than being padded with invented context.
  */
 export async function readLabelledEvents(since: string): Promise<SourceResult> {
+  assertValidWindow(since)
+  const name = "labelled-event (VictoriaLogs `funnel.tier` / `funnel.alias.resolved`)"
   const query = `_time:${since} component:="funnel" (event:="funnel.tier" OR event:="funnel.alias.resolved")`
   let entries: LogEntry[]
   try {
@@ -92,7 +128,7 @@ export async function readLabelledEvents(since: string): Promise<SourceResult> {
     return {
       mentions: [],
       report: {
-        name: "labelled-event (VictoriaLogs `funnel.tier` / `funnel.alias.resolved`)",
+        name,
         query,
         records: 0,
         unavailable: `${VICTORIALOGS_URL} — ${(err as Error).message}`,
@@ -100,30 +136,74 @@ export async function readLabelledEvents(since: string): Promise<SourceResult> {
     }
   }
 
+  const inboundByTurn = await readTurnInbound(since)
+  const utteranceFor = (turnId: unknown, surface: string): string =>
+    (typeof turnId === "string" ? inboundByTurn.get(turnId) : undefined) ?? surface
+
   const mentions: CandidateMention[] = []
   for (const e of entries) {
     if (e.event === "funnel.tier" && e.tier === "ALIAS") {
+      // Only the FIRST ambiguous surface of a turn is ever logged — see
+      // `MEASUREMENT_LIMITS` in report.ts. Nothing here can recover the rest.
       const surface = typeof e.surface === "string" ? e.surface : ""
-      if (surface.length > 0) mentions.push(labelledMention(surface, surface))
+      if (surface.length > 0) mentions.push(labelledMention(surface, utteranceFor(e.turnId, surface)))
       continue
     }
     if (e.event === "funnel.alias.resolved" && Array.isArray(e.resolutions)) {
       for (const r of e.resolutions) {
         if (typeof r !== "string") continue
-        const surface = (r.split("=>")[0] ?? "").trim()
-        if (surface.length > 0) mentions.push(labelledMention(surface, surface))
+        const surface = parseResolutionSurface(r)
+        if (surface.length > 0) mentions.push(labelledMention(surface, utteranceFor(e.turnId, surface)))
       }
     }
   }
 
-  return {
-    mentions,
-    report: {
-      name: "labelled-event (VictoriaLogs `funnel.tier` / `funnel.alias.resolved`)",
-      query,
-      records: entries.length,
-    },
+  return { mentions, report: { name, query, records: entries.length } }
+}
+
+/**
+ * Recover the SURFACE half of a pre-formatted `funnel.alias.resolved` entry.
+ *
+ * The runtime emits `"<surface>=><canonical>"`, or
+ * `"<surface>=><canonical> (via <token>)"`. Only the surface half is free
+ * customer text, so it is the only half that may contain a literal `=>` — which
+ * rules out splitting on the FIRST occurrence, the obvious implementation, since
+ * a customer typing "a=>b" would silently yield the surface "a".
+ *
+ * Anchors, in order: drop the ` (via …)` suffix, then cut at the LAST `=>`. The
+ * canonical between them is a kebab-case ASCII handle by construction and can
+ * contain neither anchor, so the cut lands correctly however strange the surface
+ * is.
+ */
+export function parseResolutionSurface(entry: string): string {
+  const viaAt = entry.lastIndexOf(" (via ")
+  const body = viaAt >= 0 && entry.endsWith(")") ? entry.slice(0, viaAt) : entry
+  const arrowAt = body.lastIndexOf("=>")
+  return arrowAt < 0 ? "" : body.slice(0, arrowAt).trim()
+}
+
+/**
+ * Map turnId -> the turn's inbound text, from the conductor's per-turn line.
+ *
+ * Best-effort context for the labelled rows. A failure here is never fatal: the
+ * caller falls back to the surface form, which is weaker evidence but honest.
+ */
+async function readTurnInbound(since: string): Promise<ReadonlyMap<string, string>> {
+  const out = new Map<string, string>()
+  try {
+    const entries = await queryLogs(
+      `_time:${since} component:="conductor" event:="turn"`,
+      5000,
+    )
+    for (const e of entries) {
+      if (typeof e.turnId === "string" && typeof e.inbound === "string" && e.inbound.length > 0) {
+        out.set(e.turnId, e.inbound)
+      }
+    }
+  } catch {
+    return out
   }
+  return out
 }
 
 // ── 2. Transcripts ───────────────────────────────────────────────────────────
@@ -141,16 +221,19 @@ export async function readTranscripts(limit: number): Promise<SourceResult> {
   const sql =
     "SELECT DISTINCT user_text FROM claustrum_memory_episodic " +
     "WHERE user_text IS NOT NULL AND user_text <> '' LIMIT $1"
+  // Clamped like `ibx obs undelivered` clamps its own --limit: an unbounded
+  // read of a partitioned store is the operator mistake this guards.
+  const capped = Math.min(Math.max(limit, 1), 50_000)
   try {
     const utterances = await withPg(async (c) => {
-      const res = await c.query<{ user_text: string }>(sql, [limit])
+      const res = await c.query<{ user_text: string }>(sql, [capped])
       return res.rows.map((r) => r.user_text)
     })
     return {
       mentions: mentionsFrom(utterances, "transcript"),
       report: {
         name: "transcript (Postgres `claustrum_memory_episodic.user_text`)",
-        query: `${sql} — limit ${limit}`,
+        query: `${sql} — limit ${capped}`,
         records: utterances.length,
       },
     }
