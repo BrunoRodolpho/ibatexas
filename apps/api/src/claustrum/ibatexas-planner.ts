@@ -142,7 +142,10 @@ import {
   sanitizeReadToolInput,
 } from "./language-engine/read-tool-schemas.js";
 import type { AdvertisedWorkflow, WorkflowRuntime } from "./workflow/workflow-runtime.js";
-import { withoutWorkflowScopedKinds } from "./workflow/workflow-access.js";
+import {
+  isWorkflowScopedKind,
+  withoutWorkflowScopedKinds,
+} from "./workflow/workflow-access.js";
 import {
   isStartWorkflowInput,
   sanitizeWorkflowSlots,
@@ -1375,7 +1378,40 @@ export function createIbatexasPlanner(
           // THIS turn's actor and a FRESH nonce, so its `intentHash` is new and the
           // always-on fail-closed execution ledger sees a genuinely new dispatch
           // instead of deduping the customer's second request against their first.
-          const replayed = cached.proposals.map((proposal, index) =>
+          // LE2-020 — the L1 replay is the THIRD kind-admission site, and the
+          // only one that mints an envelope from a string the live parse seam
+          // never saw. It is bounded implicitly (a workflow-scoped kind is
+          // never advertised, so it can never be in a surface whose digest
+          // matches this key) — but "implicitly" is an argument about the cache
+          // key, not an enforcement, and it would stop holding the moment
+          // anything else could write an entry. Re-check explicitly here: a
+          // poisoned or stale entry naming a workflow-scoped kind is DROPPED,
+          // not re-minted.
+          //
+          // Deliberately narrower than pass 1's `allowed.has(...)`: replay is
+          // already stricter than live admission (bounded by the ADVERTISED
+          // set, not the admitted one — see the unscoped-vs-scoped asymmetry
+          // above), and re-checking against `allowed` here would silently
+          // widen replay to the unscoped roster. This checks the one thing that
+          // must never be admitted from any source at all.
+          const poisoned = cached.proposals.filter((p) =>
+            isWorkflowScopedKind(p.kind),
+          );
+          if (poisoned.length > 0) {
+            logger.warn(
+              {
+                component: "planner",
+                event: "parse_cache.workflow_scoped_kind_dropped",
+                turnId: state.turnId,
+                kinds: poisoned.map((p) => p.kind),
+              },
+              "planner: a cached parse named a workflow-scoped kind — dropped, never re-minted",
+            );
+          }
+          const replayable = cached.proposals.filter(
+            (p) => !isWorkflowScopedKind(p.kind),
+          );
+          const replayed = replayable.map((proposal, index) =>
             buildEnvelope({
               kind: proposal.kind,
               payload: proposal.payload ?? {},
@@ -1391,7 +1427,7 @@ export function createIbatexasPlanner(
               event: "intents.proposed",
               turnId: state.turnId,
               envelopeCount: replayed.length,
-              capabilities: cached.proposals.map((p) => p.kind),
+              capabilities: replayable.map((p) => p.kind),
               droppedOutOfPlan: cached.dropped,
               readToolCalls: cached.readToolCalls.map((c) => c.name),
               funnelTier: stage.tier,
@@ -1404,7 +1440,7 @@ export function createIbatexasPlanner(
           return {
             envelopes: replayed,
             rationale: `ibatexas-planner: funnel L1 (${stage.reason}) — ${replayed.length} envelope(s) replayed, no extraction call`,
-            capabilities: [...cached.proposals.map((p) => p.kind)],
+            capabilities: [...replayable.map((p) => p.kind)],
             readToolCalls: [...cached.readToolCalls],
           };
         }

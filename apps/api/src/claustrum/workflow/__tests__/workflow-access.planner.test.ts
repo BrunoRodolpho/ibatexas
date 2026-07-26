@@ -25,6 +25,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CapabilityPlanner } from "@adjudicate/core/llm";
 import type { CognitiveState, Completion, ModelProvider } from "@claustrum/core";
 import { createIbatexasPlanner } from "../../ibatexas-planner.js";
+import { isWorkflowScopedKind } from "../workflow-access.js";
 
 const SCOPED_KIND = "order.reorder";
 const ORDINARY_KIND = "order.checkout.create";
@@ -141,5 +142,71 @@ describe("the access class bites even when a capability planner advertises the k
 
     expect(plan.capabilities).toEqual([ORDINARY_KIND]);
     expect(plan.envelopes).toHaveLength(1);
+  });
+});
+
+// ── The other kind-admission sites (the seam map's §2 table) ─────────────────
+//
+// `translateToolCalls` is the mainline wall, but it is not the only place a
+// `kind` string becomes an envelope on the customer plane. Two of the remaining
+// sites can reach a kind the live parse seam never checked, and the access
+// class has to hold at both.
+
+describe("kind-admission site 3 — the L1 cache replay re-mint", () => {
+  it("DROPS a workflow-scoped kind from a cached parse instead of re-minting it", async () => {
+    // A poisoned/stale entry: the replay path mints envelopes from strings the
+    // live parse seam never saw. It is bounded implicitly (a workflow-scoped
+    // kind is never advertised, so it cannot be in a surface whose digest
+    // matches the key) — but that is an argument about the cache key, not an
+    // enforcement, so the planner re-checks explicitly.
+    const { provider } = modelEmitting([]);
+    const planner = createIbatexasPlanner({
+      model: provider,
+      modelId: "mock-model",
+      capabilityPlanners: [ADVERTISES_SCOPED_KIND],
+      deriveContext: () => ({ state: {}, context: {} }),
+      parseMemo: {
+        lookupParse: async () => ({
+          proposals: [
+            { kind: SCOPED_KIND, payload: {} },
+            { kind: ORDINARY_KIND, payload: {} },
+          ],
+          dropped: [],
+          readToolCalls: [],
+        }),
+        rememberParse: async () => {},
+        stampMemoHit: () => ({
+          tier: "L1" as const,
+          reason: "memoized_parse" as const,
+          detail: {},
+          at: "2026-07-26T00:00:00.000Z",
+        }),
+        counters: () => ({}) as never,
+      } as never,
+    });
+
+    const plan = await planner.propose(state("repete meu último pedido"));
+
+    // The ordinary kind replays; the workflow-scoped one is dropped — and the
+    // reported capabilities match what was actually minted, so the trace does
+    // not claim an envelope that does not exist.
+    expect(plan.capabilities).toEqual([ORDINARY_KIND]);
+    expect(plan.envelopes).toHaveLength(1);
+    expect(String(plan.envelopes[0]?.kind)).toBe(ORDINARY_KIND);
+  });
+});
+
+describe("kind-admission site 5 — the RESOLVE-stage kind rewrite", () => {
+  it("the correction table can never rewrite INTO a workflow-scoped kind", async () => {
+    // `ibatexas-resolver.ts` does `correction?.kind ?? env.kind`, which changes
+    // the kind AFTER the planner's wall. That rewrite is deterministic and
+    // first-party, but nothing structurally stops a future entry from targeting
+    // a workflow-scoped kind — which would smuggle one past every check above.
+    const { CART_TO_AMEND_KIND } = await import("../../amend-preference-correction.js");
+    const targets = Object.values(CART_TO_AMEND_KIND);
+    expect(targets.length).toBeGreaterThan(0);
+    for (const target of targets) {
+      expect(isWorkflowScopedKind(target)).toBe(false);
+    }
   });
 });

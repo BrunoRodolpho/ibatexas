@@ -92,6 +92,7 @@ const {
   makeStatefulCustomerSession,
   runCustomerTurn,
   scriptedModel,
+  throwingModel,
 } = await import("./customer-e2e-harness.js");
 const { rk } = await import("@ibatexas/tools");
 const { loadCartCtx } = await import("../claustrum/resolve-and-assemble.js");
@@ -99,6 +100,7 @@ const { createWorkflowRuntime } = await import(
   "../claustrum/workflow/workflow-runtime.js"
 );
 const { workflowTrace } = await import("../claustrum/workflow/workflow-trace.js");
+const { createParseFunnel, renderL0Reply } = await import("../claustrum/funnel-tier.js");
 const { CUSTOMER_ROUTER } = await import("./customer-e2e-harness.js");
 const { CATALOG_VERSION, FIXTURE_WORKFLOWS, FIXTURE_WORKFLOW_ID } = await import(
   "@ibatexas/catalog"
@@ -519,5 +521,62 @@ describe("LE2-020 — the WORKFLOW-SCOPED access class, at the real parse seam",
     const rows = sink.byKind("order.reorder");
     expect(rows).toHaveLength(1);
     expect(rows[0]!.decision.kind).toBe("EXECUTE");
+  });
+});
+
+describe("LE2-020 — the workflow confirm rides the EXISTING park machinery", () => {
+  it("a parked workflow confirm blocks L0 exactly like any other park (FE-D32)", async () => {
+    // The whole-workflow confirm is an ordinary REQUEST_CONFIRMATION park, so
+    // every rule about open confirm windows applies to it unchanged — including
+    // the ratified one that L0 must not fire while a window is open. If a warm
+    // greeting template could land here, it would answer past a pending
+    // multi-step money decision.
+    //
+    // Asserted on the REPLY TEXT, not on `funnelStage`: `runCustomerTurn`'s
+    // `finally` calls `closeFunnelTurn`, which drops the stage record, so the
+    // stage is unreadable by the time a caller sees the result. The L0 template
+    // is the tier's whole deliverable anyway.
+    const funnel = createParseFunnel();
+    const greeting = renderL0Reply("greeting");
+    const { harness, session } = buildHarness({ claims: validatedClaims() });
+
+    // CONTROL — a social utterance with NO park open: L0 answers from its
+    // template. `throwingModel` makes it a genuine zero-model-call proof: if L0
+    // stood down here the turn would throw instead of quietly costing a call.
+    const control = await runCustomerTurn(
+      composeCustomerConductor({
+        model: throwingModel("L0 control"),
+        session: makeStatefulCustomerSession(),
+        adjudicator: makeAuditedAdjudicator({ sink: makeCapturingAuditSink() }),
+        funnel,
+        realResponder: true,
+      }),
+      { customerId: CUSTOMER, conversationId: CONVERSATION, text: "oi" },
+    );
+    expect(control.response).toBe(greeting);
+
+    // Now park a workflow confirm, then send the SAME social utterance.
+    const selecting = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+    expect(selecting.decision.kind).toBe("REQUEST_CONFIRMATION");
+    expect(session.parksFor(CUSTOMER)).toHaveLength(1);
+
+    const blocked = await runCustomerTurn(
+      composeCustomerConductor({
+        model: scriptedModel([], { responderText: "resposta do modelo" }),
+        session,
+        adjudicator: makeAuditedAdjudicator({ sink: makeCapturingAuditSink() }),
+        funnel,
+        realResponder: true,
+      }),
+      { customerId: CUSTOMER, conversationId: CONVERSATION, text: "oi" },
+    );
+
+    // L0 stood down — the greeting template did NOT land on a turn with an open
+    // workflow confirm window, so the restate-then-confirm path still owns it.
+    expect(blocked.response).not.toBe(greeting);
   });
 });
