@@ -632,9 +632,18 @@ async function handlePaymentSucceeded(
     }
   }
 
-  // Mark PIX as paid so expiry monitor skips reminders for this order
-  await markPixPaid(orderId).catch((err) => {
-    logger.warn({ error: String(err), order_id: orderId }, "[stripe.pix.mark_paid_failed]");
+  // Mark PIX as paid so the expiry monitor skips reminders for this attempt.
+  //
+  // BKL-241: keyed by the PaymentIntent id, NOT `orderId`. The monitor is
+  // scheduled at QR-mint time, when no Medusa order exists yet (the cart is
+  // completed by this very handler), so the `pi_…` id is the only id both sides
+  // hold. Marking under the order id wrote a key `isPixPaid` never reads, and
+  // the customer who had just paid still received "O PIX expirou".
+  await markPixPaid(paymentIntent.id).catch((err) => {
+    logger.warn(
+      { error: String(err), order_id: orderId, stripe_pi: paymentIntent.id },
+      "[stripe.pix.mark_paid_failed]",
+    );
   });
 
   logger.info(

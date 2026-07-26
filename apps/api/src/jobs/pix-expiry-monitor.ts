@@ -2,11 +2,33 @@
 // and offers regeneration after expiry.
 //
 // Flow:
-// 1. After PIX QR is generated, agent.ts schedules two delayed jobs:
+// 1. After PIX QR is generated, the WhatsApp route schedules two delayed jobs:
 //    a) REMINDER at 25 min — "Seu QR PIX expira em 5 minutos!"
 //    b) EXPIRED at 30 min — "O PIX expirou. Quer que eu gere um novo?"
 // 2. Each job checks if payment was already confirmed (Redis key set by stripe webhook)
 // 3. If paid → skip. If not → send message.
+//
+// ── BKL-241: the canonical id is the Stripe PaymentIntent id ────────────────
+// Every id on this path — the job payload, the `pix:paid:` marker, the
+// `pix:reminder-sent:` claim and the DB paid-check — is the `pi_…` id of the
+// PIX ATTEMPT this monitor watches, never the Medusa order id. Two code facts
+// force that choice:
+//
+//   • At QR-mint time there IS no order. `confirmPixAndGetQrCode`
+//     (packages/tools/src/cart/create-checkout.ts) deliberately does NOT
+//     complete the cart; the Medusa order is created later by
+//     `completePixCartIfNeeded` on `payment_intent.succeeded`. The PI id is the
+//     only id that exists on BOTH the scheduling and the marking side.
+//   • The unit of expiry is the attempt, not the order. `amend_order` /
+//     `regenerate_pix` mint a SECOND PI against the same order and schedule
+//     their own monitor pair, and the Payment model is attempt-scoped too
+//     ("retry/regeneration creates a NEW Payment row"). An order-keyed marker
+//     would let one attempt's payment silence another attempt's monitor.
+//
+// The defect this replaces: the scheduler passed the `pi_…` id under a field
+// named `orderId`, while `markPixPaid` was called with the real order id — so
+// the marker was written under a key the monitor never read, and a customer who
+// had already paid still got "O PIX expirou".
 
 import * as Sentry from "@sentry/node";
 import { getRedisClient, rk, medusaAdmin } from "@ibatexas/tools";
@@ -39,8 +61,27 @@ const PIX_REMINDER_SENT_TTL_SECONDS = Number.parseInt(
 export interface PixExpiryJobData {
   phone: string;
   phoneHash: string;
-  orderId: string;
+  /** BKL-241 — Stripe PaymentIntent id (`pi_…`) of the PIX attempt being watched. */
+  paymentIntentId: string;
   stage: "reminder" | "expired";
+}
+
+/**
+ * BKL-241 in-flight compat. Jobs enqueued by the PREVIOUS deploy carry the id
+ * under `orderId` — which for every PIX producer ALREADY held the `pi_…` id
+ * (the mislabelling was the defect), so reading it is a rename, not an id-space
+ * change. A delayed job lives 25-30 min, so without this the jobs that survive
+ * the deploy would key every lookup on `undefined`: `pix:paid:undefined` never
+ * matches, and worse, the per-stage send claim collapses to ONE global key so
+ * only the first of those customers is messaged at all.
+ *
+ * Drop once no pre-fix job can still be queued.
+ */
+type PersistedPixExpiryJobData = PixExpiryJobData & { readonly orderId?: string };
+
+function readPaymentIntentId(data: PixExpiryJobData): string | undefined {
+  const persisted = data as PersistedPixExpiryJobData;
+  return persisted.paymentIntentId ?? persisted.orderId;
 }
 
 let queue: Queue | null = null;
@@ -52,9 +93,9 @@ function getQueue(): Queue {
 }
 
 /** Check if PIX payment was already confirmed (stripe webhook sets this key). */
-export async function isPixPaid(orderId: string): Promise<boolean> {
+export async function isPixPaid(paymentIntentId: string): Promise<boolean> {
   const redis = await getRedisClient();
-  const paid = await redis.get(rk(`pix:paid:${orderId}`));
+  const paid = await redis.get(rk(`pix:paid:${paymentIntentId}`));
   if (paid) return true;
 
   // PIXPAIDFLAG: the Redis flag is best-effort — markPixPaid runs AFTER the DB write
@@ -62,8 +103,15 @@ export async function isPixPaid(orderId: string): Promise<boolean> {
   // and the key carries a 2h TTL. If it is absent, confirm against the Payment projection
   // (the billing source of truth) so a customer who already paid never gets a spurious
   // "your PIX expired" message. Pure added read; no money movement.
+  //
+  // BKL-241: resolved by PI id — a findUnique on the unique `stripePaymentIntentId`
+  // column, so it answers about THIS attempt. The previous getActiveByOrderId read
+  // could not even be reached with the id the job actually carried, and is the
+  // weaker question besides: with two attempts on one order it returns the
+  // most-recent NON-TERMINAL row, which may be the pending retry rather than the
+  // paid attempt being asked about.
   try {
-    const payment = await createPaymentQueryService().getActiveByOrderId(orderId);
+    const payment = await createPaymentQueryService().getByStripePaymentIntentId(paymentIntentId);
     return payment?.status === PaymentStatus.PAID;
   } catch {
     // DB unavailable — preserve the unpaid default (a stray reminder is harmless).
@@ -73,20 +121,28 @@ export async function isPixPaid(orderId: string): Promise<boolean> {
 
 /** BullMQ processor — sends reminder or expiry message if PIX is unpaid. */
 export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void> {
-  const { phone, orderId, stage } = job.data;
+  const { phone, stage } = job.data;
+  const paymentIntentId = readPaymentIntentId(job.data);
+
+  // No id → the paid-check is unanswerable, so messaging would risk telling a
+  // customer who already paid that their PIX expired. Fail closed (send nothing).
+  if (!paymentIntentId) {
+    logger.warn({ stage }, "[pix-expiry-monitor] job carries no payment intent id — skipping");
+    return;
+  }
 
   // Skip if already paid
-  if (await isPixPaid(orderId)) return;
+  if (await isPixPaid(paymentIntentId)) return;
 
   // P3-NET-PIXREMINDER: per-stage idempotency around the message send. Jobs are
   // scheduled with removeOnComplete, so a retry re-runs this processor; without
   // a guard the customer gets a duplicate reminder/expiry WhatsApp. Claim the
   // send with SET NX (first runner wins); a null reply means another run already
-  // sent this {orderId,stage}, so skip. This wraps ONLY the message send — the
-  // isPixPaid() paid-check and all payment logic above are untouched.
+  // sent this {paymentIntentId,stage}, so skip. This wraps ONLY the message send —
+  // the isPixPaid() paid-check and all payment logic above are untouched.
   const redis = await getRedisClient();
   const claimed = await redis.set(
-    rk(`pix:reminder-sent:${orderId}:${stage}`),
+    rk(`pix:reminder-sent:${paymentIntentId}:${stage}`),
     "1",
     { NX: true, EX: PIX_REMINDER_SENT_TTL_SECONDS },
   );
@@ -98,15 +154,25 @@ export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void
       mintCronReply("Seu QR PIX expira em 5 minutos! Ainda dá tempo de escanear 🍖"),
     );
   } else {
-    // Check if this is a scheduled-pickup order — send a tailored message
+    // Check if this is a scheduled-pickup order — send a tailored message.
+    //
+    // BKL-241: the job carries a `pi_…` id, so it must be resolved to the Medusa
+    // order id before the admin read — `/admin/orders/pi_…` only ever 404s. The
+    // Payment projection is the PI→order map (regenerate_pix / the order.placed
+    // subscriber both stamp `stripePaymentIntentId`). No row means no order exists
+    // for this attempt yet (the common unpaid create_checkout case, where the cart
+    // is completed only on payment) → generic message, same as before.
     let isScheduledPickup = false;
     try {
-      const orderData = (await medusaAdmin(`/admin/orders/${orderId}`)) as {
-        order?: { metadata?: Record<string, string> };
-      };
-      isScheduledPickup = orderData.order?.metadata?.["scheduledPickup"] === "true";
+      const payment = await createPaymentQueryService().getByStripePaymentIntentId(paymentIntentId);
+      if (payment?.orderId) {
+        const orderData = (await medusaAdmin(`/admin/orders/${payment.orderId}`)) as {
+          order?: { metadata?: Record<string, string> };
+        };
+        isScheduledPickup = orderData.order?.metadata?.["scheduledPickup"] === "true";
+      }
     } catch {
-      // If we can't fetch the order, fall through to the generic message
+      // If we can't resolve or fetch the order, fall through to the generic message
     }
 
     if (isScheduledPickup) {
@@ -144,11 +210,17 @@ export async function schedulePixExpiryMonitor(
   ]);
 }
 
-/** Mark a PIX payment as confirmed (called from stripe webhook). */
-export async function markPixPaid(orderId: string): Promise<void> {
+/**
+ * Mark a PIX payment as confirmed (called from stripe webhook).
+ *
+ * BKL-241: MUST be the Stripe PaymentIntent id — the same id
+ * {@link schedulePixExpiryMonitor} was given for this attempt. Passing the
+ * Medusa order id here writes a key `isPixPaid` never reads.
+ */
+export async function markPixPaid(paymentIntentId: string): Promise<void> {
   const redis = await getRedisClient();
   // TTL 2h — plenty of time for any pending jobs to check
-  await redis.set(rk(`pix:paid:${orderId}`), "1", { EX: 7200 });
+  await redis.set(rk(`pix:paid:${paymentIntentId}`), "1", { EX: 7200 });
 }
 
 export function startPixExpiryMonitor(): void {

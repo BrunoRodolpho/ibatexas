@@ -64,8 +64,8 @@ Example: `production:customer:profile:cust_123`
 |---------|------|-----|-------------|--------|
 | `customer:pix:{customerId}` | Hash | — | Cached PIX billing details (name, email, cpf). Pre-filled on returning customer sessions. | `apps/api/src/routes/cart.ts` |
 | `pix:regen:rate:{customerId}` | Counter | 3600 s | PIX regeneration rate limit (max 3/hr via INCR + EXPIRE). | `packages/tools/src/cart/regenerate-pix.ts` |
-| `pix:paid:{orderId}` | String | 2 h | Idempotency guard — PIX marked paid by the expiry monitor. | `apps/api/src/jobs/pix-expiry-monitor.ts` |
-| `pix:reminder-sent:{orderId}:{stage}` | String | — | PIX-pending reminder idempotency per stage. | `apps/api/src/jobs/pix-expiry-monitor.ts` |
+| `pix:paid:{paymentIntentId}` | String | 2 h | Payment-confirmed marker read by the expiry monitor. Keyed by the Stripe `pi_…` id (BKL-241) — the PIX attempt, not the order, which does not exist yet when the monitor is scheduled. Written by the Stripe webhook. | `apps/api/src/jobs/pix-expiry-monitor.ts` |
+| `pix:reminder-sent:{paymentIntentId}:{stage}` | String | 3600 s | PIX-pending reminder idempotency per stage. Same `pi_…` key space as `pix:paid:`. | `apps/api/src/jobs/pix-expiry-monitor.ts` |
 | `lock:payment:{paymentId}` | String (UUID) | 10 s | Distributed lock for payment mutations (webhook, PIX expiry, method switch). Lua conditional `DEL`. | `packages/tools/src/redis/distributed-lock.ts` |
 | `stripe:circuit:{method}` | Counter | 300 s | Stripe circuit breaker per method (INCR on failure, open if >5 in window). | `packages/tools/src/cart/_stripe-helpers.ts` |
 | `webhook:processed:{event.id}` | String | 7 d | Stripe webhook idempotency guard (prevents replay reprocessing). | `apps/api/src/routes/stripe-webhook.ts` |
