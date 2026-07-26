@@ -103,14 +103,24 @@ ibx dev start --with-tunnel --with-stripe  # same as 'all' (explicit flags)
 ibx dev start commerce api                 # only specific services + their deps
 ibx dev start --no-tui                     # plain log output (no TUI)
 ibx dev start --skip-docker                # infra already running
+ibx dev start --no-observability           # skip the obs stack (drops funnel records)
 ```
 
 `ibx dev start` launches [process-compose](https://github.com/F1bonacc1/process-compose), which orchestrates:
 1. Docker infrastructure (Postgres, Redis, Typesense, NATS)
-2. Commerce (Medusa) — waits for Docker healthy
-3. API — waits for Commerce healthy
-4. Web + Admin — wait for Docker healthy
-5. (optional) ngrok tunnel + Stripe listener — wait for API healthy
+2. Observability (VictoriaLogs, VictoriaMetrics, Grafana) — a **default** service
+3. Commerce (Medusa) — waits for Docker healthy
+4. API — waits for Commerce healthy
+5. Web + Admin — wait for Docker healthy
+6. (optional) ngrok tunnel + Stripe listener — wait for API healthy
+
+> Observability is a default service on purpose: VictoriaLogs is the **only**
+> record of a zero-call funnel turn (L0/L1/L2-fallback/ALIAS write no `turn_trace`
+> row), so an outage loses those permanently rather than delaying them. Skipping
+> it — with `--no-observability` or `--skip-docker` — prints a yellow
+> `Observability OFF` line, and the API prints one `[funnel-sink]` boot warning
+> when the sink is unset or unreachable. See
+> [docs/cli/reference.md](../cli/reference.md#why-observability-is-a-default-service).
 
 ### Stop everything
 

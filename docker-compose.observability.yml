@@ -18,6 +18,14 @@ services:
     image: victoriametrics/victoria-logs:v1.0.0-victorialogs
     container_name: ibatexas-victorialogs
     networks: [obs]
+    # BKL-266: VictoriaLogs alone carries a restart policy. Zero-call funnel
+    # turns (L0/L1/L2-fallback/ALIAS) write NO turn_trace row by design — this
+    # container IS their only record, and an outage loses them permanently
+    # (never-written, not late) rather than delaying them. Without this a Docker
+    # Desktop quit left it Exited(0) until the next full `ibx dev`; measured
+    # twice, ~6h on 2026-07-04 and ~15h on 2026-07-26. `unless-stopped` still
+    # honours a deliberate `docker stop`, so the opt-out path stays intact.
+    restart: unless-stopped
     command:
       - "-storageDataPath=/vlogs"
       - "-httpListenAddr=:9428"
