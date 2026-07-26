@@ -198,11 +198,13 @@ function renderRow(c: RankedCandidate): string {
   // would have put an unredacted customer word in the row heading and in the
   // approve/reject tokens — the two places a reader is guaranteed to look.
   const display = scrubUtterance(c.display)
-  lines.push(`#### ${c.rank}. \`${display}\`${arrow}`)
-  lines.push("")
-  lines.push(`- **evidence:** ${c.evidence} distinct utterance${c.evidence === 1 ? "" : "s"}`)
-  lines.push(`- **source:** ${c.sources.join(", ")}`)
-  lines.push(`- **why:** ${c.why}`)
+  lines.push(
+    `#### ${c.rank}. \`${display}\`${arrow}`,
+    "",
+    `- **evidence:** ${c.evidence} distinct utterance${c.evidence === 1 ? "" : "s"}`,
+    `- **source:** ${c.sources.join(", ")}`,
+    `- **why:** ${c.why}`,
+  )
   if (c.nearest !== undefined) {
     lines.push(
       `- **nearest canonical (advisory):** \`${c.nearest.handle}\` ` +
@@ -213,9 +215,7 @@ function renderRow(c: RankedCandidate): string {
   for (const ex of c.examples.slice(0, EXAMPLES_PER_ROW)) {
     lines.push(`  - "${scrubUtterance(ex)}"`)
   }
-  lines.push("- **decision:**")
-  lines.push(checkbox(display))
-  lines.push("")
+  lines.push("- **decision:**", checkbox(display), "")
   return lines.join("\n")
 }
 
@@ -228,21 +228,20 @@ export function renderReport(
   const counts = new Map<RowType, number>()
   for (const c of candidates) counts.set(c.rowType, (counts.get(c.rowType) ?? 0) + 1)
 
-  out.push(`# Alias mining report — ${ctx.generatedAt.slice(0, 10)}`)
-  out.push("")
-  out.push(`**Schema:** v${REPORT_SCHEMA_VERSION} · **Generated:** ${ctx.generatedAt}`)
-  out.push(`**Labelled-event window:** \`${ctx.window}\` — see "What this report could not see"`)
-  out.push(`**Ranking mode:** \`${ctx.mode}\` · **Embedder:** ${ctx.embedder}`)
+  out.push(
+    `# Alias mining report — ${ctx.generatedAt.slice(0, 10)}`,
+    "",
+    `**Schema:** v${REPORT_SCHEMA_VERSION} · **Generated:** ${ctx.generatedAt}`,
+    `**Labelled-event window:** \`${ctx.window}\` — see "What this report could not see"`,
+    `**Ranking mode:** \`${ctx.mode}\` · **Embedder:** ${ctx.embedder}`,
+  )
   out.push(
     `**Measured against:** ${ctx.rosterProducts} live products, ` +
       `${ctx.rosterCategories} categories, ${ctx.gazetteerSize} declared alias edges`,
   )
   out.push("")
 
-  out.push("## Sources")
-  out.push("")
-  out.push("| Source | Query | Records |")
-  out.push("|---|---|---|")
+  out.push("## Sources", "", "| Source | Query | Records |", "|---|---|---|")
   for (const s of ctx.sources) {
     const records = s.unavailable === undefined ? String(s.records) : `— (${s.unavailable})`
     out.push(`| ${s.name} | \`${s.query}\` | ${records} |`)
@@ -256,8 +255,7 @@ export function renderReport(
   )
   out.push("")
 
-  out.push("## How an approved row reaches the catalog")
-  out.push("")
+  out.push("## How an approved row reaches the catalog", "")
   out.push(
     "The miner never writes `alias-gazetteer.ts`. Approving a row is a request for a normal, " +
       "reviewed, versioned edit:",
@@ -279,8 +277,7 @@ export function renderReport(
   out.push(`> ${MINING_OUTPUT_NOTE}`)
   out.push("")
 
-  out.push("## Method, and what it cannot see")
-  out.push("")
+  out.push("## Method, and what it cannot see", "")
   out.push(
     "Candidates are the OBJECTS OF REQUESTS — the noun phrase after an ordering verb and an " +
       "optional article or quantity (`quero uma coca` → `coca`). A request phrased with a verb the " +
@@ -304,28 +301,19 @@ export function renderReport(
   )
   out.push("")
 
-  out.push(`## What this report could not see (labelled-event window: \`${ctx.window}\`)`)
-  out.push("")
+  out.push(`## What this report could not see (labelled-event window: \`${ctx.window}\`)`, "")
   for (const limit of MEASUREMENT_LIMITS) out.push(`- ${limit}`)
   out.push("")
 
-  out.push("## Summary")
-  out.push("")
-  out.push("| Row type | Rows |")
-  out.push("|---|---|")
+  out.push("## Summary", "", "| Row type | Rows |", "|---|---|")
   for (const { type } of SECTIONS) out.push(`| ${type} | ${counts.get(type) ?? 0} |`)
-  out.push(`| **total** | **${candidates.length}** |`)
-  out.push("")
+  out.push(`| **total** | **${candidates.length}** |`, "")
 
   for (const section of SECTIONS) {
     const rows = candidates.filter((c) => c.rowType === section.type)
-    out.push(`## ${section.title} (${rows.length})`)
-    out.push("")
-    out.push(`> ${section.ask}`)
-    out.push("")
+    out.push(`## ${section.title} (${rows.length})`, "", `> ${section.ask}`, "")
     if (rows.length === 0) {
-      out.push("_None._")
-      out.push("")
+      out.push("_None._", "")
       continue
     }
     for (const row of rows) out.push(renderRow(row))

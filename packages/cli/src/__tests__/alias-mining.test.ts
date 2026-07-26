@@ -15,6 +15,7 @@ import {
   mentionsFrom,
   labelledMention,
   displayFormOf,
+  trimTrailingPunctuation,
   type CandidateMention,
 } from "../lib/alias-mining/extract.js"
 import {
@@ -24,6 +25,7 @@ import {
   type Roster,
 } from "../lib/alias-mining/classify.js"
 import { cosineSimilarity, rankCandidates } from "../lib/alias-mining/rank.js"
+import { byKey, compare } from "../lib/alias-mining/ordering.js"
 import {
   MEASUREMENT_LIMITS,
   renderReport,
@@ -364,6 +366,71 @@ describe("rankCandidates", () => {
     expect(rankCandidates(candidates).map((c) => c.surface)).toEqual(
       rankCandidates([...candidates].reverse()).map((c) => c.surface),
     )
+  })
+})
+
+describe("ordering", () => {
+  it("compare is byte-wise, not locale-aware", () => {
+    // The whole point: `localeCompare` would sort "água" next to "agua"; byte
+    // order puts it after "z". The odd-looking answer is the correct one here,
+    // because it is the SAME answer on every machine and ICU build.
+    expect(compare("agua", "zebra")).toBe(-1)
+    expect(compare("água", "zebra")).toBe(1)
+    expect(compare("a", "a")).toBe(0)
+  })
+
+  it("byKey orders tuples by their key, not by stringifying them", () => {
+    // A bare `.sort()` on Map entries compares `String(["noise", 9])` against
+    // `String(["noise", 10])` — "noise,9" > "noise,10", because "9" > "1"
+    // lexicographically. Keying explicitly is what makes that unreachable.
+    const rows: [string, number][] = [
+      ["noise", 9],
+      ["catalog-gap", 10],
+      ["propose-alias", 2],
+    ]
+    expect([...rows].sort(byKey(([type]) => type)).map(([t]) => t)).toEqual([
+      "catalog-gap",
+      "noise",
+      "propose-alias",
+    ])
+  })
+
+  it("REGRESSION: numeric orderings use numeric comparators", () => {
+    // Ranks are numbers. Pinned because a bare sort would order rank 10 before
+    // rank 9 and silently scramble the owner-facing queue.
+    const ranked = rankCandidates(
+      classifyAll(
+        Array.from({ length: 12 }, (_, i) =>
+          mention(`surface${i}`, `quero uma coisa numero ${i}`, { quantified: true }),
+        ),
+        ROSTER,
+        GAZETTEER,
+      ),
+    )
+    const ranks = ranked.map((c) => c.rank)
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b))
+    expect(ranks[9]).toBe(10)
+    expect(ranks.length).toBeGreaterThan(9)
+  })
+})
+
+describe("trimTrailingPunctuation", () => {
+  it("drops trailing sentence punctuation", () => {
+    expect(trimTrailingPunctuation("Coca-Cola!!!")).toBe("Coca-Cola")
+    expect(trimTrailingPunctuation("farofa")).toBe("farofa")
+  })
+
+  it("leaves interior punctuation alone", () => {
+    expect(trimTrailingPunctuation("Coca-Cola")).toBe("Coca-Cola")
+  })
+
+  it("is linear on an adversarial tail — no catastrophic backtracking", () => {
+    // The regex this replaced (`/[.,!?;:]+$/`) is quadratic on this input, and
+    // every string reaching it is untrusted customer transcript text.
+    const hostile = `${"a".repeat(50)}${".".repeat(50_000)}x`
+    const started = Date.now()
+    expect(trimTrailingPunctuation(hostile)).toBe(hostile)
+    expect(Date.now() - started).toBeLessThan(1_000)
   })
 })
 

@@ -262,41 +262,71 @@ export function extractRequestObjects(utterance: string): readonly RequestObject
   const out: RequestObject[] = []
   for (const clause of utterance.split(CLAUSE_SPLIT)) {
     const tokens = normalizeProseForm(clause).split(" ").filter(Boolean)
-
     for (let i = 0; i < tokens.length; i++) {
-      const token = tokens[i]
-      if (token === undefined) continue
-      if (!REQUEST_VERBS.has(token) && !isExistentialTem(tokens, i)) continue
-
-      // Walk past articles / quantities to the object's first content word,
-      // remembering whether any of them implied a COUNT.
-      let j = i + 1
-      let quantified = false
-      while (j < tokens.length) {
-        const t = tokens[j] as string
-        if (QUANTIFIERS.has(t) || isBareNumber(t)) quantified = true
-        else if (!DEFINITES.has(t)) break
-        j++
-      }
-
-      // Collect the noun phrase.
-      const phrase: string[] = []
-      while (j < tokens.length && phrase.length < MAX_PHRASE_TOKENS) {
-        const t = tokens[j] as string
-        if (BOUNDARIES.has(t) || REQUEST_VERBS.has(t) || isBareNumber(t)) break
-        phrase.push(t)
-        j++
-      }
-
-      if (phrase.length === 0) continue
-      out.push({ surface: phrase.join(" "), quantified })
-      // The head word is its own candidate: an owner approving "coca" and an
-      // owner approving "coca cola" are making different decisions, and the
-      // report must let them make each one.
-      if (phrase.length > 1) out.push({ surface: phrase[0] as string, quantified })
+      if (!isRequestVerbAt(tokens, i)) continue
+      out.push(...objectAt(tokens, i))
     }
   }
   return out
+}
+
+/** Does a request verb sit at `i`, in a reading that takes a product object? */
+function isRequestVerbAt(tokens: readonly string[], i: number): boolean {
+  const token = tokens[i]
+  if (token === undefined) return false
+  return REQUEST_VERBS.has(token) || isExistentialTem(tokens, i)
+}
+
+/**
+ * Walk past articles and quantities to the object's first content word.
+ *
+ * Returns where the noun phrase starts and whether anything on the way implied
+ * a COUNT — see {@link CandidateMention.quantified} for why only the indefinite
+ * readings set it.
+ */
+function skipDeterminers(
+  tokens: readonly string[],
+  from: number,
+): { readonly start: number; readonly quantified: boolean } {
+  let j = from
+  let quantified = false
+  while (j < tokens.length) {
+    const t = tokens[j] as string
+    if (QUANTIFIERS.has(t) || isBareNumber(t)) quantified = true
+    else if (!DEFINITES.has(t)) break
+    j++
+  }
+  return { start: j, quantified }
+}
+
+/** Collect the noun phrase beginning at `from`, stopping at the first boundary. */
+function nounPhraseAt(tokens: readonly string[], from: number): readonly string[] {
+  const phrase: string[] = []
+  let j = from
+  while (j < tokens.length && phrase.length < MAX_PHRASE_TOKENS) {
+    const t = tokens[j] as string
+    if (BOUNDARIES.has(t) || REQUEST_VERBS.has(t) || isBareNumber(t)) break
+    phrase.push(t)
+    j++
+  }
+  return phrase
+}
+
+/**
+ * The candidate(s) contributed by the request verb at `verbAt`.
+ *
+ * A multi-word phrase yields its head word as well: an owner approving "coca"
+ * and an owner approving "coca cola" are making different decisions, and the
+ * report must let them make each one.
+ */
+function objectAt(tokens: readonly string[], verbAt: number): readonly RequestObject[] {
+  const { start, quantified } = skipDeterminers(tokens, verbAt + 1)
+  const phrase = nounPhraseAt(tokens, start)
+  if (phrase.length === 0) return []
+  const whole: RequestObject = { surface: phrase.join(" "), quantified }
+  return phrase.length > 1
+    ? [whole, { surface: phrase[0] as string, quantified }]
+    : [whole]
 }
 
 /**
@@ -350,10 +380,35 @@ export function displayFormOf(utterance: string, foldedSurface: string): string 
   for (let len = 1; len <= wanted; len++) {
     for (let i = 0; i + len <= words.length; i++) {
       const span = words.slice(i, i + len).join(" ")
-      if (normalizeProseForm(span) === foldedSurface) return span.replace(/[.,!?;:]+$/, "")
+      if (normalizeProseForm(span) === foldedSurface) return trimTrailingPunctuation(span)
     }
   }
   return foldedSurface
+}
+
+/** Characters stripped from the tail of a recovered display form. */
+const TRAILING_PUNCTUATION = new Set([".", ",", "!", "?", ";", ":"])
+
+/**
+ * Drop trailing sentence punctuation — a linear backward scan, deliberately not
+ * a regex.
+ *
+ * This ran as `span.replace(/[.,!?;:]+$/, "")` and was flagged for super-linear
+ * backtracking. The shape `[class]+$` is quadratic on an adversarial tail: the
+ * engine matches the run greedily, fails the anchor, gives a character back and
+ * retries, from every start position. That is a nuisance on authored input and a
+ * genuine denial-of-service shape HERE, because every string reaching this
+ * function is raw customer transcript text — untrusted by definition, and
+ * something a customer chooses freely.
+ *
+ * The scan below touches each trailing character at most once and cannot
+ * backtrack at all, which makes the linearity structural rather than a property
+ * of the pattern that someone has to re-verify after an edit.
+ */
+export function trimTrailingPunctuation(text: string): string {
+  let end = text.length
+  while (end > 0 && TRAILING_PUNCTUATION.has(text[end - 1] as string)) end--
+  return text.slice(0, end)
 }
 
 /**

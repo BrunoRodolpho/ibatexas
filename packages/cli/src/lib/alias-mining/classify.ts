@@ -48,6 +48,7 @@
 
 import { normalizeProseForm } from "@ibatexas/catalog"
 import type { CandidateMention, MiningSource } from "./extract.js"
+import { compare } from "./ordering.js"
 
 /**
  * What a candidate turned out to be. The report groups by this, and each group
@@ -125,7 +126,7 @@ const MIN_PREFIX = 4
 
 /** Fold a kebab-case handle into word space: `costela-bovina` -> `costela bovina`. */
 function foldHandle(handle: string): string {
-  return normalizeProseForm(handle.replace(/-/g, " "))
+  return normalizeProseForm(handle.replaceAll("-", " "))
 }
 
 /**
@@ -198,7 +199,7 @@ export function classifyCandidate(
   gazetteer: readonly KnownAlias[],
 ): ClassifiedCandidate {
   const examples = [...new Set(mentions.map((m) => m.utterance))]
-  const sources = [...new Set(mentions.map((m) => m.source))].sort()
+  const sources = [...new Set(mentions.map((m) => m.source))].sort(compare)
   const evidence = examples.length
   const base = { surface, display, evidence, sources, examples }
 
@@ -254,7 +255,7 @@ export function classifyCandidate(
         const v = p.variantTitles.find((t) => namesIt(surface, t)) as string
         return `${p.handle}/${v}`
       })
-      .sort()
+      .sort(compare)
     return {
       ...base,
       rowType: "variant-target",
@@ -284,7 +285,7 @@ export function classifyCandidate(
     }
   }
   if (productHits.length > 1) {
-    const handles = productHits.map((p) => p.handle).sort()
+    const handles = productHits.map((p) => p.handle).sort(compare)
     return {
       ...base,
       rowType: "needs-disambiguation",
@@ -346,7 +347,7 @@ export function classifyAll(
     else bucket.push(m)
   }
   return [...bySurface.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .sort(([a], [b]) => compare(a, b))
     .map(([surface, group]) =>
       classifyCandidate(
         surface,

@@ -15,10 +15,11 @@ import fs from "node:fs"
 import path from "node:path"
 import type { Command } from "commander"
 import chalk from "chalk"
-import ora from "ora"
+import ora, { type Ora } from "ora"
 import { ALIAS_GAZETTEER, normalizeAliasSurface } from "@ibatexas/catalog"
 import { ROOT } from "../utils/root.js"
-import { classifyAll, type KnownAlias } from "../lib/alias-mining/classify.js"
+import { classifyAll, type KnownAlias, type Roster } from "../lib/alias-mining/classify.js"
+import { byKey } from "../lib/alias-mining/ordering.js"
 import { cosineSimilarity, rankCandidates, type NearestCanonical, type RankMode } from "../lib/alias-mining/rank.js"
 import {
   REPORT_SCHEMA_VERSION,
@@ -34,6 +35,7 @@ import {
   readLabelledEvents,
   readRoster,
   readTranscripts,
+  type SourceResult,
 } from "../lib/alias-mining/sources.js"
 import type { CandidateMention } from "../lib/alias-mining/extract.js"
 
@@ -143,7 +145,8 @@ function toJson(
   )}\n`
 }
 
-async function mine(opts: MineOptions): Promise<void> {
+/** Parse and validate the numeric/window options, refusing bad input up front. */
+function parseOptions(opts: MineOptions): { minEvidence: number; limit: number } {
   const minEvidence = Number.parseInt(opts.minEvidence, 10)
   const limit = Number.parseInt(opts.limit, 10)
   // Refuse a malformed window rather than silently substituting one — the log
@@ -155,6 +158,68 @@ async function mine(opts: MineOptions): Promise<void> {
   if (!Number.isFinite(limit) || limit < 1) {
     throw new Error("--limit must be a positive integer")
   }
+  return { minEvidence, limit }
+}
+
+/** Report one source's outcome on the spinner — reached, or reached and empty. */
+function announceSource(spinner: Ora, label: string, result: SourceResult): void {
+  if (result.report.unavailable !== undefined) {
+    spinner.warn(`${label} unavailable — ${result.report.unavailable}`)
+    return
+  }
+  spinner.succeed(
+    `${label}: ${result.report.records} records → ${result.mentions.length} mentions`,
+  )
+}
+
+/** Read both evidence sources, announcing each. Neither is fatal on its own. */
+async function collectMentions(
+  spinner: Ora,
+  opts: MineOptions,
+  limit: number,
+): Promise<{ mentions: readonly CandidateMention[]; sources: readonly SourceReport[] }> {
+  spinner.start("reading labelled funnel events")
+  const labelled = await readLabelledEvents(opts.since)
+  announceSource(spinner, "labelled events", labelled)
+
+  spinner.start("reading recorded transcripts")
+  const transcripts = await readTranscripts(limit)
+  announceSource(spinner, "transcripts", transcripts)
+
+  return {
+    mentions: [...labelled.mentions, ...transcripts.mentions],
+    sources: [labelled.report, transcripts.report],
+  }
+}
+
+/**
+ * Score the candidates for ranking, and report which mode that leaves us in.
+ *
+ * Never throws: an absent embedder is the documented `frequency-only` path, not
+ * an error.
+ */
+async function resolveRanking(
+  spinner: Ora,
+  opts: MineOptions,
+  surfaces: readonly string[],
+  roster: Roster,
+): Promise<{ mode: RankMode; nearest: ReadonlyMap<string, NearestCanonical> }> {
+  if (!opts.embed) return { mode: "frequency-only", nearest: new Map() }
+  spinner.start("embedding candidates (advisory)")
+  const nearest = await nearestCanonicals(
+    surfaces,
+    roster.products.map((p) => ({ handle: p.handle, title: p.title })),
+  )
+  if (nearest.size === 0) {
+    spinner.warn("embedder unreachable — ranking degraded to frequency")
+    return { mode: "frequency-only", nearest }
+  }
+  spinner.succeed(`embedder: ${nearest.size} candidates scored`)
+  return { mode: "embedding-assisted", nearest }
+}
+
+async function mine(opts: MineOptions): Promise<void> {
+  const { minEvidence, limit } = parseOptions(opts)
 
   const spinner = ora("reading the live product roster").start()
   // Fatal by design: classifying against an empty roster would report the whole
@@ -164,27 +229,7 @@ async function mine(opts: MineOptions): Promise<void> {
     `roster: ${roster.products.length} products, ${roster.categories.length} categories`,
   )
 
-  spinner.start("reading labelled funnel events")
-  const labelled = await readLabelledEvents(opts.since)
-  if (labelled.report.unavailable !== undefined) {
-    spinner.warn(`labelled events unavailable — ${labelled.report.unavailable}`)
-  } else {
-    spinner.succeed(
-      `labelled events: ${labelled.report.records} records → ${labelled.mentions.length} mentions`,
-    )
-  }
-
-  spinner.start("reading recorded transcripts")
-  const transcripts = await readTranscripts(limit)
-  if (transcripts.report.unavailable !== undefined) {
-    spinner.warn(`transcripts unavailable — ${transcripts.report.unavailable}`)
-  } else {
-    spinner.succeed(
-      `transcripts: ${transcripts.report.records} utterances → ${transcripts.mentions.length} mentions`,
-    )
-  }
-
-  const mentions: readonly CandidateMention[] = [...labelled.mentions, ...transcripts.mentions]
+  const { mentions, sources } = await collectMentions(spinner, opts, limit)
   if (mentions.length === 0) {
     throw new Error(
       "no mentions from any source — nothing to mine. Check that the dev stack is up " +
@@ -195,25 +240,14 @@ async function mine(opts: MineOptions): Promise<void> {
   const classified = classifyAll(mentions, roster, knownAliases()).filter(
     (c) => c.evidence >= minEvidence,
   )
-
-  let mode: RankMode = "frequency-only"
-  let nearest: ReadonlyMap<string, NearestCanonical> = new Map()
-  if (opts.embed) {
-    spinner.start("embedding candidates (advisory)")
-    nearest = await nearestCanonicals(
-      classified.map((c) => c.surface),
-      roster.products.map((p) => ({ handle: p.handle, title: p.title })),
-    )
-    if (nearest.size > 0) {
-      mode = "embedding-assisted"
-      spinner.succeed(`embedder: ${nearest.size} candidates scored`)
-    } else {
-      spinner.warn("embedder unreachable — ranking degraded to frequency")
-    }
-  }
+  const { mode, nearest } = await resolveRanking(
+    spinner,
+    opts,
+    classified.map((c) => c.surface),
+    roster,
+  )
 
   const ranked = rankCandidates(classified, nearest)
-  const sources: readonly SourceReport[] = [labelled.report, transcripts.report]
   const generatedAt = new Date().toISOString()
   const ctx: ReportContext = {
     generatedAt,
@@ -246,7 +280,10 @@ async function mine(opts: MineOptions): Promise<void> {
   for (const r of ranked) counts.set(r.rowType, (counts.get(r.rowType) ?? 0) + 1)
   console.log()
   console.log(chalk.bold(`  ${ranked.length} candidate${ranked.length === 1 ? "" : "s"}, mode ${mode}`))
-  for (const [type, n] of [...counts.entries()].sort()) {
+  // Sorted by ROW TYPE under the miner's stated collation. A bare `.sort()`
+  // here compared `String(["catalog-gap", 8])` — tuple stringification, which
+  // happens to order correctly only because Map keys are unique.
+  for (const [type, n] of [...counts.entries()].sort(byKey(([type]) => type))) {
     console.log(`    ${chalk.cyan(type.padEnd(22))} ${n}`)
   }
   console.log()
