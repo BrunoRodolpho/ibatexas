@@ -1,0 +1,73 @@
+{
+  "fixture": "workflow-runtime-shape.mutating-activity-uncompensated",
+  "targets": "workflow-runtime-shape/mutating-activity-uncompensated",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/mutating-activity-uncompensated"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 10,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "mutating-activity-uncompensated",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "activities[2].compensation",
+      "message": "routes to the MUTATING capability \"conformance.workflow.step\" and declares neither a compensator nor a terminal marker. A workflow runs several governed mutations behind ONE customer approval, so a later step's failure leaves this one's effect in the store with nobody having agreed to keep it. Declare `{by: \"<activity id>\"}` if something undoes it, or `{terminal: \"irreversible\" | \"harmless\", why: \"…\"}` if nothing can or nothing needs to — an omission is indistinguishable from an oversight, which is why it is not an accepted answer.",
+      "reference": "conformance.workflow.step"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/mutating-activity-uncompensated: workflow:conformance.workflow.runtime · activities[2].compensation — routes to the MUTATING capability \"conformance.workflow.step\" and declares neither a compensator nor a terminal marker. A workflow runs several governed mutations behind ONE customer approval, so a later step's failure leaves this one's effect in the store with nobody having agreed to keep it. Declare `{by: \"<activity id>\"}` if something undoes it, or `{terminal: \"irreversible\" | \"harmless\", why: \"…\"}` if nothing can or nothing needs to — an omission is indistinguishable from an oversight, which is why it is not an accepted answer."
+  ]
+}

@@ -71,9 +71,24 @@ export function installWorkflowRuntime(
   runtime: WorkflowRuntime,
 ): void {
   for (const capability of runtime.selectionCapabilities()) {
-    const inner = tools
+    // THE LAST registration, not the first — LE2-022.
+    //
+    // `list()` is insertion-ordered and the registry is LAST-WRITE-WINS per
+    // capability, so `find` returns a registration the conductor's own dispatch
+    // would never choose. Wrapping it would put the wrapper around a tool
+    // nothing calls: the customer confirms, the winner runs unwrapped, and NOT
+    // ONE activity executes — the same silent confirm-shaped no-op the install
+    // ORDER can cause, reached a different way.
+    //
+    // This is the `list().find(...)` bug LE2-021 fixed in `resolveActivityTool`,
+    // still present here and benign only while every anchor kind happened to be
+    // registered exactly once. LE2-022's fixture corpus routes an activity at
+    // the same kind a workflow anchors on, which is the ordinary shape that
+    // makes a capability carry two registrations.
+    const registrations = tools
       .list()
-      .find((tool) => String(tool.capability) === capability);
+      .filter((tool) => String(tool.capability) === capability);
+    const inner = registrations[registrations.length - 1];
     if (inner === undefined) {
       throw new Error(
         `[workflow] a loaded workflow is anchored on "${capability}", which has no ` +

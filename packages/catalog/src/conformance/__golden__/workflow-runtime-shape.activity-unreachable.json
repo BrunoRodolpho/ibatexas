@@ -1,0 +1,73 @@
+{
+  "fixture": "workflow-runtime-shape.activity-unreachable",
+  "targets": "workflow-runtime-shape/activity-unreachable",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/activity-unreachable"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 24,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 11,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "activity-unreachable",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "activities[3].id",
+      "message": "declares the activity \"orphan\", which no route step reaches and no other activity names as its compensator. It is dead in production and live in review — the shape a rename leaves behind, seen from the other end from `route-target-dangling`. Route it, make it a compensator, or delete it.",
+      "reference": "orphan"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/activity-unreachable: workflow:conformance.workflow.runtime · activities[3].id — declares the activity \"orphan\", which no route step reaches and no other activity names as its compensator. It is dead in production and live in review — the shape a rename leaves behind, seen from the other end from `route-target-dangling`. Route it, make it a compensator, or delete it."
+  ]
+}

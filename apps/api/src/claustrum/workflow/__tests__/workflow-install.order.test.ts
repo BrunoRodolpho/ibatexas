@@ -19,7 +19,12 @@ import { describe, expect, it } from "vitest";
 import { createToolRegistry } from "@claustrum/core";
 import type { ToolDefinition } from "@claustrum/core";
 import type { CapabilityId, IntentKind } from "@claustrum/core";
-import { FIXTURE_WORKFLOWS, FIXTURE_WORKFLOW_ID } from "@ibatexas/catalog";
+import {
+  FIXTURE_WORKFLOWS,
+  FIXTURE_WORKFLOW_ID,
+  workflowActivityKinds,
+} from "@ibatexas/catalog";
+import { isWorkflowScopedKind } from "../workflow-access.js";
 import { createWorkflowRuntime, type WorkflowRuntime } from "../workflow-runtime.js";
 import { installWorkflowRuntime } from "../workflow-install.js";
 import { WORKFLOW_INSTANCE_PAYLOAD_KEY } from "../workflow-surface.js";
@@ -41,8 +46,16 @@ function baseAnchorTool(marker: string): ToolDefinition<unknown, unknown> {
 }
 
 /** The activity handlers the fixture corpus invokes. */
+/**
+ * Stub tools for every capability the FIXTURE CORPUS's activities invoke.
+ *
+ * DERIVED from the corpus rather than hand-listed (LE2-022): the v1 fixture
+ * added a third activity kind, and a re-spelled list silently stopped covering
+ * the corpus it claims to stand in for — which showed up as this file's control
+ * throwing, three files away from the edit that caused it.
+ */
 function activityTools(): ReadonlyArray<ToolDefinition<unknown, unknown>> {
-  return ["order.cart.ensure", "order.reorder"].map((kind) => ({
+  return [...workflowActivityKinds(FIXTURE_WORKFLOWS)].map((kind) => ({
     id: `stub.${kind}`,
     capability: kind as CapabilityId,
     intentKind: kind as IntentKind,
@@ -147,7 +160,15 @@ describe("LE2-021 — installWorkflowRuntime AFTER the base roster is load-beari
 
   it("an anchor with NO registered tool refuses the composition at boot", () => {
     const tools = createToolRegistry();
-    for (const tool of activityTools()) tools.register(tool);
+    // Every activity kind EXCEPT the anchor's own — LE2-022's fixture corpus
+    // routes an activity at `order.checkout.create` too, so registering the
+    // whole set would give the anchor a tool and quietly turn this assertion
+    // into a test of nothing.
+    for (const tool of activityTools().filter(
+      (t) => String(t.capability) !== ANCHOR,
+    )) {
+      tools.register(tool);
+    }
     const { runtime } = runtimeWithRecordedActivities();
     // No anchor tool registered at all — a workflow anchored on a kind nothing
     // can execute would confirm with the customer and then fail at dispatch.
@@ -200,8 +221,11 @@ describe("LE2-021 — registerWorkflowScopedTools before install", () => {
     // skips any kind the registry already has, so the ORDINARY activity kinds
     // (order.cart.ensure) must come from the pack roster; only the genuinely
     // workflow-scoped ones fall through to the scoped-handler table.
+    // Everything EXCEPT the workflow-scoped kinds, which is what makes the
+    // control meaningful: the ordinary kinds come from the pack roster and only
+    // the genuinely scoped ones fall through to the scoped-handler table.
     for (const tool of activityTools().filter(
-      (t) => String(t.capability) !== "order.reorder",
+      (t) => !isWorkflowScopedKind(String(t.capability)),
     )) {
       tools.register(tool);
     }

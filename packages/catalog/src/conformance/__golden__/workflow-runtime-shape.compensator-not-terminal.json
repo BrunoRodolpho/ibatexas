@@ -1,0 +1,73 @@
+{
+  "fixture": "workflow-runtime-shape.compensator-not-terminal",
+  "targets": "workflow-runtime-shape/compensator-not-terminal",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/compensator-not-terminal"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 24,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 11,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "compensator-not-terminal",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "activities[0].compensation.by",
+      "message": "names \"undo\" as its compensator, but \"undo\" declares a compensator of its own. That asks what undoes the undo, and the regress has no authored end — so it has to end here, at the build. A compensator must declare `{terminal: \"irreversible\" | \"harmless\", why: \"…\"}`.",
+      "reference": "undo"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/compensator-not-terminal: workflow:conformance.workflow.runtime · activities[0].compensation.by — names \"undo\" as its compensator, but \"undo\" declares a compensator of its own. That asks what undoes the undo, and the regress has no authored end — so it has to end here, at the build. A compensator must declare `{terminal: \"irreversible\" | \"harmless\", why: \"…\"}`."
+  ]
+}

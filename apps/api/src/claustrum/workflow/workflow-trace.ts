@@ -56,8 +56,36 @@
 
 import { logger } from "../../lib/logger.js";
 
-/** How a workflow run ended. Mirrors the catalog's `WorkflowOutcome`. */
-export type WorkflowRunOutcome = "completed" | "declined" | "failed";
+/**
+ * How a workflow run ended.
+ *
+ * The catalog's `WorkflowOutcome` plus `infeasible`, which is a RUN outcome with
+ * no outcome template: a failed feasibility pre-check renders that pre-check's
+ * OWN authored reason (naming what is missing) rather than one generic sentence
+ * for every way a workflow can be impossible. It is recorded here because an
+ * operator counting workflow health needs "we declined to start" to be
+ * distinguishable from "we tried and failed" — the runs never reached the
+ * kernel, so a `failed` bucket carrying them would make the failure rate a
+ * measure of demand rather than of the system.
+ */
+export type WorkflowRunOutcome =
+  | "completed"
+  | "declined"
+  | "failed"
+  | "compensated"
+  | "stranded"
+  | "infeasible";
+
+/**
+ * Which half of a run a step belongs to — LE2-022.
+ *
+ * The owner's operator view (LE2-020 tracker row) asks the drill-in to show
+ * "compensation executed", and this is the field that answers it. Without it a
+ * rollback is indistinguishable from a forward step in the row list: both are
+ * adjudicated envelopes with decisions and durations, and an operator reading a
+ * failed run would count the compensator as progress.
+ */
+export type WorkflowStepRole = "activity" | "compensation";
 
 /**
  * One step of one run — the drill-in row.
@@ -84,8 +112,53 @@ export interface WorkflowStepRecord {
   readonly basisCode?: string;
   /** `true` only when the kernel said EXECUTE *and* the tool ran without throwing. */
   readonly executed: boolean;
+  /**
+   * LE2-022 — forward step or rollback. Required rather than defaulted: a row
+   * whose role had to be inferred from position would be inferred wrongly the
+   * first time a run compensated more than one step.
+   */
+  readonly role: WorkflowStepRole;
+  /**
+   * On a `compensation` row, the forward activity id this step UNDOES. Absent on
+   * every `activity` row.
+   *
+   * The join an operator actually makes: "step 2 failed — was step 1 undone?" is
+   * answered by finding the compensation row that names step 1, not by trusting
+   * that a rollback appearing after a failure was the rollback for it.
+   */
+  readonly compensates?: string;
   readonly durationMs: number;
   readonly at: string;
+}
+
+/**
+ * ONE CONDITIONAL EDGE, as it was evaluated — LE2-022.
+ *
+ * A branch that took the `otherwise` arm and a branch whose `then` arm happened
+ * to be empty produce the SAME step list, so without this record the drill-in
+ * cannot tell "the condition was false" from "the condition never ran". That
+ * distinction is the whole operator question for a conditional workflow, and it
+ * is unanswerable after the fact from anything else the trace holds.
+ *
+ * `predicate` is the DECLARED condition rendered as text (fact name, operator,
+ * authored comparand) — never the fact's VALUE. A cart total is a customer's
+ * money and these records are logged verbatim (see the file header's
+ * scalars-only rule); `held` carries everything an operator needs, which is
+ * which way it went.
+ */
+export interface WorkflowBranchRecord {
+  /** Position in the route — the order the operator reads. */
+  readonly stepIndex: number;
+  /** The declared predicate, PII-free (`describeWorkflowPredicate`). */
+  readonly predicate: string;
+  /** Whether the predicate held over this turn's grounded facts. */
+  readonly held: boolean;
+  /** The arm taken. Redundant with `held` by construction, and stated anyway:
+   *  it is what a log reader is looking for, and it survives a future edit that
+   *  makes the mapping less obvious. */
+  readonly taken: "then" | "otherwise";
+  /** The activity ids that arm routed to, in order. */
+  readonly activityIds: readonly string[];
 }
 
 /**
@@ -109,6 +182,24 @@ export interface WorkflowRunRecord {
   readonly activitiesExecuted: number;
   /** The activity that stopped a `failed` run. Absent on any other outcome. */
   readonly failedActivityId?: string;
+  /**
+   * LE2-022 — the CATALOG SERIAL IN FORCE WHEN THE RUN EXECUTED, as against
+   * `catalogVersion`, which is the serial the instance PINNED at selection.
+   *
+   * Equal on almost every run, and the whole point is the runs where it is not:
+   * a workflow parked across a deploy resumes on its pinned SHAPE while the
+   * catalog has moved on, and these two numbers are how an operator sees that
+   * from the outside. A single field could not — it would either hide the pin or
+   * hide the drift, and "which definition did this run actually execute" is the
+   * first question anyone asks about a run that spans a release.
+   */
+  readonly catalogVersionAtRun: number;
+  /** How many COMPENSATION steps reached EXECUTE. */
+  readonly compensationsExecuted: number;
+  /** The pre-check that refused an `infeasible` run. Absent on any other outcome. */
+  readonly precheckFailedId?: string;
+  /** Every conditional edge this run evaluated, in route order. */
+  readonly branches?: readonly WorkflowBranchRecord[];
   readonly durationMs: number;
   readonly startedAt: string;
   readonly at: string;
@@ -148,12 +239,20 @@ export function recordWorkflowTrace(turnId: string, trace: WorkflowTrace): void 
       instanceId: trace.run.instanceId,
       workflowId: trace.run.workflowId,
       catalogVersion: trace.run.catalogVersion,
+      catalogVersionAtRun: trace.run.catalogVersionAtRun,
       outcome: trace.run.outcome,
       activitiesTotal: trace.run.activitiesTotal,
       activitiesExecuted: trace.run.activitiesExecuted,
+      compensationsExecuted: trace.run.compensationsExecuted,
       ...(trace.run.failedActivityId === undefined
         ? {}
         : { failedActivityId: trace.run.failedActivityId }),
+      ...(trace.run.precheckFailedId === undefined
+        ? {}
+        : { precheckFailedId: trace.run.precheckFailedId }),
+      ...(trace.run.branches === undefined || trace.run.branches.length === 0
+        ? {}
+        : { branches: trace.run.branches }),
       durationMs: trace.run.durationMs,
       // The steps ride the SAME line rather than one line each: a run is the
       // unit an operator reasons about, and splitting it would make the drill-in
@@ -165,6 +264,8 @@ export function recordWorkflowTrace(turnId: string, trace: WorkflowTrace): void 
         decision: step.decision,
         ...(step.basisCode === undefined ? {} : { basisCode: step.basisCode }),
         executed: step.executed,
+        role: step.role,
+        ...(step.compensates === undefined ? {} : { compensates: step.compensates }),
         durationMs: step.durationMs,
       })),
     },

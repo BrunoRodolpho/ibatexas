@@ -20,13 +20,18 @@ import {
   findWorkflow,
   workflowActivityKinds,
   workflowOutcomeText,
+  workflowRoutedActivityCount,
   workflowScopedKinds,
   workflowSelectionKinds,
   workflowSlotNames,
   workflowTemplateText,
   workflowTriggerPhrasings,
 } from "../projections.js"
-import { WORKFLOW_OUTCOMES, type WorkflowDefinition } from "../types.js"
+import {
+  WORKFLOW_BASE_OUTCOMES,
+  WORKFLOW_COMPENSATION_OUTCOMES,
+  type WorkflowDefinition,
+} from "../types.js"
 
 describe("workflowScopedKinds — the access class, projected from capabilities", () => {
   it("projects exactly the definitions flagged workflowScoped", () => {
@@ -94,16 +99,46 @@ describe("findWorkflow", () => {
 })
 
 describe("workflowTemplateText / workflowOutcomeText", () => {
-  it("resolves every OUTCOME to authored text, for every workflow in both corpora", () => {
+  it("resolves every BASE outcome to authored text, for every workflow in both corpora", () => {
     // The terminal-coverage guarantee, read from the data rather than from the
     // compiler that enforces it: no path may end in silence.
     for (const workflow of [...WORKFLOW_DEFINITIONS, ...FIXTURE_WORKFLOWS]) {
-      for (const outcome of WORKFLOW_OUTCOMES) {
+      for (const outcome of WORKFLOW_BASE_OUTCOMES) {
         const text = workflowOutcomeText(workflow, outcome)
         expect(text, `${workflow.id}/${outcome}`).toBeTypeOf("string")
         expect(text?.trim(), `${workflow.id}/${outcome}`).not.toBe("")
       }
     }
+  })
+
+  it("resolves both COMPENSATION outcomes for every workflow that can reach them", () => {
+    // LE2-022 — the requirement is conditional, so the assertion has to be too,
+    // and the CONDITION is asserted from the same projection the compiler rule
+    // reads rather than from a hand-listed set of workflow ids. A workflow whose
+    // route reaches at most one activity cannot half-happen; one that reaches
+    // more can, and owes both sentences.
+    const multiStep = [...WORKFLOW_DEFINITIONS, ...FIXTURE_WORKFLOWS].filter(
+      (workflow) => workflowRoutedActivityCount(workflow) > 1,
+    )
+    // The control: without it this loop would pass vacuously the day the corpus
+    // holds only single-step workflows.
+    expect(multiStep.length).toBeGreaterThan(0)
+    for (const workflow of multiStep) {
+      for (const outcome of WORKFLOW_COMPENSATION_OUTCOMES) {
+        const text = workflowOutcomeText(workflow, outcome)
+        expect(text, `${workflow.id}/${outcome}`).toBeTypeOf("string")
+        expect(text?.trim(), `${workflow.id}/${outcome}`).not.toBe("")
+      }
+    }
+  })
+
+  it("a single-step workflow is NOT required to author them — and reorder-last does not", () => {
+    // The other side of the conditional requirement, pinned so that "reorder-last
+    // has no compensated template" reads as a decision rather than as a gap the
+    // next reviewer closes by authoring pt-BR nobody can ever read.
+    expect(workflowRoutedActivityCount(REORDER_LAST_WORKFLOW)).toBe(1)
+    expect(workflowOutcomeText(REORDER_LAST_WORKFLOW, "compensated")).toBeUndefined()
+    expect(workflowOutcomeText(REORDER_LAST_WORKFLOW, "stranded")).toBeUndefined()
   })
 
   it("resolves every CONFIRM point to authored text", () => {

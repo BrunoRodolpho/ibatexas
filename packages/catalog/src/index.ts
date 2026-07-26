@@ -122,6 +122,10 @@ export {
 } from "./alias-gazetteer.js"
 
 export {
+  FIXTURE_BRANCH_THRESHOLD_CENTAVOS,
+  FIXTURE_CART_ID,
+  FIXTURE_CONDITIONAL_WORKFLOW,
+  FIXTURE_CONDITIONAL_WORKFLOW_ID,
   FIXTURE_LINEAR_WORKFLOW,
   FIXTURE_PREVIOUS_ORDER_ID,
   FIXTURE_WORKFLOW_ID,
@@ -136,8 +140,14 @@ export {
 
 export {
   findWorkflow,
+  findWorkflowActivity,
+  routeStepTargets,
   workflowActivityKinds,
+  workflowCompensatorIds,
   workflowOutcomeText,
+  workflowRoute,
+  workflowRoutedActivityCount,
+  workflowRoutedActivityIds,
   workflowScopedKinds,
   workflowSelectionKinds,
   workflowSlotNames,
@@ -146,11 +156,26 @@ export {
 } from "./workflows/projections.js"
 
 export {
+  findWorkflowFact,
+  isWorkflowFactName,
+  WORKFLOW_FACTS,
+  type WorkflowFactDefinition,
+  type WorkflowFactKind,
+} from "./workflows/facts.js"
+
+export {
   MIN_WORKFLOW_TRIGGER_PHRASINGS,
+  WORKFLOW_BASE_OUTCOMES,
+  WORKFLOW_COMPENSATION_OUTCOMES,
   WORKFLOW_CONFIRM_PLACEHOLDER,
   WORKFLOW_OUTCOMES,
+  WORKFLOW_PREDICATE_OPERATORS,
+  WORKFLOW_PREDICATE_OPERATORS_WITH_VALUE,
   WORKFLOW_TRIGGER_PROVENANCES,
   type WorkflowActivity,
+  type WorkflowBaseOutcome,
+  type WorkflowCompensation,
+  type WorkflowCompensationOutcome,
   type WorkflowConfirmPoint,
   type WorkflowDefinition,
   type WorkflowMatcher,
@@ -158,6 +183,10 @@ export {
   type WorkflowParam,
   type WorkflowParamSource,
   type WorkflowPayloadBinding,
+  type WorkflowPrecheck,
+  type WorkflowPredicate,
+  type WorkflowPredicateOperator,
+  type WorkflowRouteStep,
   type WorkflowSelection,
   type WorkflowTemplate,
   type WorkflowTriggerPhrasing,

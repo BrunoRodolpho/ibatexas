@@ -816,7 +816,16 @@ function buildHarnessResponder(deps: CustomerConductorDeps): ResponderPort {
     // `realResponder` with a `workflowRuntime`, and without one the dep is absent
     // and the branch is byte-identical.
     ...(deps.workflowRuntime !== undefined
-      ? { workflowConfirm: (turnId: string) => deps.workflowRuntime?.renderConfirm(turnId) }
+      ? {
+          workflowConfirm: (turnId: string) => deps.workflowRuntime?.renderConfirm(turnId),
+          // LE2-022 — PARITY with `buildResponder`, same as the confirm seam
+          // above and for the same reason: the feasibility notice has to be
+          // proved at `turn.response.text`, through the real responder branch,
+          // rather than by calling `renderNotice` directly (the LE2-002 class —
+          // a renderer-level assertion that passes while the seam is dead
+          // through the gate).
+          workflowNotice: (turnId: string) => deps.workflowRuntime?.renderNotice(turnId),
+        }
       : {}),
   });
 }

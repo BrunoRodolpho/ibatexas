@@ -47,6 +47,11 @@
       "pass": "workflow-shape",
       "checked": 18,
       "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 4,
+      "diagnostics": 0
     }
   ],
   "diagnostics": [],

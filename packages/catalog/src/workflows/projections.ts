@@ -8,7 +8,12 @@
  */
 
 import type { CapabilityDefinition } from "../capability-definitions/types.js"
-import type { WorkflowDefinition, WorkflowOutcome } from "./types.js"
+import type {
+  WorkflowActivity,
+  WorkflowDefinition,
+  WorkflowOutcome,
+  WorkflowRouteStep,
+} from "./types.js"
 
 /**
  * The WORKFLOW-SCOPED ACCESS CLASS, projected from the catalog (LE2
@@ -80,15 +85,23 @@ export function workflowTemplateText(
 }
 
 /**
- * The template text for an OUTCOME. Compiler-guaranteed present for an authored
- * workflow (`outcome-template-missing`), so `undefined` here means the caller
- * built a definition the compiler never saw.
+ * The template text for an OUTCOME.
+ *
+ * Compiler-guaranteed present for an authored workflow — the three base outcomes
+ * by `outcome-template-missing`, the two compensation outcomes by
+ * `compensation-outcome-template-missing` for any workflow that can reach them.
+ * `undefined` therefore means either a definition the compiler never saw, or a
+ * compensation outcome on a single-activity workflow that cannot reach it; both
+ * are handled by the runtime's honest fallback sentence rather than by silence.
  */
 export function workflowOutcomeText(
   workflow: WorkflowDefinition,
   outcome: WorkflowOutcome,
 ): string | undefined {
-  return workflowTemplateText(workflow, workflow.outcomes[outcome])
+  const templateId = workflow.outcomes[outcome]
+  return templateId === undefined
+    ? undefined
+    : workflowTemplateText(workflow, templateId)
 }
 
 /**
@@ -118,4 +131,98 @@ export function workflowTriggerPhrasings(
   workflow: WorkflowDefinition,
 ): readonly string[] {
   return workflow.triggerPhrasings.map((trigger) => trigger.phrasing)
+}
+
+// ── LE2-022 · the v1 shape's projections ─────────────────────────────────────
+
+/**
+ * The activity ids some OTHER activity names as its compensator.
+ *
+ * The definition of "compensator" in this codebase, computed rather than
+ * declared: an activity is a compensator exactly when something points at it.
+ * There is no `isCompensator: true` slot, deliberately — a boolean an author
+ * sets and a reference an author writes are two facts that can disagree, and the
+ * disagreement would decide whether the step runs forward.
+ */
+export function workflowCompensatorIds(
+  workflow: WorkflowDefinition,
+): ReadonlySet<string> {
+  const ids = new Set<string>()
+  for (const activity of workflow.activities) {
+    const compensation = activity.compensation
+    if (compensation !== undefined && "by" in compensation) ids.add(compensation.by)
+  }
+  return ids
+}
+
+/** One activity of a workflow by id, or `undefined`. */
+export function findWorkflowActivity(
+  workflow: WorkflowDefinition,
+  id: string,
+): WorkflowActivity | undefined {
+  return workflow.activities.find((activity) => activity.id === id)
+}
+
+/**
+ * The ROUTE a workflow actually runs — declared, or the implicit v0 one.
+ *
+ * IMPLICIT means "every non-compensator activity, in declaration order,
+ * unconditionally", which is byte-for-byte what LE2-020 executed. Compensators
+ * are excluded because they are reached only by a failure, never by the forward
+ * path; including them would run every rollback as a step (and, in the linear
+ * corpus that has no route, would do so with nothing to roll back).
+ *
+ * Returning a synthesised route rather than a special case is what keeps the
+ * runtime free of an `if (route === undefined)` branch, so the v0 and v1 paths
+ * are the SAME code executing different data rather than two executors that can
+ * drift.
+ */
+export function workflowRoute(
+  workflow: WorkflowDefinition,
+): readonly WorkflowRouteStep[] {
+  if (workflow.route !== undefined) return workflow.route
+  const compensators = workflowCompensatorIds(workflow)
+  return workflow.activities
+    .filter((activity) => !compensators.has(activity.id))
+    .map((activity) => ({ activity: activity.id }))
+}
+
+/** Every activity id a route step can reach, in declaration order, with
+ *  duplicates preserved — the compiler needs the positions, not a set. */
+export function routeStepTargets(step: WorkflowRouteStep): readonly string[] {
+  return "activity" in step ? [step.activity] : [...step.then, ...step.otherwise]
+}
+
+/**
+ * Every activity id the route can reach on SOME path.
+ *
+ * A union across both arms of every branch, not a single execution: an activity
+ * only the `otherwise` arm reaches is reachable, and calling it dead would make
+ * `activity-unreachable` fire on correct data.
+ */
+export function workflowRoutedActivityIds(
+  workflow: WorkflowDefinition,
+): ReadonlySet<string> {
+  const ids = new Set<string>()
+  for (const step of workflowRoute(workflow)) {
+    for (const id of routeStepTargets(step)) ids.add(id)
+  }
+  return ids
+}
+
+/**
+ * How many DISTINCT non-compensator activities the route can reach — the input
+ * to "can this workflow half-happen?".
+ *
+ * Counted across both arms rather than along the longest path: two mutually
+ * exclusive single-activity arms cannot strand each other, but a route with two
+ * reachable activities is one edit away from a shape that can, and the two
+ * compensation outcome templates are cheap next to a customer being told
+ * nothing happened while something did.
+ */
+export function workflowRoutedActivityCount(workflow: WorkflowDefinition): number {
+  const compensators = workflowCompensatorIds(workflow)
+  return [...workflowRoutedActivityIds(workflow)].filter(
+    (id) => !compensators.has(id),
+  ).length
 }

@@ -58,11 +58,33 @@ export function activityIdentityBase(
   channel: string | undefined,
   tenantId: string | undefined,
 ): ActivityIdentityBase {
-  const actor = (envelope.actor ?? {}) as {
-    customerId?: string;
-    sessionId?: string;
-  };
-  const customerId = actor.customerId ?? null;
+  return actorIdentityBase(envelope.actor as WorkflowActor | undefined, channel, tenantId);
+}
+
+/** The actor fields this layer reads. Structural — an `IntentActor` carries
+ *  more, and none of the rest decides anything here. */
+export interface WorkflowActor {
+  readonly customerId?: string;
+  readonly sessionId?: string;
+}
+
+/**
+ * The same identity decision, taken from an ACTOR rather than an envelope —
+ * LE2-022.
+ *
+ * A feasibility PRE-CHECK runs before any envelope exists (that is the whole
+ * point of it: it fires before the anchor can park a confirm), so it needs the
+ * identity from the only thing that does exist at that moment, the turn's actor.
+ * Delegating rather than duplicating keeps ONE definition of "which identity is
+ * this adjudicated as" — two would be two chances to get the channel wrong, and
+ * a mis-read channel is a money-guard bug (see this module's header).
+ */
+export function actorIdentityBase(
+  actor: WorkflowActor | undefined,
+  channel: string | undefined,
+  tenantId: string | undefined,
+): ActivityIdentityBase {
+  const customerId = actor?.customerId ?? null;
   return {
     tenantId: tenantId ?? "ibatexas",
     channel: channel ?? "web",

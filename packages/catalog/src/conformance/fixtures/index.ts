@@ -26,6 +26,10 @@ import { REFERENTIAL_INTEGRITY_FIXTURES } from "./referential-integrity.js"
 import { SAFETY_IMPLICATION_EDGES_FIXTURES } from "./safety-implication-edges.js"
 import { SLOT_DATAFLOW_FIXTURES } from "./slot-dataflow.js"
 import { TERMINAL_COVERAGE_FIXTURES } from "./terminal-coverage.js"
+import {
+  CLEAN_WORKFLOW_RUNTIME_FIXTURE,
+  WORKFLOW_RUNTIME_SHAPE_FIXTURES,
+} from "./workflow-runtime-shape.js"
 import { CLEAN_WORKFLOW_FIXTURE, WORKFLOW_SHAPE_FIXTURES } from "./workflow-shape.js"
 import type { ConformanceFixture } from "../types.js"
 
@@ -43,10 +47,12 @@ export const CONFORMANCE_FIXTURES: readonly ConformanceFixture[] = [
   ...TERMINAL_COVERAGE_FIXTURES,
   ...EXTERNAL_REFERENCES_FIXTURES,
   ...WORKFLOW_SHAPE_FIXTURES,
+  ...WORKFLOW_RUNTIME_SHAPE_FIXTURES,
   ...CLEAN_FIXTURES,
   CLEAN_EXTERNAL_REFERENCE_FIXTURE,
   CLEAN_ALIAS_GAZETTEER_FIXTURE,
   CLEAN_WORKFLOW_FIXTURE,
+  CLEAN_WORKFLOW_RUNTIME_FIXTURE,
 ]
 
 /** The fixtures that must FAIL to compile — everything with a target rule. */
