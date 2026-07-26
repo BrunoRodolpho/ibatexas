@@ -47,6 +47,7 @@ import {
   RUN_BOOTSTRAP_HARNESS,
   setupClaustrumBootstrapHarness,
   type ClaustrumBootstrapTestHarness,
+  TEST_EXTERNAL_REFERENCE_PROBES,
 } from "./helpers/claustrum-bootstrap-harness.js";
 
 // ── Scripted doubles ─────────────────────────────────────────────────────────
@@ -128,6 +129,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
     it("bootstrap #1: composes a conductor from injected scripted ModelProvider; zero-arg re-call returns the warm singleton", async () => {
       firstConductor = await bootstrapClaustrum({
         modelProvider: scriptedModelProvider("first"),
+        externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
       });
       expect(getConductor()).toBe(firstConductor);
       // Production double-init parity (index.ts): warm singleton wins.
@@ -175,6 +177,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
     it("bootstrap #2 in the same process: distinct conductor, fresh live pool, audit sink re-wired, metrics sink reinstalled", async () => {
       const secondConductor = await bootstrapClaustrum({
         modelProvider: scriptedModelProvider("second"),
+        externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
       });
 
       // Distinct instances — no cross-contamination from bootstrap #1.
@@ -213,6 +216,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
           pgPool: callerPool,
           auditSink: stubAuditSink,
           metricsSink: stubMetricsSink(),
+          externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
         });
 
         expect(getClaustrumPgPoolForTests()).toBe(callerPool);

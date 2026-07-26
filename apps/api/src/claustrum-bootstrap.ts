@@ -132,6 +132,9 @@ import {
   medusaAdjudicated,
   // BKL-034 — boot-time embeddings provider/dimension gate.
   assertEmbeddingProviderDimension,
+  // LE2-018 — boot-time external-reference reconciliation (refuse-to-start).
+  assertExternalReferencesReconcile,
+  type ExternalReferenceProbes,
 } from "@ibatexas/tools";
 import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -279,14 +282,10 @@ import {
 } from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { renderCustomerActionAnswer } from "./claustrum/customer-action-render.js";
-// BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate (flag-gated in
-// buildResponder): the pure discriminator + the safe template render source.
-import { shouldDegradeToSafeUnknown } from "./claustrum/interrogative-discriminator.js";
-import {
-  renderPropositionFreeText,
-  SAFE_TEMPLATES,
-} from "./claustrum/slot-grammar.js";
-import { asksAboutStoreState, closedHoursDisclosure } from "./claustrum/closed-hours.js";
+// BKL-078 — the question-shape SAFE-UNKNOWN gate (flag-gated in buildResponder).
+// LE2 decision 6: the construction moved to `safe-unknown-gate.ts` so the ops
+// conductor composes the SAME object instead of forking one (D5 dissolved).
+import { createSafeUnknownGate } from "./claustrum/safe-unknown-gate.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -629,6 +628,20 @@ export interface ClaustrumBootstrapOptions {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
+  /**
+   * Store probes for the LE2-018 external-reference boot gate. Default: the
+   * real ones (Medusa admin for promotions, the delivery_zones table for
+   * zones).
+   *
+   * Injectable for the same reason `pgPool` and `modelProvider` are — an
+   * in-process suite that composes a real conductor has no live Medusa. Note
+   * what this does NOT do: it does not skip the gate. The reconciliation still
+   * runs over the real declaration table, still resolves every key from
+   * config, and still refuses the boot on a miss; only the "does the store
+   * hold it" question is answered by an injected function. There is no option,
+   * env var or flag anywhere that turns the gate off — see the call site.
+   */
+  readonly externalReferenceProbes?: ExternalReferenceProbes;
   // BKL-126 — resolveStoreHours / resolveHoursForDate options removed (values
   // bind from the investigator ledger at core stage 4b; no fresh re-read).
 }
@@ -2992,6 +3005,36 @@ export async function bootstrapClaustrum(
   // bare stack), so this gate never blocks a key-less box.
   await assertEmbeddingProviderDimension();
 
+  // LE2-018 — EXTERNAL-REFERENCE RECONCILIATION. Every reference @ibatexas/catalog
+  // declares (src/external-references.ts) must exist in its live store: the welcome
+  // and loyalty coupons in Medusa today, zones in the domain DB when one is declared.
+  // Any miss — the config var unset, the promotion absent, the store unreachable —
+  // REFUSES THE BOOT, naming the reference, its store, the config variable and the
+  // code sites that break. Same posture as toolRosterDrift() above, one gate later.
+  //
+  // Strict on purpose (LE2 Implementation Decision 16, owner-ratified): no flag, no
+  // dev-mode warning, no allowlist. This gate replaced a `// must be created in
+  // Medusa admin before going live` comment, and a bypassable version of it would be
+  // that comment with more steps. The mitigation for the blast radius is that the
+  // SAME check runs standalone — `ibx catalog check --live`, wired into the staging
+  // deploy pipeline — so a dangling reference surfaces when someone changes it
+  // rather than when something restarts.
+  //
+  // Placed after the roster gates and after config load, before the conductor is
+  // composed: nothing has taken traffic yet, so a refusal costs a failed boot rather
+  // than a half-live process handing customers a coupon Medusa will reject.
+  //
+  // `probes` is the SAME kind of seam as `pgPool` and `modelProvider` above: an
+  // in-process suite has no live Medusa, so it answers the store question itself.
+  // The gate still runs — real declaration table, real config resolution, real
+  // refusal on a miss. Omitted in production, where the defaults are the real
+  // clients. Nothing here reads a flag.
+  await assertExternalReferencesReconcile(
+    options.externalReferenceProbes === undefined
+      ? {}
+      : { probes: options.externalReferenceProbes },
+  );
+
   // The ibx prisma/redis are real clients that legitimately lack the memory
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),
   // so the cast is irreducible — but name the exact contracts the adapter consumes
@@ -3156,33 +3199,13 @@ export async function bootstrapClaustrum(
       // Closes the `prose_preserved` hallucination leak on the conversational
       // fallback: a non-smalltalk info-question that produced no validated claim
       // degrades to the deterministic proposition-free SAFE_UNKNOWN reply instead of
-      // a model-authored prose draft. The ops conductor NEVER wires this (D5,
-      // ops-conductor.ts). Flag-OFF → omitted → byte-identical.
-      ...(claimsPipelineEnabled()
-        ? {
-            safeUnknown: {
-              gate: (text: string) => shouldDegradeToSafeUnknown(text),
-              render: (
-                schedule: ScheduleSignal | undefined,
-                userText: string,
-              ): string => {
-                const base = renderPropositionFreeText(SAFE_TEMPLATES.unknown);
-                // D3 (relevance-gated) — append the closed-hours disclosure ONLY when
-                // the degraded question is about ordering / hours / availability. On a
-                // topically-unrelated question the scheduled-pickup offer is
-                // unsolicited noise, so the bare epistemic SAFE_UNKNOWN ships alone.
-                const orderingOrHours =
-                  asksAboutStoreState(userText) ||
-                  /\b(pedid|pedir|encomend|entreg|retirad|agend|compr|reserv|cardapio|card[aá]pio|menu)/i.test(
-                    userText,
-                  );
-                return schedule?.isClosed && orderingOrHours
-                  ? `${base} ${closedHoursDisclosure(schedule)}`
-                  : base;
-              },
-            },
-          }
-        : {}),
+      // a model-authored prose draft. Flag-OFF → omitted → byte-identical.
+      //
+      // LE2 decision 6 — the OPS conductor now composes this SAME gate (D5, "ops
+      // never wires safe-unknown", is DISSOLVED). The construction lives in
+      // `safe-unknown-gate.ts`; the customer plane keeps the closed-hours offer
+      // (the default), the staff plane opts out of that customer copy.
+      ...(claimsPipelineEnabled() ? { safeUnknown: createSafeUnknownGate() } : {}),
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner

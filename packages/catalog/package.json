@@ -13,10 +13,12 @@
     }
   },
   "scripts": {
-    "build": "tsc --outDir dist && tsx scripts/check-claim-references.ts",
+    "build": "tsc --outDir dist && tsx scripts/check-catalog.ts",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "check:claim-refs": "tsx scripts/check-claim-references.ts"
+    "check": "tsx scripts/check-catalog.ts",
+    "check:claim-refs": "tsx scripts/check-claim-references.ts",
+    "conformance:regen": "tsx scripts/regenerate-conformance-goldens.ts"
   },
   "dependencies": {
     "@adjudicate/core": "^1.6.0"

@@ -71,14 +71,15 @@ import type {
 } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
 import {
-  CLAIM_REGISTRY,
-  canonicalizeRegistryType,
+  CUSTOMER_CLAIM_SCOPE,
+  canonicalizeScopedClaimType,
   checkCompleteness,
   constrainClaimGeneration,
   deriveCandidateValues,
   hasUnmappedSpan,
   ownerScopedBaseKey,
   routeSafety,
+  type ClaimPlaneScope,
   type ProposedClaim,
   type RequestSpan,
   type SafetyRoutingInput,
@@ -102,6 +103,8 @@ import {
 } from "./closed-hours.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
+import { resolveDeliveryCoverage } from "./delivery-coverage-resolver.js";
+import { resolveCouponValidity } from "./coupon-validity-resolver.js";
 import {
   resolveMenuItem,
   resolveMenuOverviewText,
@@ -322,6 +325,39 @@ export interface IbatexasPlannerDeps {
   readonly staffEnvelopeActor?: StaffEnvelopeActor;
   /** Override the system prompt (defaults to the pt-BR semantic-parser prompt). */
   readonly system?: string;
+  /**
+   * Override the CLAIM-path system prompt ONLY (`proposeClaims`, Q6b), leaving the
+   * intent-path `system` untouched. Defaults to `system`, then to the catalog
+   * `ibatexas/claim-planner.persona` — so every existing composition (customer,
+   * WhatsApp, tests that set `system`) is BYTE-IDENTICAL.
+   *
+   * LE2 decision 6 (ops convergence) is why this exists. The two paths are
+   * DIFFERENT JOBS on the same planner instance: `propose` extracts an intent,
+   * `proposeClaims` selects a registry claim TYPE. The ops conductor injects the
+   * staff PLANNER persona as its whole `system` ("sua única função é
+   * express_intent"-shaped), and that persona demonstrably SUPPRESSES the
+   * `propose_claim` call on a 4B (the exact failure {@link CLAIM_PLANNER_PERSONA}
+   * documents for the customer intent persona). Without a separate claim-path
+   * prompt the converged ops plane would propose ZERO claims and silently fall
+   * back to prose — the opposite of the convergence. The ops composition therefore
+   * passes the claim-planner persona here explicitly.
+   */
+  readonly claimPlannerSystem?: string;
+  /**
+   * LE2-012 — the PLANE's claim-type scope for the CLAIM path (`proposeClaims`,
+   * Q6b): the closed enum advertised on the `propose_claim` tool AND the schema
+   * the deterministic walls parameterize. Defaults to
+   * {@link CUSTOMER_CLAIM_SCOPE}, so every existing composition (customer,
+   * WhatsApp, managed-agent, tests) is BYTE-IDENTICAL.
+   *
+   * The ops conductor passes its own SUPERSET scope (customer types ∪ the
+   * store-level ops types). Because the enum, the constrained-generation wall and
+   * the P4 completeness wall all read the SAME scope, an ops-scoped type is
+   * simultaneously (a) advertised to the ops claim planner and (b) unreachable
+   * from the customer planner — the plane boundary is the wall itself, not a
+   * second mechanism.
+   */
+  readonly claimScope?: ClaimPlaneScope;
   /**
    * Wire Truth — the prompt-catalog id of an injected `system` (the ops plane
    * bypasses the fragment graph with a raw persona string, which used to leave
@@ -1423,6 +1459,12 @@ export function createIbatexasPlanner(
       state: CognitiveState,
       auth?: ClaimAuthContext,
     ): Promise<ClaimPlan> {
+      // LE2-012 — THIS plane's claim-type scope. The enum below, the
+      // constrained-generation wall, the owner-scope subject resolution and the P4
+      // completeness wall all read this ONE object, so a plane can never advertise
+      // a type its walls would then drop (or vice versa). Absent ⟹ the customer
+      // scope ⟹ byte-identical to the pre-LE2-012 planner.
+      const claimScope = deps.claimScope ?? CUSTOMER_CLAIM_SCOPE;
       // PRE-planning wall, part 1 (SDD §H/§P3): the model's `propose_claim` tool
       // exposes `type` as an `enum` over the registry — the model can only
       // SELECT an in-enum type, never type a free string into the schema. The
@@ -1447,7 +1489,7 @@ export function createIbatexasPlanner(
           properties: {
             type: {
               type: "string",
-              enum: [...CLAIM_REGISTRY],
+              enum: [...claimScope.types],
               description: "O tipo de claim do registro a ser proposto.",
             },
             subject: { type: "string", description: "Chave do recurso/assunto." },
@@ -1478,7 +1520,13 @@ export function createIbatexasPlanner(
       // the intent persona (DEFAULT_SYSTEM_PROMPT) — the intent persona's "sua
       // única função é express_intent" SUPPRESSES the propose_claim call on a 4B
       // (verified live on nemotron-3-nano:4b). `deps.system` still overrides (tests).
-      const system = deps.system ?? resolvePrompt("ibatexas/claim-planner.persona", CLAIM_PLANNER_PERSONA);
+      // LE2 decision 6 — `claimPlannerSystem` overrides the CLAIM path alone (the
+      // ops plane's staff intent persona would otherwise suppress `propose_claim`);
+      // unset ⇒ the pre-existing `deps.system ?? catalog persona` chain, byte-identical.
+      const system =
+        deps.claimPlannerSystem ??
+        deps.system ??
+        resolvePrompt("ibatexas/claim-planner.persona", CLAIM_PLANNER_PERSONA);
       // F2 observability: time the claim-planner completion so its LLMTrace
       // (emitted below) carries a real duration, like the intent `propose` path.
       const claimStartedAt = Date.now();
@@ -1543,9 +1591,11 @@ export function createIbatexasPlanner(
         // `auth.ownedByBaseKey` (the owner-scoped reads that resolved PRESENT this
         // turn — IDOR-safe). A model-supplied id is honored ONLY if it is itself an
         // OWNED resource; otherwise it is discarded.
-        const canonicalType = canonicalizeRegistryType(input.type);
+        const canonicalType = canonicalizeScopedClaimType(input.type, claimScope);
         const baseKey =
-          canonicalType !== undefined ? ownerScopedBaseKey(canonicalType) : undefined;
+          canonicalType !== undefined
+            ? ownerScopedBaseKey(canonicalType, claimScope)
+            : undefined;
         let subject = input.subject ?? "";
         if (baseKey !== undefined) {
           const owned = auth?.ownedByBaseKey?.get(baseKey) ?? [];
@@ -1638,7 +1688,7 @@ export function createIbatexasPlanner(
 
       // PRE-planning wall, part 2 (SDD §H/§P3 — defense in depth): only in-enum
       // types become typed `CandidateClaim`s; out-of-enum proposals are dropped.
-      const { candidates, dropped } = constrainClaimGeneration(proposals);
+      const { candidates, dropped } = constrainClaimGeneration(proposals, claimScope);
 
       // tag-then-derive (STEP 2 — value derivation, PRE-kernel): OVERWRITE each
       // bound candidate's `value` from the SAME first-party read the investigator
@@ -1728,17 +1778,64 @@ export function createIbatexasPlanner(
         const infoText = await resolveStoreInfoText(state.turnId);
         if (infoText !== undefined) storeInfo = { infoText };
       }
+      // LE2-002 / NEW-007 — DELIVERY_COVERAGE / DELIVERY_NO_COVERAGE derivation
+      // reads (FIXED subject): the SAME scalars the investigator records under
+      // `delivery:coverage` / `delivery:no_coverage`, memoized on turnId+text so
+      // this REUSES the investigator's ONE zone/estimation read → byte-equal value
+      // (C6 passes by construction). The resolver returns at most one of the two, so
+      // at most one is bound here; the other keeps `value: undefined` → C6 ABSTAINs
+      // → honest UNKNOWN, and the §D filter drops it. A needs-CEP or unreadable
+      // resolution binds NEITHER — never a fabricated fee, ETA, or "não entregamos".
+      let deliveryCoverage: { coverageText: string } | undefined;
+      let deliveryNoCoverage: { noCoverageText: string } | undefined;
+      if (
+        menuCandidateTypes.has("DELIVERY_COVERAGE") ||
+        menuCandidateTypes.has("DELIVERY_NO_COVERAGE")
+      ) {
+        const coverage = await resolveDeliveryCoverage(state.turnId, state.perception.text);
+        if (coverage.kind === "covered") {
+          deliveryCoverage = { coverageText: coverage.coverageText };
+        } else if (coverage.kind === "not_covered") {
+          deliveryNoCoverage = { noCoverageText: coverage.noCoverageText };
+        }
+      }
+      // LE2-019 — COUPON_VALID / COUPON_INVALID derivation reads (FIXED subject):
+      // the SAME scalars the investigator records under `coupon:valid` /
+      // `coupon:invalid`, memoized on turnId+text so this REUSES the investigator's
+      // ONE promotion lookup → byte-equal value (C6 passes by construction) AND the
+      // SAME clock reading for the campaign window. The resolver returns at most one
+      // of the two, so at most one is bound here; the other keeps `value: undefined`
+      // → C6 ABSTAINs → honest UNKNOWN, and the §D filter drops it. A needs-code or
+      // unreadable resolution binds NEITHER — never a fabricated discount, and never
+      // a wrongly-confident "não está válido".
+      let couponValid: { validityText: string } | undefined;
+      let couponInvalid: { invalidityText: string } | undefined;
+      if (
+        menuCandidateTypes.has("COUPON_VALID") ||
+        menuCandidateTypes.has("COUPON_INVALID")
+      ) {
+        const coupon = await resolveCouponValidity(state.turnId, state.perception.text);
+        if (coupon.kind === "valid") {
+          couponValid = { validityText: coupon.validityText };
+        } else if (coupon.kind === "invalid") {
+          couponInvalid = { invalidityText: coupon.invalidityText };
+        }
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         menuItemPrice,
         menuItemContents,
         ...(Object.keys(menuDietary).length > 0 ? { menuDietary } : {}),
         ...(menuOverview !== undefined ? { menuOverview } : {}),
         ...(storeInfo !== undefined ? { storeInfo } : {}),
+        ...(deliveryCoverage !== undefined ? { deliveryCoverage } : {}),
+        ...(deliveryNoCoverage !== undefined ? { deliveryNoCoverage } : {}),
+        ...(couponValid !== undefined ? { couponValid } : {}),
+        ...(couponInvalid !== undefined ? { couponInvalid } : {}),
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
       // unmapped span is surfaced as CLARIFY, never silently dropped.
-      const completeness = checkCompleteness(spans);
+      const completeness = checkCompleteness(spans, claimScope);
 
       // SAFETY routing (SDD §O#9): an unrecognized — or any — safety marker
       // forces ESCALATE (the generic safe terminal); ESCALATE outranks a P4

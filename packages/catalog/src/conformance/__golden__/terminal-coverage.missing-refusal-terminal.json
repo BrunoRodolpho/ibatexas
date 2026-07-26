@@ -1,0 +1,60 @@
+{
+  "fixture": "terminal-coverage.missing-refusal-terminal",
+  "targets": "terminal-coverage/missing-refusal-terminal",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "slot-dataflow/missing-required-slot",
+    "terminal-coverage/missing-refusal-terminal"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 24,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 4,
+      "diagnostics": 1
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "missing-required-slot",
+      "severity": "error",
+      "object": "capability:conformance.terminal.no-floor",
+      "field": "refusalCode",
+      "message": "required slot is absent on tier \"chat\". types.ts requires it; a consumer reading it gets `undefined` and has no honest fallback."
+    },
+    {
+      "pass": "terminal-coverage",
+      "rule": "missing-refusal-terminal",
+      "severity": "error",
+      "object": "capability:conformance.terminal.no-floor",
+      "field": "refusalCode",
+      "message": "declares a 1-guard chain but no refusal floor. Every path through the chain that reaches no EXECUTE / CONFIRM / ESCALATE / DEFER falls through to the Pack's default REFUSE — the terminal is reachable and the capability names no basis code for it."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/missing-required-slot: capability:conformance.terminal.no-floor · refusalCode — required slot is absent on tier \"chat\". types.ts requires it; a consumer reading it gets `undefined` and has no honest fallback.",
+    "terminal-coverage/missing-refusal-terminal: capability:conformance.terminal.no-floor · refusalCode — declares a 1-guard chain but no refusal floor. Every path through the chain that reaches no EXECUTE / CONFIRM / ESCALATE / DEFER falls through to the Pack's default REFUSE — the terminal is reachable and the capability names no basis code for it."
+  ]
+}
