@@ -97,6 +97,53 @@ export const INCIDENT_SEVERITY_LABELS_PT: Record<IncidentSeverity, string> = {
   high: "alta",
 }
 
+/**
+ * BKL-235 — the OPS-plane `channel` values.
+ *
+ * `conversation_incidents.channel` is a plain String precisely so a new plane can
+ * join the journal without an `ALTER TYPE` (see the schema comment: "agent plane
+ * later"). These are the two ops ingresses: the staff WhatsApp fork
+ * (`ops-whatsapp-ingress.ts`) and the dashboard route (`admin/ops-chat.ts`).
+ *
+ * Both MUST be set explicitly at the producer. `incident-subscriber.ts` defaults a
+ * missing `channel` to `"whatsapp"` — a CUSTOMER channel — so an omitted value does
+ * not merely lose the distinction, it actively MISLABELS an ops ghost as a customer
+ * one. Never rely on the default.
+ *
+ * BOTH ingresses are wired, and that is load-bearing rather than tidiness: they share
+ * ONE staff conversation (`sessionId = admin:<staffId>`, plus the parks and the
+ * ops-history thread), so the per-session single-open-incident invariant spans them.
+ * Wiring only WhatsApp would MANUFACTURE STUCK-OPEN ROWS — a ghost on WhatsApp
+ * followed by a recovery on the dashboard would never self-heal, and that stale open
+ * row would then absorb every later WhatsApp drop as a `dropCount` increment (no
+ * fresh open ⇒ no staff ping). The dashboard close is what keeps the journal honest.
+ *
+ * Ops rows ride the SAME `no_reply` journal `kind` as the customer plane, and that
+ * is deliberate: an ops ghost has the IDENTICAL lifecycle — the staffer was owed a
+ * reply, got silence, and the next delivered reply on the session is the recovery
+ * proof, so it self-heals through the same auto-close seam. `channel` is therefore
+ * the whole plane discriminator; a second `kind` would only be warranted by an
+ * OPPOSITE lifecycle (the shape that justified one for the attack-review journal).
+ */
+export const OPS_WHATSAPP_CHANNEL = "ops-whatsapp"
+export const OPS_DASHBOARD_CHANNEL = "ops-dashboard"
+
+const OPS_PLANE_CHANNELS: ReadonlySet<string> = new Set<string>([
+  OPS_WHATSAPP_CHANNEL,
+  OPS_DASHBOARD_CHANNEL,
+])
+
+/**
+ * True when an incident's `channel` is a STAFF/ops plane rather than a customer
+ * plane. Read by any surface whose copy asserts WHO was left without a reply: an
+ * ops ghost impeded delivery to a *funcionário*, never "ao cliente", so the staff
+ * ping must not claim a customer-facing outage
+ * (`incident-notification-subscriber.ts`).
+ */
+export function isOpsPlaneChannel(channel: string | null | undefined): boolean {
+  return channel != null && OPS_PLANE_CHANNELS.has(channel)
+}
+
 export interface IncidentOpenPayload {
   /** Soft session correlation (no FK), matching `Conversation.sessionId`. */
   readonly sessionId: string
