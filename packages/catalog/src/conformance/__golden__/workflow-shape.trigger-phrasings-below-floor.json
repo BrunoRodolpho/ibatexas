@@ -1,0 +1,67 @@
+{
+  "fixture": "workflow-shape.trigger-phrasings-below-floor",
+  "targets": "workflow-shape/trigger-phrasings-below-floor",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/trigger-phrasings-below-floor"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 14,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "trigger-phrasings-below-floor",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "triggerPhrasings",
+      "message": "declares 2 non-blank trigger phrasing(s), below the floor of 6. The phrasings are what the model reads to tell this route apart from every other one, and a workflow below the floor is reachable only through its one-line description — which measures materially worse, and whose failures are SILENT (a non-selection produces no envelope, no audit row and no diagnostic)."
+    }
+  ],
+  "formatted": [
+    "workflow-shape/trigger-phrasings-below-floor: workflow:conformance.workflow.linear · triggerPhrasings — declares 2 non-blank trigger phrasing(s), below the floor of 6. The phrasings are what the model reads to tell this route apart from every other one, and a workflow below the floor is reachable only through its one-line description — which measures materially worse, and whose failures are SILENT (a non-selection produces no envelope, no audit row and no diagnostic)."
+  ]
+}

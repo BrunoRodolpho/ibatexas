@@ -83,6 +83,59 @@ vi.mock("stripe", () => ({
   })),
 }));
 
+// LE2-021 — the domain double behind `order.reorder`'s handler.
+//
+// The handler resolves WHICH order to repeat from the customer's own projection
+// rather than from its payload, and does so UNCONDITIONALLY (see
+// `register-workflow-scoped-tools.ts`): an identifier that can be read from
+// first-party state must never be accepted from anywhere a parse could reach,
+// and a "use the payload when it has one" branch would be exactly such a place
+// the day some workflow bound that field to a slot.
+//
+// So this fixture corpus needs a row to resolve, and it is deliberately given
+// the SAME id the fixture's authored `const` binding names — the const still
+// rides the adjudicated envelope and still proves an authored constant reaches
+// a payload, it just is not what selects the order. There is no Postgres in
+// this suite.
+vi.mock("@ibatexas/domain", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  const { FIXTURE_PREVIOUS_ORDER_ID } = (await import("@ibatexas/catalog")) as {
+    FIXTURE_PREVIOUS_ORDER_ID: string;
+  };
+  const row = {
+    id: FIXTURE_PREVIOUS_ORDER_ID,
+    displayId: 1042,
+    customerId: "cus_le2020_owner",
+    totalInCentavos: 8900,
+    itemsJson: [
+      {
+        productId: "prod_costela",
+        variantId: "variant_costela_500g",
+        title: "Costela 500g",
+        quantity: 2,
+        priceInCentavos: 4450,
+      },
+    ],
+    medusaCreatedAt: new Date("2026-07-20T18:00:00Z"),
+  };
+  return {
+    ...actual,
+    createOrderQueryService: () => ({
+      getById: async (id: string, opts?: { customerId?: string }) =>
+        id === row.id && (opts?.customerId ?? row.customerId) === row.customerId
+          ? row
+          : null,
+      listByCustomer: async (customerId: string) =>
+        customerId === row.customerId
+          ? { orders: [row], count: 1 }
+          : { orders: [], count: 0 },
+      findByDisplayId: async () => [],
+      listAll: async () => ({ orders: [row], count: 1 }),
+      getStatusHistory: async () => [],
+    }),
+  };
+});
+
 const {
   composeCustomerConductor,
   makeAuditedAdjudicator,

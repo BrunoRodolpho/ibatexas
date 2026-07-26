@@ -1,0 +1,68 @@
+{
+  "fixture": "workflow-shape.trigger-phrasing-duplicated",
+  "targets": "workflow-shape/trigger-phrasing-duplicated",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/trigger-phrasing-duplicated"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 19,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "trigger-phrasing-duplicated",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "triggerPhrasings[6].phrasing",
+      "message": "repeats the phrasing \"Fluxo de conformidade ALFÁ!\", which this workflow already declares under the same normal form (the shared word-space fold ignores case, accents and punctuation). The floor counts entries, so a duplicate lets a workflow clear it while covering one fewer way of asking than its author believed.",
+      "reference": "Fluxo de conformidade ALFÁ!"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/trigger-phrasing-duplicated: workflow:conformance.workflow.linear · triggerPhrasings[6].phrasing — repeats the phrasing \"Fluxo de conformidade ALFÁ!\", which this workflow already declares under the same normal form (the shared word-space fold ignores case, accents and punctuation). The floor counts entries, so a duplicate lets a workflow clear it while covering one fewer way of asking than its author believed."
+  ]
+}

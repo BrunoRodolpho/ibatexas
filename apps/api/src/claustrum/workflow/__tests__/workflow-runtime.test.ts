@@ -137,10 +137,10 @@ describe("the L1 parse cache key (AC 7 — cache the parse, never instance state
 
   it("distinguishes two DIFFERENT offered workflow sets", () => {
     const one = startWorkflowToolDefinition([
-      { id: "workflow.a", title: "A", description: "a", slots: [] },
+      { id: "workflow.a", title: "A", description: "a", slots: [], triggerPhrasings: [] },
     ]);
     const two = startWorkflowToolDefinition([
-      { id: "workflow.b", title: "B", description: "b", slots: [] },
+      { id: "workflow.b", title: "B", description: "b", slots: [], triggerPhrasings: [] },
     ]);
     expect(
       buildParseCacheKey({ ...base, toolSurface: [one as never] }).digest,

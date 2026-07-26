@@ -135,6 +135,7 @@ export const ORDER_INTENT_KINDS = [
   "order.note.add",
   "order.review.submit",
   "order.reorder",
+  "order.reorder.request",
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",

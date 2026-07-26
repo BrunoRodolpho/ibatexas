@@ -31,11 +31,27 @@ function capabilities(
   ] as unknown as readonly CapabilityDefinition[]
 }
 
+/**
+ * Six well-formed phrasings, so every test in this file that is NOT about rule 8
+ * clears its floor. Distinct under the shared fold and deliberately unlike any
+ * real catalog phrasing, so a unit workflow can be compiled alongside the real
+ * one without tripping the cross-namespace collision rule.
+ */
+const UNIT_TRIGGER_PHRASINGS: readonly Record<string, unknown>[] = [
+  { phrasing: "fluxo unitario alfa", provenance: "authored", why: "unit fixture" },
+  { phrasing: "fluxo unitario bravo", provenance: "authored", why: "unit fixture" },
+  { phrasing: "fluxo unitario charlie", provenance: "authored", why: "unit fixture" },
+  { phrasing: "fluxo unitario delta", provenance: "authored", why: "unit fixture" },
+  { phrasing: "fluxo unitario echo", provenance: "authored", why: "unit fixture" },
+  { phrasing: "fluxo unitario foxtrot", provenance: "authored", why: "unit fixture" },
+]
+
 function workflow(overrides: Record<string, unknown> = {}): WorkflowDefinition {
   return {
     id: "workflow.unit",
     title: "Fluxo",
     description: "Fixture.",
+    triggerPhrasings: UNIT_TRIGGER_PHRASINGS,
     matchers: [{ capability: ANCHOR }],
     selection: { capability: ANCHOR },
     params: [
@@ -189,9 +205,122 @@ describe("workflow-shape — params, sequence and identity", () => {
   })
 
   it("rejects two workflows sharing an id", () => {
-    expect(rules(capabilities(), [workflow(), workflow()])).toEqual([
-      "workflow-id-duplicated",
+    // Disjoint phrasings on the second copy — sharing them would ALSO trip
+    // `trigger-phrasing-collides`, and this assertion would then pass for a
+    // reason it does not name.
+    expect(
+      rules(capabilities(), [
+        workflow(),
+        workflow({
+          triggerPhrasings: UNIT_TRIGGER_PHRASINGS.map((t) => ({
+            ...t,
+            phrasing: `outro ${String(t["phrasing"])}`,
+          })),
+        }),
+      ]),
+    ).toEqual(["workflow-id-duplicated"])
+  })
+})
+
+describe("workflow-shape — trigger phrasings (LE2-021)", () => {
+  it("rejects a workflow below the floor", () => {
+    expect(
+      rules(capabilities(), [
+        workflow({ triggerPhrasings: UNIT_TRIGGER_PHRASINGS.slice(0, 5) }),
+      ]),
+    ).toEqual(["trigger-phrasings-below-floor"])
+  })
+
+  it("counts NON-BLANK phrasings against the floor, not array length", () => {
+    // Six entries, one of them whitespace. An author who padded the array would
+    // otherwise clear the floor with five real ways of asking.
+    expect(
+      rules(capabilities(), [
+        workflow({
+          triggerPhrasings: [
+            ...UNIT_TRIGGER_PHRASINGS.slice(0, 5),
+            { phrasing: "   ", provenance: "authored", why: "padding" },
+          ],
+        }),
+      ]),
+    ).toEqual(["trigger-phrasings-below-floor"])
+  })
+
+  it("rejects two phrasings that differ only by case, accent and punctuation", () => {
+    expect(
+      rules(capabilities(), [
+        workflow({
+          triggerPhrasings: [
+            ...UNIT_TRIGGER_PHRASINGS,
+            { phrasing: "Fluxo unitário ALFA!", provenance: "authored", why: "dupe" },
+          ],
+        }),
+      ]),
+    ).toEqual(["trigger-phrasing-duplicated"])
+  })
+
+  it("rejects a phrasing another WORKFLOW already claims", () => {
+    expect(
+      rules(capabilities(), [
+        workflow(),
+        workflow({
+          id: "workflow.rival",
+          triggerPhrasings: [
+            { phrasing: "fluxo unitario alfa", provenance: "authored", why: "collides" },
+            ...UNIT_TRIGGER_PHRASINGS.map((t) => ({
+              ...t,
+              phrasing: `rival ${String(t["phrasing"])}`,
+            })),
+          ],
+        }),
+      ]),
+    ).toEqual(["trigger-phrasing-collides"])
+  })
+
+  it("rejects a phrasing a CAPABILITY's conversationTriggers already claims", () => {
+    // The cross-NAMESPACE half. Both feed the same surface, so a sentence
+    // meaning one capability and one workflow is a contradiction whichever side
+    // authored it second.
+    const definitions = capabilities({
+      step: {
+        tier: "chat",
+        conversationTriggers: ["repete meu ultimo pedido"],
+      },
+    })
+    expect(
+      rules(definitions, [
+        workflow({
+          triggerPhrasings: [
+            { phrasing: "Repete meu último pedido", provenance: "authored", why: "collides" },
+            ...UNIT_TRIGGER_PHRASINGS.slice(0, 5),
+          ],
+        }),
+      ]),
+    ).toEqual(["trigger-phrasing-collides"])
+  })
+
+  it("attributes the collision to the WORKFLOW, naming the capability that owns it", () => {
+    const definitions = capabilities({
+      step: { tier: "chat", conversationTriggers: ["repete meu ultimo pedido"] },
+    })
+    const result = runWorkflowShapePass(definitions, undefined, undefined, [
+      workflow({
+        triggerPhrasings: [
+          { phrasing: "repete meu ultimo pedido", provenance: "authored", why: "collides" },
+          ...UNIT_TRIGGER_PHRASINGS.slice(0, 5),
+        ],
+      }),
     ])
+    expect(result.diagnostics).toHaveLength(1)
+    expect(result.diagnostics[0]?.object).toBe("workflow:workflow.unit")
+    expect(result.diagnostics[0]?.message).toContain(`the capability capability:${STEP}`)
+  })
+
+  it("says nothing about a capability trigger that collides with NOTHING — the control", () => {
+    const definitions = capabilities({
+      step: { tier: "chat", conversationTriggers: ["algo completamente diferente"] },
+    })
+    expect(rules(definitions, [workflow()])).toEqual([])
   })
 })
 

@@ -372,6 +372,7 @@ import {
 // ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
 import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
 import { buildLanguageEngineAuditMetadata } from "./claustrum/language-engine/audit-metadata.js";
+import { registerWorkflowAnchorTools } from "./tools/register-workflow-anchor-tools.js";
 import { registerWorkflowScopedTools } from "./tools/register-workflow-scoped-tools.js";
 import {
   createWorkflowRuntime,
@@ -3162,6 +3163,13 @@ export async function bootstrapClaustrum(
   // no registered tool fails the boot; registered-but-unadvertised kinds are
   // WARN-only (as of FE-D28 order.review.submit is advertised + resolver-wired,
   // so there is currently no such kind — the WARN path stays for future ones).
+  // LE2-021 does NOT change that, and the reason is worth stating because it
+  // looks like it should: `order.reorder.request` has a registered tool and no
+  // planner advertises it, but the tool is registered by
+  // `registerWorkflowAnchorTools` (below, corpus-derived) rather than into
+  // `IBATEXAS_TOOLS`, so `listIbatexasToolPacks()` — the roster this gate reads
+  // — never sees it. "Registered in the process" and "on the LLM-callable
+  // roster" are two different facts, and this gate is about the second.
   const toolRegistry = createToolRegistry();
   registerIbatexasToolPacks(toolRegistry);
   const rosterDrift = toolRosterDrift(
@@ -3217,11 +3225,14 @@ export async function bootstrapClaustrum(
   // turns it on. Three seams, and the ORDER of the first two is the installation
   // mechanism rather than a style choice:
   //
-  //   1. `registerWorkflowScopedTools` FIRST. `installWorkflowRuntime` asserts
-  //      that every anchor has a registered tool and THROWS if one does not, and
-  //      a workflow-scoped activity needs its handler present before the runtime
-  //      could ever dispatch it. Registering the scoped handlers first is what
-  //      makes both true at once.
+  //   1. `registerWorkflowScopedTools` and `registerWorkflowAnchorTools` FIRST.
+  //      `installWorkflowRuntime` asserts that every anchor has a registered
+  //      tool and THROWS if one does not, and a workflow-scoped activity needs
+  //      its handler present before the runtime could ever dispatch it.
+  //      Registering both corpus-derived sets first is what makes those true at
+  //      once. Neither adds anything to the LLM-callable roster — see each
+  //      module's doc for why "registered" and "chat-drivable" are deliberately
+  //      two different facts.
   //   2. `installWorkflowRuntime` AFTER `registerIbatexasToolPacks` (above). The
   //      registry is last-write-wins per capability, so registering the anchor
   //      wrapper after the base roster IS how the wrapper gets installed.
@@ -3231,19 +3242,20 @@ export async function bootstrapClaustrum(
   // Placed AFTER both roster-drift gates so those gates still evaluate the
   // pristine roster, and before the conductor is composed.
   //
-  // INERT WHILE THE CORPUS IS EMPTY, structurally: `selectionCapabilities()` and
-  // `activityCapabilities()` are both empty for `WORKFLOW_DEFINITIONS = []`, so
-  // both calls are no-ops, `advertise()` returns nothing, `buildToolSurface`
-  // adds no `start_workflow` tool, and the wire is byte-identical to a boot
-  // without this block. Wiring it before the first workflow is authored is
-  // deliberate — it makes landing that workflow a catalog-data change with a
-  // composition already proven, rather than a data change plus untested plumbing.
+  // LE2-021 authored the first entry into `WORKFLOW_DEFINITIONS`, so this block
+  // is no longer inert: `advertise()` now returns the reorder-last workflow for
+  // any turn whose roster carries both its matchers, `buildToolSurface` adds the
+  // `start_workflow` tool, and the wire changes for those turns. The
+  // inert-on-empty-corpus property still holds structurally and is what a
+  // composition test asserts — it is the property that makes adding the SECOND
+  // workflow a data change rather than a plumbing change.
   const workflowToolsRef: { current?: ReturnType<typeof createToolRegistry> } = {};
   const workflowRuntime = buildWorkflowRuntime({
     auditSink,
     toolsRef: workflowToolsRef,
   });
   registerWorkflowScopedTools(toolRegistry, workflowRuntime.activityCapabilities());
+  registerWorkflowAnchorTools(toolRegistry, workflowRuntime.selectionCapabilities());
   installWorkflowRuntime(toolRegistry, workflowRuntime);
   workflowToolsRef.current = toolRegistry;
 

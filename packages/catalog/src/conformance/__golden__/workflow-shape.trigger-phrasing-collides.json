@@ -1,0 +1,68 @@
+{
+  "fixture": "workflow-shape.trigger-phrasing-collides",
+  "targets": "workflow-shape/trigger-phrasing-collides",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 2,
+  "rulesEmitted": [
+    "workflow-shape/trigger-phrasing-collides"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 35,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "trigger-phrasing-collides",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.rival",
+      "field": "triggerPhrasings[0].phrasing",
+      "message": "declares the phrasing \"fluxo de conformidade alfa\", which workflow:conformance.workflow.linear already claims under the same normal form. Two routes advertising one sentence do not degrade selection, they make it a coin flip — the customer gets a confidently-executed wrong route, and both sides look correct in isolation. Settle it here: one of the two owns the phrasing.",
+      "reference": "fluxo de conformidade alfa"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/trigger-phrasing-collides: workflow:conformance.workflow.rival · triggerPhrasings[0].phrasing — declares the phrasing \"fluxo de conformidade alfa\", which workflow:conformance.workflow.linear already claims under the same normal form. Two routes advertising one sentence do not degrade selection, they make it a coin flip — the customer gets a confidently-executed wrong route, and both sides look correct in isolation. Settle it here: one of the two owns the phrasing."
+  ]
+}

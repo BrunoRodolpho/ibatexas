@@ -58,6 +58,7 @@ import {
   workflowSelectionKinds,
   workflowSlotNames,
   workflowTemplateText,
+  workflowTriggerPhrasings,
   type WorkflowDefinition,
 } from "@ibatexas/catalog";
 import { logger } from "../../lib/logger.js";
@@ -102,6 +103,17 @@ export interface AdvertisedWorkflow {
   readonly description: string;
   /** The customer-authored slot names this workflow accepts. Closed. */
   readonly slots: readonly string[];
+  /**
+   * LE2-021 — the authored ways customers ASK for this workflow, natural pt-BR,
+   * in authored (strongest-evidence-first) order.
+   *
+   * On the wire, not documentation: `startWorkflowToolDefinition` composes them
+   * into the tool description. LE2-020 shipped a description-only surface and
+   * LE2-021's live drive measured what that costs — 87.5% selection, with one
+   * ordinary idiom selecting 0/5 — which is the same gap LE2-008 measured for
+   * capabilities (recall@5 = 73.8% on descriptions alone) in the same shape.
+   */
+  readonly triggerPhrasings: readonly string[];
 }
 
 export interface WorkflowRuntimeDeps {
@@ -413,6 +425,13 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
           // STATED collation — this list lands in the `start_workflow` tool
           // description, which the L1 cache key digests. See workflow-ordering.ts.
           slots: sortedByCodeUnits(workflowSlotNames(workflow)),
+          // NOT sorted, unlike the slots: slot names are a SET whose spelling
+          // order carries no information, so a stated collation is the only way
+          // to keep the cache key stable. Phrasings are a SEQUENCE the author
+          // ordered on purpose (production-grounded first), and re-sorting them
+          // would destroy that ordering to solve a problem they do not have —
+          // the array is already deterministic, straight out of the catalog.
+          triggerPhrasings: workflowTriggerPhrasings(workflow),
         }));
     },
 

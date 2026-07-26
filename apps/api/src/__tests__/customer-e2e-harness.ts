@@ -115,6 +115,7 @@ import type { ScheduleSignal } from "../claustrum/closed-hours.js";
 import { WebConfirmChannel } from "../claustrum/web-confirm-channel.js";
 import { buildLanguageEngineAuditMetadata } from "../claustrum/language-engine/audit-metadata.js";
 import { registerIbatexasToolPacks } from "../tools/register-ibatexas-tool-packs.js";
+import { registerWorkflowAnchorTools } from "../tools/register-workflow-anchor-tools.js";
 import { registerWorkflowScopedTools } from "../tools/register-workflow-scoped-tools.js";
 import { isGuestCustomerId } from "../tools/guest-identity.js";
 import type { WorkflowRuntime } from "../claustrum/workflow/workflow-runtime.js";
@@ -777,6 +778,11 @@ function buildHarnessTools(
     // anchor has a tool, and a workflow-scoped activity needs one too before
     // the runtime can dispatch it.
     registerWorkflowScopedTools(tools, workflowRuntime.activityCapabilities());
+    // LE2-021 — then the corpus-derived ANCHOR handlers, for a workflow anchored
+    // on a kind the LLM-callable roster deliberately does not carry (see
+    // `register-workflow-anchor-tools.ts`). A no-op for an anchor the roster
+    // already owns, which is why LE2-020's fixture corpus is unaffected.
+    registerWorkflowAnchorTools(tools, workflowRuntime.selectionCapabilities());
     installWorkflowRuntime(tools, workflowRuntime);
   }
   return tools;

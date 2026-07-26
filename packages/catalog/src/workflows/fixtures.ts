@@ -61,6 +61,20 @@ export const FIXTURE_LINEAR_WORKFLOW: WorkflowDefinition = {
   title: "Fluxo de teste linear",
   description:
     "Fluxo de teste do runtime: finalizar o pedido e repetir os itens do pedido anterior.",
+  // Six SYNTHETIC phrasings, all `authored`, all openly fixture-shaped — they
+  // name the fixture rather than pretending to be pt-BR a customer would speak.
+  // The field is required by the contract, and a fixture that borrowed a real
+  // workflow's phrasings would collide with it under the compiler's
+  // cross-namespace rule the moment both were compiled together, which is the
+  // rule working rather than a reason to weaken it.
+  triggerPhrasings: [
+    { phrasing: "fluxo de teste linear um", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear dois", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear tres", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear quatro", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear cinco", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear seis", provenance: "authored", why: "fixture probe" },
+  ],
   // Offered only on a turn whose capability planners already authorized a
   // checkout — so an unauthenticated customer, or one with no cart, is never
   // offered the workflow. The workflow can only narrow, never widen.

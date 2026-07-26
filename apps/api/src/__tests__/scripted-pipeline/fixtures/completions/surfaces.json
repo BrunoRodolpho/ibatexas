@@ -47,6 +47,30 @@
         }
       },
       {
+        "name": "start_workflow",
+        "description": "Iniciar um fluxo pré-autorizado de várias etapas. Use `workflow` (uma das opções do enum) e `slots` com os dados que o cliente informou. Fluxos: workflow.orders.reorder-last: Repetir o último pedido do cliente: monta um carrinho novo com os mesmos itens do pedido anterior, depois de confirmar com ele. (o cliente diz: \"repete meu último pedido\"; \"refaz meu último pedido\"; \"quero pedir a mesma coisa da última vez\"; \"faz o mesmo pedido de novo\"; \"quero repetir a última compra\"; \"bota tudo do meu último pedido no carrinho\"; \"manda o de sempre\") (dados: nenhum)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "workflow": {
+              "type": "string",
+              "enum": [
+                "workflow.orders.reorder-last"
+              ],
+              "description": "O fluxo a ser iniciado."
+            },
+            "slots": {
+              "type": "object",
+              "description": "Dados informados pelo cliente para este fluxo."
+            }
+          },
+          "required": [
+            "workflow"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
         "name": "get_cart",
         "description": "Ferramenta de leitura: get_cart. Apenas consulta, não altera dados.",
         "inputSchema": {

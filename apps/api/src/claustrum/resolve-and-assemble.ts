@@ -33,6 +33,10 @@ import {
   prisma,
 } from "@ibatexas/domain";
 import { parseAgentSessionNamespace } from "./agent-guards.js";
+// LE2-021 — the single owner-scoped "last order" read, shared with the
+// workflow-scoped reorder handler so the confirm and the act cannot name
+// different orders.
+import { loadPreviousOrder, type PreviousOrder } from "./previous-order.js";
 // FE-T13 — reuse the ops-plane displayId parser (pure, no ops-specific
 // dependency) rather than re-deriving the same `#1234`-style parse rule.
 import { matchNamedOwnedOrders, parseDisplayIdRef } from "../ops/ops-order-resolution.js";
@@ -336,6 +340,46 @@ export function buildCartCtx(base: Ctx, payload: Ctx, cart: CartLite | null): Ct
     ctx.totalInCentavos = reaisToCentavos(c.total ?? 0);
   }
   return ctx;
+}
+
+/**
+ * LE2-021 — PURE: project the customer's last order → the reorder-last anchor's
+ * ctx. `previous` null → the four `previousOrder*` fields are simply absent.
+ *
+ * Absence is a DECISION here, not a gap: `confirmReorderLast` reads exactly
+ * these fields and REFUSEs honestly ("ainda não encontrei nenhum pedido anterior
+ * seu pra repetir") when any is missing, so an unwired host, a first-time
+ * customer and a failed read all converge on the same safe sentence instead of
+ * on a confirmation for a basket nobody could name.
+ *
+ * `cartId`/`items`/`totalInCentavos` are pinned to the empty shape deliberately.
+ * They describe the CURRENT cart on every other order state, and a reorder is
+ * precisely the flow where the current cart is the wrong thing to quote — the
+ * customer is approving the PREVIOUS order's contents, and leaking a half-built
+ * unrelated basket into the same ctx is how a guard ends up reading the wrong
+ * total.
+ */
+export function buildPreviousOrderCtx(base: Ctx, previous: PreviousOrder | null): Ctx {
+  return {
+    ...base,
+    cartId: null,
+    orderId: null,
+    items: undefined,
+    totalInCentavos: undefined,
+    ...(previous === null
+      ? {}
+      : {
+          previousOrderId: previous.orderId,
+          previousOrderDisplayId: previous.displayId,
+          previousOrderTotalInCentavos: previous.totalInCentavos,
+          previousOrderItems: previous.items,
+        }),
+  };
+}
+
+/** LE2-021 — owner-scoped read of the customer's last order → the anchor ctx. */
+export async function loadPreviousOrderCtx(base: Ctx, customerId: string): Promise<Ctx> {
+  return buildPreviousOrderCtx(base, await loadPreviousOrder(customerId));
 }
 
 async function loadCart(cartId: string): Promise<CartLite> {
@@ -2316,6 +2360,9 @@ async function loadCtxForKind(
   }
   if (kind.startsWith("customer.")) {
     return loadCustomerCtx(base, customerId);
+  }
+  if (kind === "order.reorder.request") {
+    return loadPreviousOrderCtx(base, customerId);
   }
   if (kind.startsWith("order.")) {
     // Remaining order.* are cart/draft ops (ensure/item.*/checkout/coupon).

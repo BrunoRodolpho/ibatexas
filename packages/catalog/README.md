@@ -26,7 +26,7 @@ constrains claim generation, the installed Packs own their guards, and
 | Module | What it is |
 |---|---|
 | `src/version.ts` | `CATALOG_VERSION` — the monotonic serial (see below) |
-| `src/capability-definitions/` | The authored capability data (58 capabilities — 20 chat-tier, 38 identity-tier) and its thirteen pure projection generators |
+| `src/capability-definitions/` | The authored capability data (59 capabilities — 20 chat-tier, 39 identity-tier) and its thirteen pure projection generators |
 | `src/claim-references.ts` | The claim **name spaces** a definition may point at |
 | `src/external-references.ts` | The names the catalog **depends on but does not own** — a promotion in Medusa, a zone row in the domain DB (LE2-018) |
 | `src/alias-gazetteer.ts` | The **colloquial names** customers use for what the catalog sells — surface form -> canonical entity (LE2-025) |
@@ -276,7 +276,7 @@ catalog depend on its own dependent and produce a circular turbo build graph.)
 
 ## Version-bump discipline
 
-`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `4`.
+`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `7`.
 
 It is deliberately *not* derived (no content hash, no git sha, no build
 timestamp): a derived version changes on every unrelated edit and cannot be

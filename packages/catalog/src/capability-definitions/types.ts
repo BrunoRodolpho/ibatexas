@@ -246,12 +246,12 @@ interface CapabilityDefinitionCommon {
    * surface — 59 admin API routes checked, confirmed client-side-only).
    * Optional on both tiers (not tier-discriminating): `INTENT_KIND_LABELS`
    * is a "best-effort, NON-exhaustive register" per its own doc — only 8 of
-   * this registry's 66 kinds have a real committed label (3 chat-tier, 5
+   * this registry's 59 kinds have a real committed label (3 chat-tier, 5
    * identity-tier; a 9th, `pix.charge.refund`, is outside this registry
    * entirely — see `generate-admin-labels.ts`'s external-input doc). An
    * unmapped kind is NOT missing data — `intentKindLabel()`'s own fallback
    * (the raw kind string) is the correct, honest display, so `undefined`
-   * here for the other 58 kinds is correct, not an omission to fill in.
+   * here for the other 51 kinds is correct, not an omission to fill in.
    */
   readonly adminLabel?: string
   /**
@@ -308,7 +308,7 @@ interface CapabilityDefinitionCommon {
    *     in principle be moved into the class, which is exactly what Decision 15
    *     contemplates for a future orchestration).
    *
-   * `undefined`/absent (the default, correct for 57 of 58 kinds) means the kind
+   * `undefined`/absent (the default, correct for 58 of 59 kinds) means the kind
    * is reachable exactly as it always was. Optional on both tiers.
    *
    * ENFORCEMENT lives downstream, not here: the catalog DECLARES the class and
