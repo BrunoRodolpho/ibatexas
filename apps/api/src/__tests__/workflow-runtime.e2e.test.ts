@@ -238,7 +238,10 @@ function withActivityRoutes(
  * which is the point.
  */
 function buildHarness(
-  opts: { readonly claims?: ReadonlyMap<string, Record<string, unknown>> } = {},
+  opts: {
+    readonly claims?: ReadonlyMap<string, Record<string, unknown>>;
+    readonly realResponder?: boolean;
+  } = {},
 ) {
   const cart = makeCartFixture({ id: CART_ID });
   const medusa = withActivityRoutes(makeMedusaFetchFake(cart));
@@ -349,6 +352,7 @@ function buildHarness(
     session,
     adjudicator,
     workflowRuntime: runtime,
+    ...(opts.realResponder === true ? { realResponder: true } : {}),
   });
   harnessRef.current = harness;
   return { harness, sink, session, runtime, medusa };
@@ -655,5 +659,52 @@ describe("LE2-020 — the workflow confirm rides the EXISTING park machinery", (
     // L0 stood down — the greeting template did NOT land on a turn with an open
     // workflow confirm window, so the restate-then-confirm path still owns it.
     expect(blocked.response).not.toBe(greeting);
+  });
+});
+
+describe("LE2-021 — the AUTHORED confirm reaches the customer (framing case)", () => {
+  // THIS suite owns the directional proof of the responder's `workflowConfirm`
+  // seam, and the reorder-last suite deliberately does not.
+  //
+  // Reorder-last's confirm template is `{confirmation}` and nothing else — the
+  // degenerate case of the additive-framing rule — so its rendered template is
+  // BYTE-IDENTICAL to `decision.prompt`. An assertion there cannot tell a wired
+  // seam from an unwired one: both produce the same string. (Measured, not
+  // assumed: neutering the seam left all 17 of that file's cases green.)
+  //
+  // The fixture workflow ADDS framing around `{confirmation}`, so here the two
+  // strings genuinely differ and the assertion is directional.
+
+  it("the reply is the template — kernel sentence PLUS the authored framing", async () => {
+    const { harness } = buildHarness({
+      claims: validatedClaims(),
+      realResponder: true,
+    });
+
+    const turn = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+
+    expect(turn.decision.kind).toBe("REQUEST_CONFIRMATION");
+
+    // The kernel's own grounded sentence, quoted verbatim inside the reply…
+    expect(turn.response).toContain("Esse pedido soma R$ 1500,00.");
+    // …plus the framing only the AUTHORED template carries. This half is what
+    // fails the moment `workflowConfirm` is unwired: the branch would fall back
+    // to `decision.prompt`, which has no framing at all.
+    expect(turn.response).toContain("Em seguida eu repito os itens do seu pedido anterior");
+    expect(turn.response).toContain(PREVIOUS_ORDER_SUMMARY);
+    expect(turn.response).toContain("sem cebola");
+
+    // And the reply is strictly LONGER than the kernel sentence — the additive
+    // rule, asserted rather than assumed.
+    const kernelSentence = String(
+      (turn.decision as { prompt?: string }).prompt ?? "",
+    );
+    expect(kernelSentence).not.toBe("");
+    expect(turn.response).toContain(kernelSentence);
+    expect(turn.response.length).toBeGreaterThan(kernelSentence.length);
   });
 });

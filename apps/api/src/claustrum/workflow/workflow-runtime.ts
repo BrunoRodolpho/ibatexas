@@ -510,6 +510,40 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
       const instanceId = instanceByTurn.get(turnId);
       const instance = instanceId === undefined ? undefined : instances.get(instanceId);
       if (instance === undefined) return undefined;
+      // AN UNRESOLVED PARAM MEANS NO AUTHORED CONFIRM, EVER.
+      //
+      // `renderWorkflowTemplate` leaves an unfilled `{placeholder}` LITERAL —
+      // it replaces only names it has values for. Once this string is what the
+      // customer actually reads (the responder's `workflowConfirm` seam), a
+      // single unresolved param would ship "… ({previousOrderSummary}) …" into
+      // a chat window, and the customer would be asked to approve a multi-step
+      // run described partly in template syntax.
+      //
+      // Returning `undefined` degrades to the KERNEL's own sentence, which is
+      // always complete and always grounded. That is a strictly better failure
+      // than a leaked placeholder, and it is the same fail-closed direction
+      // `run()` already takes for the same condition: an unresolved param stops
+      // the run before anything is submitted.
+      //
+      // No production workflow has a claim param today (`claimsFor` is wired in
+      // no composition, and the reorder-last definition declares zero params),
+      // so this is unreachable on the current corpus — deliberately. It is a
+      // guard against the next definition, written while the reason is legible
+      // rather than after someone finds the placeholder in a transcript.
+      if (instance.unresolved.length > 0) {
+        logger.warn(
+          {
+            component: "workflow",
+            event: "workflow.confirm.unresolved_params",
+            turnId,
+            instanceId: instance.instanceId,
+            workflowId: instance.workflowId,
+            unresolvedParams: instance.unresolved,
+          },
+          "workflow: refusing to render an authored confirm with unresolved params — degrading to the kernel's own sentence",
+        );
+        return undefined;
+      }
       const template = workflowTemplateText(
         instance.definition,
         instance.definition.confirm.template,

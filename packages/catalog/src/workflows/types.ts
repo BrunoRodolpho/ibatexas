@@ -153,6 +153,37 @@ export interface WorkflowConfirmPoint {
 }
 
 /**
+ * THE CONFIRM-TEMPLATE AUTHORING RULE (LE2-021) — binding on every workflow.
+ *
+ * A confirm template MUST contain `{confirmation}`, and every other word in it
+ * MUST be ADDITIVE framing around that placeholder. It may add context before or
+ * after the kernel's sentence; it may never restate, summarise, soften,
+ * contradict or replace it.
+ *
+ * ── WHY THIS IS A RULE AND NOT A PREFERENCE ──────────────────────────────────
+ *
+ * Since LE2-021 the confirm the customer READS is this template
+ * (`ibatexas-responder.ts`'s `workflowConfirm` seam). But the PARK stores
+ * `decision.prompt` — the kernel's own sentence — as its `userPrompt`, written
+ * by `@claustrum/core` at dispatch, and nothing in the adopter can change that:
+ * `observeWorkflowDecisions` is observe-only by construction, so the only way to
+ * unify the two would be to substitute the decision itself, which is precisely
+ * the bypass the workflow layer must never have.
+ *
+ * So the two strings genuinely differ, and one of them is read back to the
+ * customer later: the BKL-212 soft-affirmative restatement quotes the park's
+ * `userPrompt` when a customer replies "ok" instead of "sim". Under this rule
+ * that restatement is a SUBSET of what they already read — the same grounded
+ * question, without the framing — which is a narrowing, not a contradiction. Break
+ * the rule and the restatement becomes a different question from the one that was
+ * asked, at the exact moment the customer is trying to confirm.
+ *
+ * The reorder-last workflow's template is `{confirmation}` alone: the degenerate
+ * case, where reply and park are byte-identical and the divergence is nil.
+ */
+export const WORKFLOW_CONFIRM_PLACEHOLDER = "{confirmation}"
+
+/**
  * The terminal states a workflow instance can reach. Every one needs a render
  * template (compiler rule `outcome-template-missing`) — the terminal-coverage
  * guarantee, so no path can end in silence or in model-authored prose.

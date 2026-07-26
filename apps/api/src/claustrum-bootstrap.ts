@@ -3504,6 +3504,13 @@ export async function bootstrapClaustrum(
         renderAction: (acted: unknown, _turnId: string) =>
           renderCustomerActionAnswer(acted),
       },
+      // LE2-021 — the WHOLE-WORKFLOW confirm. The responder cannot reach the
+      // workflow runtime (nothing under `claustrum/workflow/` is importable from
+      // it, by design), so the composition root hands it this closure. Returns
+      // `undefined` on every turn that selected no workflow, and on any instance
+      // with an unresolved param — both degrade to `decision.prompt`, which is
+      // the behaviour every confirm had before this line existed.
+      workflowConfirm: (turnId: string) => workflowRuntime.renderConfirm(turnId),
       // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate, wired ONLY
       // when ENABLE_CLAIMS_PIPELINE is on (the SAME flag buildClaimsSeams reads).
       // Closes the `prose_preserved` hallucination leak on the conversational

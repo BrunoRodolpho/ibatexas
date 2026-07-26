@@ -139,13 +139,14 @@ const {
   CUSTOMER_ROUTER,
 } = await import("./customer-e2e-harness.js");
 const { rk } = await import("@ibatexas/tools");
-const { loadCartCtx, loadPreviousOrderCtx } = await import(
-  "../claustrum/resolve-and-assemble.js"
-);
+const { resolveAndAssemble } = await import("../claustrum/resolve-and-assemble.js");
 const { createWorkflowRuntime } = await import(
   "../claustrum/workflow/workflow-runtime.js"
 );
 const { workflowTrace } = await import("../claustrum/workflow/workflow-trace.js");
+const { renderCustomerActionAnswer } = await import(
+  "../claustrum/customer-action-render.js"
+);
 const { CATALOG_VERSION, REORDER_LAST_WORKFLOW_ID, WORKFLOW_DEFINITIONS } = await import(
   "@ibatexas/catalog"
 );
@@ -246,37 +247,37 @@ function withReorderRoutes(
   };
 }
 
-/** The identity base the harness's own resolver builds, re-created for the two
- *  state projections below so an activity and a resume meet the same shape a
- *  first-pass turn does. */
-function identityBase(): Record<string, unknown> {
-  return {
-    tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
-    channel: "web",
-    customerId: CUSTOMER,
-    staffId: null,
-    isAuthenticated: true,
-  };
-}
-
 /**
- * Project state for one envelope the way `loadCtxForKind` does — the anchor gets
- * the PREVIOUS-order ctx, everything else gets cart ctx.
+ * Project state for one envelope through the REAL `resolveAndAssemble`.
  *
- * Both branches call the REAL loaders. A hand-built ctx literal here would make
- * every downstream assertion a statement about this file rather than about
- * `resolve-and-assemble.ts`, which is the module actually under test on the AC
- * that says the confirm is grounded.
+ * Two shapes, and the difference is the point:
+ *
+ *   RESUME — no `sessionId`, no `utteranceText`, exactly as production's
+ *     `enrichResumeState` calls it. The previous-order read needs neither, only
+ *     `customerId`, so the confirming turn's FRESH adjudication sees the same
+ *     projection the selecting turn did. It has to: the receipt satisfies only
+ *     the "ask first" threshold, every guard re-runs, and a `confirmReorderLast`
+ *     blind on resume would REFUSE the customer's own "sim".
+ *   ACTIVITY — with the `sessionId`, so an activity meets the same session-bound
+ *     cart state a directly-parsed mutation would.
+ *
+ * The real resolver rather than a hand-built ctx literal, because a literal would
+ * make every downstream assertion a statement about this file rather than about
+ * `resolve-and-assemble.ts` — which is the module under test on the AC that says
+ * the confirm is grounded.
  */
-async function projectStateFor(kind: string): Promise<unknown> {
-  if (kind === "order.reorder.request") {
-    return { ctx: await loadPreviousOrderCtx(identityBase() as never, CUSTOMER) };
-  }
-  return {
-    ctx: await loadCartCtx(identityBase() as never, {} as never, {
-      sessionId: CONVERSATION,
-    }),
-  };
+async function projectStateFor(
+  kind: string,
+  opts: { readonly resume?: boolean; readonly customerId?: string } = {},
+): Promise<unknown> {
+  const resolved = await resolveAndAssemble({
+    kind,
+    payload: {},
+    customerId: opts.customerId ?? CUSTOMER,
+    channel: "web",
+    ...(opts.resume === true ? {} : { sessionId: CONVERSATION }),
+  } as never);
+  return { ctx: resolved.ctx };
 }
 
 /**
@@ -287,7 +288,9 @@ async function projectStateFor(kind: string): Promise<unknown> {
  * `installWorkflowRuntime` last, because the registry is last-write-wins and
  * that order IS the installation mechanism.
  */
-function buildHarness(opts: { readonly withHistory?: boolean } = {}) {
+function buildHarness(
+  opts: { readonly withHistory?: boolean; readonly realResponder?: boolean } = {},
+) {
   orderRowsFake.rows = opts.withHistory === false ? [] : [PREVIOUS_ORDER_ROW];
 
   const cart = makeCartFixture({ id: CART_ID });
@@ -314,7 +317,9 @@ function buildHarness(opts: { readonly withHistory?: boolean } = {}) {
 
   const adjudicator = makeAuditedAdjudicator({
     sink,
-    projectResumeState: async (envelope) => projectStateFor(String(envelope.kind)) as never,
+    // The RESUME shape — no sessionId, no utteranceText, as production does.
+    projectResumeState: async (envelope) =>
+      projectStateFor(String(envelope.kind), { resume: true }) as never,
   });
 
   const harnessRef: { current?: ReturnType<typeof composeCustomerConductor> } = {};
@@ -348,6 +353,26 @@ function buildHarness(opts: { readonly withHistory?: boolean } = {}) {
     session,
     adjudicator,
     workflowRuntime: runtime,
+    // `realResponder` turns on the PRODUCTION reply path, so assertions can move
+    // up from `acted.result.message` (what the executor produced) to
+    // `turn.response` (what the customer actually reads) — the only one of the
+    // two a customer experiences, and the only one that proves the render seam
+    // is wired rather than merely present.
+    //
+    // `readAnswer` is spelled out to match `buildResponder`'s own literal in
+    // claustrum-bootstrap.ts: no deterministic customer READ render, and
+    // `renderCustomerActionAnswer` on the ACTION seam. `workflowConfirm` needs no
+    // wiring here — the harness supplies it from the runtime, as production does.
+    ...(opts.realResponder === true
+      ? {
+          realResponder: true,
+          readAnswer: {
+            render: (_turnId: string) => undefined,
+            renderAction: (acted: unknown, _turnId: string) =>
+              renderCustomerActionAnswer(acted),
+          },
+        }
+      : {}),
   });
   harnessRef.current = harness;
   return { harness, sink, session, runtime, medusa, model };
@@ -647,6 +672,199 @@ describe("LE2-021 — reorder-last, selected and confirmed against the real proj
     // The control: the guest DOES get a surface, so the assertion above is
     // about the matcher and not about an empty tool array.
     expect(plannerCall?.tools?.some((t) => t.name === "express_intent")).toBe(true);
+  });
+});
+
+describe("LE2-021 — the projection reaches BOTH resolver paths", () => {
+  // `enrichResumeState` calls `resolveAndAssemble` with no `sessionId` and no
+  // `utteranceText`, so a read that needed either would work on the selecting
+  // turn and silently stop working on the confirming one. The receipt satisfies
+  // only the "ask first" threshold — every guard re-runs against FRESH state —
+  // so a blind `confirmReorderLast` on resume would REFUSE the customer's own
+  // "sim", after they had already been shown the basket.
+  //
+  // Driven against the real `resolveAndAssemble` rather than through a turn,
+  // because the turn seam cannot distinguish the two call shapes: it is the
+  // ABSENCE of those two arguments that has to be harmless.
+
+  const RESOLVED_FIELDS = {
+    previousOrderId: PREVIOUS_ORDER_ID,
+    previousOrderDisplayId: 1042,
+    previousOrderTotalInCentavos: 12500,
+  };
+
+  it("stamps the previous order on the SELECT shape (sessionId + utterance present)", async () => {
+    orderRowsFake.rows = [PREVIOUS_ORDER_ROW];
+    const resolved = await resolveAndAssemble({
+      kind: "order.reorder.request",
+      payload: {},
+      customerId: CUSTOMER,
+      channel: "web",
+      sessionId: CONVERSATION,
+      utteranceText: SELECT_UTTERANCE,
+    } as never);
+    expect(resolved.ctx).toMatchObject(RESOLVED_FIELDS);
+    expect(resolved.ctx.previousOrderItems).toHaveLength(3);
+  });
+
+  it("stamps it identically on the RESUME shape (neither argument present)", async () => {
+    orderRowsFake.rows = [PREVIOUS_ORDER_ROW];
+    const resolved = await resolveAndAssemble({
+      kind: "order.reorder.request",
+      payload: {},
+      customerId: CUSTOMER,
+      channel: "web",
+    } as never);
+    expect(resolved.ctx).toMatchObject(RESOLVED_FIELDS);
+    expect(resolved.ctx.previousOrderItems).toHaveLength(3);
+  });
+
+  it("is ADDITIVE — the kind's own cart ctx is still there underneath", async () => {
+    // The stamp is spread ONTO the ctx the dispatch ladder built, not instead of
+    // it, so `deferOnPendingPix` and every other guard in the chain still meet
+    // the state a cart-shaped order kind always meets. A replacing stamp would
+    // remove inputs from guards that never asked to lose them.
+    orderRowsFake.rows = [PREVIOUS_ORDER_ROW];
+    const resolved = await resolveAndAssemble({
+      kind: "order.reorder.request",
+      payload: {},
+      customerId: CUSTOMER,
+      channel: "web",
+      sessionId: CONVERSATION,
+    } as never);
+    expect(resolved.ctx).toHaveProperty("cartId");
+    expect(resolved.ctx.customerId).toBe(CUSTOMER);
+    expect(resolved.ctx.isAuthenticated).toBe(true);
+  });
+
+  it("does NOT read for an unauthenticated caller", async () => {
+    // Gated like `loadCustomerCtx`, and for the same reason rather than as an
+    // optimisation: a guest has no customerId an owner-scoped read could mean,
+    // so the query could only ever return nothing. Skipping keeps "this read is
+    // owner-scoped" true of every call, not true-because-nothing-matched.
+    orderRowsFake.rows = [PREVIOUS_ORDER_ROW];
+    const resolved = await resolveAndAssemble({
+      kind: "order.reorder.request",
+      payload: {},
+      customerId: "guest:le2021-anon",
+      channel: "web",
+    } as never);
+    expect(resolved.ctx.previousOrderId).toBeUndefined();
+  });
+
+  it("does NOT read for a kind outside PREVIOUS_ORDER_CTX_KINDS", async () => {
+    // The named set, not an `order.`-prefix test: every other order kind would
+    // pay a Prisma round-trip for state no guard of theirs reads.
+    orderRowsFake.rows = [PREVIOUS_ORDER_ROW];
+    const resolved = await resolveAndAssemble({
+      kind: "order.cart.ensure",
+      payload: {},
+      customerId: CUSTOMER,
+      channel: "web",
+      sessionId: CONVERSATION,
+    } as never);
+    expect(resolved.ctx.previousOrderId).toBeUndefined();
+  });
+});
+
+describe("LE2-021 — what the CUSTOMER READS, at the production reply seam", () => {
+  // These drive the real responder, so they assert `turn.response` — the string
+  // the chat route pushes to the browser — instead of `acted.result.message`,
+  // which is only what the executor produced. The two were NOT the same before
+  // this ticket: `renderCustomerActionAnswer` had no workflow branch, so the
+  // authored outcome template reached the grounded MODEL branch as context and
+  // came back paraphrased. Asserting the executor's string would have passed
+  // through that entire defect.
+
+  it("the CONFIRM the customer reads is the authored template, filled with the kernel's own sentence", async () => {
+    const { harness, runtime } = buildHarness({ realResponder: true });
+
+    const turn = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+
+    expect(turn.decision.kind).toBe("REQUEST_CONFIRMATION");
+    const expected =
+      "Vou repetir seu último pedido: 2x Costela bovina defumada, 1x Pão de alho, " +
+      "1x Farofa de bacon, total R$ 125,00. Confirma?";
+
+    // What the customer reads…
+    expect(turn.response).toBe(expected);
+    // …is the workflow's AUTHORED template output, reached through the
+    // responder's `workflowConfirm` seam rather than by calling the runtime.
+    expect(runtime.renderConfirm(turn.turnId)).toBe(expected);
+    // reorder-last's template is `{confirmation}` and nothing else, so it is the
+    // degenerate case of the additive-framing rule: the reply and the kernel's
+    // own sentence are EQUAL, and the park's `userPrompt` — which the BKL-212
+    // restatement quotes — cannot diverge from what the customer read.
+    expect(turn.response).toBe(userFacingOf(turn.decision));
+  });
+
+  it("the OUTCOME the customer reads is the authored template, VERBATIM — not paraphrased", async () => {
+    const { harness } = buildHarness({ realResponder: true });
+
+    await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+    const turn2 = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: "sim",
+    });
+
+    expect(turn2.decision.kind).toBe("EXECUTE");
+    // Byte-for-byte the `completed` template in the catalog. Without the
+    // workflow branch in `renderCustomerActionAnswer`, `order.reorder.request`
+    // renders nothing, the responder falls through to the grounded model branch,
+    // and `summarizeActed` hands `result.message` to the MODEL — which would
+    // return a paraphrase. Equality here is what forbids that.
+    expect(turn2.response).toBe(
+      "Pronto! Montei um carrinho novo com os itens do seu último pedido. Quer finalizar?",
+    );
+    // And it is the executor's own string, unmodified in transit.
+    const acted = turn2.acted as { result?: { message?: string } };
+    expect(turn2.response).toBe(acted.result?.message);
+  });
+
+  it("the NO-HISTORY turn reads as the honest refusal", async () => {
+    const { harness } = buildHarness({ withHistory: false, realResponder: true });
+
+    const turn = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+
+    expect(turn.decision.kind).toBe("REFUSE");
+    expect(turn.response).toContain(
+      "Ainda não encontrei nenhum pedido anterior seu pra repetir",
+    );
+  });
+
+  it("a DECLINED workflow never tells the customer anything ran", async () => {
+    const { harness, sink } = buildHarness({ realResponder: true });
+
+    await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+    const turn2 = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: "não, deixa pra lá",
+    });
+
+    expect(executed(sink, "order.reorder")).toBe(0);
+    // The reply must not carry the completed template's success frame. Asserted
+    // as an absence because the decline path has several legitimate texts
+    // (unpark ack, clarification) and only one forbidden one.
+    expect(turn2.response).not.toContain("Montei um carrinho novo");
+    expect(turn2.response).not.toContain("Pronto!");
   });
 });
 

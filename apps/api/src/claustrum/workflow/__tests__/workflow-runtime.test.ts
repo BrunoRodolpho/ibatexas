@@ -271,3 +271,67 @@ describe("the instance and its catalog pin", () => {
     );
   });
 });
+
+describe("renderConfirm — the unresolved-param guard (LE2-021)", () => {
+  const ALLOWED = [ANCHOR, "order.cart.ensure"];
+  const CONFIRM_DECISION = {
+    kind: "REQUEST_CONFIRMATION",
+    prompt: "Esse pedido soma R$ 1500,00. Confirma a finalização?",
+  } as never;
+
+  /** Select the fixture workflow on a turn, with or without validated claims. */
+  function selectOn(
+    turnId: string,
+    claims?: ReadonlyMap<string, Record<string, unknown>>,
+  ) {
+    const runtime = createWorkflowRuntime({
+      workflows: [FIXTURE_LINEAR_WORKFLOW],
+      adjudicateActivity: async () => ({ kind: "REFUSE" }) as never,
+      dispatchActivity: async () => undefined,
+      ...(claims === undefined ? {} : { claimsFor: () => claims as never }),
+    });
+    const instance = runtime.select({
+      turnId,
+      workflowId: FIXTURE_LINEAR_WORKFLOW.id,
+      slots: { note: "sem cebola", payment_method: "pix", delivery_type: "pickup" },
+      allowedIntents: ALLOWED,
+    });
+    runtime.recordSelectionDecision(turnId, CONFIRM_DECISION);
+    return { runtime, instance };
+  }
+
+  it("returns undefined rather than render a template with an unresolved param", () => {
+    // No `claimsFor` wired — which is production's actual state — so the
+    // fixture's claim-sourced `previousOrderSummary` cannot resolve.
+    const { runtime, instance } = selectOn("turn_unresolved");
+    expect(instance?.unresolved).toContain("previousOrderSummary");
+    expect(runtime.renderConfirm("turn_unresolved")).toBeUndefined();
+  });
+
+  it("CONTROL: the same turn WITH the claim resolved renders the template", () => {
+    // Without this the assertion above would pass for any reason at all —
+    // a broken template lookup, a missing decision, a typo in the workflow id.
+    const { runtime, instance } = selectOn(
+      "turn_resolved",
+      new Map([["ORDER_HISTORY", { historySummaryText: "Pedido #1042" }]]),
+    );
+    expect(instance?.unresolved).toEqual([]);
+    const rendered = runtime.renderConfirm("turn_resolved");
+    expect(rendered).toContain("Esse pedido soma R$ 1500,00.");
+    expect(rendered).toContain("Pedido #1042");
+    // The property the guard exists to protect: no literal placeholder survives.
+    expect(rendered).not.toMatch(/\{[A-Za-z0-9_]+\}/);
+  });
+
+  it("the UNRESOLVED render would have leaked a literal placeholder — the reason for the guard", () => {
+    // Proves the danger is real rather than theoretical, without weakening the
+    // guard: render the same template directly through the same filler the
+    // runtime uses, with the same values the unresolved instance has.
+    const template = FIXTURE_LINEAR_WORKFLOW.templates.find((t) => t.id === "confirm");
+    const leaked = renderWorkflowTemplate(
+      template?.text ?? "",
+      new Map<string, string>([["note", "sem cebola"]]),
+    );
+    expect(leaked).toContain("{previousOrderSummary}");
+  });
+});

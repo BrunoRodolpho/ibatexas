@@ -807,6 +807,17 @@ function buildHarnessResponder(deps: CustomerConductorDeps): ResponderPort {
       ? { resolveScheduleSignal: () => deps.scheduleSignal }
       : {}),
     ...(deps.readAnswer !== undefined ? { readAnswer: deps.readAnswer } : {}),
+    // LE2-021 — PARITY with `buildResponder`'s own wiring, not an opt-in: a test
+    // that supplies a `workflowRuntime` and a real responder gets the production
+    // confirm seam automatically, so the authored confirm is proved at
+    // `turn.response.text` rather than by calling `renderConfirm` directly (the
+    // LE2-002 class — a renderer-level assertion that passes while the feature is
+    // dead through the gate). No existing test is affected: none combines
+    // `realResponder` with a `workflowRuntime`, and without one the dep is absent
+    // and the branch is byte-identical.
+    ...(deps.workflowRuntime !== undefined
+      ? { workflowConfirm: (turnId: string) => deps.workflowRuntime?.renderConfirm(turnId) }
+      : {}),
   });
 }
 

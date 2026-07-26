@@ -343,43 +343,70 @@ export function buildCartCtx(base: Ctx, payload: Ctx, cart: CartLite | null): Ct
 }
 
 /**
- * LE2-021 — PURE: project the customer's last order → the reorder-last anchor's
- * ctx. `previous` null → the four `previousOrder*` fields are simply absent.
+ * The kinds whose adjudication reads the customer's PREVIOUS order.
  *
- * Absence is a DECISION here, not a gap: `confirmReorderLast` reads exactly
- * these fields and REFUSEs honestly ("ainda não encontrei nenhum pedido anterior
- * seu pra repetir") when any is missing, so an unwired host, a first-time
- * customer and a failed read all converge on the same safe sentence instead of
- * on a confirmation for a basket nobody could name.
- *
- * `cartId`/`items`/`totalInCentavos` are pinned to the empty shape deliberately.
- * They describe the CURRENT cart on every other order state, and a reorder is
- * precisely the flow where the current cart is the wrong thing to quote — the
- * customer is approving the PREVIOUS order's contents, and leaking a half-built
- * unrelated basket into the same ctx is how a guard ends up reading the wrong
- * total.
+ * A named set rather than an `order.`-prefix test: every other order kind pays a
+ * Prisma round-trip for nothing, and the reorder-last anchor is the only act
+ * whose guard has any use for last-order state. Mirrors the shape of
+ * `ORDER_BY_ID_KINDS` above.
  */
-export function buildPreviousOrderCtx(base: Ctx, previous: PreviousOrder | null): Ctx {
+export const PREVIOUS_ORDER_CTX_KINDS: ReadonlySet<string> = new Set([
+  "order.reorder.request",
+]);
+
+/**
+ * LE2-021 — PURE: the four `previousOrder*` fields for a projected last order,
+ * or `{}` when there is none.
+ *
+ * ADDITIVE by design. It is spread ONTO whatever ctx the kind's own loader
+ * already produced rather than replacing it, so no existing guard loses an input
+ * it would otherwise have had — `deferOnPendingPix`, `requireCheckoutEligibility`
+ * and the rest still see exactly the state a cart-shaped order kind always sees.
+ * This route only ADDS information to the chain; it removes none.
+ *
+ * Absence is a DECISION, not a gap: `confirmReorderLast` reads exactly these
+ * fields and REFUSEs honestly ("ainda não encontrei nenhum pedido anterior seu
+ * pra repetir") when any is missing, so an unwired host, an unauthenticated
+ * caller, a first-time customer and a failed read all converge on the same safe
+ * sentence instead of on a confirmation for a basket nobody could name.
+ */
+export function previousOrderCtxFields(previous: PreviousOrder | null): Ctx {
+  if (previous === null) return {};
   return {
-    ...base,
-    cartId: null,
-    orderId: null,
-    items: undefined,
-    totalInCentavos: undefined,
-    ...(previous === null
-      ? {}
-      : {
-          previousOrderId: previous.orderId,
-          previousOrderDisplayId: previous.displayId,
-          previousOrderTotalInCentavos: previous.totalInCentavos,
-          previousOrderItems: previous.items,
-        }),
+    previousOrderId: previous.orderId,
+    previousOrderDisplayId: previous.displayId,
+    previousOrderTotalInCentavos: previous.totalInCentavos,
+    previousOrderItems: previous.items,
   };
 }
 
-/** LE2-021 — owner-scoped read of the customer's last order → the anchor ctx. */
-export async function loadPreviousOrderCtx(base: Ctx, customerId: string): Promise<Ctx> {
-  return buildPreviousOrderCtx(base, await loadPreviousOrder(customerId));
+/**
+ * LE2-021 — stamp the previous-order fields onto a resolved ctx, in place.
+ *
+ * Gated on `isAuthenticated` the same way `loadCustomerCtx` is, and for the same
+ * reason rather than as an optimisation: an unauthenticated caller has no
+ * `customerId` an owner-scoped read could mean, so the query could only ever
+ * return nothing. Skipping it keeps the guest path free of a pointless
+ * round-trip AND keeps "this read is owner-scoped" true of every call rather
+ * than true-because-the-filter-matched-nothing.
+ *
+ * Works identically on the RESUME path. `enrichResumeState` calls
+ * `resolveAndAssemble` with no `sessionId` and no `utteranceText`, and this read
+ * needs neither — only `customerId` — so the confirming turn's fresh
+ * adjudication sees the previous order exactly as the selecting turn did. That
+ * matters: the receipt only satisfies the "ask first" threshold, every guard
+ * re-runs, and a `confirmReorderLast` that could not see the projection on
+ * resume would REFUSE the customer's own "sim".
+ */
+async function stampPreviousOrderCtx(
+  ctx: Ctx,
+  base: Ctx,
+  kind: string,
+  customerId: string,
+): Promise<void> {
+  if (!PREVIOUS_ORDER_CTX_KINDS.has(kind)) return;
+  if (base.isAuthenticated !== true) return;
+  Object.assign(ctx, previousOrderCtxFields(await loadPreviousOrder(customerId)));
 }
 
 async function loadCart(cartId: string): Promise<CartLite> {
@@ -2361,9 +2388,6 @@ async function loadCtxForKind(
   if (kind.startsWith("customer.")) {
     return loadCustomerCtx(base, customerId);
   }
-  if (kind === "order.reorder.request") {
-    return loadPreviousOrderCtx(base, customerId);
-  }
   if (kind.startsWith("order.")) {
     // Remaining order.* are cart/draft ops (ensure/item.*/checkout/coupon).
     return loadCartCtx(base, resolvedPayload, {
@@ -2436,6 +2460,10 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   if (kind === "customer.preferences.update" && isAllergenMentionUtterance(utteranceText)) {
     ctx.allergenMentionDetected = true;
   }
+
+  // LE2-021 — the reorder-last anchor's grounding read. Additive, owner-scoped,
+  // auth-gated, and identical on the resume path (see the helper's own doc).
+  await stampPreviousOrderCtx(ctx, base, kind, customerId);
 
   // 034-F1: the ownership-confirmed resource set for the kernel authority graph.
   // ONLY ids the customer-scoped load actually returned (resourceOwnerConfirmed)
