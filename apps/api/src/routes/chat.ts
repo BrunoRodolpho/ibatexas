@@ -56,6 +56,9 @@ import {
   webNegativeDeclineTarget,
   webSoftAffirmativeRestateNotice,
 } from "../claustrum/web-confirm-channel.js";
+// LE2-007 — the funnel's per-turn context (the confirm-window fact only the ingress
+// can see). See funnel-tier.ts.
+import { closeFunnelTurn, openFunnelTurn } from "../claustrum/funnel-tier.js";
 import {
   classifyTurnDelivery,
   classifyCatchError,
@@ -511,6 +514,19 @@ async function runConductorTurn(params: {
         }
       }
 
+      // ── LE2-007 · publish this turn's FUNNEL CONTEXT ───────────────────────
+      // The one fact the funnel's L0 tier cannot see from inside the loop:
+      // `CognitiveState` carries no session, so the planner cannot tell whether a
+      // confirmation is parked. FE-D32 (ratified) says L0 must NOT fire at all while
+      // a confirm window is open — the restate-then-confirm path above and the
+      // conductor's `matchToParked` own every reply in that window — so the ingress
+      // publishes the authoritative `capsule.loadedSession` reading here, keyed on
+      // this turn's id, and the tier is fail-closed without it. Placed AFTER the two
+      // ingress niceties (both `return` before the turn) and immediately before the
+      // turn, so what L0 reads is the same park set that just failed to match.
+      openFunnelTurn(capsule.turnId, {
+        confirmWindowOpen: (parked?.length ?? 0) > 0,
+      });
       const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
       // The conductor produced a result — the inner classify below now owns the
       // no-delivery decision, so a later (post-result) throw must not re-open in
@@ -610,6 +626,9 @@ async function runConductorTurn(params: {
       // Terminal — only when the client is still listening.
       if (!aborted) pushChunk(sessionId, { type: "done" });
     } finally {
+      // LE2-007 — drop this turn's funnel state (the store is LRU-capped, so this is
+      // hygiene rather than a leak guard).
+      closeFunnelTurn(capsule.turnId);
       await conductor.closeCapsule(capsule);
     }
   } catch (err) {

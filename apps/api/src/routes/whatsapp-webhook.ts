@@ -43,6 +43,9 @@ import {
 import { getRedisClient, rk, atomicIncr, getLoyaltyBalance, getOrCreateCart } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
 import { getConductor } from "../claustrum-bootstrap.js";
+// LE2-007 — the funnel's per-turn context (the confirm-window fact only the ingress
+// can see). See funnel-tier.ts.
+import { closeFunnelTurn, openFunnelTurn } from "../claustrum/funnel-tier.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
   normalizePhone,
@@ -251,6 +254,18 @@ async function runConductorTurn(args: {
     inbound,
   });
   try {
+    // LE2-007 — publish this turn's FUNNEL CONTEXT (the WhatsApp customer mirror of
+    // routes/chat.ts). The confirm-window fact is the one thing the funnel's L0 tier
+    // cannot see from inside the loop (`CognitiveState` carries no session), and
+    // FE-D32 says L0 must not fire at all while a confirmation is parked. This plane
+    // needs the gate MORE than web does, not less: its channel driver confirms on a
+    // bare "ok" by design (see web-confirm-channel.ts's header), so courtesy tokens
+    // during a park are load-bearing here. Absent this publish the tier is
+    // fail-closed (no L0), never fail-open.
+    openFunnelTurn(capsule.turnId, {
+      confirmWindowOpen:
+        (capsule.loadedSession?.pendingConfirmations?.length ?? 0) > 0,
+    });
     const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
     const pixData = extractPixData(turn.acted);
     // Classify the delivery outcome at the source (the only place that can tell
@@ -289,6 +304,8 @@ async function runConductorTurn(args: {
       ...(pixData ? { pixData } : {}),
     };
   } finally {
+    // LE2-007 — drop this turn's funnel state (LRU-capped store; this is hygiene).
+    closeFunnelTurn(capsule.turnId);
     await conductor.closeCapsule(capsule);
   }
 }
