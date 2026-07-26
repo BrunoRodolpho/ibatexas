@@ -3320,6 +3320,10 @@ export async function bootstrapClaustrum(
       ...(capabilityRetriever === undefined
         ? {}
         : { retriever: capabilityRetriever, scopeSeam: funnel }),
+      // LE2-025b — alias canonicalization at parse entry. Unconditional: it is
+      // deterministic catalog data with no external dependency (no embedder, no
+      // engine), so there is nothing to degrade to and no reason to gate it.
+      aliasSeam: funnel,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({

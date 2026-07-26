@@ -107,6 +107,7 @@ import {
   type FunnelParseMemoSeam,
   type FunnelPlannerSeam,
   type FunnelResponderSeam,
+  type FunnelAliasSeam,
   type FunnelScopeSeam,
 } from "../claustrum/funnel-tier.js";
 import type { CapabilityRetriever } from "../claustrum/capability-retrieval.js";
@@ -714,6 +715,12 @@ export interface CustomerConductorDeps {
    */
   readonly retriever?: CapabilityRetriever;
   readonly scopeSeam?: FunnelScopeSeam;
+  /**
+   * LE2-025b — the alias layer's seam (resolutions for the trace + the CLARIFY
+   * short-circuit). Normally the SAME funnel instance as `funnel`. Omitted ⟹ no
+   * canonicalization ⟹ byte-identical to every pre-alias caller.
+   */
+  readonly aliasSeam?: FunnelAliasSeam;
 }
 
 export interface CustomerHarness {
@@ -740,6 +747,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     ...(deps.parseMemo ? { parseMemo: deps.parseMemo } : {}),
     ...(deps.retriever ? { retriever: deps.retriever } : {}),
     ...(deps.scopeSeam ? { scopeSeam: deps.scopeSeam } : {}),
+    ...(deps.aliasSeam ? { aliasSeam: deps.aliasSeam } : {}),
   });
 
   // LE2-007 — the REAL production responder, opt-in. Composed like the customer
