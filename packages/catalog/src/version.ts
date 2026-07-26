@@ -109,4 +109,15 @@
 // own confirm. The same authored bytes therefore do not describe the same run
 // across the boundary — a v8 instance stops at an activity confirm that a v9 one
 // resolves, which is a different set of mutations for one customer "sim".
-export const CATALOG_VERSION: number = 9
+// v10 (LE2-023, second slice) — the CAPABILITY CONTRACT gains `escalatable?:
+// true`, so the README's SECOND trigger fires at its letter ("src/capability-
+// definitions/types.ts — the field contract itself"), and four capabilities gain
+// the field (`order.cancel`, `payment.refund.issue`, `payment.dispute.open`,
+// `reservation.create`), which is the FIRST trigger as well.
+//
+// Bumped from 9 rather than folded into it because v9 is already pushed, and the
+// README's "never reuse a value" is unconditional. It is load-bearing here for
+// the usual reason and one more: the new `escalated-outcome-template-missing`
+// rule reads this field, so a workflow that compiled clean under v9 can fail to
+// compile under v10 without a single byte of its own definition changing.
+export const CATALOG_VERSION: number = 10

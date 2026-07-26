@@ -67,6 +67,7 @@ import {
   refuseInvalidPaymentMethod,
   refuseInvalidQuantity,
   refuseInvalidRating,
+  refuseCouponNotUsable,
   refuseNoCartId,
   refuseNoOrderToMutate,
   refuseNoPreviousOrder,
@@ -1383,6 +1384,152 @@ const confirmReorderLast: OrderGuard = (envelope, state) => {
   )
 }
 
+/**
+ * The swap-for-coupon confirm SENTENCE — LE2-023, extracted from its guard.
+ *
+ * It is its own function for two reasons that are really one. It is the string a
+ * customer reads before approving the cancellation of a real order, so it is
+ * worth reading on its own; and it is the object of a RUNTIME GATE — the
+ * workflow's `confirm.statesFacts` declares that this sentence states the order
+ * amount, the refund consequence and the new total, and a test drives this
+ * function and asserts each of them is actually in it. Both halves of that gate
+ * point at this function, so it should be findable.
+ *
+ * ── THE REFUND CLAUSE IS CONDITIONAL, AND THAT IS THE POINT ─────────────────
+ *
+ * "Cancelar implica reembolso" is a promise that money moves back, and on an
+ * unpaid order no money moves. So the clause appears exactly when
+ * `paymentIsSettled` — which is also, and not coincidentally, exactly the
+ * condition under which `gatePaidCancel` asks its own `paid_cancel_requires_
+ * confirmation`. That is what makes the workflow's declared coverage honest
+ * rather than merely declared: on every run where the coverage is USED, the
+ * customer had already read this clause; on every run where they had not, there
+ * is no coverable confirm to resolve, because the guard that would ask it
+ * returned null.
+ */
+function swapForCouponConfirmText(args: {
+  readonly couponCode: string
+  readonly displayId: number | undefined
+  readonly orderTotalInCentavos: number
+  readonly newTotalInCentavos: number
+  readonly paymentIsSettled: boolean
+}): string {
+  const order =
+    args.displayId === undefined ? "seu pedido" : `seu pedido #${args.displayId}`
+  const refund = args.paymentIsSettled
+    ? " Como ele já foi pago, esse valor volta pra você como reembolso."
+    : ""
+  return (
+    `Pra usar o cupom ${args.couponCode} eu preciso cancelar ${order}, de ` +
+    `R$ ${formatCentavosBrl(args.orderTotalInCentavos)}, e refazer ele.${refund}` +
+    ` O pedido novo sai por R$ ${formatCentavosBrl(args.newTotalInCentavos)}. Confirma?`
+  )
+}
+
+/**
+ * LE2-023 — the WHOLE-WORKFLOW confirm for `workflow.orders.swap-for-coupon`,
+ * and the four refusals that stand in front of it.
+ *
+ * Same shape and same warrant as `confirmReorderLast` above: the guard authors
+ * the sentence from host-projected `ctx` fields, the workflow's confirm template
+ * quotes it verbatim through `{confirmation}`, and no probabilistic model
+ * supplies, relays or influences an identifier or an amount anywhere in it.
+ *
+ * ── WHY FOUR REFUSALS IN FRONT OF ONE CONFIRM ────────────────────────────────
+ *
+ * Because this ask is the entry point to a saga that CANCELS A REAL ORDER, and
+ * every one of these is a way the confirm sentence could otherwise be a lie:
+ *
+ *   NO PREVIOUS ORDER   — there is nothing to swap.
+ *   PAST THE PONR       — the cancel that step one depends on will be refused by
+ *                         `requireCancellable`, so confirming here would ask a
+ *                         customer to approve a route whose first act is already
+ *                         impossible.
+ *   COUPON NOT USABLE   — the entire reason for cancelling would not hold.
+ *   NO COMPUTABLE TOTAL — the sentence's third grounded number does not exist,
+ *                         and a confirm missing it is one a customer cannot
+ *                         actually evaluate: "cancel this and rebuild it" with
+ *                         no price is not a decision, it is a leap.
+ *
+ * The workflow ALSO declares pre-checks over the same four facts, and that
+ * duplication is deliberate rather than redundant. The pre-checks run at
+ * SELECTION, before any envelope exists, so they produce the honest sentence
+ * BEFORE the customer is asked anything. These run at ADJUDICATION — including
+ * on the RESUME path, where they are the only line of defence there is. A coupon
+ * that expired in the seconds between the confirm and the customer's "sim" is
+ * caught here and nowhere else, and it is caught before the cancel.
+ *
+ * ── ORDERING ─────────────────────────────────────────────────────────────────
+ *
+ * `business[]`, BEFORE the EXECUTE producers, for the same reason
+ * `confirmReorderLast` is: `executeW5Kinds` matches this kind too and
+ * first-non-null wins, so behind it this guard would be dead code and the
+ * workflow would cancel an order without ever asking.
+ */
+const confirmSwapForCoupon: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.coupon.swap.request") return null
+  const {
+    previousOrderId,
+    previousOrderDisplayId,
+    previousOrderTotalInCentavos,
+    previousOrderIsCancelable,
+    previousOrderPaymentIsSettled,
+    couponIsValid,
+    couponNewTotalInCentavos,
+    couponCode,
+  } = state.ctx
+
+  const refusalBasis = (reason: string): ReturnType<typeof basis> =>
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+      rule: reason,
+      kind: envelope.kind,
+    })
+
+  // FAIL-SAFE, not fail-open, and in the order a customer can act on. An
+  // unwired host, an anonymous caller and a first-time customer all land on the
+  // first branch and all get an honest sentence rather than a confirmation for
+  // an order nobody can name.
+  if (previousOrderId === undefined || previousOrderTotalInCentavos === undefined) {
+    return decisionRefuse(refuseNoPreviousOrder(), [
+      refusalBasis("swap_requires_previous_order"),
+    ])
+  }
+  if (previousOrderIsCancelable !== true) {
+    return decisionRefuse(refuseOrderPastPonr(), [refusalBasis("swap_order_not_cancelable")])
+  }
+  if (couponIsValid !== true || couponCode === undefined || couponCode === "") {
+    return decisionRefuse(refuseCouponNotUsable(), [refusalBasis("swap_coupon_not_usable")])
+  }
+  if (couponNewTotalInCentavos === undefined) {
+    return decisionRefuse(refuseSwapTotalUnknown(), [refusalBasis("swap_total_not_computable")])
+  }
+
+  return decisionRequestConfirmation(
+    swapForCouponConfirmText({
+      couponCode,
+      displayId: previousOrderDisplayId,
+      orderTotalInCentavos: previousOrderTotalInCentavos,
+      newTotalInCentavos: couponNewTotalInCentavos,
+      paymentIsSettled: previousOrderPaymentIsSettled === true,
+    }),
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        rule: "swap_for_coupon_requires_confirmation",
+        kind: envelope.kind,
+        // All first-party (owner-scoped projection + a store-matched promotion
+        // code), and between them the join keys an operator needs to check WHAT
+        // a customer approved: which order, which coupon, and the two amounts
+        // the sentence quoted.
+        previousOrderId,
+        couponCode,
+        orderTotalInCentavos: previousOrderTotalInCentavos,
+        newTotalInCentavos: couponNewTotalInCentavos,
+        paymentIsSettled: previousOrderPaymentIsSettled === true,
+      }),
+    ],
+  )
+}
+
 // ── EXECUTE producers (default is REFUSE; positive matches required) ────
 
 /**
@@ -1509,6 +1656,12 @@ const W5_EXECUTE_KINDS: ReadonlySet<string> = new Set([
   // guard fires first (it sits earlier in `business[]`), so this entry is what
   // the RESUMED anchor lands on, never a way around the confirm.
   "order.reorder.request",
+  // LE2-023 — same shape as the anchor above: reachable ONLY after
+  // `confirmSwapForCoupon` has parked it and the customer's "sim" resumed it
+  // with a receipt. On an unconfirmed turn that guard fires first (it sits
+  // earlier in `business[]`), so this entry is what the RESUMED anchor lands on,
+  // never a way around the confirm.
+  "order.coupon.swap.request",
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",
@@ -1635,6 +1788,10 @@ export const ordersPolicyBundle: PolicyBundle<
     gatePaidCancel,
     escalateLargeCancel,
     confirmLargeTicket,
+    // LE2-023 — BEFORE the EXECUTE producers (see the guard's own ordering
+    // note): `executeW5Kinds` matches `order.coupon.swap.request` too, and
+    // first-non-null wins, so behind it the swap would run without asking.
+    confirmSwapForCoupon,
     // FE-T05 — after requireLegalStatusTransition (stateGuards) already REFUSEd
     // an illegal/terminal transition; a legal-but-GUESSED target still needs
     // explicit confirmation before it can execute.

@@ -158,6 +158,61 @@ export function refuseOwnershipDenied(): Refusal {
   )
 }
 
+/**
+ * LE2-023 — the swap-for-coupon ask for a coupon that is not usable, or that we
+ * could not check at all.
+ *
+ * ── WHY ONE SENTENCE FOR TWO DIFFERENT FACTS ────────────────────────────────
+ *
+ * `couponIsValid: false` means the store told us this code is not usable;
+ * ABSENT means the lookup never completed. Those are genuinely different facts
+ * (Inv 7, and `coupon-price-projection.ts` keeps them apart precisely so this
+ * Pack never claims the first when only the second is true) — but they are not
+ * different SENTENCES, because the only honest thing this text may assert is
+ * what we could establish about OURSELVES, not about the coupon. "Não consegui
+ * confirmar esse cupom" is true in both worlds; "esse cupom é inválido" is a
+ * claim about the store that is only true in one of them, and it is the one a
+ * customer would act on by throwing away a coupon that works.
+ *
+ * So the distinction lives where it can be acted on — in the projection, in the
+ * facts, and in the workflow's own pre-check templates, which speak before any
+ * envelope exists — and this guard-level refusal, which is the FAIL-SAFE for a
+ * coupon that went bad between the confirm and the customer's "sim", says only
+ * what it can stand behind.
+ */
+export function refuseCouponNotUsable(): Refusal {
+  return refuse(
+    "STATE",
+    "order.coupon.not_usable",
+    "Não consegui confirmar esse cupom agora, então não cancelei nada. Quer tentar outro código?",
+  )
+}
+
+/**
+ * LE2-023 — the coupon is usable and this system still cannot say what the
+ * rebuilt basket would cost.
+ *
+ * A REAL state, not a defensive stub: a `buyget` promotion, one carrying
+ * targeting rules, and a fixed amount in a non-BRL currency are all perfectly
+ * valid coupons whose whole-basket arithmetic "total − desconto" simply does not
+ * compute (see `couponDiscountInCentavos`). Its own code and sentence because
+ * the customer's next move differs from every other refusal here: nothing is
+ * wrong with their coupon, and the thing that cannot be done is the SWAP, so
+ * pointing them at checkout — where the store itself applies the promotion
+ * correctly — is the useful answer rather than a dead end.
+ *
+ * Kept apart from `order.coupon.not_usable` above for exactly the reason that
+ * one merges its two inputs: there the sentences would have been the same, here
+ * they are not.
+ */
+export function refuseSwapTotalUnknown(): Refusal {
+  return refuse(
+    "STATE",
+    "order.coupon.swap.total_unknown",
+    "Esse cupom é válido, mas não consigo calcular o total do pedido novo com ele — então não cancelei nada. Dá pra aplicar ele na hora de finalizar um pedido novo.",
+  )
+}
+
 export function refuseSlotsIncomplete(): Refusal {
   return refuse(
     "STATE",

@@ -1,0 +1,81 @@
+{
+  "fixture": "workflow-runtime-shape.confirm-coverage-unstated",
+  "targets": "workflow-runtime-shape/confirm-coverage-unstated",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/confirm-coverage-unstated"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 44,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 14,
+      "diagnostics": 2
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "confirm-coverage-unstated",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "activities.step.confirmCoveredBy.statesFacts",
+      "message": "claims the whole-workflow confirm covers a guard stating \"orderAmount\", but `confirm.statesFacts` does not declare it. A confirm can only cover a question it actually asked — otherwise the customer approves one sentence and a governed mutation runs on the strength of a different one."
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "confirm-coverage-unstated",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "activities.step.confirmCoveredBy.statesFacts",
+      "message": "claims the whole-workflow confirm covers a guard stating \"refundConsequence\", but `confirm.statesFacts` does not declare it. A confirm can only cover a question it actually asked — otherwise the customer approves one sentence and a governed mutation runs on the strength of a different one."
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/confirm-coverage-unstated: workflow:conformance.workflow.runtime · activities.step.confirmCoveredBy.statesFacts — claims the whole-workflow confirm covers a guard stating \"orderAmount\", but `confirm.statesFacts` does not declare it. A confirm can only cover a question it actually asked — otherwise the customer approves one sentence and a governed mutation runs on the strength of a different one.",
+    "workflow-runtime-shape/confirm-coverage-unstated: workflow:conformance.workflow.runtime · activities.step.confirmCoveredBy.statesFacts — claims the whole-workflow confirm covers a guard stating \"refundConsequence\", but `confirm.statesFacts` does not declare it. A confirm can only cover a question it actually asked — otherwise the customer approves one sentence and a governed mutation runs on the strength of a different one."
+  ]
+}

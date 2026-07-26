@@ -1,13 +1,13 @@
 {
-  "fixture": "workflow-runtime-shape.compensator-not-terminal",
-  "targets": "workflow-runtime-shape/compensator-not-terminal",
+  "fixture": "workflow-runtime-shape.confirm-coverage-fact-unknown",
+  "targets": "workflow-runtime-shape/confirm-coverage-fact-unknown",
   "ok": false,
   "capabilities": 2,
   "externalReferences": 0,
   "aliases": 0,
   "workflows": 1,
   "rulesEmitted": [
-    "workflow-runtime-shape/compensator-not-terminal"
+    "workflow-runtime-shape/confirm-coverage-fact-unknown"
   ],
   "passes": [
     {
@@ -47,27 +47,26 @@
     },
     {
       "pass": "workflow-shape",
-      "checked": 24,
+      "checked": 22,
       "diagnostics": 0
     },
     {
       "pass": "workflow-runtime-shape",
-      "checked": 16,
+      "checked": 14,
       "diagnostics": 1
     }
   ],
   "diagnostics": [
     {
       "pass": "workflow-runtime-shape",
-      "rule": "compensator-not-terminal",
+      "rule": "confirm-coverage-fact-unknown",
       "severity": "error",
       "object": "workflow:conformance.workflow.runtime",
-      "field": "activities[0].compensation.by",
-      "message": "names \"undo\" as its compensator, but \"undo\" declares a compensator of its own. That asks what undoes the undo, and the regress has no authored end — so it has to end here, at the build. A compensator must declare `{terminal: \"irreversible\" | \"harmless\", why: \"…\"}`.",
-      "reference": "undo"
+      "field": "confirm.statesFacts",
+      "message": "names \"theCustomerWasToldEverything\", which is not a member of WORKFLOW_CONFIRM_FACTS. A confirm may only declare facts the vocabulary knows, or a coverage over it could be neither true nor false."
     }
   ],
   "formatted": [
-    "workflow-runtime-shape/compensator-not-terminal: workflow:conformance.workflow.runtime · activities[0].compensation.by — names \"undo\" as its compensator, but \"undo\" declares a compensator of its own. That asks what undoes the undo, and the regress has no authored end — so it has to end here, at the build. A compensator must declare `{terminal: \"irreversible\" | \"harmless\", why: \"…\"}`."
+    "workflow-runtime-shape/confirm-coverage-fact-unknown: workflow:conformance.workflow.runtime · confirm.statesFacts — names \"theCustomerWasToldEverything\", which is not a member of WORKFLOW_CONFIRM_FACTS. A confirm may only declare facts the vocabulary knows, or a coverage over it could be neither true nor false."
   ]
 }

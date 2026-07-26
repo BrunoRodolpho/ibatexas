@@ -97,6 +97,13 @@ export const SLOT_SPECS = [
   // omitted. `scope: "both"` because reachability is independent of how richly
   // a capability's chat metadata is authored — see the field's own doc.
   { name: "workflowScoped", kind: "true-literal", scope: "both", required: false },
+  // LE2-023 — the ESCALATE-band declaration. Same `"true-literal"` + optional
+  // shape as the two flags above and for the same reason. Its consumer is the
+  // `escalated-outcome-template-missing` rule; its maintenance contract and the
+  // reason it is review-enforced rather than gate-enforced are documented on the
+  // field itself (a pack's guards are opaque to the catalog, and a synthetic
+  // probe would be vacuous enforcement rather than enforcement).
+  { name: "escalatable", kind: "true-literal", scope: "both", required: false },
   // `legacyNames` is REQUIRED on the chat tier (`ChatCapabilityDefinition`
   // narrows it) and optional on the identity tier (FE-T21's two structurally
   // grounded exceptions). The contract is expressed per-tier below.
