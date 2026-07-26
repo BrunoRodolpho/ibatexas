@@ -5,6 +5,7 @@
   "capabilities": 1,
   "externalReferences": 1,
   "aliases": 0,
+  "workflows": 0,
   "rulesEmitted": [
     "external-references/external-reference-no-consumer"
   ],
@@ -16,7 +17,7 @@
     },
     {
       "pass": "slot-dataflow",
-      "checked": 20,
+      "checked": 21,
       "diagnostics": 0
     },
     {
@@ -43,6 +44,11 @@
       "pass": "external-references",
       "checked": 1,
       "diagnostics": 1
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
     }
   ],
   "diagnostics": [

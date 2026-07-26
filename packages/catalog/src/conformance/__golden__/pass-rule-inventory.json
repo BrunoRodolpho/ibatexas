@@ -93,7 +93,24 @@
         "external-reference-no-consumer",
         "external-reference-unknown-store"
       ]
+    },
+    {
+      "pass": "workflow-shape",
+      "sources": [
+        "passes/workflow-shape.ts"
+      ],
+      "rules": [
+        "activity-id-duplicated",
+        "activity-param-undeclared",
+        "activity-sequence-empty",
+        "capability-reference-dangling",
+        "confirm-template-missing",
+        "outcome-template-missing",
+        "workflow-id-duplicated",
+        "workflow-scoped-kind-advertised",
+        "workflow-scoped-reference-unreachable"
+      ]
     }
   ],
-  "ruleCount": 38
+  "ruleCount": 47
 }

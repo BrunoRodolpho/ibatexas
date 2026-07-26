@@ -1,0 +1,68 @@
+{
+  "fixture": "workflow-shape.confirm-template-missing",
+  "targets": "workflow-shape/confirm-template-missing",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/confirm-template-missing"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 11,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "confirm-template-missing",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "confirm.template",
+      "message": "names the template \"absent\", which the workflow does not declare. The confirm point is the ONE moment the customer is shown what they are approving; without its template the runtime would have nothing to render and the only remaining source of that sentence would be model prose.",
+      "reference": "absent"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/confirm-template-missing: workflow:conformance.workflow.linear · confirm.template — names the template \"absent\", which the workflow does not declare. The confirm point is the ONE moment the customer is shown what they are approving; without its template the runtime would have nothing to render and the only remaining source of that sentence would be model prose."
+  ]
+}

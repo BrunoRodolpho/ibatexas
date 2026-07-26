@@ -5,6 +5,7 @@
   "capabilities": 1,
   "externalReferences": 0,
   "aliases": 0,
+  "workflows": 0,
   "rulesEmitted": [
     "slot-dataflow/missing-required-slot"
   ],
@@ -16,7 +17,7 @@
     },
     {
       "pass": "slot-dataflow",
-      "checked": 25,
+      "checked": 26,
       "diagnostics": 2
     },
     {
@@ -42,6 +43,11 @@
     {
       "pass": "external-references",
       "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
       "diagnostics": 0
     }
   ],

@@ -1,0 +1,67 @@
+{
+  "fixture": "workflow-shape.activity-sequence-empty",
+  "targets": "workflow-shape/activity-sequence-empty",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/activity-sequence-empty"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 9,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "activity-sequence-empty",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "activities",
+      "message": "declares no activities, so the workflow would ask the customer to confirm and then execute nothing. A confirmation that buys nothing is worse than no workflow: it teaches the customer their approval is meaningless."
+    }
+  ],
+  "formatted": [
+    "workflow-shape/activity-sequence-empty: workflow:conformance.workflow.linear · activities — declares no activities, so the workflow would ask the customer to confirm and then execute nothing. A confirmation that buys nothing is worse than no workflow: it teaches the customer their approval is meaningless."
+  ]
+}

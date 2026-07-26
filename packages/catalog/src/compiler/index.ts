@@ -62,6 +62,8 @@ import {
   type ExternalReferenceDeclaration,
 } from "../external-references.js"
 import { CATALOG_VERSION } from "../version.js"
+import { WORKFLOW_DEFINITIONS } from "../workflows/definitions.js"
+import type { WorkflowDefinition } from "../workflows/types.js"
 import {
   CATALOG_PASS_IDS,
   formatDiagnostic,
@@ -77,6 +79,7 @@ import { runReferentialIntegrityPass } from "./passes/referential-integrity.js"
 import { runSafetyImplicationEdgesPass } from "./passes/safety-implication-edges.js"
 import { runSlotDataflowPass } from "./passes/slot-dataflow.js"
 import { runTerminalCoveragePass } from "./passes/terminal-coverage.js"
+import { runWorkflowShapePass } from "./passes/workflow-shape.js"
 
 export {
   aliasObjectName,
@@ -116,23 +119,25 @@ export { runExternalReferencesPass } from "./passes/external-references.js"
 export { runSafetyImplicationEdgesPass } from "./passes/safety-implication-edges.js"
 export { runSlotDataflowPass } from "./passes/slot-dataflow.js"
 export { runTerminalCoveragePass } from "./passes/terminal-coverage.js"
+export { runWorkflowShapePass, workflowObjectName } from "./passes/workflow-shape.js"
 export { SLOT_SPECS, type SlotKind, type SlotSpec } from "./slots.js"
 
 /**
  * One registered static pass.
  *
  * A pass receives the WHOLE authored catalog — the capability definitions, the
- * external-reference declarations and the alias gazetteer — and takes what it
- * needs. Most ignore the trailing arguments entirely (JS arity makes that
- * free, and a one-argument pass function stays assignable), which keeps WHICH
- * table a pass reads visible in its signature rather than buried in a shared
- * context object.
+ * external-reference declarations, the alias gazetteer and the workflow corpus
+ * — and takes what it needs. Most ignore the trailing arguments entirely (JS
+ * arity makes that free, and a one-argument pass function stays assignable),
+ * which keeps WHICH table a pass reads visible in its signature rather than
+ * buried in a shared context object.
  *
- * Arity only lets a pass drop TRAILING arguments, so a pass that wants only
- * the last one cannot express itself that way. `alias-gazetteer` is that case:
- * it reads the gazetteer and nothing else, so it is registered through a small
+ * Arity only lets a pass drop TRAILING arguments, so a pass that wants only a
+ * later one cannot express itself that way. `alias-gazetteer` is that case: it
+ * reads the gazetteer and nothing else, so it is registered through a small
  * adapter below rather than being given two parameters it would have to name
- * and ignore.
+ * and ignore. `workflow-shape` reads the FIRST and the LAST, so it names the
+ * middle one and ignores it.
  */
 export interface CatalogPass {
   readonly id: CatalogPassId
@@ -142,6 +147,7 @@ export interface CatalogPass {
     definitions: readonly CapabilityDefinition[],
     externalReferences: readonly ExternalReferenceDeclaration[],
     aliases: readonly AliasEdge[],
+    workflows: readonly WorkflowDefinition[],
   ) => CatalogPassResult
 }
 
@@ -190,6 +196,12 @@ export const CATALOG_PASSES = [
     summary: "every declared external reference is well-formed and consumer-attributed",
     run: runExternalReferencesPass,
   },
+  {
+    id: "workflow-shape",
+    summary:
+      "every workflow's references resolve, its params bind, its outcomes render, and the workflow-scoped access class is coherent",
+    run: runWorkflowShapePass,
+  },
 ] as const satisfies readonly CatalogPass[]
 
 // Compile-time proof that every declared pass id is REGISTERED. A pass added
@@ -211,6 +223,8 @@ export interface CatalogCompileResult {
   readonly externalReferences: number
   /** How many alias edges were compiled (LE2-025a). */
   readonly aliases: number
+  /** How many workflow definitions were compiled (LE2-020). */
+  readonly workflows: number
   /** Per-pass results, in {@link CATALOG_PASSES} order. */
   readonly passes: readonly CatalogPassResult[]
   /** Every diagnostic, flattened and stable-ordered. */
@@ -223,21 +237,34 @@ export interface CatalogCompileResult {
  * what makes the same function usable from a build gate, the CLI, and a
  * fixture test.
  *
- * `externalReferences` and `aliases` default to the REAL authored tables
- * rather than to `[]`. The asymmetry with `definitions` is deliberate and
- * fail-closed: a production caller that forgot an argument would otherwise
+ * `externalReferences`, `aliases` and `workflows` default to the REAL authored
+ * tables rather than to `[]`. The asymmetry with `definitions` is deliberate
+ * and fail-closed: a production caller that forgot an argument would otherwise
  * compile zero rows and report that pass green over nothing — a vacuous gate,
  * the exact failure mode `checked` exists to expose. Fixtures pass their own
  * (usually empty) tables explicitly, so the defaults never leak real data into
  * a pinned golden.
+ *
+ * The workflow default is `WORKFLOW_DEFINITIONS`, which is EMPTY in v0 (see
+ * `../workflows/definitions.ts` for why). That is not a vacuous gate: the
+ * `workflow-shape` pass's access-class rule reads the capability definitions,
+ * so it has real work — and a non-zero `checked` — on a catalog with no
+ * workflow authored.
  */
 export function compileCatalog(
   definitions: readonly CapabilityDefinition[],
   externalReferences: readonly ExternalReferenceDeclaration[] = EXTERNAL_REFERENCES,
   aliases: readonly AliasEdge[] = ALIAS_GAZETTEER,
+  workflows: readonly WorkflowDefinition[] = WORKFLOW_DEFINITIONS,
 ): CatalogCompileResult {
-  const passes = CATALOG_PASSES.map((pass) => {
-    const result = pass.run(definitions, externalReferences, aliases)
+  // Widened to the declared interface on purpose. `CATALOG_PASSES` is
+  // `as const satisfies readonly CatalogPass[]`, so its inferred element type
+  // keeps each pass's own NARROW arity (most declare fewer parameters than the
+  // contract allows — see `CatalogPass`'s doc). Calling through the literal type
+  // would therefore be an arity error at the widest call site; calling through
+  // `CatalogPass` is the contract every pass was checked against by `satisfies`.
+  const passes = (CATALOG_PASSES as readonly CatalogPass[]).map((pass) => {
+    const result = pass.run(definitions, externalReferences, aliases, workflows)
     return { ...result, diagnostics: sortDiagnostics(result.diagnostics) }
   })
   const diagnostics = sortDiagnostics(passes.flatMap((p) => p.diagnostics))
@@ -247,6 +274,7 @@ export function compileCatalog(
     capabilities: definitions.length,
     externalReferences: externalReferences.length,
     aliases: aliases.length,
+    workflows: workflows.length,
     passes,
     diagnostics,
   }
@@ -259,6 +287,7 @@ export function formatCatalogReport(result: CatalogCompileResult): string {
       `${result.capabilities} capability definition(s), ` +
       `${result.externalReferences} external reference(s), ` +
       `${result.aliases} alias edge(s), ` +
+      `${result.workflows} workflow(s), ` +
       `${result.passes.length} static pass(es), 0 diagnostics.`
     : `[catalog] catalog check FAILED — v${result.catalogVersion}: ` +
       `${result.diagnostics.length} diagnostic(s) across ` +
@@ -302,8 +331,9 @@ export function assertCatalogCompiles(
   definitions: readonly CapabilityDefinition[],
   externalReferences?: readonly ExternalReferenceDeclaration[],
   aliases?: readonly AliasEdge[],
+  workflows?: readonly WorkflowDefinition[],
 ): CatalogCompileResult {
-  const result = compileCatalog(definitions, externalReferences, aliases)
+  const result = compileCatalog(definitions, externalReferences, aliases, workflows)
   if (!result.ok) throw new CatalogCompileError(result)
   return result
 }

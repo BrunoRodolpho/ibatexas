@@ -1,0 +1,67 @@
+{
+  "fixture": "workflow-shape.workflow-scoped-kind-advertised",
+  "targets": "workflow-shape/workflow-scoped-kind-advertised",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "rulesEmitted": [
+    "workflow-shape/workflow-scoped-kind-advertised"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 23,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "workflow-scoped-kind-advertised",
+      "severity": "error",
+      "object": "capability:conformance.workflow.step",
+      "field": "plannerAdvertisedBy",
+      "message": "is declared workflow-scoped AND advertised by a capability planner. The two say opposite things about whether the parser may propose this kind: workflow-scoped means it is never advertised and never accepted from a parse, while plannerAdvertisedBy records that a planner does put it in the advertised roster. Settle it here — either the kind is a free verb or it is workflow-invocable, and the runtime must not have to guess."
+    }
+  ],
+  "formatted": [
+    "workflow-shape/workflow-scoped-kind-advertised: capability:conformance.workflow.step · plannerAdvertisedBy — is declared workflow-scoped AND advertised by a capability planner. The two say opposite things about whether the parser may propose this kind: workflow-scoped means it is never advertised and never accepted from a parse, while plannerAdvertisedBy records that a planner does put it in the advertised roster. Settle it here — either the kind is a free verb or it is workflow-invocable, and the runtime must not have to guess."
+  ]
+}

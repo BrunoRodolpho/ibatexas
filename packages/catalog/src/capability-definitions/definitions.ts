@@ -681,7 +681,20 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     guardRefs: ORDERS_GUARD_REFS,
     refusalCode: "order.default.deny",
   },
-  { kind: "order.reorder", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-placed"] },
+  // LE2-020 — the first member of the WORKFLOW-SCOPED ACCESS CLASS (LE2
+  // Implementation Decision 15: "the reorder orchestration becomes
+  // journey-invocable … standalone reordering rides the reorder-last journey").
+  // Reordering is orchestration-shaped: as a free verb it silently replaces a
+  // customer's cart with a copy of an old order, which is why no planner has
+  // ever advertised it and its real handler (`reorder` in `@ibatexas/tools`) has
+  // never been registered. `workflowScoped: true` turns that de-facto state into
+  // a DECLARED, enforced one — the planner now subtracts it structurally rather
+  // than it merely happening to be absent from every planner's roster.
+  //
+  // Zero behaviour change today: the kind was already unadvertised and had no
+  // registered tool, and v0 ships no workflow that invokes it (see
+  // `../workflows/definitions.ts`).
+  { kind: "order.reorder", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-placed"], workflowScoped: true },
   { kind: "order.projection.create", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // Ops-foreign-advertised ONLY (BKL-090): absent from orders' OWN planner
   // literal — verified — advertised solely via pack-ops' staff allowlist.

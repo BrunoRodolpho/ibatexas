@@ -122,6 +122,38 @@ export {
 } from "./alias-gazetteer.js"
 
 export {
+  FIXTURE_LINEAR_WORKFLOW,
+  FIXTURE_WORKFLOW_ID,
+  FIXTURE_WORKFLOWS,
+} from "./workflows/fixtures.js"
+
+export { WORKFLOW_DEFINITIONS } from "./workflows/definitions.js"
+
+export {
+  findWorkflow,
+  workflowActivityKinds,
+  workflowOutcomeText,
+  workflowScopedKinds,
+  workflowSelectionKinds,
+  workflowSlotNames,
+  workflowTemplateText,
+} from "./workflows/projections.js"
+
+export {
+  WORKFLOW_OUTCOMES,
+  type WorkflowActivity,
+  type WorkflowConfirmPoint,
+  type WorkflowDefinition,
+  type WorkflowMatcher,
+  type WorkflowOutcome,
+  type WorkflowParam,
+  type WorkflowParamSource,
+  type WorkflowPayloadBinding,
+  type WorkflowSelection,
+  type WorkflowTemplate,
+} from "./workflows/types.js"
+
+export {
   CLAIM_CLASS_REFERENCES,
   isClaimClassReference,
   isRegistryClaimTypeReference,

@@ -33,4 +33,14 @@
 // canonicalize is part of that definition — the day the runtime half reads
 // this table, a turn compiled under v3 and one under v4 are not replayable
 // against each other.
-export const CATALOG_VERSION: number = 4
+// v5 (LE2-020) — workflows: `src/workflows/` (the definition shape, the corpus,
+// and its projections), a new optional `workflowScoped` slot on the capability
+// contract, `order.reorder` declared into the workflow-scoped access class, and
+// the `workflow-shape` compiler pass. The README's FIRST trigger fires twice
+// over: a field was added to the capability contract, and a capability's fields
+// changed. It matters more than the usual bump: an instance PINS the catalog
+// version it started under, so this serial is what a mid-flight workflow
+// resumes against — and a turn compiled while `order.reorder` was still an
+// ordinary unadvertised kind is not replayable against one compiled after it
+// became workflow-scoped.
+export const CATALOG_VERSION: number = 5

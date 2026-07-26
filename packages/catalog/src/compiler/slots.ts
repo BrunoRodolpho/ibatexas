@@ -90,6 +90,13 @@ export const SLOT_SPECS = [
   { name: "successClaimLinks", kind: "string-array", scope: "both", required: false },
   { name: "adminLabel", kind: "string", scope: "both", required: false },
   { name: "opsForbiddenDestructive", kind: "true-literal", scope: "both", required: false },
+  // LE2-020 — the workflow-scoped access class. `"true-literal"` + optional,
+  // exactly like `opsForbiddenDestructive` above and for the same reason: the
+  // field is a FLAG whose only meaningful value is `true`, so `false` is not a
+  // weaker statement, it is a slot that says nothing and should have been
+  // omitted. `scope: "both"` because reachability is independent of how richly
+  // a capability's chat metadata is authored — see the field's own doc.
+  { name: "workflowScoped", kind: "true-literal", scope: "both", required: false },
   // `legacyNames` is REQUIRED on the chat tier (`ChatCapabilityDefinition`
   // narrows it) and optional on the identity tier (FE-T21's two structurally
   // grounded exceptions). The contract is expressed per-tier below.

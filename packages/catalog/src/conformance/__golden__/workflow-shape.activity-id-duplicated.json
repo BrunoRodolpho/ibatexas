@@ -1,0 +1,68 @@
+{
+  "fixture": "workflow-shape.activity-id-duplicated",
+  "targets": "workflow-shape/activity-id-duplicated",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/activity-id-duplicated"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 13,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "activity-id-duplicated",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "activities[1].id",
+      "message": "re-uses the activity id \"step\". Activity ids are the join key of the per-step trace record, so a duplicate does not lose a step — it makes an operator's step drill-in silently attribute two different mutations to one row.",
+      "reference": "step"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/activity-id-duplicated: workflow:conformance.workflow.linear · activities[1].id — re-uses the activity id \"step\". Activity ids are the join key of the per-step trace record, so a duplicate does not lose a step — it makes an operator's step drill-in silently attribute two different mutations to one row."
+  ]
+}

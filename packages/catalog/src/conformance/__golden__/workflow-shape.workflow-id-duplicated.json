@@ -1,0 +1,68 @@
+{
+  "fixture": "workflow-shape.workflow-id-duplicated",
+  "targets": "workflow-shape/workflow-id-duplicated",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 2,
+  "rulesEmitted": [
+    "workflow-shape/workflow-id-duplicated"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 20,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "workflow-id-duplicated",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "id",
+      "message": "re-uses the workflow id \"conformance.workflow.linear\". The id is what the parser selects and what an instance pins itself to, so two definitions under one id means a customer's selection resolves to whichever one the corpus happens to list first.",
+      "reference": "conformance.workflow.linear"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/workflow-id-duplicated: workflow:conformance.workflow.linear · id — re-uses the workflow id \"conformance.workflow.linear\". The id is what the parser selects and what an instance pins itself to, so two definitions under one id means a customer's selection resolves to whichever one the corpus happens to list first."
+  ]
+}

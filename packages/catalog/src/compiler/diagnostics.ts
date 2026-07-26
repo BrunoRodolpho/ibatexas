@@ -44,6 +44,12 @@ export const CATALOG_PASS_IDS = [
   "safety-implication-edges",
   "terminal-coverage",
   "external-references",
+  // LE2-020 — last because it is the only pass that reads a table BUILT ON the
+  // others' verdicts: a workflow routes over capabilities, so a dangling
+  // capability reference here is only meaningful once the capability definitions
+  // themselves are known to be coherent. Reporting it after them puts the cause
+  // above the consequence in a build log.
+  "workflow-shape",
 ] as const
 
 /** One static pass's stable id. */

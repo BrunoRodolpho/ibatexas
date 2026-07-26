@@ -5,6 +5,7 @@
   "capabilities": 1,
   "externalReferences": 0,
   "aliases": 3,
+  "workflows": 0,
   "rulesEmitted": [],
   "passes": [
     {
@@ -14,7 +15,7 @@
     },
     {
       "pass": "slot-dataflow",
-      "checked": 20,
+      "checked": 21,
       "diagnostics": 0
     },
     {
@@ -40,6 +41,11 @@
     {
       "pass": "external-references",
       "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
       "diagnostics": 0
     }
   ],

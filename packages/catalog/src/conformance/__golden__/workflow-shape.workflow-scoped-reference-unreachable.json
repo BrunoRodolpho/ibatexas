@@ -1,0 +1,78 @@
+{
+  "fixture": "workflow-shape.workflow-scoped-reference-unreachable",
+  "targets": "workflow-shape/workflow-scoped-reference-unreachable",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/workflow-scoped-reference-unreachable"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 43,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 11,
+      "diagnostics": 2
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "workflow-scoped-reference-unreachable",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "matchers[0].capability",
+      "message": "references the WORKFLOW-SCOPED kind \"conformance.workflow.anchor\" from a parse-reachable position. A workflow-scoped kind is never advertised to the parser and never accepted from a parse, so a matcher gated on one can never hold and a selection anchored on one can never be minted — the workflow would be permanently unreachable. Use an ordinary capability here and invoke the scoped kind from an activity.",
+      "reference": "conformance.workflow.anchor"
+    },
+    {
+      "pass": "workflow-shape",
+      "rule": "workflow-scoped-reference-unreachable",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "selection.capability",
+      "message": "references the WORKFLOW-SCOPED kind \"conformance.workflow.anchor\" from a parse-reachable position. A workflow-scoped kind is never advertised to the parser and never accepted from a parse, so a matcher gated on one can never hold and a selection anchored on one can never be minted — the workflow would be permanently unreachable. Use an ordinary capability here and invoke the scoped kind from an activity.",
+      "reference": "conformance.workflow.anchor"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/workflow-scoped-reference-unreachable: workflow:conformance.workflow.linear · matchers[0].capability — references the WORKFLOW-SCOPED kind \"conformance.workflow.anchor\" from a parse-reachable position. A workflow-scoped kind is never advertised to the parser and never accepted from a parse, so a matcher gated on one can never hold and a selection anchored on one can never be minted — the workflow would be permanently unreachable. Use an ordinary capability here and invoke the scoped kind from an activity.",
+    "workflow-shape/workflow-scoped-reference-unreachable: workflow:conformance.workflow.linear · selection.capability — references the WORKFLOW-SCOPED kind \"conformance.workflow.anchor\" from a parse-reachable position. A workflow-scoped kind is never advertised to the parser and never accepted from a parse, so a matcher gated on one can never hold and a selection anchored on one can never be minted — the workflow would be permanently unreachable. Use an ordinary capability here and invoke the scoped kind from an activity."
+  ]
+}

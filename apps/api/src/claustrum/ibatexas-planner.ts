@@ -141,6 +141,18 @@ import {
   READ_TOOL_SCHEMAS_BY_NAME,
   sanitizeReadToolInput,
 } from "./language-engine/read-tool-schemas.js";
+import type { AdvertisedWorkflow, WorkflowRuntime } from "./workflow/workflow-runtime.js";
+import {
+  isWorkflowScopedKind,
+  withoutWorkflowScopedKinds,
+} from "./workflow/workflow-access.js";
+import {
+  isStartWorkflowInput,
+  sanitizeWorkflowSlots,
+  START_WORKFLOW_TOOL,
+  startWorkflowToolDefinition,
+  WORKFLOW_INSTANCE_PAYLOAD_KEY,
+} from "./workflow/workflow-surface.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -201,6 +213,9 @@ type ExtractionFailureReason = "malformed_tool_call" | "empty_completion" | "com
 /** Marker `translateToolCalls` pushes to `dropped` for a malformed
  *  `express_intent` call — checked below to decide whether to REFUSE. */
 const MALFORMED_EXPRESS_INTENT_MARKER = `${EXPRESS_INTENT_TOOL}(malformed)`;
+
+/** LE2-020 — the `start_workflow` twin of the marker above. */
+const MALFORMED_START_WORKFLOW_MARKER = `${START_WORKFLOW_TOOL}(malformed)`;
 
 function buildExtractionFailureEnvelope(
   reason: ExtractionFailureReason,
@@ -486,6 +501,21 @@ export interface IbatexasPlannerDeps {
    * Absent ⟹ no canonicalization at all ⟹ byte-identical to the pre-alias planner.
    */
   readonly aliasSeam?: FunnelAliasSeam;
+  /**
+   * LE2-020 — the WORKFLOW RUNTIME. Supplies this turn's closed workflow
+   * surface (`advertise`) and instantiates the one the parser selects
+   * (`select`). Absent ⟹ no workflow is ever advertised and a `start_workflow`
+   * call is dropped like any unknown tool ⟹ byte-identical to the pre-workflow
+   * planner, which is how the ops plane, the agent plane and every existing
+   * unit test opt out without a flag.
+   *
+   * NOTE the runtime does NOT carry the access class: that is subtracted from
+   * the roster unconditionally (`workflow/workflow-access.ts`), because a
+   * composition WITHOUT a workflow runtime must still refuse to emit a
+   * workflow-scoped kind — otherwise opting out of workflows would opt into
+   * reaching their private capabilities.
+   */
+  readonly workflowRuntime?: WorkflowRuntime;
 }
 
 /**
@@ -702,6 +732,7 @@ function unionPlans(
 function buildToolSurface(
   plan: CapabilityPlan,
   includeReads = true,
+  workflows: readonly AdvertisedWorkflow[] = [],
 ): CompletionRequest["tools"] {
   const tools: Array<{
     name: string;
@@ -753,6 +784,15 @@ function buildToolSurface(
       },
     });
   }
+
+  // LE2-020 — the WORKFLOW SELECTION SURFACE. Deliberately built HERE, in the
+  // same array as `express_intent`, because this array is exactly what
+  // `buildParseCacheKey` digests: putting the offered workflows inside it is
+  // what makes a parse cached while a workflow was offered unreachable from a
+  // turn where it was not. Absent workflows ⟹ nothing is pushed ⟹ the wire is
+  // byte-identical to pre-LE2-020.
+  const workflowTool = startWorkflowToolDefinition(workflows);
+  if (workflowTool !== undefined) tools.push(workflowTool as (typeof tools)[number]);
 
   if (includeReads) {
     // FE-T13 — per-read-tool extraction schema on the wire. Mirrors the
@@ -840,6 +880,110 @@ function plannerEnvelopeActor(
 }
 
 /**
+ * Turn ONE in-plan `express_intent` call into an envelope, or report why it was
+ * dropped.
+ *
+ * Extracted from {@link translateToolCalls} (LE2-020) because that function now
+ * dispatches over THREE tool shapes, and the per-shape admission rules are the
+ * part a reviewer actually needs to read. Behaviour is unchanged: the same
+ * structural check, the same allowlist check, the same payload filter, the same
+ * `buildEnvelope` arguments, in the same order.
+ */
+function admitExpressIntent(args: {
+  readonly input: unknown;
+  readonly allowed: ReadonlySet<string>;
+  readonly state: CognitiveState;
+  readonly actor: IntentActor;
+  /** LAZY: a dropped call must not consume a nonce, exactly as before the
+   *  extraction (`deriveNonce` is injectable and may be a counting double). */
+  readonly nonce: () => string;
+}): { readonly envelope: IntentEnvelope; readonly capability: string } | { readonly dropped: string } {
+  if (!isExpressIntentInput(args.input)) {
+    // FE-T01 (NIT-1) — the SAME constant the extraction-failure REFUSE check
+    // reads, so producer and consumer cannot drift apart.
+    return { dropped: MALFORMED_EXPRESS_INTENT_MARKER };
+  }
+  const { capability, payload } = args.input;
+  // Defense in depth: never build an envelope for a capability the pack
+  // planners did not authorize this turn, even if the model (or a compromised
+  // prompt) emits one.
+  if (!args.allowed.has(capability)) return { dropped: capability };
+
+  // FE-T11 — the plan-time payload filter (see stripUnauthoredPayloadFields's
+  // doc): the ENFORCEMENT half of the authored extraction schemas, closing the
+  // class of bug where a smuggled key rode the wire unfiltered straight into
+  // buildEnvelope. Runs BEFORE buildEnvelope, unconditionally, for every
+  // capability — a no-op for any capability with no authored schema.
+  const { filtered: filteredPayload, stripped } = stripUnauthoredPayloadFields(
+    capability,
+    payload ?? {},
+  );
+  if (stripped.length > 0) {
+    // SIGNAL — names only, NEVER values (the stripped value could be arbitrary
+    // model-generated text/PII).
+    logger.warn(
+      {
+        component: "planner",
+        event: "express_intent.payload_fields_stripped",
+        turnId: args.state.turnId,
+        capability,
+        strippedFields: stripped,
+      },
+      `planner stripped ${stripped.length} unauthored payload field(s) for "${capability}"`,
+    );
+  }
+  return {
+    envelope: buildEnvelope({
+      kind: capability,
+      payload: filteredPayload ?? {},
+      // Per-turn constant (customer plane: llm/conversation; ops plane:
+      // user/admin:<staffId>/role). `payload` above is the ONLY thing the model
+      // influences — never `actor`.
+      actor: args.actor,
+      taint: "UNTRUSTED",
+      nonce: args.nonce(),
+    }),
+    capability,
+  };
+}
+
+/**
+ * Turn ONE `start_workflow` call into the workflow's ANCHOR envelope, or report
+ * why it was dropped (LE2-020).
+ *
+ * Treated with exactly the suspicion an `express_intent` call gets: structurally
+ * validated, then checked against the CLOSED surface this turn actually offered
+ * (inside `selectWorkflow`), then turned into an ordinary IntentEnvelope so the
+ * kernel adjudicates the selection like any other proposed mutation. Selecting a
+ * workflow grants nothing on its own.
+ */
+function admitWorkflowSelection(args: {
+  readonly input: unknown;
+  readonly selectWorkflow:
+    | ((workflowId: string, slots: unknown) => { readonly kind: string; readonly payload: unknown } | undefined)
+    | undefined;
+  readonly actor: IntentActor;
+  /** LAZY — see {@link admitExpressIntent}. */
+  readonly nonce: () => string;
+}): { readonly envelope: IntentEnvelope; readonly capability: string } | { readonly dropped: string } {
+  if (!isStartWorkflowInput(args.input)) {
+    return { dropped: MALFORMED_START_WORKFLOW_MARKER };
+  }
+  const selected = args.selectWorkflow?.(args.input.workflow, args.input.slots);
+  if (selected === undefined) return { dropped: args.input.workflow };
+  return {
+    envelope: buildEnvelope({
+      kind: selected.kind,
+      payload: selected.payload ?? {},
+      actor: args.actor,
+      taint: "UNTRUSTED",
+      nonce: args.nonce(),
+    }),
+    capability: selected.kind,
+  };
+}
+
+/**
  * Translate the model's tool calls into the planner's outputs (RC-A1): each
  * in-plan `express_intent` becomes an `IntentEnvelope`; a visible read tool is
  * recorded in `readToolCalls`; a malformed/out-of-plan/unknown call is dropped
@@ -862,6 +1006,18 @@ function translateToolCalls(args: {
    */
   readonly actor: IntentActor;
   readonly deriveNonce: (state: CognitiveState, envelopeIndex: number) => string;
+  /**
+   * LE2-020 — instantiate a workflow the model selected, returning the ANCHOR
+   * envelope's kind and payload, or `undefined` when the id is not on this
+   * turn's closed surface (the workflow twin of the `allowed.has(capability)`
+   * check below). Injected rather than reached for, so this function stays a
+   * pure translation over the model's calls plus the turn's allowlists.
+   * Absent ⟹ a `start_workflow` call is dropped like any unknown tool.
+   */
+  readonly selectWorkflow?: (
+    workflowId: string,
+    slots: unknown,
+  ) => { readonly kind: string; readonly payload: unknown } | undefined;
 }): {
   envelopes: IntentEnvelope[];
   capabilities: string[];
@@ -874,65 +1030,37 @@ function translateToolCalls(args: {
   const dropped: string[] = [];
 
   for (const call of args.toolCalls ?? []) {
-    if (call.name === EXPRESS_INTENT_TOOL) {
-      if (!isExpressIntentInput(call.input)) {
-        // FE-T01 (NIT-1) — the SAME constant the extraction-failure REFUSE
-        // check below reads, so producer and consumer cannot drift apart.
-        dropped.push(MALFORMED_EXPRESS_INTENT_MARKER);
-        continue;
+    if (call.name !== EXPRESS_INTENT_TOOL && call.name !== START_WORKFLOW_TOOL) {
+      if (args.visibleReadTools.includes(call.name)) {
+        readToolCalls.push({ name: call.name, input: call.input });
+      } else {
+        dropped.push(call.name);
       }
-      const { capability, payload } = call.input;
-      // Defense in depth: never build an envelope for a capability the
-      // pack planners did not authorize this turn, even if the model
-      // (or a compromised prompt) emits one.
-      if (!args.allowed.has(capability)) {
-        dropped.push(capability);
-        continue;
-      }
-      // FE-T11 — the plan-time payload filter (see stripUnauthoredPayload
-      // Fields's doc): the ENFORCEMENT half of the authored extraction
-      // schemas, closing the class of bug where a smuggled key (e.g. a
-      // hallucinated orderId) rode the wire unfiltered straight into
-      // buildEnvelope. Runs BEFORE buildEnvelope, unconditionally, for every
-      // capability — a no-op for any capability with no authored schema.
-      const { filtered: filteredPayload, stripped } = stripUnauthoredPayloadFields(
-        capability,
-        payload ?? {},
-      );
-      if (stripped.length > 0) {
-        // SIGNAL — names only, NEVER values (the stripped value could be
-        // arbitrary model-generated text/PII): observability for how often a
-        // completion attempts to smuggle an unauthored field past a capability's
-        // narrowed wire schema.
-        logger.warn(
-          {
-            component: "planner",
-            event: "express_intent.payload_fields_stripped",
-            turnId: args.state.turnId,
-            capability,
-            strippedFields: stripped,
-          },
-          `planner stripped ${stripped.length} unauthored payload field(s) for "${capability}"`,
-        );
-      }
-      envelopes.push(
-        buildEnvelope({
-          kind: capability,
-          payload: filteredPayload ?? {},
-          // Per-turn constant (customer plane: llm/conversation; ops plane:
-          // user/admin:<staffId>/role). `payload` above is the ONLY thing the
-          // model influences — never `actor`.
-          actor: args.actor,
-          taint: "UNTRUSTED",
-          nonce: args.deriveNonce(args.state, envelopes.length),
-        }),
-      );
-      capabilities.push(capability);
-    } else if (args.visibleReadTools.includes(call.name)) {
-      readToolCalls.push({ name: call.name, input: call.input });
-    } else {
-      dropped.push(call.name);
+      continue;
     }
+
+    const admitted =
+      call.name === EXPRESS_INTENT_TOOL
+        ? admitExpressIntent({
+            input: call.input,
+            allowed: args.allowed,
+            state: args.state,
+            actor: args.actor,
+            nonce: () => args.deriveNonce(args.state, envelopes.length),
+          })
+        : admitWorkflowSelection({
+            input: call.input,
+            selectWorkflow: args.selectWorkflow,
+            actor: args.actor,
+            nonce: () => args.deriveNonce(args.state, envelopes.length),
+          });
+
+    if ("dropped" in admitted) {
+      dropped.push(admitted.dropped);
+      continue;
+    }
+    envelopes.push(admitted.envelope);
+    capabilities.push(admitted.capability);
   }
 
   return { envelopes, capabilities, readToolCalls, dropped };
@@ -1089,11 +1217,44 @@ export function createIbatexasPlanner(
         state: { tenantId: state.tenantId, locale: state.locale },
         context: {},
       };
-      const plan = unionPlans(
+      const authorized = unionPlans(
         deps.capabilityPlanners,
         derived.state,
         derived.context,
       );
+
+      // ── LE2-020 · THE WORKFLOW-SCOPED ACCESS CLASS · ONE SUBTRACTION ───────
+      // Immediately after the capability planners decide what this turn may
+      // propose, and BEFORE anything reads that roster. Both halves of the
+      // access class fall out of this single edit, because everything
+      // downstream derives from `plan.allowedIntents`:
+      //
+      //   NEVER ADVERTISED — `buildToolSurface` builds the `capability` enum
+      //                      from it (via `scopedPlan`), so the kind is not on
+      //                      the wire and the model is never invited to propose
+      //                      it.
+      //   NEVER ACCEPTED   — `allowed` (below) is built from it, so
+      //                      `translateToolCalls` drops the kind even if a
+      //                      completion emits it anyway — which is the half
+      //                      that actually holds, since "the model cannot see
+      //                      it" is a property of a prompt, not a boundary.
+      //
+      // Upstream of L2's retriever on purpose: retrieval can only narrow what
+      // it is given, so a workflow-scoped kind cannot re-enter through a stale
+      // retrieval index. See `workflow/workflow-access.ts`.
+      const plan: CapabilityPlan = {
+        ...authorized,
+        allowedIntents: [...withoutWorkflowScopedKinds(authorized.allowedIntents)],
+      };
+
+      // The workflows this turn OFFERS, gated on the roster above — so a
+      // workflow can only ever be offered to someone who could already have
+      // asked for its anchor capability directly. Computed from `authorized`
+      // (pre-subtraction) is deliberately NOT done: a matcher gated on a
+      // workflow-scoped kind can never hold, which the compiler rejects
+      // (`workflow-scoped-reference-unreachable`) rather than papering over.
+      const offeredWorkflows: readonly AdvertisedWorkflow[] =
+        deps.workflowRuntime?.advertise(plan.allowedIntents) ?? [];
 
       // ── LE2-008 · L2 · THE FUNNEL'S THIRD QUESTION ─────────────────────────
       // Asked AFTER the capability planners have decided what this turn is even
@@ -1123,7 +1284,7 @@ export function createIbatexasPlanner(
 
       // Nothing proposable and nothing to read → skip the LLM entirely; the
       // response phase still runs (envelopes:[] is a valid "respond-only" plan).
-      const tools = buildToolSurface(scopedPlan);
+      const tools = buildToolSurface(scopedPlan, true, offeredWorkflows);
       if (tools === undefined || tools.length === 0) {
         // SIGNAL-5: the "respond-only" (small-talk / informational) path — no
         // proposable intents. debug (this fires on every small-talk turn).
@@ -1170,6 +1331,58 @@ export function createIbatexasPlanner(
       system += closedHoursPromptNote(scheduleSignal, state.perception.text);
 
       const allowed = new Set(plan.allowedIntents);
+
+      // LE2-020 — instantiate a selected workflow. Closes over THIS turn's
+      // offered surface, so the closed-set check inside `select` is against
+      // what this turn actually advertised rather than the whole corpus. The
+      // slots are stripped to the workflow's DECLARED names first — the same
+      // treatment `stripUnauthoredPayloadFields` gives a capability payload,
+      // one level up.
+      const selectWorkflow = (
+        workflowId: string,
+        rawSlots: unknown,
+      ): { readonly kind: string; readonly payload: unknown } | undefined => {
+        const runtime = deps.workflowRuntime;
+        if (runtime === undefined) return undefined;
+        const offered = offeredWorkflows.find((w) => w.id === workflowId);
+        if (offered === undefined) return undefined;
+        const { slots, dropped: droppedSlots } = sanitizeWorkflowSlots(
+          rawSlots,
+          new Set(offered.slots),
+        );
+        if (droppedSlots.length > 0) {
+          // NAMES only, never values — the dropped value is arbitrary
+          // model-generated text and may carry anything the customer typed.
+          logger.warn(
+            {
+              component: "planner",
+              event: "start_workflow.slots_stripped",
+              turnId: state.turnId,
+              workflowId,
+              strippedSlots: droppedSlots,
+            },
+            `planner stripped ${droppedSlots.length} undeclared slot(s) from a workflow selection`,
+          );
+        }
+        const instance = runtime.select({
+          turnId: state.turnId,
+          workflowId,
+          slots,
+          allowedIntents: plan.allowedIntents,
+        });
+        if (instance === undefined) return undefined;
+        return {
+          // The ANCHOR capability: a real, pack-owned kind whose guards decide
+          // whether this workflow may run at all.
+          kind: instance.definition.selection.capability,
+          // The instance id rides the payload so it survives the PARK: a
+          // confirm flow spans two turns with two different turn ids, and the
+          // parked envelope is the only thing that crosses between them. It is
+          // a lookup handle, never an authority — every activity is still
+          // adjudicated individually when the id comes back.
+          payload: { ...slots, [WORKFLOW_INSTANCE_PAYLOAD_KEY]: instance.instanceId },
+        };
+      };
       // NEW-032 slice A — the per-turn envelope actor. Computed ONCE from the
       // composition-time `staffEnvelopeActor` option (absent ⇒ the llm/
       // conversation actor, byte-identical to today), reused for every envelope
@@ -1214,7 +1427,40 @@ export function createIbatexasPlanner(
           // THIS turn's actor and a FRESH nonce, so its `intentHash` is new and the
           // always-on fail-closed execution ledger sees a genuinely new dispatch
           // instead of deduping the customer's second request against their first.
-          const replayed = cached.proposals.map((proposal, index) =>
+          // LE2-020 — the L1 replay is the THIRD kind-admission site, and the
+          // only one that mints an envelope from a string the live parse seam
+          // never saw. It is bounded implicitly (a workflow-scoped kind is
+          // never advertised, so it can never be in a surface whose digest
+          // matches this key) — but "implicitly" is an argument about the cache
+          // key, not an enforcement, and it would stop holding the moment
+          // anything else could write an entry. Re-check explicitly here: a
+          // poisoned or stale entry naming a workflow-scoped kind is DROPPED,
+          // not re-minted.
+          //
+          // Deliberately narrower than pass 1's `allowed.has(...)`: replay is
+          // already stricter than live admission (bounded by the ADVERTISED
+          // set, not the admitted one — see the unscoped-vs-scoped asymmetry
+          // above), and re-checking against `allowed` here would silently
+          // widen replay to the unscoped roster. This checks the one thing that
+          // must never be admitted from any source at all.
+          const poisoned = cached.proposals.filter((p) =>
+            isWorkflowScopedKind(p.kind),
+          );
+          if (poisoned.length > 0) {
+            logger.warn(
+              {
+                component: "planner",
+                event: "parse_cache.workflow_scoped_kind_dropped",
+                turnId: state.turnId,
+                kinds: poisoned.map((p) => p.kind),
+              },
+              "planner: a cached parse named a workflow-scoped kind — dropped, never re-minted",
+            );
+          }
+          const replayable = cached.proposals.filter(
+            (p) => !isWorkflowScopedKind(p.kind),
+          );
+          const replayed = replayable.map((proposal, index) =>
             buildEnvelope({
               kind: proposal.kind,
               payload: proposal.payload ?? {},
@@ -1230,7 +1476,7 @@ export function createIbatexasPlanner(
               event: "intents.proposed",
               turnId: state.turnId,
               envelopeCount: replayed.length,
-              capabilities: cached.proposals.map((p) => p.kind),
+              capabilities: replayable.map((p) => p.kind),
               droppedOutOfPlan: cached.dropped,
               readToolCalls: cached.readToolCalls.map((c) => c.name),
               funnelTier: stage.tier,
@@ -1243,7 +1489,7 @@ export function createIbatexasPlanner(
           return {
             envelopes: replayed,
             rationale: `ibatexas-planner: funnel L1 (${stage.reason}) — ${replayed.length} envelope(s) replayed, no extraction call`,
-            capabilities: [...cached.proposals.map((p) => p.kind)],
+            capabilities: [...replayable.map((p) => p.kind)],
             readToolCalls: [...cached.readToolCalls],
           };
         }
@@ -1409,6 +1655,7 @@ export function createIbatexasPlanner(
           state,
           actor: envelopeActor,
           deriveNonce,
+          selectWorkflow,
         });
 
       // ── BKL-027 (F2): one-hop read-tool enrichment loop ────────────────────
@@ -1521,7 +1768,7 @@ export function createIbatexasPlanner(
           "pedido original do cliente, proponha a ação apropriada ou apenas responda.";
         // FIX B4 — hop 2 offers express_intent ONLY (no read tools): the loop runs
         // exactly one hop, so a hop-2 read would be traced-but-never-executed.
-        const pass2Tools = buildToolSurface(scopedPlan, false);
+        const pass2Tools = buildToolSurface(scopedPlan, false, offeredWorkflows);
         const startedAt2 = Date.now();
         // BKL-162 — the read-loop re-prompt is the OTHER completion boundary that
         // can throw on the read-tool surface (the malformed-XML 500 was live-
@@ -1619,6 +1866,7 @@ export function createIbatexasPlanner(
           state,
           actor: envelopeActor,
           deriveNonce,
+          selectWorkflow,
         });
         envelopes = second.envelopes;
         capabilities = second.capabilities;

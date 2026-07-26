@@ -1,0 +1,68 @@
+{
+  "fixture": "workflow-shape.capability-reference-dangling",
+  "targets": "workflow-shape/capability-reference-dangling",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/capability-reference-dangling"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 11,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "capability-reference-dangling",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "activities[0].capability",
+      "message": "references the capability kind \"conformance.workflow.absent\", which no capability definition declares. A workflow can only route over capabilities the catalog defines — the kernel default-REFUSEs an envelope whose kind no pack owns, so an unresolved reference is a step that can never run.",
+      "reference": "conformance.workflow.absent"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/capability-reference-dangling: workflow:conformance.workflow.linear · activities[0].capability — references the capability kind \"conformance.workflow.absent\", which no capability definition declares. A workflow can only route over capabilities the catalog defines — the kernel default-REFUSEs an envelope whose kind no pack owns, so an unresolved reference is a step that can never run."
+  ]
+}
