@@ -159,6 +159,67 @@ export const CLAIM_REGISTRY = [
   // admin — never inferred, never model-authored). Absent/blank metadata → ABSENT
   // evidence → honest UNKNOWN ("can never ground" closes only when data exists).
   "STORE_INFO",
+  // LE2-002 / NEW-007 — the PUBLIC delivery-coverage pair ("vocês entregam em
+  // Ibaté?" / "entregam no CEP 14815000?"). CUSTOMER-scoped by construction: they
+  // live in this enum, so `CUSTOMER_CLAIM_SCOPE` carries them and the ops plane
+  // gets them only via its SUPERSET scope (ops-plane delivery answers are LE2-013's
+  // job — nothing here wires ops). PUBLIC (`not_applicable` ownership, like
+  // STORE_INFO / MENU_OVERVIEW): a delivery ZONE is store policy, owned by nobody.
+  //
+  // A COMPLEMENTARY PAIR on the CART_CONTENTS/CART_EMPTY precedent (BKL-163): the
+  // investigator records `delivery:coverage` PRESENT only when a zone actually
+  // matched, and `delivery:no_coverage` PRESENT only when the estimation tool
+  // proved the CEP falls OUTSIDE every zone — so exactly ONE of the pair can ever
+  // validate in a turn, and the other resolves honest UNKNOWN and is dropped by the
+  // kernel's §D filter (never a rendered contradiction). The NEGATIVE is a
+  // first-class VALIDATED claim, not an UNKNOWN: a definitive "outside every zone"
+  // read off the zone data IS a fact, and answering it with "não localizei essa
+  // informação" would be less honest, not more.
+  //
+  // The third branch — an unrecognised place name with no CEP — is deliberately
+  // CLAIMLESS: neither key is recorded, the classify-only path forces CLARIFY, and
+  // the turn ASKS for the CEP. There is no "probably covered" claim to make, and
+  // nearest-neighbour guessing is exactly what this ticket exists to forbid.
+  "DELIVERY_COVERAGE",
+  "DELIVERY_NO_COVERAGE",
+  // LE2-019 / spec Decision 18 — the COUPON-VALIDITY pair ("o cupom X1234
+  // vale?"). CUSTOMER-scoped by construction: they live in this enum, so
+  // `CUSTOMER_CLAIM_SCOPE` carries them; the ops plane reaches them only through
+  // its SUPERSET scope (nothing here wires ops, and no ops phrasing override is
+  // minted — a coupon question is a customer question). PUBLIC
+  // (`not_applicable` ownership, like STORE_INFO / DELIVERY_COVERAGE): a
+  // promotion is store policy, owned by nobody — the SAME code is valid or not
+  // regardless of who asks, so this is deliberately NOT owner-scoped and a guest
+  // gets the same honest answer as an authenticated customer.
+  //
+  // A COMPLEMENTARY PAIR on the DELIVERY_COVERAGE / CART_CONTENTS precedent: the
+  // investigator records `coupon:valid` PRESENT only when a SUCCESSFUL promotion
+  // lookup found a usable record, and `coupon:invalid` PRESENT only when a
+  // SUCCESSFUL lookup positively determined the code is not usable — so exactly
+  // ONE of the pair can ever validate in a turn, and the other resolves honest
+  // UNKNOWN and is dropped by the kernel's §D filter (never a rendered
+  // contradiction). Both are registered in PRESENCE_COMPLEMENT_PAIRS
+  // (required-claim-decomposer.ts); omitting that registration is the LE2-002
+  // latent defect this ticket refuses to reproduce.
+  //
+  // WHY A PAIR AND NOT ONE TYPE WITH A VALIDITY FIELD: the two answers carry
+  // genuinely DIFFERENT static frames (the positive ends with how to use the
+  // code at checkout; the negative ends with an offer to check another one), and
+  // under the frozen single-C6-field kernel a single type would have to hide the
+  // whole difference inside its one scalar, leaving a template frame that can
+  // say nothing true in both branches. That is the same argument the delivery
+  // pair made, and it holds identically here.
+  //
+  // The third branch — coupon phrasing with NO extractable code — is
+  // deliberately CLAIMLESS: neither key is recorded, the classify-only path
+  // forces CLARIFY, and the turn ASKS for the code. There is no "probably valid"
+  // claim to make.
+  //
+  // DECISION 14 NEGATIVE SPACE: both are `read_claim`s. No coupon APPLY /
+  // price-adjustment claim exists, here or anywhere — validity is discoverable
+  // WITHOUT attempting an apply, which is the whole point of Decision 18.
+  "COUPON_VALID",
+  "COUPON_INVALID",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -199,9 +260,31 @@ export function isRegistryClaimType(value: unknown): value is RegistryClaimType 
 export function canonicalizeRegistryType(
   raw: unknown,
 ): RegistryClaimType | undefined {
+  return canonicalizeScopedClaimType(raw) as RegistryClaimType | undefined;
+}
+
+/**
+ * LE2-012 — the SCOPE-AWARE twin of {@link canonicalizeRegistryType}: the same
+ * casing-robust canonicalization, but resolved against a {@link ClaimPlaneScope}
+ * instead of the hard-wired customer registry. Defaults to
+ * {@link CUSTOMER_CLAIM_SCOPE}, so an unscoped call is byte-identical to the
+ * customer behaviour above (the two share this ONE implementation, so they can
+ * never drift). Returns the CANONICAL UPPER_SNAKE type name when `raw` maps to a
+ * type IN THAT SCOPE, else `undefined` → the proposal is DROPPED by the
+ * constrained-generation wall.
+ *
+ * This is what makes the wall do double duty as the PLANE BOUNDARY: an
+ * ops-scoped type is absent from `CUSTOMER_CLAIM_SCOPE`, so a customer-plane
+ * proposal of it canonicalizes to `undefined` and is dropped exactly like a
+ * hallucinated type. Pure.
+ */
+export function canonicalizeScopedClaimType(
+  raw: unknown,
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
+): string | undefined {
   if (typeof raw !== "string") return undefined;
   const upper = raw.toUpperCase();
-  return REGISTRY_SET.has(upper) ? (upper as RegistryClaimType) : undefined;
+  return Object.hasOwn(scope.specs, upper) ? upper : undefined;
 }
 
 /**
@@ -929,6 +1012,158 @@ export const REGISTRY_SPECS = {
     ],
     valueBinding: { key: "store:info", path: ["infoText"] },
   },
+  // LE2-002 / NEW-007 — DELIVERY_COVERAGE: the PUBLIC "we deliver there" read.
+  // FIXED-SUBJECT single-key (the STORE_INFO / MENU_OVERVIEW shape — no
+  // perResourceKey, keys are never `:{subject}`-parameterized): a coverage answer
+  // is about the STORE's delivery policy, so there is one key and no owner.
+  // `must_read_this_turn` (NOT cacheable): the fee/ETA are ADMIN-EDITABLE at any
+  // moment (routes/admin/delivery-zones.ts) and the ticket requires an admin zone
+  // edit to show up in the very next chat answer — a cacheable TTL would license
+  // the kernel to accept a stale entry, which is exactly the staleness this claim
+  // must not have. The `delivery:zones_changed` W6 falsifier is DECLARED (escaping
+  // the W6 UNKNOWN-only cap so the type can VALIDATE) but DELIBERATELY UNREAD —
+  // the same disposition STORE_INFO's `store:info_changed` and CART_CONTENTS's
+  // `cart_cleared` carry, and for the same reason: the only available "changed"
+  // signal derives from the SAME zone row the base read already returned this turn,
+  // so firing it would be a tautology that demotes every truthful answer while
+  // catching zero staleness the base misses. The declaration stays for a future
+  // INDEPENDENT signal (a zone-events stream / the Redis invalidation pub-sub).
+  DELIVERY_COVERAGE: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "delivery:coverage",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "delivery:zones_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered sentence to the read's ACTUAL `coverageText`, the
+    // scalar delivery-coverage-resolver.ts composes IN CODE from the zone row's
+    // INTEGER centavos + minutes (Hard Rule 2). Ledger-sourced, never model-authored.
+    valueBinding: { key: "delivery:coverage", path: ["coverageText"] },
+  },
+  // LE2-002 / NEW-007 — DELIVERY_NO_COVERAGE: the presence-COMPLEMENT of
+  // DELIVERY_COVERAGE (the CART_CONTENTS/CART_EMPTY pairing, BKL-163). The
+  // investigator records `delivery:no_coverage` PRESENT *only* when the estimation
+  // tool positively proved the supplied CEP falls outside every active zone, so
+  // exactly ONE of the pair can ever be present in a turn. A read that ERRORED or
+  // could not resolve records NEITHER key → honest UNKNOWN (Inv 7: "could not
+  // check" is never "we don't deliver").
+  DELIVERY_NO_COVERAGE: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "delivery:no_coverage",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "delivery:zones_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "delivery:no_coverage", path: ["noCoverageText"] },
+  },
+  // LE2-019 — COUPON_VALID: the PUBLIC "this code is good" read. FIXED-SUBJECT
+  // single-key (the STORE_INFO / DELIVERY_COVERAGE shape — no perResourceKey,
+  // keys are never `:{subject}`-parameterized): the answer is about the STORE's
+  // promotion, so there is one key and no owner. `must_read_this_turn` (NOT
+  // cacheable): a promotion's status, campaign window and budget move on their own
+  // (a budget exhausts on someone ELSE's checkout), so a cacheable TTL would
+  // license the kernel to accept a stale entry — exactly the staleness a "vale?"
+  // answer must not have. The `coupon:promotions_changed` W6 falsifier is DECLARED
+  // (escaping the W6 UNKNOWN-only cap so the type can VALIDATE) but DELIBERATELY
+  // UNREAD — the same disposition STORE_INFO's `store:info_changed` and
+  // DELIVERY_COVERAGE's `delivery:zones_changed` carry, and for the same reason:
+  // the only available "changed" signal derives from the SAME promotion row the
+  // base read already returned this turn, so firing it would be a tautology that
+  // demotes every truthful answer while catching zero staleness. The declaration
+  // stays for a future INDEPENDENT signal (a promotion-events stream).
+  COUPON_VALID: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "coupon:valid",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "coupon:promotions_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered sentence to the read's ACTUAL `validityText`, the
+    // scalar coupon-validity-resolver.ts composes IN CODE from the promotion
+    // record's own code + `application_method` (Hard Rule 2 for a fixed amount).
+    // Ledger-sourced, never model-authored — the model cannot invent a discount.
+    valueBinding: { key: "coupon:valid", path: ["validityText"] },
+  },
+  // LE2-019 — COUPON_INVALID: the presence-COMPLEMENT of COUPON_VALID (the
+  // DELIVERY_COVERAGE / CART_CONTENTS pairing). The investigator records
+  // `coupon:invalid` PRESENT *only* when a SUCCESSFUL promotion lookup positively
+  // determined the code is not usable (absent / draft / inactive / outside its
+  // campaign window / budget-exhausted), so exactly ONE of the pair can ever be
+  // present in a turn. A lookup that ERRORED records NEITHER key → honest UNKNOWN
+  // (Inv 7: "could not check" is never "your coupon is invalid").
+  COUPON_INVALID: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "coupon:invalid",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "coupon:promotions_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "coupon:invalid", path: ["invalidityText"] },
+  },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
     minSourceIntegrity: "structured",
@@ -947,6 +1182,44 @@ export const REGISTRY_SPECS = {
 } satisfies Record<RegistryClaimType, RegistryClaimSpec>;
 
 /**
+ * LE2-012 — ONE PLANE's claim-type SCOPE: the closed enum the planner of that
+ * plane may SELECT from (`types`, the `propose_claim` tool's `enum`) plus the
+ * per-type evidence/falsifier/value-binding schema the deterministic walls
+ * parameterize (`specs`). `specs` MUST be exhaustive over `types` — the two are
+ * the SAME closed vocabulary seen from the enum side and the schema side, and a
+ * drift between them is what the plane's registry pin test asserts against.
+ *
+ * WHY a scope and not one flat registry: the ops plane answers STORE-LEVEL
+ * questions ("quantos pedidos hoje?") that the customer-scoped vocabulary cannot
+ * express, and those types must NEVER become customer-plane parseable or
+ * renderable (an operator's store totals are not a customer-facing fact). Rather
+ * than invent a second mechanism, the EXISTING §H/§P3 constrained-generation wall
+ * carries the boundary: each plane's planner advertises only ITS scope's enum,
+ * and `selectCandidateClaim` DROPS an out-of-scope type exactly as it drops a
+ * hallucinated one. The customer scope is unchanged and remains the DEFAULT of
+ * every wall in this module, so nothing that does not explicitly pass a scope
+ * changes by a byte.
+ */
+export interface ClaimPlaneScope {
+  /** The closed claim-TYPE enum this plane's planner may select from. */
+  readonly types: readonly string[];
+  /** The per-type registry schema, exhaustive over {@link types}. */
+  readonly specs: Readonly<Record<string, RegistryClaimSpec>>;
+}
+
+/**
+ * The CUSTOMER plane's scope — the `CLAIM_REGISTRY` enum + `REGISTRY_SPECS`, i.e.
+ * exactly the vocabulary that existed before plane scoping. It is the DEFAULT
+ * argument of every scoped wall below. A plane-scoped type is added by composing a
+ * SUPERSET scope on that plane (see `apps/api/src/ops/ops-claim-registry.ts`);
+ * this constant is never widened, which is what keeps the customer plane closed.
+ */
+export const CUSTOMER_CLAIM_SCOPE: ClaimPlaneScope = {
+  types: CLAIM_REGISTRY,
+  specs: REGISTRY_SPECS,
+};
+
+/**
  * The owner-scoped, per-resource BASE ledger key for a registry type (FIX 2 —
  * owner-scoped subject resolution). It is the `order_fulfillment_stage` /
  * `payment_status` prefix the investigator records the owner-scoped read under,
@@ -960,9 +1233,12 @@ export const REGISTRY_SPECS = {
  * the ONLY admissible subjects — so the subject derives from the authenticated
  * owner-scoped reads, never the 4B's (possibly empty/hallucinated) extraction.
  */
-export function ownerScopedBaseKey(type: RegistryClaimType): string | undefined {
-  const spec: RegistryClaimSpec = REGISTRY_SPECS[type];
-  if (spec.perResourceKey !== true) return undefined;
+export function ownerScopedBaseKey(
+  type: string,
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
+): string | undefined {
+  const spec: RegistryClaimSpec | undefined = scope.specs[type];
+  if (spec === undefined || spec.perResourceKey !== true) return undefined;
   const required = spec.requiredEvidence.find(
     (e) => e.ownershipPolicy === "required",
   );
@@ -1004,6 +1280,7 @@ export interface ProposedClaim {
  */
 export function selectCandidateClaim(
   proposed: ProposedClaim,
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
 ): CandidateClaim | undefined {
   // fix 3 — CASING-ROBUST membership: canonicalize the (possibly miscased) model
   // tag to its UPPER_SNAKE registry form BEFORE the membership test, so a
@@ -1011,7 +1288,11 @@ export function selectCandidateClaim(
   // rather than dropped into the lie-capable prose path. A tag that does not map
   // even after canonicalization → `undefined` → DROPPED by the constrained-
   // generation wall (degrade SAFE; the planner routes UNKNOWN/CLARIFY/ESCALATE).
-  const canonicalType = canonicalizeRegistryType(proposed.type);
+  // LE2-012 — resolved against the PLANE's scope (the customer registry by
+  // default): an out-of-SCOPE type is dropped by the very same wall that drops a
+  // hallucinated one, which is what keeps an ops-scoped type unreachable from the
+  // customer plane.
+  const canonicalType = canonicalizeScopedClaimType(proposed.type, scope);
   if (canonicalType === undefined) {
     return undefined;
   }
@@ -1019,7 +1300,11 @@ export function selectCandidateClaim(
   // fields (falsifierComplete / falsifiers / valueBinding) are readable on every
   // member (a member that omits them is `undefined`, not a missing property).
   // Keyed by the CANONICAL type so a miscased tag selects the right spec.
-  const baseSpec: RegistryClaimSpec = REGISTRY_SPECS[canonicalType];
+  // `canonicalizeScopedClaimType` already proved own-key membership, so the
+  // lookup is total; the `?? undefined` guard is defense in depth for a caller
+  // that hands in a scope whose `types`/`specs` drifted apart.
+  const baseSpec: RegistryClaimSpec | undefined = scope.specs[canonicalType];
+  if (baseSpec === undefined) return undefined;
   // STEP 3 key-alignment: an owner-scoped, per-resource type (perResourceKey) has
   // its evidence/falsifier/value-binding keys parameterized by the candidate
   // `subject` so they match the investigator's `${base}:{id}` ledger keys. A
@@ -1127,11 +1412,12 @@ function parameterizeKeysBySubject(
  */
 export function constrainClaimGeneration(
   proposals: readonly ProposedClaim[],
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
 ): { readonly candidates: CandidateClaim[]; readonly dropped: string[] } {
   const candidates: CandidateClaim[] = [];
   const dropped: string[] = [];
   for (const p of proposals) {
-    const candidate = selectCandidateClaim(p);
+    const candidate = selectCandidateClaim(p, scope);
     if (candidate === undefined) {
       dropped.push(p.type);
     } else {
@@ -1189,6 +1475,27 @@ export interface FirstPartyDerivationReads {
    *  by construction). Absent (blank/unreadable metadata) → value stays undefined →
    *  C6 ABSTAIN → honest UNKNOWN. */
   readonly storeInfo?: { readonly infoText?: unknown };
+  /** LE2-002 / NEW-007 — the delivery-coverage read for THIS turn (fixed subject,
+   *  single-key, like STORE_INFO). The SAME `coverageText` the investigator records
+   *  under `delivery:coverage` (shared per-turn resolver memo keyed on turnId+text),
+   *  so the derived value is byte-equal (C6 passes by construction). Absent (no zone
+   *  matched / an unreadable projection) → value stays undefined → C6 ABSTAIN →
+   *  honest UNKNOWN, never a fabricated fee or ETA. */
+  readonly deliveryCoverage?: { readonly coverageText?: unknown };
+  /** LE2-002 / NEW-007 — the NEGATIVE twin, recorded under `delivery:no_coverage`
+   *  only on a POSITIVE out-of-zone determination (never on a read error). */
+  readonly deliveryNoCoverage?: { readonly noCoverageText?: unknown };
+  /** LE2-019 — the coupon-validity read for THIS turn (fixed subject, single-key,
+   *  like DELIVERY_COVERAGE). The SAME `validityText` the investigator records
+   *  under `coupon:valid` (shared per-turn resolver memo keyed on turnId+text), so
+   *  the derived value is byte-equal (C6 passes by construction). Absent (no code
+   *  supplied / an unreadable promotion lookup / unreadable terms) → value stays
+   *  undefined → C6 ABSTAIN → honest UNKNOWN, never a fabricated discount. */
+  readonly couponValid?: { readonly validityText?: unknown };
+  /** LE2-019 — the NEGATIVE twin, recorded under `coupon:invalid` only on a
+   *  POSITIVE not-usable determination off a SUCCESSFUL lookup (never on an
+   *  error). */
+  readonly couponInvalid?: { readonly invalidityText?: unknown };
 }
 
 /**
@@ -1264,6 +1571,46 @@ export function deriveBoundValue(
     return { ...candidate, value: { infoText: reads.storeInfo.infoText } };
   }
 
+  if (candidate.type === "DELIVERY_COVERAGE") {
+    // LE2-002 — FIXED subject (single-key, like STORE_INFO): bind `coverageText`
+    // from the single delivery-coverage read. Absent read (no zone matched, an
+    // unrecognised place, or an unreadable projection) → value stays undefined →
+    // C6 ABSTAINs → honest UNKNOWN, never a fabricated "sim, entregamos".
+    if (reads.deliveryCoverage === undefined) return candidate;
+    return { ...candidate, value: { coverageText: reads.deliveryCoverage.coverageText } };
+  }
+
+  if (candidate.type === "DELIVERY_NO_COVERAGE") {
+    // LE2-002 — the negative twin. Bound ONLY when the resolver positively proved
+    // the CEP is outside every zone; a read error leaves this undefined → C6
+    // ABSTAINs → honest UNKNOWN (never a wrongly-confident "não entregamos").
+    if (reads.deliveryNoCoverage === undefined) return candidate;
+    return {
+      ...candidate,
+      value: { noCoverageText: reads.deliveryNoCoverage.noCoverageText },
+    };
+  }
+
+  if (candidate.type === "COUPON_VALID") {
+    // LE2-019 — FIXED subject (single-key, like DELIVERY_COVERAGE): bind
+    // `validityText` from the single coupon read. Absent read (no code supplied,
+    // an unreadable promotion lookup, or terms we could not state) → value stays
+    // undefined → C6 ABSTAINs → honest UNKNOWN, never a fabricated "está válido".
+    if (reads.couponValid === undefined) return candidate;
+    return { ...candidate, value: { validityText: reads.couponValid.validityText } };
+  }
+
+  if (candidate.type === "COUPON_INVALID") {
+    // LE2-019 — the negative twin. Bound ONLY when a SUCCESSFUL lookup positively
+    // proved the code is not usable; a read error leaves this undefined → C6
+    // ABSTAINs → honest UNKNOWN (never a wrongly-confident "não está válido").
+    if (reads.couponInvalid === undefined) return candidate;
+    return {
+      ...candidate,
+      value: { invalidityText: reads.couponInvalid.invalidityText },
+    };
+  }
+
   // Owner-scoped per-resource types have no planner-available first-party read
   // (deriving them would require an owner-scoped re-read — reserved for Wall 2 to
   // keep the IDOR closed). Pass through → honest UNKNOWN residual.
@@ -1310,6 +1657,11 @@ export interface RequestSpan {
  *   - `"CLARIFY"`  — an UNMAPPED span (SDD §J.8: never a silent drop) OR an
  *                    out-of-enum mapping (defense in depth — an unrecognized
  *                    mapped type is not silently honored).
+ *
+ * LE2-012: on a NON-default {@link ClaimPlaneScope} the mapped-type arm carries
+ * that plane's type NAME (a string outside the customer `RegistryClaimType`
+ * union). The union below documents the customer plane — the default and the
+ * only one whose types this module can name without importing a plane.
  */
 export type SpanDisposition =
   | RegistryClaimType
@@ -1335,6 +1687,7 @@ export interface SpanCompleteness {
  */
 export function checkCompleteness(
   spans: readonly RequestSpan[],
+  scope: ClaimPlaneScope = CUSTOMER_CLAIM_SCOPE,
 ): SpanCompleteness[] {
   return spans.map((span) => {
     if (span.mappedClaimType === undefined) {
@@ -1345,11 +1698,14 @@ export function checkCompleteness(
     // needlessly forced to CLARIFY (mirrors selectCandidateClaim). A span that
     // does not map even after canonicalization still → CLARIFY (defense in depth:
     // a hallucinated/out-of-enum mapped type is not silently honored as a claim).
-    const canonical = canonicalizeRegistryType(span.mappedClaimType);
+    // LE2-012 — resolved against the PLANE's scope, so an ops-plane span mapped to
+    // an ops-scoped type is NOT force-CLARIFYed (and a customer-plane span mapped
+    // to one still is: out of scope ⟹ not silently honored).
+    const canonical = canonicalizeScopedClaimType(span.mappedClaimType, scope);
     if (canonical === undefined) {
       return { text: span.text, disposition: "CLARIFY" };
     }
-    return { text: span.text, disposition: canonical };
+    return { text: span.text, disposition: canonical as SpanDisposition };
   });
 }
 
