@@ -101,7 +101,16 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
-import type { FunnelParseMemoSeam, FunnelPlannerSeam } from "./funnel-tier.js";
+import type {
+  FunnelParseMemoSeam,
+  FunnelPlannerSeam,
+  FunnelScopeSeam,
+} from "./funnel-tier.js";
+import {
+  L2_SURFACE_VERSION,
+  type CapabilityRetriever,
+  type ScopeDecision,
+} from "./capability-retrieval.js";
 import {
   buildParseCacheKey,
   canonicalizeUtterance,
@@ -456,6 +465,19 @@ export interface IbatexasPlannerDeps {
    * opt out.
    */
   readonly parseMemo?: FunnelParseMemoSeam;
+  /**
+   * LE2-008 — the funnel's L2 tier: scoped parse. The retriever narrows this
+   * turn's advertised roster to the K most plausible capabilities, or stands
+   * down to the full roster when retrieval is not confident.
+   *
+   * Absent ⟹ no retrieval, no scoping, no stamp — the planner advertises the
+   * full roster exactly as it did pre-L2, which is how the ops/agent planes and
+   * every unit suite opt out.
+   */
+  readonly retriever?: CapabilityRetriever;
+  /** LE2-008 — the seam that stamps this turn's scope decision on the trace. The
+   *  SAME funnel instance the other seams come from. */
+  readonly scopeSeam?: FunnelScopeSeam;
 }
 
 /**
@@ -1015,9 +1037,35 @@ export function createIbatexasPlanner(
         derived.context,
       );
 
+      // ── LE2-008 · L2 · THE FUNNEL'S THIRD QUESTION ─────────────────────────
+      // Asked AFTER the capability planners have decided what this turn is even
+      // ALLOWED to propose, and BEFORE the surface is built: of that authorized
+      // roster, which K capabilities is the utterance plausibly about?
+      //
+      // ORDERING IS LOAD-BEARING, TWICE OVER.
+      //  1. Retrieval runs DOWNSTREAM of `unionPlans`, so it can only ever narrow
+      //     what the planners already authorized — auth level, cart state and the
+      //     ops boundary all stay strictly upstream of the retriever, and a stale
+      //     index cannot widen the surface.
+      //  2. It runs UPSTREAM of `buildToolSurface`, so the scoped roster is what
+      //     goes on the wire AND what L1 keys its cache on (parse-memo.ts digests
+      //     the tool surface) — a parse made against a scoped surface can never be
+      //     replayed onto a full-roster turn.
+      //
+      // The DECISION is taken here; the trace STAMP happens after L1 misses (see
+      // below), so exactly one tier is ever attributed to a turn.
+      const scopeDecision: ScopeDecision | undefined =
+        deps.retriever === undefined
+          ? undefined
+          : await deps.retriever.scopeFor(state.perception.text, plan.allowedIntents);
+      const scopedPlan: CapabilityPlan =
+        scopeDecision?.scoped === true
+          ? { ...plan, allowedIntents: [...scopeDecision.selected] }
+          : plan;
+
       // Nothing proposable and nothing to read → skip the LLM entirely; the
       // response phase still runs (envelopes:[] is a valid "respond-only" plan).
-      const tools = buildToolSurface(plan);
+      const tools = buildToolSurface(scopedPlan);
       if (tools === undefined || tools.length === 0) {
         // SIGNAL-5: the "respond-only" (small-talk / informational) path — no
         // proposable intents. debug (this fires on every small-talk turn).
@@ -1090,6 +1138,12 @@ export function createIbatexasPlanner(
               // while the store was closed can never be served while it is open.
               system,
               toolSurface: tools,
+              // LE2-008 — the reserved slot, now NAMED. Changing it makes every
+              // parse cached under the pre-L2 full-roster regime unreachable in
+              // one move, which is the purge LE2-009 designed the component for.
+              // Applied on EVERY turn, scoped and fallback alike: the tier's
+              // presence changes what a cached parse means, not just its surface.
+              surfaceVersion: L2_SURFACE_VERSION,
             });
       if (memo !== undefined && memoKey !== undefined) {
         const cached = await memo.lookupParse(
@@ -1135,6 +1189,18 @@ export function createIbatexasPlanner(
             readToolCalls: [...cached.readToolCalls],
           };
         }
+      }
+
+      // ── LE2-008 · the L2 STAMP ─────────────────────────────────────────────
+      // Deliberately here and not at the decision site above: had L1 hit, the turn
+      // is an L1 turn and stamping L2 as well would put two tier attributions on
+      // one turn and make the trace's tier counts double-count. L1 returns before
+      // reaching this line, so a stamp here means "L1 did not resolve this turn,
+      // and here is the surface L2 chose for the model call about to happen" —
+      // including the FALLBACK case, which is how the fallback RATE becomes
+      // visible in the trace rather than being inferred from an absence.
+      if (scopeDecision !== undefined && deps.scopeSeam !== undefined) {
+        deps.scopeSeam.stampScope(state.turnId, scopeDecision);
       }
 
       const startedAt = Date.now();
@@ -1397,7 +1463,7 @@ export function createIbatexasPlanner(
           "pedido original do cliente, proponha a ação apropriada ou apenas responda.";
         // FIX B4 — hop 2 offers express_intent ONLY (no read tools): the loop runs
         // exactly one hop, so a hop-2 read would be traced-but-never-executed.
-        const pass2Tools = buildToolSurface(plan, false);
+        const pass2Tools = buildToolSurface(scopedPlan, false);
         const startedAt2 = Date.now();
         // BKL-162 — the read-loop re-prompt is the OTHER completion boundary that
         // can throw on the read-tool surface (the malformed-XML 500 was live-
