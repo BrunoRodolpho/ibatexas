@@ -110,7 +110,7 @@ export const LOYALTY_INTENT_KINDS: ReadonlySet<string> = new Set<string>([
   "loyalty.stamp.add",
 ])
 
-// ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/packs-composed/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
+// ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
 
 // ── Pack-orders intent surface ────────────────────────────────────────────────
 //
