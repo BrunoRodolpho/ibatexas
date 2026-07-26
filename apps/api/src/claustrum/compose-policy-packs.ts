@@ -128,13 +128,20 @@ export const confirmOnAutoResolveGuard = nameGuard(
     threshold: 1,
     comparator: ">=",
     // BKL-197 — the prompt referred to an ORDER as an "item" (wrong noun) and is
-    // shared across kinds that blind-resolve to the customer's MOST-RECENT order
-    // (the amend kinds' resolveOrderId ignores a named order — the mutation-plane
-    // sibling of BKL-203, tracked separately). Use the "pedido" noun and keep the
-    // wording honest to that most-recent resolution. Rendering a specific "#N" for
-    // an explicitly-named order is deferred to the mutation-plane order-reference
-    // resolution fix (BKL-216) — until the resolver honors the named order, a "#N"
-    // here could confidently show the wrong (most-recent) order's number.
+    // shared across kinds that blind-resolve to the customer's MOST-RECENT order.
+    // Use the "pedido" noun and keep the wording honest to that most-recent
+    // resolution. Rendering a specific "#N" for an explicitly-named order stays
+    // BKL-197's own row (a copy change, not resolver behavior).
+    //
+    // BKL-216 (landed) — the amend kinds (`order.amend.*`) no longer ignore an order
+    // the customer NAMED: `resolveAmendOrderReference` binds it and does NOT set
+    // `autoResolvedMoneyRef`, so for those kinds this prompt now fires ONLY on the
+    // genuinely blind most-recent branch — "mais recente" is TRUE whenever a
+    // customer sees it. That removes the hazard that deferred the "#N" split (a
+    // number here can no longer name a different order than the one resolved). The
+    // remaining autoresolve kinds (order.cancel / note.add / address.change /
+    // type.switch / payment.pix.regenerate) still blind-resolve — widening the
+    // reference resolution to them is BKL-198.
     //
     // BKL-226 — this same guard fronts the RESERVATION autoresolve kinds
     // (reservation.cancel / reservation.modify are in AUTORESOLVE_CONFIRM_KINDS),

@@ -1661,6 +1661,231 @@ describe("resolve-and-assemble — NL→id confirm-first (auto-resolve money int
   );
 });
 
+// ── BKL-216 — the amend kinds' in-message order-reference resolution ──────────
+//
+// The MUTATION-plane sibling of BKL-203/#350. The decision table below IS the
+// contract: named-owned binds the NAMED order (even when it is not the most
+// recent), unnamed keeps the blind most-recent auto-resolve, a foreign number can
+// never bind (IDOR), and ≥2 named owned orders CLARIFY instead of guessing.
+//
+// Every arm drives the REAL `resolveAndAssemble` entry with `utteranceText`, so the
+// utterance→resolver threading is under test too (a test calling the inner resolver
+// directly would pass even if the conductor never handed the text over).
+const AMEND_KINDS = [
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+] as const;
+
+/** Two OWNED orders, most-recent FIRST (listByCustomer's ordering, which
+ *  `resolveIdless`/`resolveOrderId` already rely on). */
+const TWO_OWNED_ORDERS = [
+  { id: "ord_newest", displayId: 960763, customerId: "c1", fulfillmentStatus: "preparing" },
+  { id: "ord_older", displayId: 933869, customerId: "c1", fulfillmentStatus: "preparing" },
+];
+
+describe("resolve-and-assemble — BKL-216 amend in-message order reference", () => {
+  beforeEach(() => {
+    orderListByCustomer = async () => ({ orders: TWO_OWNED_ORDERS, count: 2 });
+    orderGetById = async () => ({
+      customerId: "c1",
+      paymentStatus: "paid",
+      totalInCentavos: 5000,
+      fulfillmentStatus: "preparing",
+    });
+  });
+
+  it.each(AMEND_KINDS)(
+    "%s: an EXPLICITLY-NAMED owned order binds THAT order, not the most-recent one",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        utteranceText: "tira a coca do pedido 933869",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_older");
+      // A NAMED order was given, not guessed → the auto-resolve confirm (whose
+      // shared prompt asserts "o seu pedido mais RECENTE") must NOT fire.
+      expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+      expect(
+        (payload as { orderReferenceAmbiguousCount?: number }).orderReferenceAmbiguousCount,
+      ).toBeUndefined();
+    },
+  );
+
+  it("the '#N' reference form binds the same way (# prefix, ops matcher parity)", async () => {
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "muda o #933869 pra retirada",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("ord_older");
+  });
+
+  it.each(AMEND_KINDS)(
+    "%s: NO order named → the blind most-recent auto-resolve is preserved, confirm flag intact",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        utteranceText: "tira a coca do meu pedido",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+      expect(ctx.autoResolvedMoneyRef).toBe(true);
+    },
+  );
+
+  // IDOR pin — the SEVERE arm. `matchNamedOwnedOrders` can only ever return an id
+  // drawn from the owner-scoped `listByCustomer` rows, so a foreign display number
+  // is unrepresentable as a result: it falls back to the customer's own most-recent
+  // order (still behind the confirm gate), never the named foreign order.
+  it.each(AMEND_KINDS)(
+    "%s: a display number NOT owned by this customer does NOT bind (IDOR-safe) — falls back to their own most-recent",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        // 111222 belongs to somebody else; it is not in this customer's rows.
+        utteranceText: "tira a coca do pedido 111222",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+      expect(ctx.autoResolvedMoneyRef).toBe(true);
+    },
+  );
+
+  it("a foreign order the customer names is never bound even when the lookup WOULD find it (owner-scoped read is the only source)", async () => {
+    // The foreign order exists in the store but `listByCustomer` (owner-scoped)
+    // never returns it — the resolver has no other source of candidates.
+    orderListByCustomer = async (cid) =>
+      cid === "c1"
+        ? { orders: TWO_OWNED_ORDERS, count: 2 }
+        : { orders: [{ id: "ord_foreign", displayId: 777777, customerId: "c2" }], count: 1 };
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "tira a coca do pedido 777777",
+    });
+    expect((payload as { orderId?: string }).orderId).not.toBe("ord_foreign");
+    expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+  });
+
+  it.each(AMEND_KINDS)(
+    "%s: ≥2 OWNED orders named → binds NOTHING and stamps orderReferenceAmbiguous* (CLARIFY, never a guess)",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        utteranceText: "tira a coca do 933869 e do 960763",
+      });
+      const p = payload as {
+        orderId?: string;
+        orderReferenceAmbiguousCount?: number;
+        orderReferenceAmbiguousDisplayIds?: number[];
+      };
+      expect(p.orderId).toBeUndefined(); // never picks between two named orders
+      expect(p.orderReferenceAmbiguousCount).toBe(2);
+      // First-party display numbers (the customer's OWN rows), for the clarify copy.
+      expect(p.orderReferenceAmbiguousDisplayIds).toEqual([960763, 933869]);
+      // Not an autoresolve: no forced confirm on a turn that resolved nothing.
+      expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+    },
+  );
+
+  it("whole-token discipline: '42420' does not match owned displayId 4242 (no digit-substring bind)", async () => {
+    orderListByCustomer = async () => ({
+      orders: [
+        { id: "ord_a", displayId: 5000, customerId: "c1" },
+        { id: "ord_b", displayId: 4242, customerId: "c1" },
+      ],
+      count: 2,
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "o pedido 42420 precisa mudar",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("ord_a"); // most-recent
+    expect(ctx.autoResolvedMoneyRef).toBe(true);
+  });
+
+  it("an EXPLICIT payload orderId still wins and never enumerates the customer's orders", async () => {
+    let listCalled = false;
+    orderListByCustomer = async () => {
+      listCalled = true;
+      return { orders: TWO_OWNED_ORDERS, count: 2 };
+    };
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: { orderId: "ord_explicit" },
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "tira a coca do pedido 933869",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("ord_explicit");
+    expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+    expect(listCalled).toBe(false);
+  });
+
+  it("no utterance text at all → most-recent, byte-identical to the pre-BKL-216 path", async () => {
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+    expect(ctx.autoResolvedMoneyRef).toBe(true);
+  });
+
+  it("a read error yields no order and no ambiguity marker (fail-safe, same as resolveOrderId's catch)", async () => {
+    orderListByCustomer = async () => {
+      throw new Error("db down");
+    };
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "tira a coca do pedido 933869",
+    });
+    const p = payload as { orderId?: string; orderReferenceAmbiguousCount?: number };
+    expect(p.orderId).toBeUndefined();
+    expect(p.orderReferenceAmbiguousCount).toBeUndefined();
+    expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+  });
+
+  // SCOPE PIN (BKL-198 stays open): the reference resolution is order.amend.* only.
+  it.each(["order.cancel", "order.note.add", "order.address.change", "order.type.switch"] as const)(
+    "%s: a named order does NOT change the resolution — still blind most-recent + confirm (scope pin)",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        utteranceText: "cancela o pedido 933869",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+      expect(ctx.autoResolvedMoneyRef).toBe(true);
+    },
+  );
+});
+
 describe("confirm-on-autoresolve guard (mirrors claustrum-bootstrap)", () => {
   const guard = createConfirmGuard<string, unknown, unknown>({
     matches: (env) =>

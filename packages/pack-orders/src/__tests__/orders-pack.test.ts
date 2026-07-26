@@ -194,6 +194,125 @@ describe("ordersPolicyBundle — state guards", () => {
     expect(decision.refusal.code).toBe("order.not_found")
   })
 
+  // ── BKL-216 — the amend in-message order-reference ambiguity CLARIFY ──────
+  //
+  // `resolveAmendOrderReference` (apps/api resolve-and-assemble.ts) resolves NO
+  // orderId when the message named ≥2 of the customer's OWN orders, stamping
+  // `orderReferenceAmbiguous*` instead. This guard must voice WHICH orders rather
+  // than let the turn fall to the generic `order.not_found` — the orders WERE
+  // found, the resolver just would not pick between two the customer named.
+  const AMBIGUITY_KINDS: readonly OrderIntentKind[] = [
+    "order.amend.request",
+    "order.amend.add_item",
+    "order.amend.update_qty",
+    "order.amend.remove_item",
+  ]
+
+  it.each(AMBIGUITY_KINDS)(
+    "%s: ≥2 named owned orders → REFUSE order.ambiguous_reference (pre-empts order.not_found) and voices both numbers",
+    (kind) => {
+      const decision = adjudicate(
+        env(kind, {
+          item: "coca",
+          orderReferenceAmbiguousCount: 2,
+          orderReferenceAmbiguousDisplayIds: [960763, 933869],
+        }),
+        state({ orderId: null }),
+        ordersPolicyBundle,
+      )
+      expect(decision.kind).toBe("REFUSE")
+      if (decision.kind !== "REFUSE") return
+      expect(decision.refusal.code).toBe("order.ambiguous_reference")
+      expect(decision.refusal.userFacing).toContain("#960763")
+      expect(decision.refusal.userFacing).toContain("#933869")
+      expect(decision.refusal.userFacing).toContain("Em qual deles?")
+    },
+  )
+
+  it("the ambiguity refusal carries the count in its audit basis (machine-readable, not just copy)", () => {
+    const decision = adjudicate(
+      env("order.amend.remove_item", {
+        item: "coca",
+        orderReferenceAmbiguousCount: 3,
+        orderReferenceAmbiguousDisplayIds: [1, 2, 3],
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(
+      decision.basis.some(
+        (b) =>
+          (b.detail as { reason?: string } | undefined)?.reason ===
+            "order_reference_ambiguous" &&
+          (b.detail as { count?: number } | undefined)?.count === 3,
+      ),
+    ).toBe(true)
+  })
+
+  it("NO ambiguity marker → the guard is inert; an unresolved amend keeps the honest order.not_found", () => {
+    const decision = adjudicate(
+      env("order.amend.remove_item", { item: "coca" }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
+  it("a malformed (non-numeric) count is inert, not fail-open — order.not_found stands", () => {
+    const decision = adjudicate(
+      env("order.amend.remove_item", {
+        item: "coca",
+        orderReferenceAmbiguousCount: "2",
+        orderReferenceAmbiguousDisplayIds: [1, 2],
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
+  it("missing/garbled displayIds still CLARIFY, and never fabricate a number", () => {
+    const decision = adjudicate(
+      env("order.amend.remove_item", {
+        item: "coca",
+        orderReferenceAmbiguousCount: 2,
+        orderReferenceAmbiguousDisplayIds: ["nope", null],
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.ambiguous_reference")
+    expect(decision.refusal.userFacing).toBe(
+      "Você citou mais de um pedido. Em qual deles?",
+    )
+    expect(decision.refusal.userFacing).not.toContain("#")
+  })
+
+  // Scope pin: the marker is only ever stamped for order.amend.* (BKL-198 owns the
+  // rest of the mutation plane), so the guard must not fire for other kinds.
+  it("order.cancel carrying the marker is NOT clarified by this guard (scope pin)", () => {
+    const decision = adjudicate(
+      env("order.cancel", {
+        orderId: "o-1",
+        orderReferenceAmbiguousCount: 2,
+        orderReferenceAmbiguousDisplayIds: [1, 2],
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
   it("REFUSE order.cancel on already-cancelled order", () => {
     const decision = adjudicate(
       env("order.cancel", { orderId: "o-1" }),

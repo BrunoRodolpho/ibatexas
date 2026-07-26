@@ -58,6 +58,7 @@ import {
 } from "@ibatexas/types"
 import {
   refuseAllergensNotExplicit,
+  refuseAmbiguousOrderReference,
   refuseAmountExceedsLimit,
   refuseCartEmpty,
   refuseCheckoutMissingPaymentMethod,
@@ -428,6 +429,51 @@ const ORDER_OPS_REQUIRING_ORDER_ID: ReadonlySet<string> = new Set([
   // NEW-014 — fiscal emission targets a specific order.
   "order.fiscal.emit",
 ])
+
+/**
+ * BKL-216 — the amend kinds whose orderId the host resolves from an in-message
+ * order reference (`ORDER_NAMED_REFERENCE_KINDS`, resolve-and-assemble.ts). When
+ * the message named ≥2 of the customer's OWN orders the resolver declines to guess
+ * and stamps `orderReferenceAmbiguous*` instead of an orderId.
+ */
+const ORDER_REFERENCE_AMBIGUITY_KINDS: ReadonlySet<OrderIntentKind> = new Set([
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+])
+
+/**
+ * BKL-216 — voice the order numbers a message named ≥2 of. `resolveAmendOrderReference`
+ * leaves the orderId UNSTAMPED (so `requireOrderIdForMutation` below still fails
+ * closed) and stamps `orderReferenceAmbiguousCount` + the first-party
+ * `orderReferenceAmbiguousDisplayIds`. This runs FIRST so the disambiguation
+ * pre-empts the generic `order.not_found` refuse — the orders WERE found, the
+ * resolver just would not pick between two the customer named. Mirrors
+ * `clarifyAmbiguousReservation` (pack-reservations, BKL-223).
+ *
+ * Fail-inert when the marker is absent or malformed: a host that does not stamp it
+ * sees the pre-existing verdicts unchanged.
+ */
+const clarifyAmbiguousOrderReference: OrderGuard = (envelope) => {
+  if (!ORDER_REFERENCE_AMBIGUITY_KINDS.has(envelope.kind)) return null
+  const payload = envelope.payload as {
+    orderReferenceAmbiguousCount?: unknown
+    orderReferenceAmbiguousDisplayIds?: unknown
+  }
+  if (typeof payload.orderReferenceAmbiguousCount !== "number") return null
+  const displayIds = Array.isArray(payload.orderReferenceAmbiguousDisplayIds)
+    ? payload.orderReferenceAmbiguousDisplayIds.filter(
+        (d): d is number => typeof d === "number",
+      )
+    : []
+  return decisionRefuse(refuseAmbiguousOrderReference(displayIds), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      reason: "order_reference_ambiguous",
+      count: payload.orderReferenceAmbiguousCount,
+    }),
+  ])
+}
 
 const requireOrderIdForMutation: OrderGuard = (envelope, state) => {
   if (!ORDER_OPS_REQUIRING_ORDER_ID.has(envelope.kind)) {
@@ -1354,6 +1400,9 @@ export const ordersPolicyBundle: PolicyBundle<
 > = {
   stateGuards: [
     requireCartIdForCartOps,
+    // BKL-216 — BEFORE requireOrderIdForMutation: a message naming ≥2 owned orders
+    // resolves no orderId, and "qual pedido?" is the honest answer, not `order.not_found`.
+    clarifyAmbiguousOrderReference,
     requireOrderIdForMutation,
     // BKL-090 — after requireOrderIdForMutation so a missing order REFUSEs
     // `no_order` first; this guard then gates transition LEGALITY/terminality.

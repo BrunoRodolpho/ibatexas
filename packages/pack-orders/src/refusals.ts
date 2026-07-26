@@ -66,6 +66,40 @@ export function refuseNoOrderToMutate(): Refusal {
   )
 }
 
+/** Max candidate order numbers voiced inline before summarising the remainder. */
+const MAX_AMBIGUOUS_ORDERS_SHOWN = 6
+
+/**
+ * BKL-216 — a specific "which order?" refusal for a message that named ≥2 of the
+ * customer's OWN orders ("tira a coca do 933869 e do 933870"). The amend resolver
+ * (`resolveAmendOrderReference`) declines to guess between them and stamps
+ * `orderReferenceAmbiguousCount` + `orderReferenceAmbiguousDisplayIds`. This voices
+ * the numbers INSTEAD of the bare `refuseNoOrderToMutate` (the orders WERE found;
+ * the resolver just would not pick one). The display numbers are the customer's own
+ * first-party order data — never model-authored — so the refusal asserts no
+ * unbacked fact. Mirrors `refuseReservationAmbiguous` (pack-reservations).
+ */
+export function refuseAmbiguousOrderReference(
+  displayIds: readonly number[],
+): Refusal {
+  const shown = displayIds
+    .slice(0, MAX_AMBIGUOUS_ORDERS_SHOWN)
+    .map((d) => `#${d}`)
+    .join(", ")
+  const more =
+    displayIds.length > MAX_AMBIGUOUS_ORDERS_SHOWN ? ", entre outros" : ""
+  const userFacing =
+    shown === ""
+      ? "Você citou mais de um pedido. Em qual deles?"
+      : `Você citou mais de um pedido: ${shown}${more}. Em qual deles?`
+  return refuse(
+    "STATE",
+    "order.ambiguous_reference",
+    userFacing,
+    `count=${displayIds.length}`,
+  )
+}
+
 export function refuseOrderAlreadyCancelled(): Refusal {
   return refuse(
     "STATE",

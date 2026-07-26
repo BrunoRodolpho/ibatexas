@@ -67,7 +67,10 @@
 // the narrow eligible set.
 
 import type { CandidateClaim, EvidenceLedger } from "@adjudicate/core";
-import { orderReferenceAppearsInMessage } from "../ops/ops-order-resolution.js";
+import {
+  matchNamedOwnedOrders,
+  type OwnedOrderRef,
+} from "../ops/ops-order-resolution.js";
 import {
   ownerScopedBaseKey,
   selectCandidateClaim,
@@ -340,6 +343,12 @@ const ORDER_SUBJECT_BASE_KEYS: ReadonlySet<string> = new Set([
  *
  * Returns the SINGLE matched owned id, or `undefined` (0 or ≥2 matches → the
  * caller keeps the ambiguity CLARIFY — never a guess). Pure over (data, ledger).
+ *
+ * BKL-216 — the match itself now runs through the SHARED
+ * {@link matchNamedOwnedOrders} (ops-order-resolution.ts), so the mutation plane's
+ * amend resolver reuses this exact heuristic rather than growing a second one.
+ * This function keeps its ledger-shaped contract: extract the owned
+ * `(id, displayId)` pairs from the PRESENT owner-scoped entries, then match.
  */
 export function resolveNamedOwnedOrderSubject(
   baseKey: string,
@@ -348,18 +357,17 @@ export function resolveNamedOwnedOrderSubject(
   messageText: string,
 ): string | undefined {
   if (!ORDER_SUBJECT_BASE_KEYS.has(baseKey)) return undefined;
-  const text = messageText.trim();
-  if (text === "") return undefined;
-  const matched: string[] = [];
+  const owned: OwnedOrderRef[] = [];
   for (const id of ownedIds) {
     const res = ledger.resolve(`${baseKey}:${id}`);
     if (res.state !== "present") continue;
     const displayId = (res.entry?.value as { displayId?: unknown } | undefined)
       ?.displayId;
     if (typeof displayId !== "number") continue;
-    if (orderReferenceAppearsInMessage(String(displayId), text)) matched.push(id);
+    owned.push({ id, displayId });
   }
-  return matched.length === 1 ? matched[0] : undefined;
+  const matched = matchNamedOwnedOrders(owned, messageText);
+  return matched.length === 1 ? matched[0]?.id : undefined;
 }
 
 /**
