@@ -74,6 +74,14 @@ export type WorkflowRunOutcome =
   | "failed"
   | "compensated"
   | "stranded"
+  // LE2-023 — the kernel sent a step to a HUMAN. Its own bucket, never folded
+  // into `failed`: on the shape that produces it (a paid cancel at the escalate
+  // band) `failed`'s "nothing ran" is literally true and still misleading,
+  // because an approval request is now live on a staff queue and an owner's
+  // decision will change what happened. A workflow whose escalations counted as
+  // failures would also read as broken to an operator when it is in fact its
+  // money bands working.
+  | "escalated"
   | "infeasible";
 
 /**

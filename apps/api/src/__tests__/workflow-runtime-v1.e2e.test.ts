@@ -581,8 +581,11 @@ describe("LE2-022 AC 3 — a mid-run failure runs the declared compensators", ()
   it("undoes the executed step through FULL kernel adjudication and says so honestly", async () => {
     // The failure is the REAL kernel's, not a stub: with an expensive cart the
     // `finishCheckout` ACTIVITY meets `confirmLargeTicket` on its own terms and
-    // returns REQUEST_CONFIRMATION rather than EXECUTE — a workflow confirm does
-    // not pre-authorize a step's own confirm. So the run stops after `reorder`
+    // returns REQUEST_CONFIRMATION rather than EXECUTE. Under LE2-023's refined
+    // rule this activity declares NO `confirmCoveredBy`, so it is an UNCOVERED
+    // confirm and the LE2-022 behaviour is unchanged byte-for-byte — which is
+    // what this case now also pins: coverage is the declared exception, never
+    // the default. So the run stops after `reorder`
     // has already rebuilt the cart, which is exactly the shape compensation
     // exists for.
     const h = buildHarness({ cartTotal: EXPENSIVE_CART_TOTAL });
