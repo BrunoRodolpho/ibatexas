@@ -272,12 +272,18 @@ function buildHarness(
         )
       ).decision,
     dispatchActivity: async (envelope, ctx) => {
-      const tool = harnessRef.current?.tools
-        .list()
-        .find((t) => String(t.capability) === String(envelope.kind));
-      if (tool === undefined) {
-        throw new Error(`no registered tool for ${String(envelope.kind)}`);
+      const registry = harnessRef.current?.tools;
+      if (registry === undefined) {
+        throw new Error(`no tool registry for ${String(envelope.kind)}`);
       }
+      // `resolveTool`, matching production (claustrum-bootstrap.ts). This used
+      // to be `list().find(...)`, which is a DIFFERENT question: the registry
+      // keeps every registration for a capability and `list()` is
+      // insertion-ordered, so a `find` returns the FIRST registration while the
+      // conductor's own dispatch takes the last-write-wins winner. It was benign
+      // here only because activity tools are registered exactly once — but a
+      // harness is where people copy from, so it should ask the real question.
+      const tool = registry.resolveTool(envelope.kind as never, ctx);
       return tool.execute(envelope.payload, ctx);
     },
     ...(opts.claims === undefined
