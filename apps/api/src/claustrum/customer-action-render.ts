@@ -9,19 +9,23 @@
 // (audit-confirmed). A customer told their order failed on a real success is the
 // inverse of the false-success class the SUCCESS_CLAIM_CLASSES guard polices.
 //
-// SCOPE (deliberately narrow): only the AMEND kinds and reservation.modify
-// (BKL-231) render here — every other customer verb returns `undefined`, so the
-// responder falls through to its existing grounded model path BYTE-IDENTICALLY
-// (item.add/checkout/reservation.cancel/… are untouched by this change;
-// reservation.cancel keeps its model-prose success draft). The statement is built
-// ONLY from the executed envelope kind (+ quantity / party-size where the payload
-// carries it) — never a fabricated item name, order number, or time (amend
-// payloads carry variantId/itemId, reservation.modify a time SLOT id, not human
-// labels), so the line is grounded and honest, never confident-wrong.
+// SCOPE (deliberately narrow): only the AMEND kinds, reservation.modify
+// (BKL-231) and order.checkout.create (BKL-230) render here — every other
+// customer verb returns `undefined`, so the responder falls through to its
+// existing grounded model path BYTE-IDENTICALLY (item.add/reservation.cancel/…
+// are untouched by this change; reservation.cancel keeps its model-prose success
+// draft). The statement is built ONLY from the executed envelope kind (+ quantity
+// / party-size where the payload carries it, + the dispatch RESULT for checkout)
+// — never a fabricated item name, order number, or time (amend payloads carry
+// variantId/itemId, reservation.modify a time SLOT id, not human labels), so the
+// line is grounded and honest, never confident-wrong.
 //
 // `executedOpsActions` is plane-neutral (it reads the @claustrum dispatch-result
 // shape: `executed` / `rewritten_and_executed` / `executed_plan`), so it is
 // reused here to extract the committed envelope(s) from the customer `acted`.
+// It already carries each execution's `result` — the tool executor's OWN return
+// value, verbatim — which is what makes the BKL-230 outcome grounding below
+// possible without widening this module's `(acted)` signature.
 
 import { executedOpsActions } from "../ops/ops-action-render.js";
 
@@ -38,12 +42,45 @@ const AMEND_REMOVE = "order.amend.remove_item";
 // but they saw no confirmation). Rendering it here gives rule-3b a draft to hold.
 const RESERVATION_MODIFY = "reservation.modify";
 
+// BKL-230 — order.checkout.create had no deterministic render at all: the cash
+// success line was MODEL prose that survived rule-3b by luck, and a PIX turn
+// (whose resume leaves no draft) degraded to UNKNOWN.
+//
+// Checkout is also the first kind here to render from the dispatch RESULT rather
+// than the payload alone, because its EXECUTE can COMMIT at the kernel and still
+// FAIL in the tool: `createCheckout` has several `success:false` early returns
+// (payment-init failure, missing PIX name/email) that RETURN rather than throw,
+// and @claustrum's dispatcher decides `executed` vs `failed` purely on whether
+// `tool.execute` THREW (execution/dispatch.js — it never inspects the returned
+// value), so those land here as `executed` carrying a `success:false` result. A
+// deterministic success line on one of those is precisely the FALSE-CLAIM class
+// this module exists to kill. Checkout therefore renders ONLY when the tool's own
+// return PROVES success, and only for the two payment methods whose outcome is
+// knowable at this seam:
+//   - `pix`  → the QR exists but the ORDER IS NOT CONFIRMED YET (payment pending),
+//              so the copy promises confirmation in the FUTURE and NEVER voices
+//              `result.orderId` — on this branch that field is a Stripe `pi_…`
+//              PaymentIntent id, not a customer-facing order number.
+//   - `cash` → the cart completed, so the order exists; its `result.orderId` is
+//              the formatted IBX-#### display id, voiced only when it actually
+//              matches that shape (it falls back to a raw Medusa `order_…` id
+//              when the projection carries no display_id — never leak that).
+// `card` (a client-secret handoff, nothing placed yet) and every `success:false`
+// return fall through to `undefined`, preserving today's behaviour exactly: the
+// model draft voices those, as it does now.
+const CHECKOUT_CREATE = "order.checkout.create";
+
 const RENDERED_KINDS: ReadonlySet<string> = new Set([
   AMEND_ADD,
   AMEND_UPDATE,
   AMEND_REMOVE,
   RESERVATION_MODIFY,
+  CHECKOUT_CREATE,
 ]);
+
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return x !== null && typeof x === "object";
+}
 
 /** A positive integer quantity from the executed payload, else undefined. */
 function quantityOf(payload: unknown): number | undefined {
@@ -71,10 +108,62 @@ function renderReservationModify(payload: unknown): string {
     : "Pronto! Sua reserva foi atualizada.";
 }
 
+/** The customer-facing display order number (`formatOrderId`, @ibatexas/types),
+ *  or undefined for anything else — notably a raw Medusa `order_…` id (the cash
+ *  fallback when the projection carries no display_id) and a Stripe `pi_…`
+ *  PaymentIntent id. Only this shape is ever voiced. */
+const DISPLAY_ORDER_ID = /^IBX-\d{4,}$/;
+
+function displayOrderIdOf(result: unknown): string | undefined {
+  if (!isRecord(result)) return undefined;
+  const id = result.orderId;
+  return typeof id === "string" && DISPLAY_ORDER_ID.test(id) ? id : undefined;
+}
+
+/** The executor's own `paymentMethod`, else undefined. Read from the RESULT, never
+ *  the payload: the payload carries what the model/resolver PROPOSED, the result
+ *  what the tool actually did. */
+function paymentMethodOf(result: unknown): string | undefined {
+  if (!isRecord(result)) return undefined;
+  const m = result.paymentMethod;
+  return typeof m === "string" ? m : undefined;
+}
+
+/**
+ * BKL-230 — the checkout success line, grounded in the tool's OWN outcome.
+ * `undefined` unless the executor explicitly returned `success === true`: a
+ * kernel EXECUTE is NOT evidence the checkout succeeded (see the CHECKOUT_CREATE
+ * note above), and an absent / non-boolean / false `success` must never be read
+ * as one. `card` and unknown methods also return `undefined` — nothing is placed
+ * on a client-secret handoff, so there is no success to state.
+ */
+function renderCheckoutCreate(result: unknown): string | undefined {
+  if (!isRecord(result) || result.success !== true) return undefined;
+  const method = paymentMethodOf(result);
+  if (method === "pix") {
+    // The QR is generated; the ORDER IS NOT CONFIRMED YET. The future-tense
+    // clause is the honest part — and it is why this line can never read as a
+    // settled payment. No id is voiced (it is a `pi_…`, not an order number).
+    return "Seu código PIX foi gerado! O pedido será confirmado assim que o pagamento for aprovado.";
+  }
+  if (method === "cash") {
+    // The cart completed ⇒ the order exists. Says nothing about the payment
+    // (cash is still pending) and nothing about WHERE it is paid (a cash order
+    // may be pickup or delivery — the result does not distinguish them).
+    const displayId = displayOrderIdOf(result);
+    return displayId !== undefined
+      ? `Pronto! Seu pedido ${displayId} foi confirmado.`
+      : "Pronto! Seu pedido foi confirmado.";
+  }
+  return undefined;
+}
+
 /** Deterministic pt-BR success line for one committed mutation, grounded in the
- *  executed envelope kind (+ quantity / party-size). No item name / order number /
- *  time is invented. */
-function renderAction(kind: string, payload: unknown): string {
+ *  executed envelope kind (+ quantity / party-size, + the dispatch result for
+ *  checkout), or `undefined` when the executed kind proved no success. No item
+ *  name / order number / time is invented. */
+function renderAction(kind: string, payload: unknown, result: unknown): string | undefined {
+  if (kind === CHECKOUT_CREATE) return renderCheckoutCreate(result);
   if (kind === RESERVATION_MODIFY) return renderReservationModify(payload);
   return renderAmend(kind, payload);
 }
@@ -99,15 +188,19 @@ function renderAmend(kind: string, payload: unknown): string {
 }
 
 /**
- * Deterministic customer mutation-success reply, or `undefined` when NO amend
- * committed this turn (the responder then keeps its existing grounded model path
- * for every other kind — a deferred/failed dispatch is NOT a success). When ≥1
- * amend committed the return is ALWAYS a string built from the executed
- * envelope(s); the model authors none of it. Multiple amends (a transactional
- * plan) render in order, joined.
+ * Deterministic customer mutation-success reply, or `undefined` when NO rendered
+ * kind committed this turn — or when the one that did PROVED no success (BKL-230
+ * checkout). The responder then keeps its existing grounded model path for every
+ * other kind; a deferred/failed dispatch is NOT a success. When ≥1 rendered kind
+ * committed with a proven outcome the return is ALWAYS a string built from the
+ * executed envelope(s) + result(s); the model authors none of it. Multiple actions
+ * (a transactional plan) render in order, joined — an action that renders nothing
+ * drops out rather than emptying the reply.
  */
 export function renderCustomerActionAnswer(acted: unknown): string | undefined {
-  const rendered = executedOpsActions(acted).filter((a) => RENDERED_KINDS.has(a.kind));
-  if (rendered.length === 0) return undefined;
-  return rendered.map((a) => renderAction(a.kind, a.payload)).join("\n\n");
+  const lines = executedOpsActions(acted)
+    .filter((a) => RENDERED_KINDS.has(a.kind))
+    .map((a) => renderAction(a.kind, a.payload, a.result))
+    .filter((line): line is string => line !== undefined);
+  return lines.length === 0 ? undefined : lines.join("\n\n");
 }
