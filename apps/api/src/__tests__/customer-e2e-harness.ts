@@ -44,8 +44,11 @@
 // on rendered text (render precedence is another worker's surface), and the
 // claims seams are deliberately omitted so a render degrade cannot interfere.
 //
-// SCOPE: checkout-turn needs ONLY. No speculative ports, no fixtures for other
-// intent kinds. Expected to grow as later tickets extend the customer funnel.
+// SCOPE: checkout-turn needs, plus (BKL-103) an optional `handoff` port so an
+// ESCALATE-ing turn can drive the AUT-017 park seam. No speculative ports, no
+// fixtures for other intent kinds — a kind's own fixtures live in its test file
+// (see chat-cancel-escalate-approve.e2e.test.ts, which supplies the order/payment
+// doubles for a cancel turn). Expected to grow as later tickets extend the funnel.
 
 import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
@@ -534,6 +537,16 @@ export interface CustomerConductorDeps {
   readonly model: ModelProvider;
   readonly session: SessionPort;
   readonly adjudicator: Adjudicator;
+  /**
+   * BKL-103 — the HandoffPort the conductor calls on an ESCALATE. Defaults to the
+   * inert no-op this harness shipped with (checkout turns never escalate). Supply
+   * the AUT-017 PARKING handoff — the same `ESCALATION_RESUMABLE_KINDS`-gated
+   * `park(buildEscalationParkInput(envelope))` shape `natsHandoff(publish,
+   * parkDeps)` performs in production — to drive an escalate→park→approve→resume
+   * loop through a REAL customer turn. Without it a resumable ESCALATE is audited
+   * but never parked, which is exactly the pre-BKL-103 hole.
+   */
+  readonly handoff?: { queue: (envelope: IntentEnvelope, reason: string) => Promise<void> };
 }
 
 export interface CustomerHarness {
@@ -571,7 +584,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     planner,
     responder: inertResponder(),
     explainer: { render: (r) => r.userFacing },
-    handoff: { async queue() {} },
+    handoff: deps.handoff ?? { async queue() {} },
     telemetry: noopTelemetry,
     session: deps.session,
     tools,

@@ -137,6 +137,15 @@ import {
   type ExternalReferenceProbes,
 } from "@ibatexas/tools";
 import type { AgentContext, UserType } from "@ibatexas/types";
+// BKL-103 — the approved paid-cancel executor's terminal-payment test + the
+// shared cancel side-effect body it delegates to (no `order.cancel` re-mint).
+import { PaymentStatus } from "@ibatexas/types";
+import { executeOrderCancel } from "./routes/order-actions.js";
+import {
+  createApprovedOrderCancelExecutor,
+  type ApprovedCancelActivePayment,
+  type ApprovedCancelOrder,
+} from "./escalation/approved-cancel-executor.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
@@ -155,6 +164,7 @@ import {
 import {
   getEscalationParkStore,
   buildEscalationParkInput,
+  escalationProposerStampFor,
   ESCALATION_RESUMABLE_KINDS,
 } from "./escalation/escalation-park-store.js";
 import {
@@ -1083,6 +1093,61 @@ export async function enrichResumeState(
   } catch {
     return state;
   }
+}
+
+/**
+ * BKL-103 — the channel the CUSTOMER-plane escalation resume re-projects under.
+ *
+ * The parked envelope does NOT carry the originating channel: the customer-plane
+ * planner stamps `actor = { principal: "llm", sessionId: conversationId }`
+ * (`plannerEnvelopeActor`) and the HTTP plane stamps
+ * `{ principal: "user", sessionId: customerId }` — neither has a channel slot, and
+ * `ParkedEscalationIntent` therefore has nothing to round-trip. Using a fixed
+ * customer channel is SOUND for the kinds wired here rather than merely
+ * convenient: no `order.cancel` guard in `@ibatexas/pack-orders` reads
+ * `state.ctx.channel` (the single `ctx.channel` read is `canCheckout`, which gates
+ * `order.checkout.create` only), so the cancel verdict is channel-invariant. A
+ * future resumable kind whose guards DO read the channel must thread the real one
+ * through the park record instead of reusing this constant.
+ */
+const ESCALATION_RESUME_CHANNEL = "web";
+
+/**
+ * BKL-103 — the SEED state `enrichResumeState` re-projects an escalation resume
+ * from, per plane.
+ *
+ * WHY THIS EXISTS. `enrichResumeState` has two branches: an `admin:`-keyed ops
+ * table, and a CUSTOMER branch that needs `{ customerId, channel }` on the state
+ * it is handed in order to re-run `resolveAndAssemble`. The escalation-approval
+ * engine used to hand it a bare `{ ctx: { exists: false } }`, which is exactly
+ * right for the ops-plane refund (whose parked `actor.sessionId` is
+ * `admin:<staffId>`, so the ops table serves it) but makes the CUSTOMER branch
+ * fall straight through and return the stub UNCHANGED. A customer-plane
+ * `order.cancel` resumed against that stub would adjudicate with no
+ * paymentStatus / total / fulfillmentStatus at all — `gatePaidCancel` would not
+ * even recognize it as paid, so the fresh-state re-verification BKL-103 depends on
+ * would silently not happen.
+ *
+ * The customer id is read through the kind's BKL-113 PROPOSER STAMP — the same
+ * `payload.actorId` the pack overlay's separation-of-duty gate compares against.
+ * That is deliberate and load-bearing: it is the ONLY authenticated customer
+ * identity that survives the park on BOTH customer planes (the conversational
+ * envelope's `actor.sessionId` is a CONVERSATION id, not a customer id), so one
+ * stamp serves both the self-approve comparand and the resume's ownership scope.
+ * An UNSTAMPED payload yields the stub ⇒ the pack guards see no order state ⇒
+ * REFUSE (fail-closed; nothing is cancelled off an unprojectable state).
+ *
+ * Ops-plane behaviour is BYTE-IDENTICAL to pre-BKL-103 (the `admin:` short-circuit
+ * returns the same stub the engine passed before).
+ */
+export function escalationResumeSeedState(envelope: IntentEnvelope): unknown {
+  const opsStub = { ctx: { exists: false } };
+  if (envelope.actor.sessionId.startsWith("admin:")) return opsStub;
+  const proposerId = escalationProposerStampFor(
+    String(envelope.kind),
+  )?.readProposerId((envelope.payload ?? {}) as Record<string, unknown>);
+  if (proposerId === null || proposerId === undefined) return opsStub;
+  return { customerId: proposerId, channel: ESCALATION_RESUME_CHANNEL };
 }
 
 /**
@@ -3434,8 +3499,15 @@ export async function bootstrapClaustrum(
   _escalationApprovalGateway = createEscalationApprovalEngine({
     get: (token) => getEscalationParkStore().get(token),
     consume: (token) => getEscalationParkStore().consume(token),
+    // BKL-103 — the seed is now PER-PLANE (`escalationResumeSeedState`): the
+    // ops-plane refund still re-projects through the `admin:`-keyed OPS_RESUME_TABLE
+    // off the identical `{ ctx: { exists: false } }` stub, while a customer-plane
+    // `order.cancel` seeds `{ customerId, channel }` so the CUSTOMER branch actually
+    // re-runs `resolveAndAssemble` and the cancel re-adjudicates against FRESH order
+    // state. See that function's doc for why the customer id comes off the BKL-113
+    // proposer stamp.
     rebuildState: (envelope) =>
-      enrichResumeState(envelope, { ctx: { exists: false } }),
+      enrichResumeState(envelope, escalationResumeSeedState(envelope)),
     policyFor: (kind) => {
       const policy = policyForKind(kind);
       if (policy === null) {
@@ -3454,6 +3526,37 @@ export async function bootstrapClaustrum(
           approverStaffId,
         );
       },
+      // BKL-103 — the approved >=R$1.000 PAID-cancel executor. The ordering
+      // rationale (refund settled as a POST-DECISION write BEFORE the shared
+      // cancel body, so `executeOrderCancel`'s BKL-130 inner refund — which would
+      // itself ESCALATE at this amount — is skipped) lives in
+      // escalation/approved-cancel-executor.ts. Extracted there so the e2e drives
+      // the REAL executor instead of a hand-rolled mirror of it.
+      "order.cancel": createApprovedOrderCancelExecutor({
+        getOrder: (orderId, customerId) =>
+          createOrderQueryService().getById(orderId, {
+            customerId,
+          }) as Promise<ApprovedCancelOrder | null>,
+        findActivePayment: (orderId) =>
+          createPaymentCommandService().findActiveByOrderId(
+            orderId,
+          ) as Promise<ApprovedCancelActivePayment | null>,
+        getPayment: (paymentId) => createPaymentQueryService().getById(paymentId),
+        isPaidStatus: (status) => status === PaymentStatus.PAID,
+        settleApprovedRefund: (refundPayload, approverStaffId) =>
+          executeRefund(opsRegistryDeps, refundPayload, approverStaffId),
+        runCancel: ({ orderId, customerId, reason, order }) =>
+          executeOrderCancel({
+            orderId,
+            customerId,
+            reason,
+            order,
+            orderCmdSvc: createOrderCommandService(),
+            paymentCmdSvc: createPaymentCommandService(),
+            paymentQuerySvc: createPaymentQueryService(),
+            log: logger as unknown as Parameters<typeof executeOrderCancel>[0]["log"],
+          }),
+      }),
     },
     markIntentResolved: async (sessionId, intentHash, status, resolvedBy, at) => {
       const store = await getEscalationStore();

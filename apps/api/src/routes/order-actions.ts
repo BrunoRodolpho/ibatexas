@@ -979,6 +979,15 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
       const cancelPayload: OrderCancelPayload = {
         orderId: id,
         reason: request.body.reason ?? "Cancelado pelo cliente",
+        // BKL-103 — the PROPOSER stamp. `order.cancel` is a resumable escalation
+        // kind, and `gatePaidCancel`'s OWNER-approval overlay compares
+        // `approval.approverId !== payload.actorId`; without this stamp that
+        // comparand is absent and the overlay refuses to convert at all (it
+        // requires a non-empty proposer), so an approved >=R$1.000 paid cancel
+        // could never resume. Sourced from the AUTHENTICATED customer only —
+        // never from request input. It is also the customer scope the resume
+        // re-projection uses (`escalationResumeSeedState`).
+        actorId: customerId,
       };
       // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key ───────
       //
