@@ -21,6 +21,75 @@ export interface RcaConversation {
   lastText: string | null // last archived message (server-redacted)
   lastRole: string | null
   turnCount: number
+  // LE2-031 identity columns — both opaque (a cuid and a salted hash), null
+  // when the session could not be attributed. OPTIONAL on the wire: an older
+  // API build sends neither.
+  customerId?: string | null
+  phoneHash?: string | null
+}
+
+/** LE2-031 — how a rail group's identity was established. `ungrouped` is the
+ *  CLIENT-side fallback for an API build that does not group at all: it asserts
+ *  nothing about identity (unlike `unidentified`, which is a server finding). */
+export type RcaGroupKind = "customer" | "ops" | "unidentified" | "ungrouped"
+
+/** One top-level rail row: a customer (or a staff operator, or the explicit
+ *  unidentified bucket) with its sessions as sub-rows. Built server-side
+ *  (apps/api/src/routes/qa-rca-grouping.ts) so the identity ladder and the
+ *  ordering are pinned in one place. */
+export interface RcaConversationGroup {
+  /** Stable identity — a pure function of the session's identity fields, so a
+   *  live refresh never re-keys (and therefore never collapses) an open group. */
+  groupKey: string
+  kind: RcaGroupKind
+  label: string
+  customerId: string | null
+  phoneHash: string | null
+  staffId: string | null
+  /** Sessions of this group, most-recent-first — the rail's sub-rows. */
+  sessionIds: string[]
+  channels: string[]
+  sessionCount: number
+  turnCount: number
+  startedAt: string | null
+  lastAt: string | null
+}
+
+/** The rail's payload: the grouped view plus the flat rows it is built from
+ *  (the sub-rows, the channel facet counts and the previews all read those). */
+export interface RcaConversationPage {
+  conversations: RcaConversation[]
+  groups: RcaConversationGroup[]
+  /** true = this API build did not group; `groups` is the one-row-per-session
+   *  fallback below, NOT a claim that every session is unidentifiable. */
+  ungrouped: boolean
+}
+
+/** Server groups when the API sent them; otherwise ONE group per session,
+ *  explicitly marked `ungrouped`. Pure — the rail then has a single code path,
+ *  and a stale API degrades the VIEW without inventing customer identities. */
+export function groupsOrFallback(
+  conversations: ReadonlyArray<RcaConversation>,
+  groups: RcaConversationGroup[] | undefined,
+): { groups: RcaConversationGroup[]; ungrouped: boolean } {
+  if (groups !== undefined) return { groups, ungrouped: false }
+  return {
+    ungrouped: true,
+    groups: conversations.map((c) => ({
+      groupKey: `session:${c.sessionId}`,
+      kind: "ungrouped" as const,
+      label: c.sessionId,
+      customerId: null,
+      phoneHash: null,
+      staffId: null,
+      sessionIds: [c.sessionId],
+      channels: [c.channel],
+      sessionCount: 1,
+      turnCount: c.turnCount,
+      startedAt: c.startedAt,
+      lastAt: c.lastAt,
+    })),
+  }
 }
 
 export interface RcaTurnSummary {
@@ -173,17 +242,23 @@ export interface ConversationFilter {
   limit?: number
 }
 
-export const fetchConversations = (cfg: QaConfig, f: ConversationFilter): Promise<RcaConversation[]> => {
+/** The rail read. Returns the grouped view AND the flat rows: grouping is a
+ *  server concern (one identity ladder, one ordering, pinned once), the client
+ *  only renders it. */
+export const fetchConversationPage = (
+  cfg: QaConfig,
+  f: ConversationFilter,
+): Promise<RcaConversationPage> => {
   const p = new URLSearchParams()
   p.set("limit", String(f.limit ?? 40))
   if (f.q) p.set("q", f.q)
   if (f.from) p.set("from", f.from)
   if (f.to) p.set("to", f.to)
   if (f.channels !== undefined && f.channels.length > 0) p.set("channel", f.channels.join(","))
-  return authedGetJson<{ conversations: RcaConversation[] }>(
+  return authedGetJson<{ conversations: RcaConversation[]; groups?: RcaConversationGroup[] }>(
     cfg,
     `/internal/qa/rca/conversations?${p.toString()}`,
-  ).then((r) => r.conversations)
+  ).then((r) => ({ conversations: r.conversations, ...groupsOrFallback(r.conversations, r.groups) }))
 }
 
 export const fetchTurns = (

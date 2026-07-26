@@ -40,6 +40,9 @@ import { createAuditRedactor } from "@ibatexas/audit-sink";
 import { logger } from "../lib/logger.js";
 // LE2-030 — one vocabulary for "this reply did not land", shared with the writer.
 import { FAILED_WHATSAPP_STATUSES } from "../whatsapp/delivery-store.js";
+// LE2-031 — the rail reads as customers, not kernel sessions. The identity
+// ladder + ordering live in a pure module so they are unit-pinnable.
+import { groupConversationsByCustomer } from "./qa-rca-grouping.js";
 
 // Dedicated lazy read pool (own connection, not the bootstrap writer pool — the
 // RCA surface is dev-only and strictly read-only). connectionString mirrors
@@ -274,6 +277,58 @@ async function probeStore(fn: () => Promise<unknown>): Promise<StoreProbe> {
   }
 }
 
+// ── LE2-031: the phone-hash identity lane ───────────────────────────────────
+
+/** Best-effort salted phone hash per conversation — the fallback identity for a
+ *  guest who never became a customer row. Two independent sources, because they
+ *  cover each other's blind spot: `whatsapp_delivery` has a row whenever a reply
+ *  was HANDED to Twilio (LE2-030), and `conversation_incidents` has one exactly
+ *  when a reply never landed. Delivery wins on conflict (it is written at send,
+ *  the incident lane is derived).
+ *
+ *  Each source degrades on its own — an absent table leaves those sessions
+ *  without a hash, which lands them in the explicit "unidentified" bucket
+ *  rather than 500-ing the rail. Same fail-safe posture as every other read
+ *  here; the value is a hash, never a phone number. */
+async function fetchPhoneHashes(ids: ReadonlyArray<string>): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (ids.length === 0) return out;
+  const read = async (sql: string, lane: string): Promise<Array<Record<string, unknown>>> => {
+    try {
+      return (await pool().query(sql, [ids])).rows as Array<Record<string, unknown>>;
+    } catch (err) {
+      logger.warn(
+        { component: "qa-rca", lane, err: (err as Error).message },
+        "phone-hash lane unavailable — sessions fall back to the unidentified bucket",
+      );
+      return [];
+    }
+  };
+  const [incidents, deliveries] = await Promise.all([
+    read(
+      `SELECT DISTINCT ON (session_id) session_id AS conversation_id, phone_hash
+       FROM ibx_domain.conversation_incidents
+       WHERE session_id = ANY($1) AND phone_hash IS NOT NULL
+       ORDER BY session_id, last_drop_at DESC`,
+      "incidents",
+    ),
+    read(
+      `SELECT DISTINCT ON (conversation_id) conversation_id, phone_hash
+       FROM whatsapp_delivery
+       WHERE conversation_id = ANY($1) AND phone_hash IS NOT NULL
+       ORDER BY conversation_id, sent_at DESC`,
+      "delivery",
+    ),
+  ]);
+  // Delivery applied last so it wins on conflict.
+  for (const r of [...incidents, ...deliveries]) {
+    const conv = str(r.conversation_id);
+    const hash = str(r.phone_hash);
+    if (conv !== null && hash !== null && hash.length > 0) out.set(conv, hash);
+  }
+  return out;
+}
+
 // ── routes ──────────────────────────────────────────────────────────────────
 
 /** Register the read-only RCA routes. Call from inside qaControlRoutes, after
@@ -367,19 +422,29 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       ).rows;
     }
 
-    // Best-effort enrichment: channel + chat cuid + last archived message from
-    // the domain schema. Message content is redacted server-side (see header).
+    // Best-effort enrichment: channel + chat cuid + customer id + last archived
+    // message from the domain schema. Message content is redacted server-side
+    // (see header). customer_id is the TOP rung of LE2-031's identity ladder —
+    // when this enrichment is skipped every session falls back to the phone
+    // hash and then to the explicit "unidentified" bucket, never to a guess.
     const meta = new Map<
       string,
-      { channel: string | null; chatCuid: string | null; lastText: string | null; lastRole: string | null }
+      {
+        channel: string | null;
+        chatCuid: string | null;
+        customerId: string | null;
+        lastText: string | null;
+        lastRole: string | null;
+      }
     >();
     const ids = rows
       .map((r) => str((r as Record<string, unknown>).session_id))
       .filter((v): v is string => v !== null);
+    const phoneHashes = fetchPhoneHashes(ids);
     if (ids.length > 0) {
       try {
         const enr = await pool().query(
-          `SELECT c.session_id, c.id AS chat_cuid, c.channel, m.content, m.role
+          `SELECT c.session_id, c.id AS chat_cuid, c.channel, c.customer_id, m.content, m.role
            FROM ibx_domain.conversations c
            LEFT JOIN LATERAL (
              SELECT content, role FROM ibx_domain.conversation_messages
@@ -395,6 +460,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
             meta.set(sid, {
               channel: str(r.channel),
               chatCuid: str(r.chat_cuid),
+              customerId: str(r.customer_id),
               lastText: content !== null ? redactText(content).slice(0, 160) : null,
               lastRole: str(r.role),
             });
@@ -404,6 +470,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
         logger.warn({ component: "qa-rca", err: (err as Error).message }, "conversation enrichment skipped");
       }
     }
+    const hashes = await phoneHashes;
 
     const conversations = rows
       .map((r) => {
@@ -419,12 +486,21 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
           lastText: m?.lastText ?? null,
           lastRole: m?.lastRole ?? null,
           turnCount: num(row.turns) ?? 0,
+          // LE2-031 identity columns — the rail groups on these, and they are
+          // both opaque (a cuid and a salted hash); no PII crosses the wire.
+          customerId: m?.customerId ?? null,
+          phoneHash: hashes.get(sid) ?? null,
         };
       })
       .filter((c) => pushedDown || channels === null || channels.has(c.channel))
       .slice(0, limit);
 
-    return { conversations };
+    // LE2-031 — the rail's top-level rows. Derived from exactly the
+    // conversations served above (after filtering + LIMIT), so a group never
+    // references a session the client cannot see. The flat `conversations`
+    // array stays on the wire unchanged: the sub-rows, the channel facets and
+    // every existing consumer still read it.
+    return { conversations, groups: groupConversationsByCustomer(conversations) };
   });
 
   // ── turns of one conversation ─────────────────────────────────────────────
