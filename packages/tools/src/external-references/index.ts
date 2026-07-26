@@ -17,6 +17,7 @@
 export {
   ExternalReferenceConfigError,
   externalReferenceKey,
+  externalReferencesForStore,
   findExternalReference,
   requireExternalReferenceKey,
   type EnvLike,
