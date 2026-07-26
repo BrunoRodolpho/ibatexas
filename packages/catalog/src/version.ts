@@ -18,4 +18,9 @@
 // `catalogVersion === 1` comparisons, which is exactly the runtime authority
 // the catalog must never hold (Decision 13: "the catalog defines; it never
 // holds runtime authority").
-export const CATALOG_VERSION: number = 2
+// v3 (LE2-033) — the conversation projection: `conversationTriggers`, a new
+// REQUIRED slot on every chat-tier capability, populated for all 20. Both
+// halves of the bump discipline's first trigger ("adding, removing, or
+// editing a capability; changing any field on one" AND "the field contract
+// itself") apply, so the serial moves even though no existing field changed.
+export const CATALOG_VERSION: number = 3

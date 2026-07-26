@@ -1,0 +1,56 @@
+{
+  "fixture": "conversation-projection.duplicate-trigger-phrasing",
+  "targets": "conversation-projection/duplicate-trigger-phrasing",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "conversation-projection/duplicate-trigger-phrasing"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 27,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 7,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "conversation-projection",
+      "rule": "duplicate-trigger-phrasing",
+      "severity": "error",
+      "object": "capability:conformance.projection.duplicate",
+      "field": "conversationTriggers[6]",
+      "message": "trigger phrasing \"Conformance Base Gatilho Três!\" repeats conversationTriggers[2] under the projection's normal form (\"conformance base gatilho tres\") — they differ only by case, accent, punctuation or spacing. A repeat adds no retrieval signal and inflates the coverage floor without widening it.",
+      "reference": "conformance base gatilho tres"
+    }
+  ],
+  "formatted": [
+    "conversation-projection/duplicate-trigger-phrasing: capability:conformance.projection.duplicate · conversationTriggers[6] — trigger phrasing \"Conformance Base Gatilho Três!\" repeats conversationTriggers[2] under the projection's normal form (\"conformance base gatilho tres\") — they differ only by case, accent, punctuation or spacing. A repeat adds no retrieval signal and inflates the coverage floor without widening it."
+  ]
+}

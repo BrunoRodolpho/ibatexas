@@ -16,6 +16,12 @@
 //   5. `external-references`        — the declaration table is well-formed and
 //                                     its consumers resolve (LE2-018)
 //
+// LE2-033 added the sixth, slotted after `slot-dataflow`:
+//
+//   6. `conversation-projection`    — the authored pt-BR trigger phrasings are
+//                                     well-formed and no two capabilities
+//                                     claim the same one
+//
 // Compensation completeness, graph shape and lifecycle are journey-shaped
 // (tickets 20/22 add the objects AND the passes together).
 //
@@ -57,6 +63,7 @@ import {
   type CatalogPassId,
   type CatalogPassResult,
 } from "./diagnostics.js"
+import { runConversationProjectionPass } from "./passes/conversation-projection.js"
 import { runExternalReferencesPass } from "./passes/external-references.js"
 import { runReferentialIntegrityPass } from "./passes/referential-integrity.js"
 import { runSafetyImplicationEdgesPass } from "./passes/safety-implication-edges.js"
@@ -94,6 +101,7 @@ export {
   type CatalogReferenceEdge,
   type EdgeDangler,
 } from "./passes/referential-integrity.js"
+export { runConversationProjectionPass } from "./passes/conversation-projection.js"
 export { runExternalReferencesPass } from "./passes/external-references.js"
 export { runSafetyImplicationEdgesPass } from "./passes/safety-implication-edges.js"
 export { runSlotDataflowPass } from "./passes/slot-dataflow.js"
@@ -137,6 +145,11 @@ export const CATALOG_PASSES = [
     id: "slot-dataflow",
     summary: "every declared slot is well-formed for its tier contract",
     run: runSlotDataflowPass,
+  },
+  {
+    id: "conversation-projection",
+    summary: "trigger phrasings are well-formed and no two capabilities share one",
+    run: runConversationProjectionPass,
   },
   {
     id: "safety-implication-edges",

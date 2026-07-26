@@ -82,6 +82,12 @@ export type {
 
 export { CAPABILITY_DEFINITIONS } from "./definitions.js"
 
+export {
+  generateConversationTriggers,
+  MIN_CONVERSATION_TRIGGERS,
+  normalizeTriggerPhrasing,
+} from "./conversation-triggers.js"
+
 export { generateChatDrivableToolKinds } from "./generate-chat-drivable-tool-kinds.js"
 
 export {

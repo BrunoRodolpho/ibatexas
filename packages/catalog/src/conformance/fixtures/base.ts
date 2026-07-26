@@ -32,7 +32,40 @@ export const IDENTITY_BASE: Omit<IdentityCapabilityDefinition, "kind"> = {
   tier: "identity",
 }
 
-/** A well-formed chat-tier capability, minus its `kind`. */
+/**
+ * `MIN_CONVERSATION_TRIGGERS` (6) well-formed phrasings, namespaced by
+ * `discriminator` so that two capabilities in ONE fixture never accidentally
+ * share one (LE2-033).
+ *
+ * That accident is not hypothetical: the `conversation-projection` pass
+ * rejects a phrasing claimed by two capabilities, so any multi-capability
+ * fixture spreading `CHAT_BASE` twice would emit a collision diagnostic it
+ * never meant to test and stop being a single-purpose witness. Every fixture
+ * with two chat capabilities must give the second one its own discriminator.
+ *
+ * `conformance` appears in every line so a fixture phrasing can never collide
+ * with an authored production phrasing either.
+ */
+export function conformanceTriggers(discriminator: string): readonly string[] {
+  return [
+    `conformance ${discriminator} gatilho um`,
+    `conformance ${discriminator} gatilho dois`,
+    `conformance ${discriminator} gatilho três`,
+    `conformance ${discriminator} gatilho quatro`,
+    `conformance ${discriminator} gatilho cinco`,
+    `conformance ${discriminator} gatilho seis`,
+  ]
+}
+
+/**
+ * A well-formed chat-tier capability, minus its `kind`.
+ *
+ * `conversationTriggers` (LE2-033) carries exactly
+ * `MIN_CONVERSATION_TRIGGERS` (6) phrasings — the floor, not a round number.
+ * A base sitting ON the boundary is what lets a rejection fixture prove the
+ * floor by removing ONE entry, keeping the specimen one slot away from the
+ * control.
+ */
 export const CHAT_BASE: Omit<ChatCapabilityDefinition, "kind"> = {
   pack: FIXTURE_PACK,
   mutating: true,
@@ -41,6 +74,7 @@ export const CHAT_BASE: Omit<ChatCapabilityDefinition, "kind"> = {
   auth: "guest",
   legacyNames: ["conformance_tool"],
   description: "Capacidade de conformidade (fixture).",
+  conversationTriggers: conformanceTriggers("base"),
   guardRefs: [{ phase: "business", name: "conformanceBusinessGuard" }],
   refusalCode: "order.default.deny",
 }

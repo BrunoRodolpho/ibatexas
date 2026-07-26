@@ -13,7 +13,12 @@
     },
     {
       "pass": "slot-dataflow",
-      "checked": 25,
+      "checked": 27,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 6,
       "diagnostics": 0
     },
     {

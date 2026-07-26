@@ -41,6 +41,17 @@ describe("generateChatDrivableToolKinds — filter behavior (FE-4.3)", () => {
         auth: "staff",
         legacyNames: [],
         description: "test fixture — staff-only, must not appear in the chat projection",
+        // LE2-033: a REQUIRED chat-tier slot. Present so this fixture stays a
+        // legal chat-tier literal — the point it proves is the mutating+chat
+        // FILTER, not the slot contract.
+        conversationTriggers: [
+          "fixture gatilho um",
+          "fixture gatilho dois",
+          "fixture gatilho três",
+          "fixture gatilho quatro",
+          "fixture gatilho cinco",
+          "fixture gatilho seis",
+        ],
         guardRefs: [],
         refusalCode: "ops.default.deny",
       },
@@ -53,6 +64,14 @@ describe("generateChatDrivableToolKinds — filter behavior (FE-4.3)", () => {
         auth: "guest",
         legacyNames: [],
         description: "test fixture — read-only, must not appear in the MUTATING chat projection",
+        conversationTriggers: [
+          "fixture leitura um",
+          "fixture leitura dois",
+          "fixture leitura três",
+          "fixture leitura quatro",
+          "fixture leitura cinco",
+          "fixture leitura seis",
+        ],
         guardRefs: [],
         refusalCode: "order.default.deny",
       },

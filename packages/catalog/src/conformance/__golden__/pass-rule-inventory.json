@@ -31,6 +31,18 @@
       ]
     },
     {
+      "pass": "conversation-projection",
+      "sources": [
+        "passes/conversation-projection.ts"
+      ],
+      "rules": [
+        "cross-capability-trigger-collision",
+        "duplicate-trigger-phrasing",
+        "insufficient-trigger-coverage",
+        "malformed-trigger-phrasing"
+      ]
+    },
+    {
       "pass": "safety-implication-edges",
       "sources": [
         "passes/safety-implication-edges.ts"
@@ -67,5 +79,5 @@
       ]
     }
   ],
-  "ruleCount": 26
+  "ruleCount": 30
 }

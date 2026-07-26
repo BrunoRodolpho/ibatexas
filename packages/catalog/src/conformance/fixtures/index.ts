@@ -13,6 +13,7 @@
 // failure.
 
 import { CLEAN_FIXTURES } from "./clean.js"
+import { CONVERSATION_PROJECTION_FIXTURES } from "./conversation-projection.js"
 import {
   CLEAN_EXTERNAL_REFERENCE_FIXTURE,
   EXTERNAL_REFERENCES_FIXTURES,
@@ -31,6 +32,7 @@ import type { ConformanceFixture } from "../types.js"
 export const CONFORMANCE_FIXTURES: readonly ConformanceFixture[] = [
   ...REFERENTIAL_INTEGRITY_FIXTURES,
   ...SLOT_DATAFLOW_FIXTURES,
+  ...CONVERSATION_PROJECTION_FIXTURES,
   ...SAFETY_IMPLICATION_EDGES_FIXTURES,
   ...TERMINAL_COVERAGE_FIXTURES,
   ...EXTERNAL_REFERENCES_FIXTURES,

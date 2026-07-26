@@ -85,6 +85,7 @@ export {
   generateCapabilityDescriptions,
   generateChatCapabilityAuthLevels,
   generateChatDrivableToolKinds,
+  generateConversationTriggers,
   generateForeignAdvertisedKinds,
   generateIntentKindsMirror,
   generateJustifiedByForClaim,
@@ -95,9 +96,13 @@ export {
   generatePlannerAllowedIntents,
   generateRefusalCodes,
   generateToolToIntentMap,
+  MIN_CONVERSATION_TRIGGERS,
+  normalizeTriggerPhrasing,
   type AdminLabelExternalInputs,
   type KnownIntentKindsExternalInputs,
 } from "./capability-definitions/index.js"
+
+export { normalizeDiacritics } from "./text-normalization.js"
 
 export {
   CLAIM_CLASS_REFERENCES,

@@ -22,7 +22,7 @@ function def(overrides: Record<string, unknown> = {}): CapabilityDefinition {
   } as CapabilityDefinition
 }
 
-/** A minimal, VALID chat-tier capability — all six chat slots populated. */
+/** A minimal, VALID chat-tier capability — all seven chat slots populated. */
 function chat(overrides: Record<string, unknown> = {}): CapabilityDefinition {
   return def({
     tier: "chat",
@@ -30,6 +30,19 @@ function chat(overrides: Record<string, unknown> = {}): CapabilityDefinition {
     auth: "guest",
     legacyNames: ["reorder"],
     description: "Repetir um pedido anterior.",
+    // LE2-033 — `conversationTriggers` is a REQUIRED chat-tier slot, so a base
+    // without one is no longer valid and every test below would read
+    // `missing-required-slot` as its first diagnostic instead of the rule it
+    // is actually about. Six entries: the pass's floor (the count itself is
+    // this file's concern only insofar as it must not be the finding).
+    conversationTriggers: [
+      "repete meu último pedido",
+      "quero pedir a mesma coisa de novo",
+      "faz de novo o pedido da semana passada",
+      "manda o mesmo pedido de sempre",
+      "quero repetir aquele pedido",
+      "pede igual ao anterior",
+    ],
     guardRefs: [{ phase: "business", name: "executeW5Kinds" }],
     refusalCode: "order.default.deny",
     ...overrides,

@@ -29,6 +29,12 @@
 export const CATALOG_PASS_IDS = [
   "referential-integrity",
   "slot-dataflow",
+  // LE2-033 — sits directly after `slot-dataflow` because the two speak about
+  // the same slots from opposite sides: slot-dataflow reports that
+  // `conversationTriggers` is missing or misshapen, this pass reports that its
+  // CONTENTS do not separate capabilities. Adjacency puts both halves of one
+  // authoring mistake next to each other in a build log.
+  "conversation-projection",
   "safety-implication-edges",
   "terminal-coverage",
   "external-references",
