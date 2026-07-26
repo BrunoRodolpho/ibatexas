@@ -1,6 +1,13 @@
 {
   "passing": [
     "eval.refusal:delivery-coverage-question",
+    "eval.refusal:le2001-cus-ctl-coverage-02",
+    "eval.refusal:le2001-cus-ctl-hours-01",
+    "eval.refusal:le2001-cus-ctl-smalltalk-01",
+    "eval.refusal:le2001-ops-ctl-coverage-01",
+    "eval.refusal:le2001-ops-ctl-coverage-02",
+    "eval.refusal:le2001-ops-ctl-status-q-01",
+    "eval.refusal:le2001-ops-hist-ghost-a",
     "eval.refusal:store-open-question",
     "order.cancel:bare-direct",
     "order.cancel:escalate-exact-threshold-boundary",
