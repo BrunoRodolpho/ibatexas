@@ -39,6 +39,7 @@ import { beginWireTurn } from "../claustrum/wire-capture.js";
 import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { Channel, type StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken, getOrCreateCart } from "@ibatexas/tools";
+import { beginWorkflowTurn } from "../claustrum/workflow/workflow-turn.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import { optionalAuth } from "../middleware/auth.js";
 import {
@@ -527,7 +528,17 @@ async function runConductorTurn(params: {
       openFunnelTurn(capsule.turnId, {
         confirmWindowOpen: (parked?.length ?? 0) > 0,
       });
-      const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
+      // LE2-021 — bind this turn's identity for the workflow decision observer.
+      // The `Adjudicator` port carries no turn id, so the runtime learns which
+      // turn a CONFIRM belongs to out of band, from the async call tree rather
+      // than from a module-scope variable that concurrent turns would overwrite
+      // (workflow/workflow-turn.ts). Nested inside `beginWireTurn` because both
+      // are per-turn ambient contexts over the same call.
+      const turn = await beginWireTurn(() =>
+        beginWorkflowTurn({ turnId: capsule.turnId, channel: "web" }, () =>
+          handleTurn(capsule, inbound),
+        ),
+      );
       // The conductor produced a result — the inner classify below now owns the
       // no-delivery decision, so a later (post-result) throw must not re-open in
       // the catch (F2 gate).

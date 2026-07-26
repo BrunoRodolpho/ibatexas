@@ -83,6 +83,59 @@ vi.mock("stripe", () => ({
   })),
 }));
 
+// LE2-021 — the domain double behind `order.reorder`'s handler.
+//
+// The handler resolves WHICH order to repeat from the customer's own projection
+// rather than from its payload, and does so UNCONDITIONALLY (see
+// `register-workflow-scoped-tools.ts`): an identifier that can be read from
+// first-party state must never be accepted from anywhere a parse could reach,
+// and a "use the payload when it has one" branch would be exactly such a place
+// the day some workflow bound that field to a slot.
+//
+// So this fixture corpus needs a row to resolve, and it is deliberately given
+// the SAME id the fixture's authored `const` binding names — the const still
+// rides the adjudicated envelope and still proves an authored constant reaches
+// a payload, it just is not what selects the order. There is no Postgres in
+// this suite.
+vi.mock("@ibatexas/domain", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  const { FIXTURE_PREVIOUS_ORDER_ID } = (await import("@ibatexas/catalog")) as {
+    FIXTURE_PREVIOUS_ORDER_ID: string;
+  };
+  const row = {
+    id: FIXTURE_PREVIOUS_ORDER_ID,
+    displayId: 1042,
+    customerId: "cus_le2020_owner",
+    totalInCentavos: 8900,
+    itemsJson: [
+      {
+        productId: "prod_costela",
+        variantId: "variant_costela_500g",
+        title: "Costela 500g",
+        quantity: 2,
+        priceInCentavos: 4450,
+      },
+    ],
+    medusaCreatedAt: new Date("2026-07-20T18:00:00Z"),
+  };
+  return {
+    ...actual,
+    createOrderQueryService: () => ({
+      getById: async (id: string, opts?: { customerId?: string }) =>
+        id === row.id && (opts?.customerId ?? row.customerId) === row.customerId
+          ? row
+          : null,
+      listByCustomer: async (customerId: string) =>
+        customerId === row.customerId
+          ? { orders: [row], count: 1 }
+          : { orders: [], count: 0 },
+      findByDisplayId: async () => [],
+      listAll: async () => ({ orders: [row], count: 1 }),
+      getStatusHistory: async () => [],
+    }),
+  };
+});
+
 const {
   composeCustomerConductor,
   makeAuditedAdjudicator,
@@ -102,9 +155,8 @@ const { createWorkflowRuntime } = await import(
 const { workflowTrace } = await import("../claustrum/workflow/workflow-trace.js");
 const { createParseFunnel, renderL0Reply } = await import("../claustrum/funnel-tier.js");
 const { CUSTOMER_ROUTER } = await import("./customer-e2e-harness.js");
-const { CATALOG_VERSION, FIXTURE_WORKFLOWS, FIXTURE_WORKFLOW_ID } = await import(
-  "@ibatexas/catalog"
-);
+const { CATALOG_VERSION, FIXTURE_PREVIOUS_ORDER_ID, FIXTURE_WORKFLOWS, FIXTURE_WORKFLOW_ID } =
+  await import("@ibatexas/catalog");
 const { adjudicateAndAudit } = await import("@adjudicate/core/kernel");
 const { buildLanguageEngineAuditMetadata } = await import(
   "../claustrum/language-engine/audit-metadata.js"
@@ -113,7 +165,10 @@ const { buildLanguageEngineAuditMetadata } = await import(
 const CUSTOMER = "cus_le2020_owner";
 const CONVERSATION = "conv_le2020";
 const CART_ID = "cart_le2020";
-const PREVIOUS_ORDER = "order_le2020_previous";
+/** The order the fixture's reorder activity targets — an AUTHORED CONSTANT on
+ *  the definition (LE2-021), not a param, so the test reads it from the catalog
+ *  rather than re-spelling it. */
+const PREVIOUS_ORDER = FIXTURE_PREVIOUS_ORDER_ID;
 
 /** The utterance that selects the fixture workflow. */
 const SELECT_UTTERANCE = "quero repetir meu último pedido e finalizar";
@@ -183,7 +238,10 @@ function withActivityRoutes(
  * which is the point.
  */
 function buildHarness(
-  opts: { readonly claims?: ReadonlyMap<string, Record<string, unknown>> } = {},
+  opts: {
+    readonly claims?: ReadonlyMap<string, Record<string, unknown>>;
+    readonly realResponder?: boolean;
+  } = {},
 ) {
   const cart = makeCartFixture({ id: CART_ID });
   const medusa = withActivityRoutes(makeMedusaFetchFake(cart));
@@ -270,12 +328,18 @@ function buildHarness(
         )
       ).decision,
     dispatchActivity: async (envelope, ctx) => {
-      const tool = harnessRef.current?.tools
-        .list()
-        .find((t) => String(t.capability) === String(envelope.kind));
-      if (tool === undefined) {
-        throw new Error(`no registered tool for ${String(envelope.kind)}`);
+      const registry = harnessRef.current?.tools;
+      if (registry === undefined) {
+        throw new Error(`no tool registry for ${String(envelope.kind)}`);
       }
+      // `resolveTool`, matching production (claustrum-bootstrap.ts). This used
+      // to be `list().find(...)`, which is a DIFFERENT question: the registry
+      // keeps every registration for a capability and `list()` is
+      // insertion-ordered, so a `find` returns the FIRST registration while the
+      // conductor's own dispatch takes the last-write-wins winner. It was benign
+      // here only because activity tools are registered exactly once — but a
+      // harness is where people copy from, so it should ask the real question.
+      const tool = registry.resolveTool(envelope.kind as never, ctx);
       return tool.execute(envelope.payload, ctx);
     },
     ...(opts.claims === undefined
@@ -288,14 +352,18 @@ function buildHarness(
     session,
     adjudicator,
     workflowRuntime: runtime,
+    ...(opts.realResponder === true ? { realResponder: true } : {}),
   });
   harnessRef.current = harness;
   return { harness, sink, session, runtime, medusa };
 }
 
-/** The claims the claims kernel VALIDATED this turn, in the runtime's shape. */
+/** The claims the claims kernel VALIDATED this turn, in the runtime's shape.
+ *  Keyed by REGISTRY CLAIM TYPE (LE2-021) — the vocabulary the fixture's param
+ *  now names, and the only one that carries a validated value. */
+const PREVIOUS_ORDER_SUMMARY = "Pedido #1042 (entregue, R$89,00) — mostrando o mais recente";
 function validatedClaims(): ReadonlyMap<string, Record<string, unknown>> {
-  return new Map([["order-placed", { orderId: PREVIOUS_ORDER }]]);
+  return new Map([["ORDER_HISTORY", { historySummaryText: PREVIOUS_ORDER_SUMMARY }]]);
 }
 
 /** Audit records for a kind, EXECUTE only. */
@@ -340,9 +408,9 @@ describe("LE2-020 turn seam — a catalog-declared workflow, selected, confirmed
     expect(instance?.params.has("orderId")).toBe(false);
     expect(instance?.params.get("note")).toEqual({ resolved: true, value: "sem cebola" });
     // The claim-sourced param came from the VALIDATED claim, not the model.
-    expect(instance?.params.get("previousOrderId")).toEqual({
+    expect(instance?.params.get("previousOrderSummary")).toEqual({
       resolved: true,
-      value: PREVIOUS_ORDER,
+      value: PREVIOUS_ORDER_SUMMARY,
     });
 
     // The whole-workflow confirm QUOTES the kernel's grounded sentence — the
@@ -352,6 +420,8 @@ describe("LE2-020 turn seam — a catalog-declared workflow, selected, confirmed
     const confirm = runtime.renderConfirm(turn1.turnId);
     expect(confirm).toContain("Esse pedido soma R$ 1500,00.");
     expect(confirm).toContain("sem cebola");
+    // …and the CLAIM-sourced summary is quoted back before the customer approves.
+    expect(confirm).toContain(PREVIOUS_ORDER_SUMMARY);
 
     // NOTHING has executed yet — the park is the whole point.
     const parked = session.parksFor(CUSTOMER);
@@ -589,5 +659,52 @@ describe("LE2-020 — the workflow confirm rides the EXISTING park machinery", (
     // L0 stood down — the greeting template did NOT land on a turn with an open
     // workflow confirm window, so the restate-then-confirm path still owns it.
     expect(blocked.response).not.toBe(greeting);
+  });
+});
+
+describe("LE2-021 — the AUTHORED confirm reaches the customer (framing case)", () => {
+  // THIS suite owns the directional proof of the responder's `workflowConfirm`
+  // seam, and the reorder-last suite deliberately does not.
+  //
+  // Reorder-last's confirm template is `{confirmation}` and nothing else — the
+  // degenerate case of the additive-framing rule — so its rendered template is
+  // BYTE-IDENTICAL to `decision.prompt`. An assertion there cannot tell a wired
+  // seam from an unwired one: both produce the same string. (Measured, not
+  // assumed: neutering the seam left all 17 of that file's cases green.)
+  //
+  // The fixture workflow ADDS framing around `{confirmation}`, so here the two
+  // strings genuinely differ and the assertion is directional.
+
+  it("the reply is the template — kernel sentence PLUS the authored framing", async () => {
+    const { harness } = buildHarness({
+      claims: validatedClaims(),
+      realResponder: true,
+    });
+
+    const turn = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+
+    expect(turn.decision.kind).toBe("REQUEST_CONFIRMATION");
+
+    // The kernel's own grounded sentence, quoted verbatim inside the reply…
+    expect(turn.response).toContain("Esse pedido soma R$ 1500,00.");
+    // …plus the framing only the AUTHORED template carries. This half is what
+    // fails the moment `workflowConfirm` is unwired: the branch would fall back
+    // to `decision.prompt`, which has no framing at all.
+    expect(turn.response).toContain("Em seguida eu repito os itens do seu pedido anterior");
+    expect(turn.response).toContain(PREVIOUS_ORDER_SUMMARY);
+    expect(turn.response).toContain("sem cebola");
+
+    // And the reply is strictly LONGER than the kernel sentence — the additive
+    // rule, asserted rather than assumed.
+    const kernelSentence = String(
+      (turn.decision as { prompt?: string }).prompt ?? "",
+    );
+    expect(kernelSentence).not.toBe("");
+    expect(turn.response).toContain(kernelSentence);
+    expect(turn.response.length).toBeGreaterThan(kernelSentence.length);
   });
 });

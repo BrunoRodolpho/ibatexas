@@ -266,6 +266,7 @@ import {
 import {
   CAPABILITY_DEFINITIONS,
   CATALOG_VERSION,
+  WORKFLOW_DEFINITIONS,
   generateChatDrivableToolKinds,
   generateOpsForbiddenDestructiveKinds,
 } from "@ibatexas/catalog";
@@ -342,6 +343,7 @@ import {
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import {
   sessionTokenKey,
+  loadCartCtx,
   resolveAndAssemble,
   resolveCustomerOrderReference,
 } from "./claustrum/resolve-and-assemble.js";
@@ -370,6 +372,25 @@ import {
 // ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
 import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
 import { buildLanguageEngineAuditMetadata } from "./claustrum/language-engine/audit-metadata.js";
+import {
+  activityIdentityBase,
+  activitySessionArg,
+  resolveActivityTool,
+} from "./claustrum/workflow/workflow-composition.js";
+import { registerWorkflowAnchorTools } from "./tools/register-workflow-anchor-tools.js";
+import { registerWorkflowScopedTools } from "./tools/register-workflow-scoped-tools.js";
+import {
+  createWorkflowRuntime,
+  type WorkflowRuntime,
+} from "./claustrum/workflow/workflow-runtime.js";
+import {
+  installWorkflowRuntime,
+  observeWorkflowDecisions,
+} from "./claustrum/workflow/workflow-install.js";
+import {
+  currentWorkflowChannel,
+  currentWorkflowTurnId,
+} from "./claustrum/workflow/workflow-turn.js";
 import {
   composeOpsConductor,
   opsPlaneDriftProblems,
@@ -1791,6 +1812,85 @@ const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> =
 const IBATEXAS_POLICY_ROUTER = composePolicyRouter(IBATEXAS_POLICY_PACKS);
 
 /**
+ * Build the production WORKFLOW RUNTIME (LE2-021 — the first composition that
+ * wires it; LE2-020 shipped the runtime with production wiring deliberately
+ * absent).
+ *
+ * ── WHY EVERY SEAM IS THE REAL ONE ──────────────────────────────────────────
+ *
+ * A workflow activity must be indistinguishable from a directly-parsed mutation
+ * once it reaches the kernel, or "each activity is adjudicated individually"
+ * would be a claim about a private code path rather than about the system. So:
+ *
+ *   - `adjudicateActivity` is `adjudicateAndAudit` over `IBATEXAS_POLICY_ROUTER`
+ *     — the SAME composed router every other envelope meets — writing to the
+ *     SAME audit sink with the SAME metadata provider. An operator reading
+ *     `intent_audit` cannot tell a workflow activity from a parsed one, which is
+ *     the point.
+ *   - The per-activity SystemState is projected by `loadCartCtx`, the same
+ *     assembly the conductor's resolver runs, so an activity meets the same
+ *     grounded state a direct request would rather than a stub the workflow
+ *     layer chose for itself.
+ *   - `dispatchActivity` resolves through the REAL tool registry.
+ *
+ * The registry is a genuine forward reference — `dispatchActivity` needs it, and
+ * the registry's workflow wiring needs the runtime — so a holder object breaks
+ * the cycle without a reassignable binding, exactly as the e2e harness does.
+ */
+function buildWorkflowRuntime(deps: {
+  readonly auditSink: AuditSink;
+  readonly toolsRef: { current?: ReturnType<typeof createToolRegistry> };
+}): WorkflowRuntime {
+  /**
+   * Project the grounded state ONE activity is adjudicated against.
+   *
+   * The identity half — which channel, which customer, whether authenticated —
+   * is `activityIdentityBase`, extracted to `workflow/workflow-composition.ts`
+   * because it is a DECISION with a wrong answer (a mis-read channel adjudicates
+   * a WhatsApp order against web rules) and was unreachable from a test in here.
+   * What remains is the glue: hand that identity to the same `loadCartCtx` the
+   * conductor's resolver runs, so an activity meets the grounded state a direct
+   * request would rather than a stub the workflow layer chose for itself.
+   */
+  const activityState = async (envelope: IntentEnvelope): Promise<unknown> => {
+    const ctx = await loadCartCtx(
+      activityIdentityBase(
+        envelope,
+        // From the turn binding, NOT hardcoded — see the extracted function's
+        // doc for why a guess here would be a money-guard bug.
+        currentWorkflowChannel(),
+        process.env.KERNEL_TENANT_ID,
+      ) as never,
+      {} as never,
+      activitySessionArg(envelope),
+    );
+    return { ctx };
+  };
+
+  return createWorkflowRuntime({
+    workflows: WORKFLOW_DEFINITIONS,
+    adjudicateActivity: async (envelope) =>
+      (
+        await adjudicateAndAudit(
+          envelope,
+          (await activityState(envelope)) as never,
+          IBATEXAS_POLICY_ROUTER as never,
+          { sink: deps.auditSink, metadataProvider: buildLanguageEngineAuditMetadata },
+        )
+      ).decision,
+    // `resolveActivityTool` asks the registry the same question the conductor's
+    // own dispatch asks (last-write-wins, not first-registered) and throws for a
+    // missing registry rather than reporting a phantom successful step. Both are
+    // decisions rather than glue, so both live — and are tested — next door.
+    dispatchActivity: async (envelope, ctx) =>
+      resolveActivityTool(deps.toolsRef.current, envelope, ctx).execute(
+        envelope.payload,
+        ctx,
+      ),
+  });
+}
+
+/**
  * Resolve the concrete per-kind PolicyBundle for the explicit HTTP-route path
  * (RC-A1 Phase B). Routes that build their own `principal:"user"` envelope pass
  * the result to `runCustomerIntent`. Returns null for a kind no installed pack
@@ -3058,6 +3158,13 @@ export async function bootstrapClaustrum(
   // no registered tool fails the boot; registered-but-unadvertised kinds are
   // WARN-only (as of FE-D28 order.review.submit is advertised + resolver-wired,
   // so there is currently no such kind — the WARN path stays for future ones).
+  // LE2-021 does NOT change that, and the reason is worth stating because it
+  // looks like it should: `order.reorder.request` has a registered tool and no
+  // planner advertises it, but the tool is registered by
+  // `registerWorkflowAnchorTools` (below, corpus-derived) rather than into
+  // `IBATEXAS_TOOLS`, so `listIbatexasToolPacks()` — the roster this gate reads
+  // — never sees it. "Registered in the process" and "on the LLM-callable
+  // roster" are two different facts, and this gate is about the second.
   const toolRegistry = createToolRegistry();
   registerIbatexasToolPacks(toolRegistry);
   const rosterDrift = toolRosterDrift(
@@ -3105,6 +3212,47 @@ export async function bootstrapClaustrum(
         readRosterDrift.join("\n  "),
     );
   }
+
+  // ── LE2-021 · THE WORKFLOW RUNTIME, WIRED IN PRODUCTION ─────────────────────
+  //
+  // LE2-020 landed the runtime and deliberately wired NOTHING here, shipping an
+  // empty corpus so the wire stayed byte-identical. This is the composition that
+  // turns it on. Three seams, and the ORDER of the first two is the installation
+  // mechanism rather than a style choice:
+  //
+  //   1. `registerWorkflowScopedTools` and `registerWorkflowAnchorTools` FIRST.
+  //      `installWorkflowRuntime` asserts that every anchor has a registered
+  //      tool and THROWS if one does not, and a workflow-scoped activity needs
+  //      its handler present before the runtime could ever dispatch it.
+  //      Registering both corpus-derived sets first is what makes those true at
+  //      once. Neither adds anything to the LLM-callable roster — see each
+  //      module's doc for why "registered" and "chat-drivable" are deliberately
+  //      two different facts.
+  //   2. `installWorkflowRuntime` AFTER `registerIbatexasToolPacks` (above). The
+  //      registry is last-write-wins per capability, so registering the anchor
+  //      wrapper after the base roster IS how the wrapper gets installed.
+  //   3. The adjudicator decorator, so the runtime can quote the kernel's own
+  //      confirm sentence instead of re-deriving money.
+  //
+  // Placed AFTER both roster-drift gates so those gates still evaluate the
+  // pristine roster, and before the conductor is composed.
+  //
+  // LE2-021 authored the first entry into `WORKFLOW_DEFINITIONS`, so this block
+  // is no longer inert: `advertise()` now returns the reorder-last workflow for
+  // any turn whose roster carries both its matchers, `buildToolSurface` adds the
+  // `start_workflow` tool, and the wire changes for those turns. The
+  // inert-on-empty-corpus property still holds structurally and is what a
+  // composition test asserts — it is the property that makes adding the SECOND
+  // workflow a data change rather than a plumbing change.
+  const workflowToolsRef: { current?: ReturnType<typeof createToolRegistry> } = {};
+  const workflowRuntime = buildWorkflowRuntime({
+    auditSink,
+    toolsRef: workflowToolsRef,
+  });
+  registerWorkflowScopedTools(toolRegistry, workflowRuntime.activityCapabilities());
+  registerWorkflowAnchorTools(toolRegistry, workflowRuntime.selectionCapabilities());
+  installWorkflowRuntime(toolRegistry, workflowRuntime);
+  workflowToolsRef.current = toolRegistry;
 
   // BKL-034 — embeddings provider/dimension boot gate. A configured provider whose
   // probe vector length differs from EMBEDDING_DIMENSION would silently poison every
@@ -3324,6 +3472,11 @@ export async function bootstrapClaustrum(
       // deterministic catalog data with no external dependency (no embedder, no
       // engine), so there is nothing to degrade to and no reason to gate it.
       aliasSeam: funnel,
+      // LE2-021 — the workflow selection surface. The planner advertises the
+      // closed `start_workflow` enum for this turn's authorized roster and
+      // instantiates whatever the model selects from it. Empty corpus ⟹ nothing
+      // advertised ⟹ byte-identical wire.
+      workflowRuntime,
     });
   const buildResponder = (model: ModelProvider): ResponderPort =>
     createIbatexasResponder({
@@ -3346,6 +3499,13 @@ export async function bootstrapClaustrum(
         renderAction: (acted: unknown, _turnId: string) =>
           renderCustomerActionAnswer(acted),
       },
+      // LE2-021 — the WHOLE-WORKFLOW confirm. The responder cannot reach the
+      // workflow runtime (nothing under `claustrum/workflow/` is importable from
+      // it, by design), so the composition root hands it this closure. Returns
+      // `undefined` on every turn that selected no workflow, and on any instance
+      // with an unresolved param — both degrade to `decision.prompt`, which is
+      // the behaviour every confirm had before this line existed.
+      workflowConfirm: (turnId: string) => workflowRuntime.renderConfirm(turnId),
       // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate, wired ONLY
       // when ENABLE_CLAIMS_PIPELINE is on (the SAME flag buildClaimsSeams reads).
       // Closes the `prose_preserved` hallucination leak on the conversational
@@ -3426,7 +3586,16 @@ export async function bootstrapClaustrum(
     },
   };
   _conductor = createConductor({
-    adjudicator,
+    // LE2-021 — the workflow decision observer. OBSERVE-ONLY by construction
+    // (every method returns the inner result unchanged), and it reads the turn
+    // from the AsyncLocalStorage binding the ingresses install around
+    // `handleTurn`, so concurrent turns never cross-bind their confirms. See
+    // claustrum/workflow/workflow-turn.ts.
+    adjudicator: observeWorkflowDecisions(
+      adjudicator,
+      workflowRuntime,
+      currentWorkflowTurnId,
+    ),
     memory,
     grounding,
     planner,

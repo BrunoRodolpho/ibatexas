@@ -111,6 +111,7 @@ export {
   type OrderReviewSubmitPayload,
   type OrderFiscalEmitPayload,
   type OrderReorderPayload,
+  type OrderReorderRequestPayload,
   type OrderState,
   type OrderStatusTransitionPayload,
   type OrderStatusReconcilePayload,
@@ -129,6 +130,7 @@ export {
   refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseNoPreviousOrder,
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
@@ -183,6 +185,7 @@ export const ordersPack = {
     "order.note.add",
     "order.review.submit",
     "order.reorder",
+    "order.reorder.request",
     "order.projection.create",
     "order.status.transition",
     "order.status.reconcile",
@@ -208,6 +211,10 @@ export const ordersPack = {
     "order.ambiguous_reference",
     "order.already_cancelled",
     "order.already_shipped",
+    // LE2-021 — `confirmReorderLast`'s no-history REFUSE. Declared here at the
+    // same time the builder was written, which is the whole lesson of the
+    // BKL-251 note below.
+    "order.reorder.no_history",
     // BKL-251 — emitted since BKL-036/034-F1 but never declared here, so the
     // AI-BOM and the config seal under-reported the Pack's refusal vocabulary.
     // `order.past_ponr` fires from `requireCancellable` (a customer cancel past

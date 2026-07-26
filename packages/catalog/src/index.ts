@@ -123,11 +123,16 @@ export {
 
 export {
   FIXTURE_LINEAR_WORKFLOW,
+  FIXTURE_PREVIOUS_ORDER_ID,
   FIXTURE_WORKFLOW_ID,
   FIXTURE_WORKFLOWS,
 } from "./workflows/fixtures.js"
 
-export { WORKFLOW_DEFINITIONS } from "./workflows/definitions.js"
+export {
+  REORDER_LAST_WORKFLOW,
+  REORDER_LAST_WORKFLOW_ID,
+  WORKFLOW_DEFINITIONS,
+} from "./workflows/definitions.js"
 
 export {
   findWorkflow,
@@ -137,10 +142,14 @@ export {
   workflowSelectionKinds,
   workflowSlotNames,
   workflowTemplateText,
+  workflowTriggerPhrasings,
 } from "./workflows/projections.js"
 
 export {
+  MIN_WORKFLOW_TRIGGER_PHRASINGS,
+  WORKFLOW_CONFIRM_PLACEHOLDER,
   WORKFLOW_OUTCOMES,
+  WORKFLOW_TRIGGER_PROVENANCES,
   type WorkflowActivity,
   type WorkflowConfirmPoint,
   type WorkflowDefinition,
@@ -151,6 +160,8 @@ export {
   type WorkflowPayloadBinding,
   type WorkflowSelection,
   type WorkflowTemplate,
+  type WorkflowTriggerPhrasing,
+  type WorkflowTriggerProvenance,
 } from "./workflows/types.js"
 
 export {

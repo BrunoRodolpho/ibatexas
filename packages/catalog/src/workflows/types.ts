@@ -153,6 +153,37 @@ export interface WorkflowConfirmPoint {
 }
 
 /**
+ * THE CONFIRM-TEMPLATE AUTHORING RULE (LE2-021) — binding on every workflow.
+ *
+ * A confirm template MUST contain `{confirmation}`, and every other word in it
+ * MUST be ADDITIVE framing around that placeholder. It may add context before or
+ * after the kernel's sentence; it may never restate, summarise, soften,
+ * contradict or replace it.
+ *
+ * ── WHY THIS IS A RULE AND NOT A PREFERENCE ──────────────────────────────────
+ *
+ * Since LE2-021 the confirm the customer READS is this template
+ * (`ibatexas-responder.ts`'s `workflowConfirm` seam). But the PARK stores
+ * `decision.prompt` — the kernel's own sentence — as its `userPrompt`, written
+ * by `@claustrum/core` at dispatch, and nothing in the adopter can change that:
+ * `observeWorkflowDecisions` is observe-only by construction, so the only way to
+ * unify the two would be to substitute the decision itself, which is precisely
+ * the bypass the workflow layer must never have.
+ *
+ * So the two strings genuinely differ, and one of them is read back to the
+ * customer later: the BKL-212 soft-affirmative restatement quotes the park's
+ * `userPrompt` when a customer replies "ok" instead of "sim". Under this rule
+ * that restatement is a SUBSET of what they already read — the same grounded
+ * question, without the framing — which is a narrowing, not a contradiction. Break
+ * the rule and the restatement becomes a different question from the one that was
+ * asked, at the exact moment the customer is trying to confirm.
+ *
+ * The reorder-last workflow's template is `{confirmation}` alone: the degenerate
+ * case, where reply and park are byte-identical and the divergence is nil.
+ */
+export const WORKFLOW_CONFIRM_PLACEHOLDER = "{confirmation}"
+
+/**
  * The terminal states a workflow instance can reach. Every one needs a render
  * template (compiler rule `outcome-template-missing`) — the terminal-coverage
  * guarantee, so no path can end in silence or in model-authored prose.
@@ -163,6 +194,82 @@ export interface WorkflowConfirmPoint {
 export const WORKFLOW_OUTCOMES = ["completed", "declined", "failed"] as const
 
 export type WorkflowOutcome = (typeof WORKFLOW_OUTCOMES)[number]
+
+/**
+ * Where a trigger phrasing CAME FROM — the review surface, in the provenance
+ * discipline LE2-033 established for the conversation projection and LE2-025a
+ * carried into the alias gazetteer.
+ *
+ *   `production-utterance` — READ from a real customer utterance in the
+ *     `intent_audit` store, then PII-SCRUBBED (order ids became `12345`, given
+ *     names became `Fulano`). Grounded: somebody actually typed this at the
+ *     system.
+ *
+ *   `authored` — a freely authored colloquial. Plausible pt-BR, no external
+ *     grounding, and the class that most needs owner review.
+ *
+ * Deliberately a SEPARATE const from `ALIAS_PROVENANCES`, whose two members it
+ * currently mirrors exactly. The two tables answer different questions (what a
+ * customer calls a PRODUCT vs. how a customer asks for a ROUTE) and will not
+ * stay in step — a workflow phrasing could one day be mirrored from an
+ * extraction schema, which an alias surface never can. Sharing the type would
+ * make the first divergence a breaking change to the other table for no reason
+ * beyond that they happen to agree today.
+ *
+ * SOURCING BOUNDARY (binding, inherited verbatim from the conversation
+ * projection's legend): no phrasing here is drawn from
+ * `packages/journeys/extraction-corpus` or the extraction-eval fixtures. That
+ * corpus is LE2-008's hard gate, and authoring against it would test-fit the
+ * gate and destroy the measurement's independence.
+ */
+export const WORKFLOW_TRIGGER_PROVENANCES = ["production-utterance", "authored"] as const
+
+/** One trigger phrasing's provenance tag. */
+export type WorkflowTriggerProvenance = (typeof WORKFLOW_TRIGGER_PROVENANCES)[number]
+
+/**
+ * One way a customer asks for this workflow.
+ *
+ * # Why the workflow carries these and its anchor capability does not
+ *
+ * A workflow's anchor is identity-tier — the parser never picks it by name, so
+ * it has no `conversationTriggers` and nothing would read them if it did. The
+ * language surface of a workflow is the WORKFLOW: what the model is shown is
+ * the `start_workflow` enum, and the only text next to each option is the
+ * `description`. LE2-008 measured recall@5 = 73.8% on descriptions ALONE for
+ * capabilities, which is the same gap in the same shape, and the reorder-last
+ * live drive measured it again from the other side: 87.5% selection on a
+ * description-only surface, with one authored idiom selecting 0/5.
+ *
+ * So these are not documentation. They are composed into the selection surface
+ * (see the host's `startWorkflowToolDefinition`), which is why the compiler
+ * polices them: a phrasing that collides with another workflow's, or with a
+ * capability's conversation trigger, makes two different routes look like the
+ * same request to whatever reads them.
+ */
+export interface WorkflowTriggerPhrasing {
+  /**
+   * What the customer types, in natural pt-BR — accents, spacing and all.
+   * STORED natural, COMPARED under the package's shared word-space fold
+   * (`normalizeTriggerPhrasing`), exactly as `conversationTriggers` and
+   * `AliasEdge.surface` are. The natural form is what gets embedded and shown;
+   * folding accents out of storage would degrade the retrieval this exists to
+   * improve.
+   */
+  readonly phrasing: string
+  readonly provenance: WorkflowTriggerProvenance
+  /** Why this phrasing is worth carrying, in one clause. */
+  readonly why: string
+}
+
+/**
+ * The floor a workflow's `triggerPhrasings` must clear. SIX, the same floor
+ * `MIN_CONVERSATION_TRIGGERS` sets for a chat-tier capability and for the same
+ * reason: one or two phrasings cannot span imperative, desiderative and
+ * interrogative askings, which are three different neighbourhoods of the
+ * embedding space. A floor is enforceable where a ceiling is not.
+ */
+export const MIN_WORKFLOW_TRIGGER_PHRASINGS = 6
 
 /** A pt-BR render template. Placeholders are `{paramName}`; nothing else. */
 export interface WorkflowTemplate {
@@ -178,6 +285,13 @@ export interface WorkflowDefinition {
   readonly title: string
   /** pt-BR one-liner the parser reads when choosing between workflows. */
   readonly description: string
+  /**
+   * How customers ASK for this workflow — at least
+   * {@link MIN_WORKFLOW_TRIGGER_PHRASINGS}, unique under the shared fold both
+   * within this workflow and across the whole catalog. Composed into the
+   * selection surface; see {@link WorkflowTriggerPhrasing}.
+   */
+  readonly triggerPhrasings: readonly WorkflowTriggerPhrasing[]
   readonly matchers: readonly WorkflowMatcher[]
   readonly selection: WorkflowSelection
   readonly params: readonly WorkflowParam[]

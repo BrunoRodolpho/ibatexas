@@ -195,6 +195,29 @@ export interface IbatexasResponderDeps {
     ): string;
   };
   /**
+   * LE2-021 — the WHOLE-WORKFLOW confirm sentence for this turn, or `undefined`
+   * when the turn selected no workflow (or when the workflow runtime declines to
+   * render one — see `renderConfirm`'s unresolved-param guard).
+   *
+   * Structural sibling of `readAnswer.render` above and injected the same way:
+   * the responder cannot reach the workflow runtime, so the composition root
+   * hands it a closure over `renderConfirm`. Consulted ONLY on the
+   * REQUEST_CONFIRMATION branch, and only ever as a preference over
+   * `decision.prompt` — never as a source of new facts. The string it returns is
+   * the workflow's AUTHORED template with the kernel's own grounded sentence
+   * interpolated into it, so no model authored any part of it.
+   *
+   * KNOWN, ACCEPTED DIVERGENCE: the PARK's `userPrompt` is written by
+   * `@claustrum/core` from `decision.prompt` and cannot follow this, so the
+   * BKL-212 soft-affirmative restatement quotes the kernel sentence while the
+   * reply quotes the template. That is benign only because the authoring rule
+   * makes the template strictly ADDITIVE around `{confirmation}` — the restated
+   * sentence is then a subset of what the customer already read, never a
+   * contradiction. Unifying them would mean substituting the decision itself,
+   * and `observeWorkflowDecisions` is observe-only by construction.
+   */
+  readonly workflowConfirm?: (turnId: string) => string | undefined;
+  /**
    * BKL-078 — the QUESTION-SHAPE SAFE-UNKNOWN gate. Injected on BOTH conversational
    * conductors when ENABLE_CLAIMS_PIPELINE is on (LE2 Implementation Decision 6
    * dissolved D5, under which only the CUSTOMER conductor passed it; both planes now
@@ -1440,9 +1463,22 @@ export function createIbatexasResponder(
           return { text: explained };
         }
 
-        case "REQUEST_CONFIRMATION":
+        case "REQUEST_CONFIRMATION": {
+          // LE2-021 — a WORKFLOW confirm is the whole-workflow question, and its
+          // authored template is the only place that framing exists. Absent the
+          // dep, or on any turn that selected no workflow, this is `undefined`
+          // and the branch is byte-identical to what it always was.
+          //
+          // The template QUOTES the kernel's own sentence through
+          // `{confirmation}` and may only ADD framing around it — see the
+          // workflow corpus's authoring rule — so this never replaces the
+          // grounded question, it surrounds it. And `renderConfirm` returns
+          // `undefined` rather than render a template with an unresolved param,
+          // so a literal `{placeholder}` can never reach a customer here.
+          const authored = deps.workflowConfirm?.(turnId);
           // The guard already authored the confirm question; surface it verbatim.
-          return { text: decision.prompt };
+          return { text: authored ?? decision.prompt };
+        }
 
         case "ESCALATE":
           return {

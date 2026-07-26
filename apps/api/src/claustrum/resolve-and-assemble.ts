@@ -33,6 +33,10 @@ import {
   prisma,
 } from "@ibatexas/domain";
 import { parseAgentSessionNamespace } from "./agent-guards.js";
+// LE2-021 — the single owner-scoped "last order" read, shared with the
+// workflow-scoped reorder handler so the confirm and the act cannot name
+// different orders.
+import { loadPreviousOrder, type PreviousOrder } from "./previous-order.js";
 // FE-T13 — reuse the ops-plane displayId parser (pure, no ops-specific
 // dependency) rather than re-deriving the same `#1234`-style parse rule.
 import { matchNamedOwnedOrders, parseDisplayIdRef } from "../ops/ops-order-resolution.js";
@@ -336,6 +340,73 @@ export function buildCartCtx(base: Ctx, payload: Ctx, cart: CartLite | null): Ct
     ctx.totalInCentavos = reaisToCentavos(c.total ?? 0);
   }
   return ctx;
+}
+
+/**
+ * The kinds whose adjudication reads the customer's PREVIOUS order.
+ *
+ * A named set rather than an `order.`-prefix test: every other order kind pays a
+ * Prisma round-trip for nothing, and the reorder-last anchor is the only act
+ * whose guard has any use for last-order state. Mirrors the shape of
+ * `ORDER_BY_ID_KINDS` above.
+ */
+export const PREVIOUS_ORDER_CTX_KINDS: ReadonlySet<string> = new Set([
+  "order.reorder.request",
+]);
+
+/**
+ * LE2-021 — PURE: the four `previousOrder*` fields for a projected last order,
+ * or `{}` when there is none.
+ *
+ * ADDITIVE by design. It is spread ONTO whatever ctx the kind's own loader
+ * already produced rather than replacing it, so no existing guard loses an input
+ * it would otherwise have had — `deferOnPendingPix`, `requireCheckoutEligibility`
+ * and the rest still see exactly the state a cart-shaped order kind always sees.
+ * This route only ADDS information to the chain; it removes none.
+ *
+ * Absence is a DECISION, not a gap: `confirmReorderLast` reads exactly these
+ * fields and REFUSEs honestly ("ainda não encontrei nenhum pedido anterior seu
+ * pra repetir") when any is missing, so an unwired host, an unauthenticated
+ * caller, a first-time customer and a failed read all converge on the same safe
+ * sentence instead of on a confirmation for a basket nobody could name.
+ */
+export function previousOrderCtxFields(previous: PreviousOrder | null): Ctx {
+  if (previous === null) return {};
+  return {
+    previousOrderId: previous.orderId,
+    previousOrderDisplayId: previous.displayId,
+    previousOrderTotalInCentavos: previous.totalInCentavos,
+    previousOrderItems: previous.items,
+  };
+}
+
+/**
+ * LE2-021 — stamp the previous-order fields onto a resolved ctx, in place.
+ *
+ * Gated on `isAuthenticated` the same way `loadCustomerCtx` is, and for the same
+ * reason rather than as an optimisation: an unauthenticated caller has no
+ * `customerId` an owner-scoped read could mean, so the query could only ever
+ * return nothing. Skipping it keeps the guest path free of a pointless
+ * round-trip AND keeps "this read is owner-scoped" true of every call rather
+ * than true-because-the-filter-matched-nothing.
+ *
+ * Works identically on the RESUME path. `enrichResumeState` calls
+ * `resolveAndAssemble` with no `sessionId` and no `utteranceText`, and this read
+ * needs neither — only `customerId` — so the confirming turn's fresh
+ * adjudication sees the previous order exactly as the selecting turn did. That
+ * matters: the receipt only satisfies the "ask first" threshold, every guard
+ * re-runs, and a `confirmReorderLast` that could not see the projection on
+ * resume would REFUSE the customer's own "sim".
+ */
+async function stampPreviousOrderCtx(
+  ctx: Ctx,
+  base: Ctx,
+  kind: string,
+  customerId: string,
+): Promise<void> {
+  if (!PREVIOUS_ORDER_CTX_KINDS.has(kind)) return;
+  if (base.isAuthenticated !== true) return;
+  Object.assign(ctx, previousOrderCtxFields(await loadPreviousOrder(customerId)));
 }
 
 async function loadCart(cartId: string): Promise<CartLite> {
@@ -2389,6 +2460,10 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   if (kind === "customer.preferences.update" && isAllergenMentionUtterance(utteranceText)) {
     ctx.allergenMentionDetected = true;
   }
+
+  // LE2-021 — the reorder-last anchor's grounding read. Additive, owner-scoped,
+  // auth-gated, and identical on the resume path (see the helper's own doc).
+  await stampPreviousOrderCtx(ctx, base, kind, customerId);
 
   // 034-F1: the ownership-confirmed resource set for the kernel authority graph.
   // ONLY ids the customer-scoped load actually returned (resourceOwnerConfirmed)

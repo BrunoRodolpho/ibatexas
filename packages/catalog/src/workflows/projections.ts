@@ -103,3 +103,19 @@ export function workflowSlotNames(workflow: WorkflowDefinition): ReadonlySet<str
   }
   return slots
 }
+
+/**
+ * A workflow's trigger phrasings as plain natural pt-BR strings, in authored
+ * order — the shape the SELECTION SURFACE consumes (LE2-021).
+ *
+ * Natural, never folded: the fold exists to compare and validate, and the text
+ * the model is shown has to be the text a customer would actually type. Authored
+ * order is preserved rather than sorted, because the array is authored
+ * strongest-evidence-first (the production-grounded phrasings lead) and the
+ * surface truncates from the end.
+ */
+export function workflowTriggerPhrasings(
+  workflow: WorkflowDefinition,
+): readonly string[] {
+  return workflow.triggerPhrasings.map((trigger) => trigger.phrasing)
+}

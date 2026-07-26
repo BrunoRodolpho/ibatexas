@@ -42,18 +42,40 @@ export function workflowCapabilities(
  *
  * Spread-and-override is how each fixture below breaks exactly one thing.
  */
+/**
+ * Six phrasings that clear the floor, are distinct under the shared fold, and
+ * look like nothing in the real catalog — so a fixture isolating some OTHER rule
+ * never also trips rule 8. `phrasingsFrom` below builds a second, disjoint set
+ * for the fixtures that need two workflows.
+ */
+export function workflowPhrasings(prefix: string): readonly Record<string, unknown>[] {
+  return ["alfa", "bravo", "charlie", "delta", "echo", "foxtrot"].map((word) => ({
+    phrasing: `${prefix} ${word}`,
+    provenance: "authored",
+    why: "conformance fixture",
+  }))
+}
+
 export function workflowBase(): Record<string, unknown> {
   return {
     id: "conformance.workflow.linear",
     title: "Fluxo de conformidade",
     description: "Fluxo de conformidade (fixture).",
+    triggerPhrasings: workflowPhrasings("fluxo de conformidade"),
     matchers: [{ capability: FIXTURE_ANCHOR_KIND }],
     selection: { capability: FIXTURE_ANCHOR_KIND },
+    // A REAL registry claim type (`claim-param-type-unknown` targets the wrong
+    // vocabulary deliberately, and only in its own fixture). The base has to be
+    // otherwise-clean or every fixture in this file would carry a second,
+    // unrelated diagnostic and stop isolating the rule it names.
     params: [
-      { name: "orderId", source: { from: "claim", claimType: "order-placed", field: "orderId" } },
+      {
+        name: "history",
+        source: { from: "claim", claimType: "ORDER_HISTORY", field: "historySummaryText" },
+      },
     ],
     activities: [
-      { id: "step", capability: FIXTURE_STEP_KIND, payload: { orderId: { param: "orderId" } } },
+      { id: "step", capability: FIXTURE_STEP_KIND, payload: { summary: { param: "history" } } },
     ],
     confirm: { template: "confirm" },
     templates: [
@@ -83,7 +105,7 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
         {
           id: "step",
           capability: "conformance.workflow.absent",
-          payload: { orderId: { param: "orderId" } },
+          payload: { summary: { param: "history" } },
         },
       ],
     }),
@@ -118,6 +140,28 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
     }),
   },
   {
+    name: "workflow-shape.claim-param-type-unknown",
+    targets: "workflow-shape/claim-param-type-unknown",
+    why:
+      "The param sources from `order-placed`, which is a SUCCESS CLAIM CLASS — one of " +
+      "the responder's anti-confabulation guard ids — and not a member of the registry " +
+      "claim-type vocabulary the planner selects from. The two are constantly confused " +
+      "because both are called 'claims' (SDD §K: map, do not equate), and only the " +
+      "registry types carry a validated VALUE at all. This is not a hypothetical " +
+      "authoring slip: LE2-020's own fixture shipped exactly this spelling. It has to " +
+      "be a BUILD error because at run time it is perfectly silent — the resolver looks " +
+      "the type up in a map, misses, and leaves the param UNRESOLVED forever, so the " +
+      "workflow simply never runs and no diagnostic is emitted anywhere.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows({
+      ...workflowBase(),
+      params: [
+        ...(workflowBase()["params"] as readonly unknown[]),
+        { name: "previous", source: { from: "claim", claimType: "order-placed", field: "orderId" } },
+      ],
+    }),
+  },
+  {
     name: "workflow-shape.activity-sequence-empty",
     targets: "workflow-shape/activity-sequence-empty",
     why:
@@ -141,7 +185,7 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
     workflows: fixtureWorkflows({
       ...workflowBase(),
       activities: [
-        { id: "step", capability: FIXTURE_STEP_KIND, payload: { orderId: { param: "orderId" } } },
+        { id: "step", capability: FIXTURE_STEP_KIND, payload: { summary: { param: "history" } } },
         { id: "step", capability: FIXTURE_STEP_KIND, payload: {} },
       ],
     }),
@@ -181,7 +225,81 @@ export const WORKFLOW_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
       "fail — it resolves to whichever definition the corpus happens to list first, " +
       "making the customer's selection depend on array order.",
     definitions: workflowCapabilities(),
-    workflows: fixtureWorkflows(workflowBase(), workflowBase()),
+    // The SECOND copy carries a disjoint phrasing set. Sharing one would also
+    // trip `trigger-phrasing-collides`, and a fixture emitting two rules stops
+    // being a witness for either.
+    workflows: fixtureWorkflows(workflowBase(), {
+      ...workflowBase(),
+      triggerPhrasings: workflowPhrasings("outro fluxo de conformidade"),
+    }),
+  },
+  {
+    name: "workflow-shape.trigger-phrasings-below-floor",
+    targets: "workflow-shape/trigger-phrasings-below-floor",
+    why:
+      "The workflow declares two trigger phrasings against a floor of six. The " +
+      "phrasings are composed into the `start_workflow` tool description — they are " +
+      "on the wire, not in the docs — so a workflow below the floor is reachable " +
+      "only through its one-line description. LE2-021 measured that surface against " +
+      "the real engine at 87.5% selection, with an ordinary pt-BR idiom selecting " +
+      "0/5. And the failure is SILENT: a non-selection produces no envelope, no " +
+      "audit row and no diagnostic, so nothing downstream can tell the difference " +
+      "between a customer who did not ask and a customer whose asking was not " +
+      "understood.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows({
+      ...workflowBase(),
+      triggerPhrasings: workflowPhrasings("fluxo de conformidade").slice(0, 2),
+    }),
+  },
+  {
+    name: "workflow-shape.trigger-phrasing-duplicated",
+    targets: "workflow-shape/trigger-phrasing-duplicated",
+    why:
+      "Two of this workflow's own phrasings are the same sentence under the shared " +
+      "word-space fold — differing only in case, an accent and an exclamation mark. " +
+      "The floor counts ENTRIES, so the workflow clears it while covering one fewer " +
+      "way of asking than its author believed, and nothing at run time can report " +
+      "the shortfall. The fold is `normalizeTriggerPhrasing`, the same one " +
+      "`conversationTriggers` and the alias gazetteer compare under, so 'same' means " +
+      "one thing catalog-wide.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows({
+      ...workflowBase(),
+      triggerPhrasings: [
+        ...workflowPhrasings("fluxo de conformidade"),
+        {
+          phrasing: "Fluxo de conformidade ALFÁ!",
+          provenance: "authored",
+          why: "the same sentence as the first entry, once folded",
+        },
+      ],
+    }),
+  },
+  {
+    name: "workflow-shape.trigger-phrasing-collides",
+    targets: "workflow-shape/trigger-phrasing-collides",
+    why:
+      "A second workflow claims a phrasing the first already owns. This is the " +
+      "dangerous member of the family: it does not DEGRADE selection, it makes it a " +
+      "coin flip, and the customer gets a confidently-executed wrong route while " +
+      "both definitions look correct read in isolation. The rule spans namespaces " +
+      "for the same reason — a capability's `conversationTriggers` and a workflow's " +
+      "phrasings both feed the same surface, so one sentence meaning two different " +
+      "things is a contradiction no runtime can resolve at the moment it matters.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows(workflowBase(), {
+      ...workflowBase(),
+      id: "conformance.workflow.rival",
+      triggerPhrasings: [
+        {
+          phrasing: "fluxo de conformidade alfa",
+          provenance: "authored",
+          why: "already owned by conformance.workflow.linear",
+        },
+        ...workflowPhrasings("fluxo rival"),
+      ],
+    }),
   },
   {
     name: "workflow-shape.workflow-scoped-kind-advertised",

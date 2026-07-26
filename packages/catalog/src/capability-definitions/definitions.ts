@@ -275,7 +275,7 @@ const WHATSAPP_GUARD_REFS: readonly CapabilityGuardRef[] = [
 // ── Capability instances ─────────────────────────────────────────────────
 
 export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
-  // ── pack-orders (22 — matches ORDER_INTENT_KINDS / ordersPack.intents order) ──
+  // ── pack-orders (23 — matches ORDER_INTENT_KINDS / ordersPack.intents order) ──
   {
     kind: "order.cart.ensure",
     pack: "ibatexas/pack-orders",
@@ -695,6 +695,39 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // registered tool, and v0 ships no workflow that invokes it (see
   // `../workflows/definitions.ts`).
   { kind: "order.reorder", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", successClaimLinks: ["order-placed"], workflowScoped: true },
+  // LE2-021 — the reorder-last workflow's GOVERNANCE ANCHOR. Sibling of the
+  // kind above, not a rename: `order.reorder` ACTS (rebuilds the cart) and is
+  // workflow-scoped; this one ASKS, and must be parse-reachable because a
+  // workflow's selection envelope is minted from a parse
+  // (`workflow-scoped-reference-unreachable` makes anchoring on a scoped kind a
+  // build error). Splitting them is what lets the ask carry the confirm and the
+  // act stay unreachable from the parser.
+  //
+  // ── WHY IDENTITY TIER, NOT CHAT ──────────────────────────────────────────
+  //
+  // Chat tier is the slot set for a kind the parser chooses BY NAME out of the
+  // capability enum: it exists to carry `conversationTriggers`, a `description`
+  // the model reads, `guardRefs` and a `refusalCode`. This kind is never in that
+  // enum. It is never advertised by any planner and appears in no
+  // `allowedIntents` branch; the parser reaches it only by selecting the
+  // WORKFLOW, and the workflow is what carries the language surface (its
+  // `description`, and its `triggerPhrasings` — see `../workflows/types.ts`).
+  // Authoring chat-tier triggers here would put a second, competing set of
+  // phrasings on a kind the model can never name, and every consumer of the
+  // chat-tier projections (`generateCapabilityDescriptions`,
+  // `generateConversationTriggers`, `generateRefusalCodes`) would then carry a
+  // row that nothing can ever select — dead surface that reads as live.
+  //
+  // Not `workflowScoped: true` either, and the two are NOT the same statement:
+  // workflow-scoped means "no parse may ever produce this", which is false here
+  // and would make the anchor unreachable. Identity tier means "the parser does
+  // not pick this by name", which is exactly true.
+  //
+  // It DOES have a registered tool (`ibatexas.order.reorderRequest.v1`) —
+  // `installWorkflowRuntime` throws for an anchor without one — so it is the
+  // repository's first registered-but-unadvertised capability since FE-D28.
+  // `toolRosterDrift` is WARN-only in that direction by design.
+  { kind: "order.reorder.request", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   { kind: "order.projection.create", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // Ops-foreign-advertised ONLY (BKL-090): absent from orders' OWN planner
   // literal — verified — advertised solely via pack-ops' staff allowlist.

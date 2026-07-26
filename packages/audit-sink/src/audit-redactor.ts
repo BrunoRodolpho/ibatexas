@@ -551,6 +551,13 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "order.address.change", // address.{street,number,...} covered by global HASH_FIELDS
   "order.type.switch", // orderId + newType: closed enum + optional httpVocab enum
   "order.reorder", // previousOrderId + paymentMethod: closed enum
+  // LE2-021 — the reorder-last workflow's anchor. The strongest member of this
+  // list: its payload has NO authored fields at all. The only key that ever
+  // rides it is the runtime-written `_workflowInstanceId` (a UUID the workflow
+  // runtime mints), and the workflow declares zero slots, so the parse seam's
+  // `sanitizeWorkflowSlots` drops every key the model tries to attach — there is
+  // no free-form string slot for PII to reach, smuggled or otherwise.
+  "order.reorder.request",
   "order.projection.create", // customerId covered by global HASH_FIELDS
   "order.status.reconcile", // orderId/newStatus(short status enum)/source: closed enum
   "order.fiscal.emit", // NEW-014 — orderId only (customerTaxId lives in the PR2 provider input, never on the envelope)

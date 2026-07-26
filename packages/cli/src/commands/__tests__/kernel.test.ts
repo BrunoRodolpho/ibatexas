@@ -90,7 +90,9 @@ describe("ibx kernel status", () => {
     // SCN-114 menu.special.set + SCN-127 schedule.override.set + BKL-088
     // ops.alert.resolve.staff / incident.ticket.close.staff), loyalty 1). The
     // pre-cutover `32` was stale.
-    expect(parsed.knownIntentKinds.count).toBe(62)
+    // LE2-021 added order.reorder.request (the reorder-last workflow's
+    // identity-tier anchor): 62 → 63.
+    expect(parsed.knownIntentKinds.count).toBe(63)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -169,7 +171,7 @@ describe("ibx kernel status", () => {
     expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 62 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 63 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
@@ -201,7 +203,7 @@ describe("ibx kernel status", () => {
     const out = stdout.getOutput()
     // Per-domain counts derived from @ibatexas/intent-kinds (post W5 expansion).
     // NEW-014 lifts order.* to 22 (order.fiscal.emit joins the order prefix).
-    expect(out).toMatch(/order \(22\)/)
+    expect(out).toMatch(/order \(23\)/)
     expect(out).toMatch(/reservation \(7\)/)
     // whatsapp.* prefix group = 4 (message.send, template.send,
     // session.handover, BKL-030 handoff.request); the pack's 5th kind

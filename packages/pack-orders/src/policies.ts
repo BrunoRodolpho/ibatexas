@@ -69,6 +69,7 @@ import {
   refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseNoPreviousOrder,
   refuseFiscalNotEligible,
   refuseFiscalRetryExceeded,
   refuseNotAuthenticated,
@@ -93,6 +94,49 @@ import {
 } from "./types.js"
 
 type OrderGuard = Guard<OrderIntentKind, OrderPayload, OrderState>
+
+// ── Customer-facing money + list formatting ──────────────────────────────────
+
+/**
+ * Integer centavos → the pt-BR decimal string a customer reads (Hard Rule #2 +
+ * Hard Rule #4). Extracted because four guards now quote an amount and a fifth
+ * spelling of the same three-step dance is one chance too many to drop the
+ * comma. Callers supply the `R$ ` prefix, since not every sentence wants it in
+ * the same position.
+ */
+function formatCentavosBrl(centavos: number): string {
+  return (centavos / 100).toFixed(2).replace(".", ",")
+}
+
+/**
+ * Max previous-order lines voiced inline by `confirmReorderLast` before the
+ * remainder is summarised. Mirrors `MAX_AMBIGUOUS_ORDERS_SHOWN` in
+ * `./refusals.ts` and exists for the same reason: a confirmation the customer
+ * has to scroll is a confirmation they will approve without reading, so the cap
+ * protects the confirm rather than the message length.
+ */
+const MAX_REORDER_ITEMS_SHOWN = 3
+
+/**
+ * "2x Costela bovina defumada, 1x Pão de alho e mais 2 itens" — the previous
+ * order's lines as one pt-BR fragment.
+ *
+ * Titles are quoted from the projection VERBATIM: they are the names the
+ * products carried when they were sold, and re-deriving them at read time would
+ * let a renamed product silently change what the customer thinks they are
+ * repeating.
+ */
+function reorderItemList(
+  items: ReadonlyArray<{ readonly title: string; readonly quantity: number }>,
+): string {
+  const shown = items
+    .slice(0, MAX_REORDER_ITEMS_SHOWN)
+    .map((item) => `${item.quantity}x ${item.title}`)
+    .join(", ")
+  const remaining = items.length - Math.min(items.length, MAX_REORDER_ITEMS_SHOWN)
+  if (remaining === 0) return shown
+  return `${shown} e mais ${remaining} ${remaining === 1 ? "item" : "itens"}`
+}
 
 // ── PII data-classification (F1) ─────────────────────────────────────────────
 // Two guards on the PIX / checkout free-text leaves. ORDER MATTERS: the PAN
@@ -990,7 +1034,7 @@ const confirmLargeTicket = nameGuard(
     threshold: CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS,
     comparator: ">=",
     prompt: (value) =>
-      `Esse pedido soma R$ ${(value / 100).toFixed(2).replace(".", ",")}. Confirma a finalização?`,
+      `Esse pedido soma R$ ${formatCentavosBrl(value)}. Confirma a finalização?`,
   }),
 ) as OrderGuard
 
@@ -1047,7 +1091,7 @@ const gatePaidCancel: OrderGuard = (envelope, state) => {
   const refundEquivalentCentavos = state.ctx.totalInCentavos ?? null
   const reais =
     typeof refundEquivalentCentavos === "number"
-      ? (refundEquivalentCentavos / 100).toFixed(2).replace(".", ",")
+      ? formatCentavosBrl(refundEquivalentCentavos)
       : null
   // High band: a large paid cancel escalates to a human (mirrors the refund
   // ESCALATE band + escalateLargeCancel's >= comparator/threshold).
@@ -1158,7 +1202,7 @@ const escalateLargeCancel = nameGuard(
     comparator: ">=",
     to: "human",
     reason: (value) =>
-      `Cancelamento de pedido com valor de R$ ${(value / 100).toFixed(2).replace(".", ",")} — atendente humano deve revisar.`,
+      `Cancelamento de pedido com valor de R$ ${formatCentavosBrl(value)} — atendente humano deve revisar.`,
   }),
 ) as OrderGuard
 
@@ -1235,6 +1279,86 @@ const requireAmendItemDisambiguation: OrderGuard = (envelope, state) => {
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         rule: "adjacent_amend_requires_confirmation",
         kind: envelope.kind,
+      }),
+    ],
+  )
+}
+
+/**
+ * LE2-021 — the WHOLE-WORKFLOW confirm for `workflow.orders.reorder-last`, and
+ * its no-history refusal. One guard, because they are the two answers to one
+ * question the kernel asks once: *may this customer be shown a repeat of their
+ * last order, and what does it say?*
+ *
+ * ── WHY THE GUARD AUTHORS THE SENTENCE ───────────────────────────────────────
+ *
+ * The owner's reading of ticket 21's second acceptance criterion is
+ * GROUNDED-NOT-LITERALLY-CLAIMS: the items and the total must be first-party and
+ * fresh, and the order id must never be model-authored — but they need not
+ * travel as claim-kernel values, and in this repository they cannot (no per-turn
+ * validated-claims capture exists, and no order claim carries an order id at
+ * all — `ORDER_HISTORY`'s validated value is a pre-composed summary STRING).
+ *
+ * So the sentence is authored HERE, from `state.ctx` fields the host projected
+ * out of the owner-scoped `OrderProjection` read, and the workflow's confirm
+ * template quotes it verbatim through `{confirmation}`. That is the same path
+ * every other grounded action value in this Pack already takes —
+ * `confirmLargeTicket` reads `ctx.totalInCentavos` for exactly this reason — and
+ * it keeps the anti-fabrication invariant structural rather than procedural: at
+ * no point does a probabilistic model supply, relay, or get to influence the
+ * item names, the amount, or the identifier.
+ *
+ * ── WHY IT IS UNCONDITIONAL ──────────────────────────────────────────────────
+ *
+ * Not threshold-banded, so `createConfirmGuard` is the wrong tool (it is a
+ * `createThresholdGuard` alias and cannot express "always"). This is a plain
+ * `OrderGuard` arrow on the `requireAmendItemDisambiguation` pattern.
+ *
+ * The Inv 11 money bands are deliberately NOT the gate here. A reorder is not a
+ * large-ticket problem, it is an IDENTITY problem: the customer is approving a
+ * basket they cannot see, assembled from a record only the system holds, and an
+ * R$40 repeat of the WRONG order is exactly as wrong as an R$4.000 one. A band
+ * would make the small-value majority execute silently, which is the case where
+ * the customer has least chance of noticing. The bands still apply INSIDE the
+ * run: each activity meets its own guards, so a reorder that crosses
+ * `CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS` at checkout still meets that band
+ * there. A workflow confirm never pre-authorises a step's own confirm.
+ *
+ * ── ORDERING ─────────────────────────────────────────────────────────────────
+ *
+ * Lives in `business[]` BEFORE the EXECUTE producers. `executeW5Kinds` matches
+ * this kind too, and first-non-null wins, so behind it this guard would be dead
+ * code and the workflow would run without ever asking.
+ */
+const confirmReorderLast: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.reorder.request") return null
+  const { previousOrderId, previousOrderItems, previousOrderTotalInCentavos } = state.ctx
+  // FAIL-SAFE, not fail-open: an unwired host, an anonymous customer, or a
+  // genuinely first-time customer all land here, and all three get the honest
+  // sentence rather than a confirmation for a basket nobody can name.
+  if (
+    previousOrderId === undefined ||
+    previousOrderTotalInCentavos === undefined ||
+    previousOrderItems === undefined ||
+    previousOrderItems.length === 0
+  ) {
+    return decisionRefuse(refuseNoPreviousOrder(), [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: "reorder_requires_previous_order",
+        kind: envelope.kind,
+      }),
+    ])
+  }
+  return decisionRequestConfirmation(
+    `Vou repetir seu último pedido: ${reorderItemList(previousOrderItems)}, ` +
+      `total R$ ${formatCentavosBrl(previousOrderTotalInCentavos)}. Confirma?`,
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        rule: "reorder_requires_confirmation",
+        kind: envelope.kind,
+        // First-party by construction (owner-scoped projection), and the join
+        // key an operator needs to check WHICH order a customer approved.
+        previousOrderId,
       }),
     ],
   )
@@ -1361,6 +1485,11 @@ const W5_EXECUTE_KINDS: ReadonlySet<string> = new Set([
   "order.type.switch",
   "order.review.submit",
   "order.reorder",
+  // LE2-021 — reachable ONLY after `confirmReorderLast` has parked it and the
+  // customer's "sim" resumed it with a receipt. On an unconfirmed turn that
+  // guard fires first (it sits earlier in `business[]`), so this entry is what
+  // the RESUMED anchor lands on, never a way around the confirm.
+  "order.reorder.request",
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",
@@ -1495,6 +1624,10 @@ export const ordersPolicyBundle: PolicyBundle<
     refuseCardPanInPix,
     redactPiiInPix,
     requireAmendItemDisambiguation,
+    // LE2-021 — the reorder-last whole-workflow confirm. MUST stay above
+    // `executeW5Kinds`, which also matches `order.reorder.request`: below it
+    // this guard is dead code and the workflow runs unasked.
+    confirmReorderLast,
     // NEW-014 — bounded fiscal-emit retries BEFORE the fiscal EXECUTE producer.
     fiscalEmitRetryCapGuard,
     executeCartOps,

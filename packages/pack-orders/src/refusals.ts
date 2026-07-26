@@ -66,6 +66,32 @@ export function refuseNoOrderToMutate(): Refusal {
   )
 }
 
+/**
+ * LE2-021 — "repete meu último pedido" from a customer who has never ordered.
+ *
+ * Its own code and its own sentence rather than `refuseDefault()`, and the
+ * difference is not cosmetic: the default deny says *"Operação não permitida"*,
+ * which tells a first-time customer they lack PERMISSION to do something they
+ * are in fact perfectly entitled to do. The true fact is that there is nothing
+ * to repeat yet. Ticket 21's fourth acceptance criterion asks for an HONEST
+ * render on the no-history path, and a permission frame over a state fact is
+ * exactly the kind of plausible-but-wrong sentence the whole claims runtime
+ * exists to prevent — so the honest sentence gets a code, and the code goes in
+ * `ordersPack.basisCodes` where the AaC drift gate can see it.
+ *
+ * `order.not_found` above was the near-miss and is genuinely a different fact:
+ * it means the customer HAS orders but none is in a mutable state. Reusing it
+ * here would tell someone with an empty history that their nonexistent order is
+ * merely closed.
+ */
+export function refuseNoPreviousOrder(): Refusal {
+  return refuse(
+    "STATE",
+    "order.reorder.no_history",
+    "Ainda não encontrei nenhum pedido anterior seu pra repetir. Quer montar um novo?",
+  )
+}
+
 /** Max candidate order numbers voiced inline before summarising the remainder. */
 const MAX_AMBIGUOUS_ORDERS_SHOWN = 6
 

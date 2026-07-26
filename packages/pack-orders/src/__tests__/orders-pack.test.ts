@@ -1658,3 +1658,183 @@ describe("BKL-145 — admin-session note.add auth recognition", () => {
     expect(decision.refusal.code).toBe("auth.required")
   })
 })
+
+// ── Business: the reorder-last whole-workflow confirm (LE2-021) ──────────
+//
+// Driven through `adjudicate` against the REAL bundle, not by calling the guard
+// directly: the guard's whole contract is its position in `business[]` — above
+// `executeW5Kinds`, which also matches this kind — and a direct call would prove
+// the body works while saying nothing about whether it is reachable.
+
+describe("ordersPolicyBundle — confirmReorderLast (LE2-021)", () => {
+  const PREVIOUS_ORDER = {
+    previousOrderId: "order_prev_1",
+    previousOrderDisplayId: 1042,
+    previousOrderTotalInCentavos: 12_500,
+    previousOrderItems: [
+      { title: "Costela bovina defumada", quantity: 2 },
+      { title: "Pão de alho", quantity: 1 },
+      { title: "Farofa de bacon", quantity: 1 },
+    ],
+  }
+
+  /** A reorder-request state: authenticated, with (or without) a previous order. */
+  function reorderState(overrides: Partial<OrderState["ctx"]> = {}): OrderState {
+    return state({
+      cartId: null,
+      orderId: null,
+      items: undefined,
+      totalInCentavos: undefined,
+      ...overrides,
+    })
+  }
+
+  const reorderEnv = () => env("order.reorder.request", {})
+
+  it("REQUEST_CONFIRMATION naming the projected items and the projected total", () => {
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState(PREVIOUS_ORDER),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    expect((decision as { prompt?: string }).prompt).toBe(
+      "Vou repetir seu último pedido: 2x Costela bovina defumada, 1x Pão de alho, " +
+        "1x Farofa de bacon, total R$ 125,00. Confirma?",
+    )
+  })
+
+  it("QUOTES the projected total — it does not add the lines up", () => {
+    // The lines here sum to R$ 30,00; the projection says R$ 125,00 (a real
+    // order carries shipping and tips). The guard must say what the projection
+    // says. If it ever starts computing, this is the assertion that catches it.
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({
+        ...PREVIOUS_ORDER,
+        previousOrderItems: [{ title: "Costela", quantity: 1 }],
+      }),
+      ordersPolicyBundle,
+    )
+    expect((decision as { prompt?: string }).prompt).toContain("total R$ 125,00")
+    expect((decision as { prompt?: string }).prompt).not.toContain("R$ 30,00")
+  })
+
+  it("caps the item list at three and counts the remainder", () => {
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({
+        ...PREVIOUS_ORDER,
+        previousOrderItems: [
+          ...PREVIOUS_ORDER.previousOrderItems,
+          { title: "Vinagrete", quantity: 1 },
+          { title: "Guaraná", quantity: 3 },
+        ],
+      }),
+      ordersPolicyBundle,
+    )
+    expect((decision as { prompt?: string }).prompt).toContain(
+      "1x Farofa de bacon e mais 2 itens, total R$ 125,00",
+    )
+  })
+
+  it("uses the SINGULAR for a remainder of one", () => {
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({
+        ...PREVIOUS_ORDER,
+        previousOrderItems: [
+          ...PREVIOUS_ORDER.previousOrderItems,
+          { title: "Vinagrete", quantity: 1 },
+        ],
+      }),
+      ordersPolicyBundle,
+    )
+    expect((decision as { prompt?: string }).prompt).toContain("e mais 1 item,")
+  })
+
+  // ── The no-history REFUSE, one case per missing field ──────────────────
+  // Four fields, four independent absences. Parameterised because a single
+  // "no previous order" case would leave three of them free to be dropped from
+  // the condition without a test noticing.
+  it.each([
+    ["previousOrderId", { previousOrderId: undefined }],
+    ["previousOrderTotalInCentavos", { previousOrderTotalInCentavos: undefined }],
+    ["previousOrderItems", { previousOrderItems: undefined }],
+    ["an EMPTY item list", { previousOrderItems: [] }],
+  ])("REFUSEs honestly when %s is absent", (_label, missing) => {
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({ ...PREVIOUS_ORDER, ...(missing as Partial<OrderState["ctx"]>) }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    const refusal = (decision as { refusal?: { code?: string; userFacing?: string } }).refusal
+    expect(refusal?.code).toBe("order.reorder.no_history")
+    // HONEST: a state fact, never a permission frame.
+    expect(refusal?.userFacing).toBe(
+      "Ainda não encontrei nenhum pedido anterior seu pra repetir. Quer montar um novo?",
+    )
+    expect(refusal?.userFacing).not.toContain("não permitida")
+  })
+
+  it("REFUSEs an unwired host — no previousOrder* fields at all", () => {
+    const decision = adjudicate(reorderEnv(), reorderState(), ordersPolicyBundle)
+    expect(decision.kind).toBe("REFUSE")
+    expect(
+      (decision as { refusal?: { code?: string } }).refusal?.code,
+    ).toBe("order.reorder.no_history")
+  })
+
+  it("is INERT for every other kind", () => {
+    // The guard's first line. Without it a projected previous order would park
+    // an unrelated cart operation.
+    const decision = adjudicate(
+      env("order.cart.ensure", { cartId: "cart-1" }),
+      state(PREVIOUS_ORDER),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  // ── NON-VACUITY: the confirm is the only thing between the customer and
+  // an unasked cart rebuild. Same shape as the §O#10 proof above.
+  it("NON-VACUITY: removing confirmReorderLast flips the reorder to EXECUTE", () => {
+    const withGuard = adjudicate(
+      reorderEnv(),
+      reorderState(PREVIOUS_ORDER),
+      ordersPolicyBundle,
+    )
+    expect(withGuard.kind).toBe("REQUEST_CONFIRMATION")
+
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "confirmReorderLast",
+    )
+    expect(businessWithoutGuard.length).toBe(ordersPolicyBundle.business.length - 1)
+
+    const withoutGuard = adjudicate(
+      reorderEnv(),
+      reorderState(PREVIOUS_ORDER),
+      { ...ordersPolicyBundle, business: businessWithoutGuard },
+    )
+    // `executeW5Kinds` matches this kind too, and it sits BELOW the confirm.
+    // Removing the confirm does not fail the kind closed — it silently executes
+    // it, which is exactly why the ordering in `business[]` is load-bearing.
+    expect(withoutGuard.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSEs an UNAUTHENTICATED reorder before the confirm is ever considered", () => {
+    // `order.reorder.request` is absent from SYSTEM_OR_ANON_KINDS, so
+    // `requireAuthenticated` (an auth-phase guard) fires first. Asserted so the
+    // kind's auth posture is a tested property rather than an omission.
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({ ...PREVIOUS_ORDER, customerId: null as unknown as string }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect(
+      (decision as { refusal?: { code?: string } }).refusal?.code,
+    ).not.toBe("order.reorder.no_history")
+  })
+})

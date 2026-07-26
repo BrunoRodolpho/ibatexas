@@ -28,7 +28,55 @@ import { reorder } from "@ibatexas/tools";
 import type { ToolDefinition, ToolRegistry } from "@claustrum/core";
 import type { CapabilityId, IntentKind } from "@claustrum/core";
 import type { Capsule } from "@claustrum/core";
+import { loadPreviousOrder } from "../claustrum/previous-order.js";
 import { agentCtxFromCapsule } from "./register-ibatexas-tool-packs.js";
+
+/**
+ * Run `reorder` against the customer's own last order.
+ *
+ * ── WHY THE ORDER ID IS RESOLVED HERE AND NOT PASSED IN ──────────────────────
+ *
+ * The activity's authored payload is `{}`, because the reorder-last workflow
+ * declares no params — see its definition for the full argument, but the short
+ * version is that `WorkflowParamSource` has two members and neither can carry an
+ * identifier honestly (no registry claim type exposes an order id, and a slot is
+ * model-EXTRACTED, which for an id is indistinguishable from model-invented).
+ *
+ * So the executor asks the database, through the SAME owner-scoped read that
+ * grounded the confirm sentence the customer just approved
+ * (`loadPreviousOrder`). Anything an upstream layer could have tampered with is
+ * simply not in the path.
+ *
+ * ── WHY IT THROWS ────────────────────────────────────────────────────────────
+ *
+ * `installWorkflowRuntime`'s wrapper overwrites `message` with the outcome
+ * template, so a soft `{ message: "não encontrei..." }` returned here would be
+ * DISCARDED and the customer would read "Pronto! Montei um carrinho novo" over
+ * a reorder that never happened. Throwing is what the runtime can actually see:
+ * `submitActivity` catches it, marks the step un-executed, and the run reaches
+ * the `failed` outcome with its honest template.
+ *
+ * Reaching the no-order branch at all means the projection changed between the
+ * confirm and the customer's "sim" — `confirmReorderLast` REFUSEs before the
+ * park otherwise — so it is a genuinely exceptional path, not the empty-history
+ * case.
+ */
+async function executeReorder(input: unknown, capsule: Capsule): Promise<unknown> {
+  const ctx = agentCtxFromCapsule(capsule);
+  const customerId = ctx.customerId ?? "";
+  const previous = await loadPreviousOrder(customerId);
+  if (previous === null) {
+    throw new Error(
+      "[workflow] order.reorder: the customer has no readable previous order at " +
+        "execution time. The confirm was authored from one, so this means the " +
+        "projection changed between the confirm and the approval — failing the run " +
+        "rather than reporting a success the customer would read as a rebuilt cart.",
+    );
+  }
+  // The authored payload is `{}` and stays that way; the id is added here, at
+  // the last possible moment, from first-party state.
+  return reorder({ ...(input as object), orderId: previous.orderId } as never, ctx);
+}
 
 /**
  * The workflow-scoped handlers, by capability kind.
@@ -53,7 +101,7 @@ const WORKFLOW_SCOPED_TOOLS: ReadonlyMap<string, ToolDefinition<unknown, unknown
         // reason it is workflow-scoped.
         riskLevel: "medium",
         execute: (input: unknown, ctx: unknown) =>
-          reorder(input as never, agentCtxFromCapsule(ctx as Capsule)),
+          executeReorder(input, ctx as Capsule),
       } satisfies ToolDefinition<unknown, unknown>,
     ],
   ]);

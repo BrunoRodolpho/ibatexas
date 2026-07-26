@@ -58,6 +58,7 @@ import {
   workflowSelectionKinds,
   workflowSlotNames,
   workflowTemplateText,
+  workflowTriggerPhrasings,
   type WorkflowDefinition,
 } from "@ibatexas/catalog";
 import { logger } from "../../lib/logger.js";
@@ -102,6 +103,17 @@ export interface AdvertisedWorkflow {
   readonly description: string;
   /** The customer-authored slot names this workflow accepts. Closed. */
   readonly slots: readonly string[];
+  /**
+   * LE2-021 — the authored ways customers ASK for this workflow, natural pt-BR,
+   * in authored (strongest-evidence-first) order.
+   *
+   * On the wire, not documentation: `startWorkflowToolDefinition` composes them
+   * into the tool description. LE2-020 shipped a description-only surface and
+   * LE2-021's live drive measured what that costs — 87.5% selection, with one
+   * ordinary idiom selecting 0/5 — which is the same gap LE2-008 measured for
+   * capabilities (recall@5 = 73.8% on descriptions alone) in the same shape.
+   */
+  readonly triggerPhrasings: readonly string[];
 }
 
 export interface WorkflowRuntimeDeps {
@@ -413,6 +425,13 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
           // STATED collation — this list lands in the `start_workflow` tool
           // description, which the L1 cache key digests. See workflow-ordering.ts.
           slots: sortedByCodeUnits(workflowSlotNames(workflow)),
+          // NOT sorted, unlike the slots: slot names are a SET whose spelling
+          // order carries no information, so a stated collation is the only way
+          // to keep the cache key stable. Phrasings are a SEQUENCE the author
+          // ordered on purpose (production-grounded first), and re-sorting them
+          // would destroy that ordering to solve a problem they do not have —
+          // the array is already deterministic, straight out of the catalog.
+          triggerPhrasings: workflowTriggerPhrasings(workflow),
         }));
     },
 
@@ -491,6 +510,40 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
       const instanceId = instanceByTurn.get(turnId);
       const instance = instanceId === undefined ? undefined : instances.get(instanceId);
       if (instance === undefined) return undefined;
+      // AN UNRESOLVED PARAM MEANS NO AUTHORED CONFIRM, EVER.
+      //
+      // `renderWorkflowTemplate` leaves an unfilled `{placeholder}` LITERAL —
+      // it replaces only names it has values for. Once this string is what the
+      // customer actually reads (the responder's `workflowConfirm` seam), a
+      // single unresolved param would ship "… ({previousOrderSummary}) …" into
+      // a chat window, and the customer would be asked to approve a multi-step
+      // run described partly in template syntax.
+      //
+      // Returning `undefined` degrades to the KERNEL's own sentence, which is
+      // always complete and always grounded. That is a strictly better failure
+      // than a leaked placeholder, and it is the same fail-closed direction
+      // `run()` already takes for the same condition: an unresolved param stops
+      // the run before anything is submitted.
+      //
+      // No production workflow has a claim param today (`claimsFor` is wired in
+      // no composition, and the reorder-last definition declares zero params),
+      // so this is unreachable on the current corpus — deliberately. It is a
+      // guard against the next definition, written while the reason is legible
+      // rather than after someone finds the placeholder in a transcript.
+      if (instance.unresolved.length > 0) {
+        logger.warn(
+          {
+            component: "workflow",
+            event: "workflow.confirm.unresolved_params",
+            turnId,
+            instanceId: instance.instanceId,
+            workflowId: instance.workflowId,
+            unresolvedParams: instance.unresolved,
+          },
+          "workflow: refusing to render an authored confirm with unresolved params — degrading to the kernel's own sentence",
+        );
+        return undefined;
+      }
       const template = workflowTemplateText(
         instance.definition,
         instance.definition.confirm.template,

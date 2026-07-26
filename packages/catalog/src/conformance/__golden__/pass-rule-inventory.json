@@ -104,13 +104,17 @@
         "activity-param-undeclared",
         "activity-sequence-empty",
         "capability-reference-dangling",
+        "claim-param-type-unknown",
         "confirm-template-missing",
         "outcome-template-missing",
+        "trigger-phrasing-collides",
+        "trigger-phrasing-duplicated",
+        "trigger-phrasings-below-floor",
         "workflow-id-duplicated",
         "workflow-scoped-kind-advertised",
         "workflow-scoped-reference-unreachable"
       ]
     }
   ],
-  "ruleCount": 47
+  "ruleCount": 51
 }

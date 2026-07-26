@@ -1,0 +1,68 @@
+{
+  "fixture": "workflow-shape.claim-param-type-unknown",
+  "targets": "workflow-shape/claim-param-type-unknown",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-shape/claim-param-type-unknown"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 42,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 19,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-shape",
+      "rule": "claim-param-type-unknown",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.linear",
+      "field": "params[1].source.claimType",
+      "message": "sources a param from the claim type \"order-placed\", which is not a member of the registry claim-type vocabulary. Two vocabularies exist and they are not interchangeable (SDD §K, \"map, do not equate\"): registry claim TYPES are the planner's UPPER_SNAKE selection enum and are the only things that carry a validated VALUE, while the lowercase-hyphen success claim CLASSES are the responder's guard ids and have no value to read. A param naming the wrong vocabulary does not fail loudly at run time — it resolves by map lookup, misses, and leaves the param UNRESOLVED forever, so the workflow silently never runs.",
+      "reference": "order-placed"
+    }
+  ],
+  "formatted": [
+    "workflow-shape/claim-param-type-unknown: workflow:conformance.workflow.linear · params[1].source.claimType — sources a param from the claim type \"order-placed\", which is not a member of the registry claim-type vocabulary. Two vocabularies exist and they are not interchangeable (SDD §K, \"map, do not equate\"): registry claim TYPES are the planner's UPPER_SNAKE selection enum and are the only things that carry a validated VALUE, while the lowercase-hyphen success claim CLASSES are the responder's guard ids and have no value to read. A param naming the wrong vocabulary does not fail loudly at run time — it resolves by map lookup, misses, and leaves the param UNRESOLVED forever, so the workflow silently never runs."
+  ]
+}

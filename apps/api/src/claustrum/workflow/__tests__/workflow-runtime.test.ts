@@ -137,10 +137,10 @@ describe("the L1 parse cache key (AC 7 — cache the parse, never instance state
 
   it("distinguishes two DIFFERENT offered workflow sets", () => {
     const one = startWorkflowToolDefinition([
-      { id: "workflow.a", title: "A", description: "a", slots: [] },
+      { id: "workflow.a", title: "A", description: "a", slots: [], triggerPhrasings: [] },
     ]);
     const two = startWorkflowToolDefinition([
-      { id: "workflow.b", title: "B", description: "b", slots: [] },
+      { id: "workflow.b", title: "B", description: "b", slots: [], triggerPhrasings: [] },
     ]);
     expect(
       buildParseCacheKey({ ...base, toolSurface: [one as never] }).digest,
@@ -151,31 +151,31 @@ describe("the L1 parse cache key (AC 7 — cache the parse, never instance state
 describe("param resolution — two sources, and no third", () => {
   it("resolves a customer-authored slot and a validated claim", () => {
     const { params, unresolved } = resolveWorkflowParams(FIXTURE_LINEAR_WORKFLOW, {
-      claims: new Map([["order-placed", { orderId: "order_123" }]]),
+      claims: new Map([["ORDER_HISTORY", { historySummaryText: "Pedido #1042 (entregue, R$89,00) — mostrando o mais recente" }]]),
       slots: { note: "sem cebola", payment_method: "pix", delivery_type: "pickup" },
     });
     expect(unresolved).toEqual([]);
     expect(params.get("note")).toEqual({ resolved: true, value: "sem cebola" });
-    expect(params.get("previousOrderId")).toEqual({ resolved: true, value: "order_123" });
+    expect(params.get("previousOrderSummary")).toEqual({ resolved: true, value: "Pedido #1042 (entregue, R$89,00) — mostrando o mais recente" });
   });
 
   it("leaves a claim-sourced param UNRESOLVED when no claim validated — never a guess", () => {
     const { params, unresolved } = resolveWorkflowParams(FIXTURE_LINEAR_WORKFLOW, {
       slots: { note: "x", payment_method: "pix", delivery_type: "pickup" },
     });
-    expect(unresolved).toEqual(["previousOrderId"]);
-    expect(params.get("previousOrderId")).toEqual({
+    expect(unresolved).toEqual(["previousOrderSummary"]);
+    expect(params.get("previousOrderSummary")).toEqual({
       resolved: false,
-      reason: 'no VALIDATED claim of type "order-placed" this turn',
+      reason: 'no VALIDATED claim of type "ORDER_HISTORY" this turn',
     });
   });
 
   it("leaves a claim-sourced param UNRESOLVED when the claim carries no such field", () => {
     const { unresolved } = resolveWorkflowParams(FIXTURE_LINEAR_WORKFLOW, {
-      claims: new Map([["order-placed", { somethingElse: "x" }]]),
+      claims: new Map([["ORDER_HISTORY", { somethingElse: "x" }]]),
       slots: {},
     });
-    expect(unresolved).toContain("previousOrderId");
+    expect(unresolved).toContain("previousOrderSummary");
   });
 
   it("refuses to build a payload with a hole in it", () => {
@@ -225,7 +225,7 @@ describe("the instance and its catalog pin", () => {
       dispatchActivity: async () => {
         throw new Error("must never dispatch a non-EXECUTE activity");
       },
-      claimsFor: () => new Map([["order-placed", { orderId: "order_123" }]]),
+      claimsFor: () => new Map([["ORDER_HISTORY", { historySummaryText: "Pedido #1042 (entregue, R$89,00) — mostrando o mais recente" }]]),
     });
     const instance = runtime.select({
       turnId: "t1",
@@ -269,5 +269,69 @@ describe("the instance and its catalog pin", () => {
     expect(runtime.renderOutcome(instance, "failed")).toBe(
       "Não consegui concluir todas as etapas. Já chamei alguém da equipe para te ajudar.",
     );
+  });
+});
+
+describe("renderConfirm — the unresolved-param guard (LE2-021)", () => {
+  const ALLOWED = [ANCHOR, "order.cart.ensure"];
+  const CONFIRM_DECISION = {
+    kind: "REQUEST_CONFIRMATION",
+    prompt: "Esse pedido soma R$ 1500,00. Confirma a finalização?",
+  } as never;
+
+  /** Select the fixture workflow on a turn, with or without validated claims. */
+  function selectOn(
+    turnId: string,
+    claims?: ReadonlyMap<string, Record<string, unknown>>,
+  ) {
+    const runtime = createWorkflowRuntime({
+      workflows: [FIXTURE_LINEAR_WORKFLOW],
+      adjudicateActivity: async () => ({ kind: "REFUSE" }) as never,
+      dispatchActivity: async () => undefined,
+      ...(claims === undefined ? {} : { claimsFor: () => claims as never }),
+    });
+    const instance = runtime.select({
+      turnId,
+      workflowId: FIXTURE_LINEAR_WORKFLOW.id,
+      slots: { note: "sem cebola", payment_method: "pix", delivery_type: "pickup" },
+      allowedIntents: ALLOWED,
+    });
+    runtime.recordSelectionDecision(turnId, CONFIRM_DECISION);
+    return { runtime, instance };
+  }
+
+  it("returns undefined rather than render a template with an unresolved param", () => {
+    // No `claimsFor` wired — which is production's actual state — so the
+    // fixture's claim-sourced `previousOrderSummary` cannot resolve.
+    const { runtime, instance } = selectOn("turn_unresolved");
+    expect(instance?.unresolved).toContain("previousOrderSummary");
+    expect(runtime.renderConfirm("turn_unresolved")).toBeUndefined();
+  });
+
+  it("CONTROL: the same turn WITH the claim resolved renders the template", () => {
+    // Without this the assertion above would pass for any reason at all —
+    // a broken template lookup, a missing decision, a typo in the workflow id.
+    const { runtime, instance } = selectOn(
+      "turn_resolved",
+      new Map([["ORDER_HISTORY", { historySummaryText: "Pedido #1042" }]]),
+    );
+    expect(instance?.unresolved).toEqual([]);
+    const rendered = runtime.renderConfirm("turn_resolved");
+    expect(rendered).toContain("Esse pedido soma R$ 1500,00.");
+    expect(rendered).toContain("Pedido #1042");
+    // The property the guard exists to protect: no literal placeholder survives.
+    expect(rendered).not.toMatch(/\{[A-Za-z0-9_]+\}/);
+  });
+
+  it("the UNRESOLVED render would have leaked a literal placeholder — the reason for the guard", () => {
+    // Proves the danger is real rather than theoretical, without weakening the
+    // guard: render the same template directly through the same filler the
+    // runtime uses, with the same values the unresolved instance has.
+    const template = FIXTURE_LINEAR_WORKFLOW.templates.find((t) => t.id === "confirm");
+    const leaked = renderWorkflowTemplate(
+      template?.text ?? "",
+      new Map<string, string>([["note", "sem cebola"]]),
+    );
+    expect(leaked).toContain("{previousOrderSummary}");
   });
 });

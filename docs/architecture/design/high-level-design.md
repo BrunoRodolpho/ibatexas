@@ -184,7 +184,7 @@ authority rather than definition.
 
 | Aggregate | Root | Notes |
 |---|---|---|
-| CapabilityDefinition | `kind` | 58 kinds — 20 chat-drivable, 38 identity-only |
+| CapabilityDefinition | `kind` | 59 kinds — 20 chat-drivable, 39 identity-only |
 | ClaimDefinition | claim type | 17 runtime types; 37-row / 40-name design vocabulary |
 | *(LE2)* JourneyDefinition | journey id | Hand-authored activity graph with declared compensators |
 | *(LE2)* AliasEntry | surface form | `pep` → canonical entity; unknown alias → `CLARIFY` |

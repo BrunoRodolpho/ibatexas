@@ -55,6 +55,20 @@ import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
  *                                     (composite — produces multiple
  *                                     `order.item.add` envelopes inside the
  *                                     executor).
+ *   - `order.reorder.request`      — UNTRUSTED. LE2-021. ASK to repeat the last
+ *                                     order. The governance ANCHOR of the
+ *                                     `workflow.orders.reorder-last` workflow
+ *                                     and nothing else: it carries the
+ *                                     unconditional whole-workflow CONFIRM
+ *                                     (`confirmReorderLast`) and the no-history
+ *                                     REFUSE, while `order.reorder` above does
+ *                                     the actual rebuilding as a
+ *                                     workflow-scoped activity. Two kinds
+ *                                     because the ASK and the ACT need
+ *                                     different access classes: the ask is
+ *                                     parse-reachable (a workflow's selection
+ *                                     envelope is minted from a parse), the act
+ *                                     never is.
  *   - `order.projection.create`    — SYSTEM. Initial projection row for an
  *                                     order on cart-intelligence subscriber.
  *   - `order.status.transition`    — SYSTEM/TRUSTED. Direct status flip
@@ -84,6 +98,7 @@ export type OrderIntentKind =
   | "order.note.add"
   | "order.review.submit"
   | "order.reorder"
+  | "order.reorder.request"
   | "order.projection.create"
   | "order.status.transition"
   | "order.status.reconcile"
@@ -259,6 +274,29 @@ export interface OrderReorderPayload {
   readonly paymentMethod: "pix" | "card" | "cash"
 }
 
+/**
+ * LE2-021 — the reorder-last ASK (`order.reorder.request`).
+ *
+ * It carries NO AUTHORED FIELDS, and that absence is the design rather than an
+ * omission. The one value this act needs — WHICH previous order — is the one
+ * value a language model must never supply: an order id it reported would be
+ * indistinguishable from an order id it invented, and the customer would be
+ * shown a confirmation for someone else's basket or for nothing at all. So the
+ * id never rides the payload. `resolveAndAssemble` projects the customer's last
+ * order from an OWNER-SCOPED read and stamps it on `OrderState.ctx`
+ * (`previousOrderId` and friends below), where `confirmReorderLast` reads it to
+ * author the confirm sentence — see that guard in `./policies.ts`.
+ *
+ * The single optional field is written by the WORKFLOW RUNTIME, never by a
+ * parse: it is the instance handle that has to survive the confirm park (see
+ * `WORKFLOW_INSTANCE_PAYLOAD_KEY` in the host). No guard in this Pack reads it;
+ * it is declared only so the payload type does not lie about what is on the
+ * envelope the kernel actually sees.
+ */
+export interface OrderReorderRequestPayload {
+  readonly _workflowInstanceId?: string
+}
+
 export interface OrderProjectionCreatePayload {
   readonly orderId: string
   readonly customerId: string
@@ -331,6 +369,7 @@ export type OrderPayload =
   | OrderNoteAddPayload
   | OrderReviewSubmitPayload
   | OrderReorderPayload
+  | OrderReorderRequestPayload
   | OrderFiscalEmitPayload
   | OrderProjectionCreatePayload
   | OrderStatusTransitionPayload
@@ -450,6 +489,53 @@ export interface OrderState {
      * (the extraction schema simply has no field for the reference to ride).
      */
     readonly orderNamedInMessage?: boolean
+    /**
+     * LE2-021 — THE PREVIOUS ORDER, projected by the host for the reorder-last
+     * workflow's anchor (`order.reorder.request`). Four fields, all optional,
+     * all fail-SAFE when absent.
+     *
+     * # Why they exist at all
+     *
+     * `confirmReorderLast` (`./policies.ts`) has to author a sentence naming
+     * what the customer is about to re-buy — items and total — because a
+     * confirmation that says only "confirma?" buys the customer nothing they
+     * could check. Every other `ctx` field describing money or items on this
+     * state describes the CURRENT cart (`items`, `totalInCentavos`), which for
+     * a reorder is empty or, worse, someone's half-built unrelated basket. So
+     * the previous order needs its own carrier.
+     *
+     * # Why the HOST stamps them and the payload does not carry them
+     *
+     * Same reason as {@link OrderReorderRequestPayload}: the model must not be
+     * the source of an order id or of a price it will then be quoted back on.
+     * The host reads them from the domain `OrderProjection` under an
+     * OWNER-SCOPED query, so the values are first-party by construction and the
+     * guard's sentence is grounded in the same sense every other grounded
+     * action value in this Pack is.
+     *
+     * # Absent means NO HISTORY, and that is a decision, not a gap
+     *
+     * `confirmReorderLast` REFUSEs (honestly, `order.reorder.no_history`) when
+     * `previousOrderId` is absent rather than confirming a repeat of nothing.
+     * Lenient-when-absent here therefore means fail-SAFE, matching
+     * `amendItemConfirmed` above: a host that has not wired the projection sees
+     * the honest refusal, never a bypass.
+     */
+    readonly previousOrderId?: string
+    /** The previous order's DISPLAY number — what a customer recognises. */
+    readonly previousOrderDisplayId?: number
+    /** The previous order's grand total, integer centavos (Hard Rule #2). */
+    readonly previousOrderTotalInCentavos?: number
+    /**
+     * The previous order's lines, in the order the projection recorded them.
+     * `title` is the product name as it was SOLD (the projection's own copy),
+     * never a name re-derived at read time — a reorder confirm that renamed a
+     * product would be quoting something the customer never bought.
+     */
+    readonly previousOrderItems?: ReadonlyArray<{
+      readonly title: string
+      readonly quantity: number
+    }>
     /**
      * BKL-103 / AUT-017 — the ESCALATE→OWNER-approve→executable-resume marker for
      * the RESUMABLE `order.cancel` escalation. Structural mirror of

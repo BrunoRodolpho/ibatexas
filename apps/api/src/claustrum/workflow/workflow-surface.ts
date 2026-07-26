@@ -79,6 +79,39 @@ export function isStartWorkflowInput(input: unknown): input is StartWorkflowInpu
 }
 
 /**
+ * One workflow's line in the `start_workflow` catalogue.
+ *
+ * ── WHY THE PHRASINGS ARE HERE AND NOT ONLY IN THE DESCRIPTION ───────────────
+ *
+ * The description says what a workflow DOES; the phrasings say what it SOUNDS
+ * LIKE when a customer asks for it, and those are different retrieval signals.
+ * LE2-020 shipped this line description-only and LE2-021's live drive measured
+ * the cost against the real engine: 87.5% selection over 8 phrasings × 5 passes,
+ * with `"manda o de sempre"` — an ordinary pt-BR idiom naming neither "pedido"
+ * nor "repetir" — selecting 0/5. A description cannot cover that; an example
+ * can.
+ *
+ * The phrasings are AUTHORED CATALOG DATA, compiler-checked for a floor, for
+ * duplicates and for cross-namespace collisions (`workflow-shape` rule 8), so
+ * what lands on the wire here is bounded by the same review as everything else
+ * the catalog declares. They are quoted so the model reads them as examples of
+ * customer speech rather than as instructions.
+ *
+ * Extracted as a named function rather than inlined in the `.map` because this
+ * string IS the selection surface: the L1 parse cache digests the whole tools
+ * array, so every character here is part of a cache key, and a line worth
+ * measuring is a line worth being able to read on its own.
+ */
+function describeWorkflowForSurface(workflow: AdvertisedWorkflow): string {
+  const examples =
+    workflow.triggerPhrasings.length === 0
+      ? ""
+      : ` (o cliente diz: ${workflow.triggerPhrasings.map((p) => `"${p}"`).join("; ")})`;
+  const slots = `(dados: ${workflow.slots.join(", ") || "nenhum"})`;
+  return `${workflow.id}: ${workflow.description}${examples} ${slots}`;
+}
+
+/**
  * Build the `start_workflow` tool definition for a turn's offered workflows, or
  * `undefined` when none are offered (in which case the wire is byte-identical
  * to pre-LE2-020 — the tools array simply does not grow).
@@ -94,9 +127,7 @@ export function startWorkflowToolDefinition(
   workflows: readonly AdvertisedWorkflow[],
 ): NonNullable<CompletionRequest["tools"]>[number] | undefined {
   if (workflows.length === 0) return undefined;
-  const catalogue = workflows
-    .map((w) => `${w.id}: ${w.description} (dados: ${w.slots.join(", ") || "nenhum"})`)
-    .join(" | ");
+  const catalogue = workflows.map(describeWorkflowForSurface).join(" | ");
   return {
     name: START_WORKFLOW_TOOL,
     description:

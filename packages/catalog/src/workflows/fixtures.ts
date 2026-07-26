@@ -45,6 +45,14 @@ import type { WorkflowDefinition } from "./types.js"
 export const FIXTURE_WORKFLOW_ID = "workflow.fixture.linear-v0"
 
 /**
+ * The authored order id the fixture's reorder activity targets. Exported so the
+ * turn-seam suite routes its Medusa fake at the same value instead of
+ * re-spelling it — see the activity's binding for why it is a `const` and not a
+ * param.
+ */
+export const FIXTURE_PREVIOUS_ORDER_ID = "order_le2020_previous"
+
+/**
  * The linear v0 fixture workflow. See the module doc for why each capability is
  * the one it is.
  */
@@ -53,6 +61,20 @@ export const FIXTURE_LINEAR_WORKFLOW: WorkflowDefinition = {
   title: "Fluxo de teste linear",
   description:
     "Fluxo de teste do runtime: finalizar o pedido e repetir os itens do pedido anterior.",
+  // Six SYNTHETIC phrasings, all `authored`, all openly fixture-shaped — they
+  // name the fixture rather than pretending to be pt-BR a customer would speak.
+  // The field is required by the contract, and a fixture that borrowed a real
+  // workflow's phrasings would collide with it under the compiler's
+  // cross-namespace rule the moment both were compiled together, which is the
+  // rule working rather than a reason to weaken it.
+  triggerPhrasings: [
+    { phrasing: "fluxo de teste linear um", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear dois", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear tres", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear quatro", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear cinco", provenance: "authored", why: "fixture probe" },
+    { phrasing: "fluxo de teste linear seis", provenance: "authored", why: "fixture probe" },
+  ],
   // Offered only on a turn whose capability planners already authorized a
   // checkout — so an unauthenticated customer, or one with no cart, is never
   // offered the workflow. The workflow can only narrow, never widen.
@@ -70,10 +92,27 @@ export const FIXTURE_LINEAR_WORKFLOW: WorkflowDefinition = {
       source: { from: "slot", slot: "note" },
     },
     {
-      // CLAIM-SOURCED: the order id comes from a claim the claims kernel
-      // VALIDATED this turn — never from the model's own recollection.
-      name: "previousOrderId",
-      source: { from: "claim", claimType: "order-placed", field: "orderId" },
+      // CLAIM-SOURCED, and it must name the REGISTRY CLAIM TYPE vocabulary —
+      // not the responder's success-class vocabulary (SDD §K: "map, do not
+      // equate"). LE2-020 shipped `{claimType: "order-placed", field:
+      // "orderId"}`, which is wrong in BOTH halves and was caught by LE2-021:
+      // `order-placed` is a `SUCCESS_CLAIM_CLASSES` guard id, not a member of
+      // `REGISTRY_CLAIM_TYPE_REFERENCES`, and no registry type's `valueBinding`
+      // carries an `orderId` at all. The `claim-param-type-unknown` rule in the
+      // workflow-shape pass now makes that spelling a BUILD error.
+      //
+      // The honest binding is the one the registry actually proves: the C6
+      // value of ORDER_HISTORY is a deterministically pre-composed pt-BR
+      // SUMMARY STRING (`historySummaryText`), so this param is shown back to
+      // the customer in the confirm prompt rather than used as an identifier.
+      // That is the strongest use of a claim-sourced value anyway — see the
+      // slot param above.
+      name: "previousOrderSummary",
+      source: {
+        from: "claim",
+        claimType: "ORDER_HISTORY",
+        field: "historySummaryText",
+      },
     },
     // The ANCHOR's own required slots. Declaring them as params is what puts
     // them on the workflow's CLOSED slot surface, which is what lets them
@@ -94,7 +133,18 @@ export const FIXTURE_LINEAR_WORKFLOW: WorkflowDefinition = {
     {
       id: "reorder",
       capability: "order.reorder",
-      payload: { orderId: { param: "previousOrderId" } },
+      // An AUTHORED CONSTANT, which is first-party by construction. It used to
+      // bind the claim param above, back when that param was mis-declared as an
+      // order id; now that the param is honestly a summary STRING, feeding it to
+      // an `orderId` field would be a type lie the compiler cannot see.
+      //
+      // A `slot` would be the other available source and is deliberately NOT
+      // used: a slot is model-EXTRACTED, so a fixture that sourced an order id
+      // from one would stand in the repository as a worked example of the exact
+      // confabulation `WorkflowParamSource` exists to prevent. In the real
+      // reorder-last flow the identifier is resolved executor-side from
+      // owner-scoped state, never carried as a param at all.
+      payload: { orderId: { const: FIXTURE_PREVIOUS_ORDER_ID } },
     },
   ],
   confirm: { template: "confirm" },
@@ -103,7 +153,7 @@ export const FIXTURE_LINEAR_WORKFLOW: WorkflowDefinition = {
       id: "confirm",
       // `{confirmation}` is the KERNEL's own confirm prompt, quoted verbatim —
       // the grounded amount is never re-computed here.
-      text: "{confirmation} Em seguida eu repito os itens do seu pedido anterior. Sua observação: {note}",
+      text: "{confirmation} Em seguida eu repito os itens do seu pedido anterior ({previousOrderSummary}). Sua observação: {note}",
     },
     { id: "completed", text: "Pronto! Concluí todas as etapas do seu pedido." },
     { id: "declined", text: "Tudo bem, não fiz nada. É só me chamar quando quiser." },

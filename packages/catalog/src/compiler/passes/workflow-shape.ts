@@ -32,6 +32,17 @@
 //      (`workflow-scoped-kind-advertised`) — the two say opposite things about
 //      whether the parser may propose it, and the build is where that has to be
 //      settled.
+//   7. CLAIM PARAMS NAME A REAL CLAIM TYPE. A `{from: "claim"}` param's
+//      `claimType` is a member of the registry claim-type vocabulary, not the
+//      responder's success-class vocabulary (`claim-param-type-unknown`) — see
+//      that rule's own doc for why the two are constantly confused and why
+//      getting it wrong is silent rather than loud.
+//   8. TRIGGER PHRASINGS ARE SUFFICIENT AND UNAMBIGUOUS. A workflow declares at
+//      least `MIN_WORKFLOW_TRIGGER_PHRASINGS` non-blank phrasings
+//      (`trigger-phrasings-below-floor`), no two of its own repeat under the
+//      shared fold (`trigger-phrasing-duplicated`), and none collides with
+//      another workflow's phrasing or with any capability's conversation
+//      trigger (`trigger-phrasing-collides`) — see rule 8's own doc.
 //
 // ── WHY RULE 6 IS IN THIS PASS ───────────────────────────────────────────────
 //
@@ -42,18 +53,24 @@
 // access class in two passes, and a reviewer chasing "why can't the parser emit
 // this" would find only half the answer.
 //
-// It is also why this pass has real work on a catalog with ZERO workflows: it
-// inspects all 58 definitions, so `checked` is non-zero and the pass contract
-// in `../diagnostics.ts` ("a pass reporting `checked: 0` on the real catalog is
-// not passing, it is not running") is satisfied honestly rather than by an
-// accident of the corpus being empty.
+// It is also why this pass had real work back when the catalog declared ZERO
+// workflows: it inspects all 59 definitions, so `checked` was non-zero and the
+// pass contract in `../diagnostics.ts` ("a pass reporting `checked: 0` on the
+// real catalog is not passing, it is not running") was satisfied honestly
+// rather than by an accident of the corpus being empty. LE2-021 authored the
+// first production workflow, so the workflow legs now contribute too.
 //
 // Pure: no clock, no RNG, no IO. Reads everything structurally (`asRecord`) —
 // fixtures are widened, so the static types are a hint here, never a guarantee.
 
+import { normalizeTriggerPhrasing } from "../../capability-definitions/conversation-triggers.js"
 import type { CapabilityDefinition } from "../../capability-definitions/types.js"
+import { isRegistryClaimTypeReference } from "../../claim-references.js"
 import type { WorkflowDefinition } from "../../workflows/types.js"
-import { WORKFLOW_OUTCOMES } from "../../workflows/types.js"
+import {
+  MIN_WORKFLOW_TRIGGER_PHRASINGS,
+  WORKFLOW_OUTCOMES,
+} from "../../workflows/types.js"
 import {
   capabilityObjectName,
   type CatalogDiagnostic,
@@ -261,6 +278,178 @@ function checkActivities(ctx: WorkflowContext): readonly CatalogDiagnostic[] {
   return out
 }
 
+/**
+ * Rule 7 — a claim-sourced param must name the REGISTRY CLAIM TYPE vocabulary.
+ *
+ * ── THE CLASS THIS CLOSES ────────────────────────────────────────────────────
+ *
+ * There are two claim vocabularies in this system and they are NOT the same
+ * set, which SDD §K states as "map, do not equate":
+ *
+ *   REGISTRY CLAIM TYPES  — UPPER_SNAKE (`ORDER_HISTORY`, `PAYMENT_STATUS`).
+ *     The planner's constrained-generation enum; each declares a `valueBinding`
+ *     naming the ONE field its validated value exposes.
+ *   SUCCESS CLAIM CLASSES — lowercase-hyphen (`order-placed`, `payment-settled`).
+ *     The responder's anti-confabulation guard ids. They have no value at all —
+ *     they are predicates over rendered prose.
+ *
+ * LE2-020's own fixture bound `{claimType: "order-placed", field: "orderId"}`,
+ * which is wrong in both halves: it names a success class as if it were a
+ * registry type, and `orderId` is not any registry type's value field. Nothing
+ * caught it, because the runtime resolves a claim param by MAP LOOKUP — an
+ * unknown type is simply absent, so the param lands UNRESOLVED and the run
+ * fails closed. The symptom is a workflow that never works, with no diagnostic
+ * anywhere and a plausible-looking definition. That is the worst shape a
+ * catalog error can take, and it is exactly what a compiler is for.
+ *
+ * ── WHY MEMBERSHIP ONLY, FOR NOW ─────────────────────────────────────────────
+ *
+ * The field half of the check is NOT enforced here. `REGISTRY_CLAIM_TYPE_
+ * REFERENCES` is a NAME mirror — it carries the type names and nothing else, so
+ * the catalog cannot see any type's `valueBinding` path and therefore cannot
+ * prove `field` is the right one. Widening that mirror to carry value fields is
+ * a real change to what the catalog knows about the runtime and is deliberately
+ * not made unilaterally here; the gap is recorded in the PR body. Membership
+ * alone already turns the LE2-020 fixture's spelling into a build error, which
+ * is the half that closes the class.
+ */
+function checkClaimParams(ctx: WorkflowContext): readonly CatalogDiagnostic[] {
+  const out: CatalogDiagnostic[] = []
+  readArray(ctx.record["params"]).forEach((param, index) => {
+    const source = readRecord(readRecord(param)["source"])
+    if (source["from"] !== "claim") return
+    const claimType = source["claimType"]
+    if (!isNonBlank(claimType)) return
+    if (isRegistryClaimTypeReference(claimType)) return
+    out.push(
+      diag(
+        ctx,
+        "claim-param-type-unknown",
+        `params[${index}].source.claimType`,
+        `sources a param from the claim type "${claimType}", which is not a ` +
+          "member of the registry claim-type vocabulary. Two vocabularies exist " +
+          "and they are not interchangeable (SDD §K, \"map, do not equate\"): " +
+          "registry claim TYPES are the planner's UPPER_SNAKE selection enum and " +
+          "are the only things that carry a validated VALUE, while the " +
+          "lowercase-hyphen success claim CLASSES are the responder's guard ids " +
+          "and have no value to read. A param naming the wrong vocabulary does " +
+          "not fail loudly at run time — it resolves by map lookup, misses, and " +
+          "leaves the param UNRESOLVED forever, so the workflow silently never " +
+          "runs.",
+        claimType,
+      ),
+    )
+  })
+  return out
+}
+
+/**
+ * Rule 8 — the trigger phrasings a workflow puts on the SELECTION SURFACE.
+ *
+ * ── WHY THIS IS A BUILD ERROR AND NOT A LINT ─────────────────────────────────
+ *
+ * A workflow's phrasings are composed into the `start_workflow` tool
+ * description, which is the ONLY text distinguishing one route from another on
+ * the wire. Every failure this rule catches is therefore a failure of the model
+ * to be able to tell two different things apart, and none of them is visible at
+ * run time:
+ *
+ *   TOO FEW — the surface degrades to description-only, which LE2-008 measured
+ *     at recall@5 = 73.8% for capabilities and LE2-021's own live drive measured
+ *     at 87.5% selection for this workflow. The symptom is a customer whose
+ *     perfectly ordinary sentence simply does not start the workflow, and there
+ *     is nothing in any log saying why — a non-selection produces no envelope,
+ *     no audit row and no diagnostic.
+ *   DUPLICATED — a workflow paying for the same phrasing twice while believing
+ *     it has cleared the floor. The count is right and the coverage is not.
+ *   COLLIDING — two routes advertising the same sentence. This is the dangerous
+ *     one: it does not degrade selection, it makes it a COIN FLIP, and the
+ *     customer gets a confidently-executed wrong route. Checked across the whole
+ *     catalog rather than within a workflow because the namespaces genuinely
+ *     share a surface — a capability's `conversationTriggers` and a workflow's
+ *     phrasings both feed retrieval, and "repete meu último pedido" meaning both
+ *     a capability and a workflow is a contradiction no runtime can resolve.
+ *
+ * ── ONE FOLD, NOT TWO ────────────────────────────────────────────────────────
+ *
+ * Comparison uses `normalizeTriggerPhrasing` — the package's SHARED word-space
+ * fold, the same function `conversationTriggers` uniqueness and the alias
+ * gazetteer already compare under. Re-rolling a fold here would let a phrasing
+ * be a duplicate under one definition of "same" and not under the other, which
+ * is exactly the state a cross-namespace check exists to make impossible.
+ */
+function checkTriggerPhrasings(
+  ctx: WorkflowContext,
+  seenPhrasings: Map<string, string>,
+): readonly CatalogDiagnostic[] {
+  const out: CatalogDiagnostic[] = []
+  const phrasings = readArray(ctx.record["triggerPhrasings"])
+
+  const nonBlank = phrasings.filter((trigger) => isNonBlank(readRecord(trigger)["phrasing"]))
+  if (nonBlank.length < MIN_WORKFLOW_TRIGGER_PHRASINGS) {
+    out.push(
+      diag(
+        ctx,
+        "trigger-phrasings-below-floor",
+        "triggerPhrasings",
+        `declares ${nonBlank.length} non-blank trigger phrasing(s), below the floor ` +
+          `of ${MIN_WORKFLOW_TRIGGER_PHRASINGS}. The phrasings are what the model ` +
+          "reads to tell this route apart from every other one, and a workflow " +
+          "below the floor is reachable only through its one-line description — " +
+          "which measures materially worse, and whose failures are SILENT (a " +
+          "non-selection produces no envelope, no audit row and no diagnostic).",
+      ),
+    )
+  }
+
+  const seenHere = new Set<string>()
+  phrasings.forEach((trigger, index) => {
+    const phrasing = readRecord(trigger)["phrasing"]
+    if (!isNonBlank(phrasing)) return
+    const folded = normalizeTriggerPhrasing(phrasing)
+    if (folded === "") return
+
+    if (seenHere.has(folded)) {
+      out.push(
+        diag(
+          ctx,
+          "trigger-phrasing-duplicated",
+          `triggerPhrasings[${index}].phrasing`,
+          `repeats the phrasing "${phrasing}", which this workflow already ` +
+            "declares under the same normal form (the shared word-space fold " +
+            "ignores case, accents and punctuation). The floor counts entries, so " +
+            "a duplicate lets a workflow clear it while covering one fewer way of " +
+            "asking than its author believed.",
+          phrasing,
+        ),
+      )
+      return
+    }
+    seenHere.add(folded)
+
+    const owner = seenPhrasings.get(folded)
+    if (owner !== undefined) {
+      out.push(
+        diag(
+          ctx,
+          "trigger-phrasing-collides",
+          `triggerPhrasings[${index}].phrasing`,
+          `declares the phrasing "${phrasing}", which ${owner} already claims ` +
+            "under the same normal form. Two routes advertising one sentence do " +
+            "not degrade selection, they make it a coin flip — the customer gets a " +
+            "confidently-executed wrong route, and both sides look correct in " +
+            "isolation. Settle it here: one of the two owns the phrasing.",
+          phrasing,
+        ),
+      )
+      return
+    }
+    seenPhrasings.set(folded, ctx.object)
+  })
+
+  return out
+}
+
 /** Rule 3 — terminal coverage over the confirm point and every outcome. */
 function checkTemplates(ctx: WorkflowContext): readonly CatalogDiagnostic[] {
   const out: CatalogDiagnostic[] = []
@@ -348,8 +537,9 @@ function checkAccessClass(
  *
  * `checked` counts INSPECTIONS: every capability definition read for
  * access-class coherence, plus, per workflow, its identity, its capability
- * references, its activities and its templates. The capability leg is what
- * keeps the count honest on a catalog that declares no workflow yet.
+ * references, its activities, its templates and its trigger phrasings. The
+ * capability leg is what kept the count honest on a catalog that declared no
+ * workflow yet.
  */
 export function runWorkflowShapePass(
   definitions: readonly CapabilityDefinition[],
@@ -372,6 +562,21 @@ export function runWorkflowShapePass(
       .map((definition) => asRecord(definition)["kind"])
       .filter(isNonBlank),
   )
+
+  // Rule 8's cross-namespace index, SEEDED with the capability side first so a
+  // workflow phrasing colliding with a `conversationTriggers` entry is reported
+  // against the WORKFLOW — the newer, movable half of the collision. Folded
+  // once, here, with the package's shared fold.
+  const seenPhrasings = new Map<string, string>()
+  definitions.forEach((definition, index) => {
+    const record = asRecord(definition)
+    for (const trigger of readArray(record["conversationTriggers"])) {
+      if (!isNonBlank(trigger)) continue
+      const folded = normalizeTriggerPhrasing(trigger)
+      if (folded === "" || seenPhrasings.has(folded)) continue
+      seenPhrasings.set(folded, `the capability ${capabilityObjectName(record["kind"], index)}`)
+    }
+  })
 
   const seenWorkflowIds = new Set<string>()
   workflows.forEach((workflow, index) => {
@@ -407,8 +612,14 @@ export function runWorkflowShapePass(
     checked += readArray(record["activities"]).length
     diagnostics.push(...checkActivities(ctx))
 
+    checked += readArray(record["params"]).length
+    diagnostics.push(...checkClaimParams(ctx))
+
     checked += WORKFLOW_OUTCOMES.length + 1
     diagnostics.push(...checkTemplates(ctx))
+
+    checked += readArray(record["triggerPhrasings"]).length
+    diagnostics.push(...checkTriggerPhrasings(ctx, seenPhrasings))
   })
 
   return { pass: PASS, checked, diagnostics }

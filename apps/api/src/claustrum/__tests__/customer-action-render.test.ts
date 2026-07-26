@@ -453,3 +453,119 @@ describe("renderCustomerActionAnswer — byte-identical fall-through (scope guar
     expect(text).toBe("Pronto! Adicionei o item ao seu pedido.");
   });
 });
+
+// ── LE2-021: a WORKFLOW run outranks the per-kind templates ────────────────
+//
+// The branch exists because the comment in `workflow-install.ts` — "the reply
+// the customer reads comes from the AUTHORED template … never from model prose"
+// — was false in both available ways, and both were SILENT (a fluent, plausible
+// reply either way). These cases pin the discriminator and every degrade around
+// it, because the failure mode of getting this wrong is a customer being told
+// something the catalog never said.
+
+describe("renderCustomerActionAnswer — the workflow outcome branch (LE2-021)", () => {
+  /** The shape `installWorkflowRuntime`'s anchor wrapper actually stamps. */
+  const workflowResult = (overrides: Record<string, unknown> = {}) => ({
+    message: "Pronto! Montei um carrinho novo com os itens do seu último pedido. Quer finalizar?",
+    workflow: {
+      instanceId: "inst-1",
+      workflowId: "workflow.orders.reorder-last",
+      catalogVersion: 7,
+      outcome: "completed",
+      activitiesExecuted: 1,
+      activitiesTotal: 1,
+    },
+    ...overrides,
+  });
+
+  it("returns the authored outcome template VERBATIM", () => {
+    expect(
+      renderCustomerActionAnswer(executed("order.reorder.request", {}, workflowResult())),
+    ).toBe(
+      "Pronto! Montei um carrinho novo com os itens do seu último pedido. Quer finalizar?",
+    );
+  });
+
+  it("returns the FAILED template just as verbatim — no success frame smuggled in", () => {
+    const failed = workflowResult({
+      message: "Não consegui montar o carrinho com os itens do seu último pedido.",
+      workflow: { outcome: "failed", activitiesExecuted: 0, activitiesTotal: 1 },
+    });
+    const text = renderCustomerActionAnswer(executed("order.reorder.request", {}, failed));
+    expect(text).toBe("Não consegui montar o carrinho com os itens do seu último pedido.");
+    expect(text).not.toMatch(/Pronto/);
+  });
+
+  it("OUTRANKS a per-kind template that would otherwise render", () => {
+    // The concrete regression: the LE2-020 fixture anchors on
+    // `order.checkout.create`, which this module DOES render — and
+    // `renderCheckoutCreate` reads only `success`/`paymentMethod`, dropping
+    // `message`. Without the workflow branch a run whose authored outcome was a
+    // failure would tell the customer a PIX code had been generated.
+    const text = renderCustomerActionAnswer(
+      executed(
+        "order.checkout.create",
+        { cartId: "c1" },
+        workflowResult({
+          message: "Não consegui concluir todas as etapas.",
+          success: true,
+          paymentMethod: "pix",
+          workflow: { outcome: "failed" },
+        }),
+      ),
+    );
+    expect(text).toBe("Não consegui concluir todas as etapas.");
+    expect(text).not.toMatch(/PIX|pix/);
+  });
+
+  it("does NOT fire without the `workflow` discriminator", () => {
+    // `message` alone is not enough: plenty of executors return one, and none of
+    // those are authored catalog text. The `workflow` key is written by exactly
+    // one place — the anchor wrapper, after a run — which is what makes its
+    // presence proof of provenance.
+    expect(
+      renderCustomerActionAnswer(
+        executed("order.checkout.create", { cartId: "c1" }, {
+          message: "algo que um executor escreveu",
+          success: true,
+          paymentMethod: "pix",
+        }),
+      ),
+    ).not.toBe("algo que um executor escreveu");
+  });
+
+  it.each([
+    ["a missing message", { message: undefined }],
+    ["a blank message", { message: "   " }],
+    ["a non-string message", { message: 42 }],
+  ])("falls through on %s rather than emptying the reply", (_label, override) => {
+    // Degrades to the ordinary path instead of returning "" — an empty reply is
+    // the one outcome worse than a generic one.
+    const text = renderCustomerActionAnswer(
+      executed("order.amend.remove_item", { orderId: "o1" }, workflowResult(override)),
+    );
+    expect(text).toBe("Pronto! Removi o item do seu pedido.");
+  });
+
+  it("ignores a non-object workflow key", () => {
+    expect(
+      renderCustomerActionAnswer(
+        executed("order.amend.remove_item", { orderId: "o1" }, {
+          message: "não deve vazar",
+          workflow: "not-an-object",
+        }),
+      ),
+    ).toBe("Pronto! Removi o item do seu pedido.");
+  });
+
+  it("joins two workflow runs in a plan, in order", () => {
+    const text = renderCustomerActionAnswer({
+      kind: "executed_plan",
+      executions: [
+        { envelope: { kind: "order.reorder.request", payload: {} }, result: workflowResult({ message: "Primeiro." }) },
+        { envelope: { kind: "order.reorder.request", payload: {} }, result: workflowResult({ message: "Segundo." }) },
+      ],
+    });
+    expect(text).toBe("Primeiro.\n\nSegundo.");
+  });
+});
