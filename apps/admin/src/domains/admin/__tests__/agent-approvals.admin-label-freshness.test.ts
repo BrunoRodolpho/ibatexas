@@ -19,7 +19,7 @@
 // fails loudly (see the negative-direction test at the bottom, which proves
 // this by construction rather than asserting it).
 //
-// `@ibatexas/packs-composed` is a devDependency (test-only consumption) —
+// `@ibatexas/catalog` is a devDependency (test-only consumption) —
 // this ticket does NOT repoint `agent-approvals.mappers.ts` itself; the hand-
 // maintained `INTENT_KIND_LABELS` remains the production source (FE-4 is
 // MIGRATE, not CONTRACT).
@@ -29,7 +29,7 @@ import { describe, expect, it } from "vitest"
 import {
   CAPABILITY_DEFINITIONS,
   generateAdminLabels,
-} from "@ibatexas/packs-composed/capability-definitions"
+} from "@ibatexas/catalog"
 
 import { INTENT_KIND_LABELS, intentKindLabel } from "../agent-approvals.mappers.js"
 
