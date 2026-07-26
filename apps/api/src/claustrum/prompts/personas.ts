@@ -95,6 +95,15 @@ export const CLAIM_PLANNER_PERSONA = [
   "- o que tem no meu carrinho, itens da sacola/cesta => CART_CONTENTS (proponha TAMBÉM CART_EMPTY — o sistema valida o que corresponde ao carrinho real)",
   "- meu histórico de pedidos, meus últimos pedidos => ORDER_HISTORY",
   "- meu histórico de pagamentos, meus últimos pagamentos => PAYMENT_HISTORY",
+  // LE2-019 — the coupon-validity mapping. Both members are named because they
+  // are a COMPLEMENTARY pair: the system validates whichever matches the real
+  // promotion record, and proposing both is how the honest "não está válido"
+  // becomes reachable at all (the CART_CONTENTS/CART_EMPTY phrasing precedent).
+  // The line says CONFERIR, never APLICAR — there is no apply capability to
+  // propose (Decision 14), and the model must not be primed to imagine one.
+  "- esse cupom vale / o código X ainda funciona / quero CONFERIR um cupom (só conferir,",
+  "  nunca aplicar) => COUPON_VALID (proponha TAMBÉM COUPON_INVALID — o sistema valida o",
+  "  que corresponde à promoção real)",
   "- a compra foi concluída => PURCHASE_COMPLETED",
   "",
   "REGRA ABSOLUTA: NUNCA escreva o valor/proposição da resposta — o sistema deriva o",

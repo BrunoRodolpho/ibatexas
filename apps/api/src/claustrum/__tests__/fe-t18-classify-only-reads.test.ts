@@ -159,7 +159,9 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     // DELIVERY_NO_COVERAGE fixed-key public pair). Extended as a CONSCIOUS act, per
     // the classify-only-reads.ts header's "scope grown by conscious acts, never
     // byproduct" rule — never re-sorted green.
-    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(14);
+    // LE2-019 GREW it 14 → 16 (the COUPON_VALID / COUPON_INVALID fixed-key public
+    // pair), by the same conscious act.
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(16);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_STATUS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("RESERVATION_STATUS")).toBe(true);
@@ -185,6 +187,11 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     // turn wholesale (the BKL-163 CART_EMPTY lesson).
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("DELIVERY_COVERAGE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("DELIVERY_NO_COVERAGE")).toBe(true);
+    // LE2-019 — the PUBLIC coupon-validity pair (fixed-key, same shape). Both, in
+    // lockstep, for the identical reason: the COUPON_VALIDITY_Q closure row
+    // requires the pair.
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("COUPON_VALID")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("COUPON_INVALID")).toBe(true);
     // The SAFETY carve-out is structural: MENU_ITEM_ALLERGENS is NOT eligible
     // (no decomposer span ever requires it — allergen asks keep the model path).
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_ITEM_ALLERGENS")).toBe(false);

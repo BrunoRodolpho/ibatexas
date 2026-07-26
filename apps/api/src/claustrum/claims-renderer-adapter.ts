@@ -44,6 +44,7 @@ import {
   classifyRequestSpans,
   decomposeRequiredClaims,
   isAllergenFamilyAsk,
+  isCouponValidityAsk,
   isDeliveryCoverageAsk,
   isMedicalEmergencyAsk,
 } from "./required-claim-decomposer.js";
@@ -355,6 +356,10 @@ export function createIbatexasClaimsRenderer(
         // ask-for-the-CEP variant (the classifier's own net decides; absent
         // requestText → false → generic clarify, byte-identical).
         isDeliveryCoverageAsk(context?.requestText ?? ""),
+        // LE2-019 — a coupon-VALIDITY ask landing on CLARIFY renders the
+        // ask-for-the-code variant (the classifier's own net decides; absent
+        // requestText → false → generic clarify, byte-identical).
+        isCouponValidityAsk(context?.requestText ?? ""),
       );
       // BKL-209 — fire the best-effort SAFETY sink when the turn resolved to a
       // medical-emergency ESCALATE, so staff are notified ("vou avisar nossa

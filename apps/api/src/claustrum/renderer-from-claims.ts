@@ -53,6 +53,7 @@ import { localizeClaimEnum } from "./claims-labels.js";
 import {
   clarifyWithCandidatesText,
   isPropositionFree,
+  SAFE_CLARIFY_COUPON_CODE_TEMPLATE,
   SAFE_CLARIFY_DELIVERY_CEP_TEMPLATE,
   SAFE_TEMPLATES,
   SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
@@ -270,6 +271,10 @@ export function render(
   // ask-for-the-CEP variant instead of the generic "qual pedido?" disambiguation.
   // Default false → byte-identical.
   deliveryCoverageAsk: boolean = false,
+  // LE2-019 — when the request carries coupon phrasing (the adapter computes it
+  // via the classifier's own net), a CLARIFY terminal renders the ask-for-the-code
+  // variant instead of the generic disambiguation. Default false → byte-identical.
+  couponValidityAsk: boolean = false,
 ): RenderResult {
   // ── inv.17 ENTRY BRAND: the renderer's REQUIRED input is the kernel-minted
   // CanonicalClaim. `unwrapCanonical` asserts WeakSet provenance and THROWS on a
@@ -291,6 +296,7 @@ export function render(
     emergencyAsk,
     templates,
     deliveryCoverageAsk,
+    couponValidityAsk,
   );
 }
 
@@ -311,6 +317,7 @@ export function renderRenderables(
   emergencyAsk: boolean = false,
   templates: Readonly<Record<string, Template>> = VALIDATED_TEMPLATES,
   deliveryCoverageAsk: boolean = false,
+  couponValidityAsk: boolean = false,
 ): RenderResult {
   // ── 1. §O#5 render-half: a non-RENDER terminal emits ONLY the safe template. ──
   if (terminal !== "RENDER") {
@@ -321,6 +328,7 @@ export function renderRenderables(
       allergenAsk,
       emergencyAsk,
       deliveryCoverageAsk,
+      couponValidityAsk,
     );
   }
 
@@ -361,6 +369,7 @@ function renderTerminalResult(
   allergenAsk: boolean = false,
   emergencyAsk: boolean = false,
   deliveryCoverageAsk: boolean = false,
+  couponValidityAsk: boolean = false,
 ): RenderResult {
   // BKL-170 — a CLARIFY the adopter enriched with first-party, owner-scoped
   // disambiguation candidates (0.8.0 `disambiguationCandidates` carrier) renders the
@@ -396,7 +405,18 @@ function renderTerminalResult(
           // coverage turn never carries disambiguation candidates.
           deliveryCoverageAsk
           ? SAFE_CLARIFY_DELIVERY_CEP_TEMPLATE
-          : SAFE_TEMPLATES.clarify
+          : // LE2-019 — a COUPON-VALIDITY ask that lands on CLARIFY renders the
+            // ask-for-the-CODE variant: the resolver refused to guess WHICH coupon
+            // an utterance with no (or two) code(s) meant, so the turn asks for the
+            // one datum that settles it. Still proposition-free (it asserts validity
+            // in NEITHER direction); every other CLARIFY renders the generic
+            // disambiguation ask, byte-identical. Ordered BELOW the delivery arm
+            // only for reading order — the two nets are disjoint by vocabulary (a
+            // text cannot be both a CEP-coverage and a coupon-code question), so
+            // this is documentation, not precedence.
+            couponValidityAsk
+            ? SAFE_CLARIFY_COUPON_CODE_TEMPLATE
+            : SAFE_TEMPLATES.clarify
         : allergenAsk
           ? SAFE_UNKNOWN_ALLERGEN_TEMPLATE
           : SAFE_TEMPLATES.unknown;

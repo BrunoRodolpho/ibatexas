@@ -77,6 +77,7 @@ import {
 } from "./claim-registry.js";
 import type { EvidenceLedgerLike } from "./ibatexas-claims-kernel-deps.js";
 import { DELIVERY_NEEDS_CEP_MARKER_KEY } from "./delivery-coverage-resolver.js";
+import { COUPON_NEEDS_CODE_MARKER_KEY } from "./coupon-validity-resolver.js";
 import type { ClaimAuthContext } from "./ibatexas-planner.js";
 import {
   classifyRequestSpans,
@@ -183,6 +184,20 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // adjacent one is already excluded by the wholesale allergen carve-out.
     "DELIVERY_COVERAGE",
     "DELIVERY_NO_COVERAGE",
+    // LE2-019 — the PUBLIC coupon-validity PAIR joins the eligible set (the same
+    // conscious growth this header documents). Both are FIXED single-key public
+    // types (`coupon:valid` / `coupon:invalid`, ownership `not_applicable`, no
+    // perResourceKey), so the candidate subject is "" and the spec is never
+    // parameterized — exactly the DELIVERY_COVERAGE / STORE_INFO shape. They join
+    // in LOCKSTEP: the COUPON_VALIDITY_Q closure row requires BOTH (the
+    // complementary pair), and `classifyOnlyRequiredTypes` declines WHOLESALE when
+    // any required type is outside this set — omitting one would silently disable
+    // the deterministic path for every coupon question. FE-D12 residual grows
+    // identically (a pure coupon-read turn skips the model's §O#9 self-report); a
+    // coupon ask carries no safety marker, and an allergen-adjacent one is already
+    // excluded by the wholesale allergen carve-out.
+    "COUPON_VALID",
+    "COUPON_INVALID",
   ]);
 
 /**
@@ -367,6 +382,26 @@ export function deliveryCoverageNeedsCep(
   return ledger.resolve(DELIVERY_NEEDS_CEP_MARKER_KEY).state === "present";
 }
 
+/**
+ * LE2-019 — is THIS turn a coupon question that must ASK for the code? True iff
+ * the coupon span pulled the pair into the required set AND the investigator
+ * recorded the needs-code marker PRESENT. Pure over (data, ledger).
+ *
+ * The `deliveryCoverageNeedsCep` shape, for the same reason: the resolver refuses
+ * to guess WHICH coupon an ambiguous utterance meant, so instead of a claim the
+ * turn gets a forced CLARIFY and the renderer's coupon-code ask. It is a CLARIFY,
+ * not an UNKNOWN, because the turn is not ignorant — it knows exactly which one
+ * datum would settle the answer.
+ */
+export function couponValidityNeedsCode(
+  required: ReadonlySet<RegistryClaimType>,
+  ledger: EvidenceLedgerLike | undefined,
+): boolean {
+  if (ledger === undefined) return false;
+  if (!required.has("COUPON_VALID")) return false;
+  return ledger.resolve(COUPON_NEEDS_CODE_MARKER_KEY).state === "present";
+}
+
 export function buildClassifyOnlyCandidates(
   required: ReadonlySet<RegistryClaimType>,
   auth: ClaimAuthContext,
@@ -459,7 +494,14 @@ export function buildClassifyOnlyCandidates(
   // picking a nearby zone. Additive: on every non-coverage turn the marker is absent
   // and this is byte-identical to before.
   const needsCep = deliveryCoverageNeedsCep(required, ledger);
-  const forcedClarify = ambiguousOwnedSets.length > 0 || publicAmbiguity || needsCep;
+  // LE2-019 — the needs-CODE CLARIFY, structurally identical to the needs-CEP one
+  // above: the candidate claims stay in the batch (they resolve honest UNKNOWN off
+  // their absent keys) and the turn is FORCED to CLARIFY, so the renderer asks for
+  // the code instead of answering about a coupon nobody named. Additive: on every
+  // non-coupon turn the marker is absent and this is byte-identical to before.
+  const needsCode = couponValidityNeedsCode(required, ledger);
+  const forcedClarify =
+    ambiguousOwnedSets.length > 0 || publicAmbiguity || needsCep || needsCode;
   return forcedClarify
     ? {
         candidates,
