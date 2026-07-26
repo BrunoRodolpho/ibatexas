@@ -269,6 +269,105 @@ describe("lattice rule 3b — committed EXECUTE/REWRITE mutation keeps its deter
   });
 });
 
+// ── Rule 3c (LE2 decision 6) — a DETERMINISTIC read render beats a degenerate one
+
+describe("lattice rule 3c — a deterministic READ render keeps its grounded answer", () => {
+  const READ = { deterministicReadRender: true } as const;
+
+  it("degenerate UNKNOWN + a deterministic ops read render → keep_draft (the grounded read answer is not clobbered)", () => {
+    const v = decideRenderPrecedence(
+      ctx({
+        decision: refuse(),
+        plan: plan(0),
+        claims: claimsResult("UNKNOWN"),
+        requestText: "quantos pedidos hoje?",
+      }),
+      READ,
+    );
+    expect(v).toEqual({ decision: "keep_draft", mechanism: "deterministic_read_render" });
+  });
+
+  it("rule 3 STILL WINS: a VALIDATED RENDER supersedes even a deterministic read render (store-open-now on the ops thread)", () => {
+    const v = decideRenderPrecedence(
+      ctx({
+        decision: refuse(),
+        plan: plan(0),
+        claims: claimsResult("RENDER"),
+        requestText: "estamos abertos?",
+      }),
+      READ,
+    );
+    expect(v).toEqual({ decision: "render", mechanism: "validated_render" });
+  });
+
+  it("rule 1 STILL WINS: a suppression renders the safe template regardless of the read (no-leak is absolute)", () => {
+    const v = decideRenderPrecedence(
+      ctx({
+        decision: refuse(),
+        plan: plan(0),
+        claims: claimsResult("UNKNOWN", [suppression()]),
+        requestText: "quantos pedidos hoje?",
+      }),
+      READ,
+    );
+    expect(v).toEqual({ decision: "render", mechanism: "claims_escalate_or_suppression" });
+  });
+
+  it("rule 1 STILL WINS: an ESCALATE terminal outranks the read render", () => {
+    const v = decideRenderPrecedence(
+      ctx({
+        decision: refuse(),
+        plan: plan(0),
+        claims: claimsResult("ESCALATE"),
+        requestText: "quantos pedidos hoje?",
+      }),
+      READ,
+    );
+    expect(v).toEqual({ decision: "render", mechanism: "claims_escalate_or_suppression" });
+  });
+
+  it("signal ABSENT (the customer plane) → byte-identical to the pre-LE2 lattice", () => {
+    const noSignal = decideRenderPrecedence(
+      ctx({
+        decision: refuse(),
+        plan: plan(0),
+        claims: claimsResult("UNKNOWN"),
+        requestText: "vocês têm sushi?",
+      }),
+    );
+    expect(noSignal).toEqual({ decision: "render", mechanism: "safe_degrade" });
+    // Explicit `false` is the same as absent — only `true` engages the rule.
+    expect(
+      decideRenderPrecedence(
+        ctx({
+          decision: refuse(),
+          plan: plan(0),
+          claims: claimsResult("UNKNOWN"),
+          requestText: "vocês têm sushi?",
+        }),
+        { deterministicReadRender: false },
+      ),
+    ).toEqual(noSignal);
+  });
+
+  it("the seam factory threads the per-turn signal (hasDeterministicReadRender)", () => {
+    let hasRead = false;
+    const seam = createIbatexasClaimsRenderPrecedence({
+      plane: "ops",
+      hasDeterministicReadRender: () => hasRead,
+    });
+    const turn = ctx({
+      decision: refuse(),
+      plan: plan(0),
+      claims: claimsResult("UNKNOWN"),
+      requestText: "quantos pedidos hoje?",
+    });
+    expect(seam(turn)).toBe("render"); // no read captured → rule 4 safe degrade
+    hasRead = true;
+    expect(seam(turn)).toBe("keep_draft"); // read captured → rule 3c protects it
+  });
+});
+
 // ── Rule 4 — a conversational degrade: question renders safe, statement keeps prose
 
 describe("lattice rule 4 — conversational degrade by request SHAPE", () => {

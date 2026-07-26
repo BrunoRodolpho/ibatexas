@@ -342,9 +342,11 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
         : { onSafetyEmergency: deps.onSafetyEmergency }),
     }),
     // BKL-155/153 (@claustrum/core 0.7.0) — the RENDER-vs-DRAFT precedence seam,
-    // PAIRED with `claimsRenderer` above so it is only consulted on the SAME
-    // claims-ON customer plane where the render runs (the OPS conductor keeps its
-    // own render path — BKL-149 — and is deliberately NOT given this seam). When
+    // PAIRED with `claimsRenderer` above so it is only consulted on a claims-ON
+    // plane where the render also runs. LE2 decision 6: the OPS conductor now takes
+    // this whole seam set too, and REPLACES this entry with the same factory carrying
+    // its per-turn deterministic-read signal (lattice rule 3c), so its BKL-100 /
+    // BKL-149 deterministic renders survive convergence. When
     // wired, handleTurn 6a asks the pure ibatexas lattice whether the claims render
     // supersedes the responder draft this turn (a spurious safe-degrade must not
     // hide a kernel REQUEST_CONFIRMATION prompt, nor a friendly statement reply).

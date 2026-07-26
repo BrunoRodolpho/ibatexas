@@ -36,6 +36,7 @@ import { logger } from "../lib/logger.js";
 import {
   decideRenderPrecedence,
   type RenderPrecedenceContext,
+  type RenderPrecedenceSignals,
 } from "./claims-render-precedence.js";
 import {
   type ActiveResourceOwnership,
@@ -328,11 +329,16 @@ export function createIbatexasClaimsRenderer(
 function emitRenderPrecedence(
   ctx: RenderPrecedenceContext,
   verdict: ReturnType<typeof decideRenderPrecedence>,
+  plane: string,
 ): void {
   logger.info(
     {
       component: "claims",
       event: "claims.render_precedence",
+      // LE2 decision 6 — BOTH planes now consult this seam, so the line must say
+      // WHICH one decided (otherwise a converged-ops verdict is indistinguishable
+      // from a customer one in the same log stream).
+      plane,
       // The seam outcome + WHICH lattice rule produced it (rules 1-4).
       decision: verdict.decision,
       mechanism: verdict.mechanism,
@@ -346,24 +352,54 @@ function emitRenderPrecedence(
   );
 }
 
+/** Construction opts for the ibatexas render-precedence seam. */
+export interface IbatexasClaimsRenderPrecedenceOptions {
+  /**
+   * Which plane composed this seam — an observability label only (it appears on the
+   * `claims.render_precedence` line and steers NO decision). Defaults to
+   * `"customer"`, so the customer wiring is byte-identical apart from the new field.
+   */
+  readonly plane?: string;
+  /**
+   * LE2 decision 6 — resolve the per-turn
+   * {@link RenderPrecedenceSignals.deterministicReadRender} signal at decision time.
+   * The OPS composition passes a closure over its per-turn read-capture buffer, so a
+   * degenerate claims render never clobbers the deterministic BKL-100 read answer.
+   * Absent (customer plane) → no signal → the lattice is byte-identical.
+   */
+  readonly hasDeterministicReadRender?: () => boolean;
+}
+
 /**
  * Build the ibatexas `ClaimsRenderPrecedence` seam (@claustrum/core 0.7.0). PAIRED
  * with {@link createIbatexasClaimsRenderer}: `buildClaimsSeams` wires the two
- * together so the RENDER-vs-DRAFT decision is only ever consulted on the claims-ON
- * customer plane where the renderer also runs. handleTurn calls this AFTER invoking
- * the render (so `claims.terminal` telemetry + observability side-effects already
+ * together so the RENDER-vs-DRAFT decision is only ever consulted on a claims-ON
+ * plane where the renderer also runs. handleTurn calls this AFTER invoking the
+ * render (so `claims.terminal` telemetry + observability side-effects already
  * fired); the seam gates ONLY whether that render OVERWRITES the responder draft.
  *
  * Thin bridge: it evaluates the PURE {@link decideRenderPrecedence} lattice, emits
  * the observe-only `claims.render_precedence` telemetry, and returns the seam
  * `"render" | "keep_draft"`. All policy lives in the pure lattice; this adds only
- * the side-channel log. Absent seam (flag OFF) → core defaults to "render" →
- * byte-identical to 0.6.0's unconditional supersession.
+ * the side-channel log and (LE2 decision 6) the per-turn plane SIGNAL lookup. Absent
+ * seam (flag OFF) → core defaults to "render" → byte-identical to 0.6.0's
+ * unconditional supersession.
+ *
+ * LE2 decision 6 — the OPS conductor composes this SAME factory (it no longer
+ * "keeps its own render path"): one lattice, one telemetry line, two planes.
  */
-export function createIbatexasClaimsRenderPrecedence(): ClaimsRenderPrecedence {
+export function createIbatexasClaimsRenderPrecedence(
+  opts?: IbatexasClaimsRenderPrecedenceOptions,
+): ClaimsRenderPrecedence {
+  const plane = opts?.plane ?? "customer";
+  const hasDeterministicReadRender = opts?.hasDeterministicReadRender;
   return (ctx) => {
-    const verdict = decideRenderPrecedence(ctx);
-    emitRenderPrecedence(ctx, verdict);
+    const signals: RenderPrecedenceSignals =
+      hasDeterministicReadRender === undefined
+        ? {}
+        : { deterministicReadRender: hasDeterministicReadRender() };
+    const verdict = decideRenderPrecedence(ctx, signals);
+    emitRenderPrecedence(ctx, verdict, plane);
     return verdict.decision;
   };
 }
