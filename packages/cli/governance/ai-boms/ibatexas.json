@@ -7,9 +7,9 @@
     "agent/pix-payment-failure-remediation": "966813a40cdbd77a4556ca80f2f8bb32654f6e36f32d34ed8ea637dda140bfcb",
     "ibatexas/pack-customer-onboarding": "203366b62ca1b7c438803ed5907e2ff43897b5b9e07d62c65246a49ab4e6b4fc",
     "ibatexas/pack-ops": "6662a9a5147b214173d61fe9924ef53bd57ac827e832a1765a6b7b86372f74f3",
-    "ibatexas/pack-orders": "2cb6205e3be40c4b829603bf508ce568eca77deeb5305acb559ff614537d0aeb",
+    "ibatexas/pack-orders": "165f939ea9ca3ac0ccf9c55d4f65886366648d8ae02941d4181f4b9e30cd4ec7",
     "ibatexas/pack-payments": "04a8422bf2588b5f82e8ae4171c6da320c689935a8fdda51c6f2e3aa2262b018",
-    "ibatexas/pack-reservations": "2ccf7b7f225947006e3b6f02832872f9a735e0389ecdc4a5d8e1bb73b622e8fe",
+    "ibatexas/pack-reservations": "e3f1d4bf4eb6bcd5b1da1beb14dd49c5f5724088aeede098149bc2c959249705",
     "ibatexas/pack-whatsapp": "12888c3e9e6082f4d08b8528c2917979f6666dea5d8502b93aab5e4a2026e6d5",
     "pack-payments-pix": "d6a71ea6796ccada541ff88849bfdea8214918e982576278e9d9ed854f40a16b"
   },
@@ -329,7 +329,7 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "b6e4dcc07d734555ce19ab2b6612a6f70bdb6453e2217e8325897a36b6ef366b",
+      "fingerprint": "b7c1a8d21ac7778f2064ffc30c0c02b403999e9b5cae081ad9a4e457b0da5522",
       "intents": [
         "order.address.change",
         "order.amend.add_item",
@@ -376,6 +376,8 @@
         "order.item.quantity_invalid",
         "order.item.quantity_over_limit",
         "order.not_found",
+        "order.ownership_denied",
+        "order.past_ponr",
         "order.review.rating_invalid",
         "order.status.terminal",
         "order.status.transition_illegal",
@@ -525,6 +527,14 @@
           "category": "order"
         },
         {
+          "basisCode": "order.ownership_denied",
+          "category": "order"
+        },
+        {
+          "basisCode": "order.past_ponr",
+          "category": "order"
+        },
+        {
           "basisCode": "order.review.rating_invalid",
           "category": "order"
         },
@@ -557,7 +567,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "2cb6205e3be40c4b829603bf508ce568eca77deeb5305acb559ff614537d0aeb"
+      "bomDigest": "165f939ea9ca3ac0ccf9c55d4f65886366648d8ae02941d4181f4b9e30cd4ec7"
     },
     {
       "bomVersion": "1.0",
@@ -726,7 +736,7 @@
       "contract": "v0",
       "kernelMinVersion": "1.0.0",
       "kernelVersion": "1.3.0",
-      "fingerprint": "ab127e31156d46f46d2264ad0883addf636d2acac5d23272f52f62f004ca4291",
+      "fingerprint": "7eaa0a39cd0fd92d296d3092ea4de50686a9ede76c5932254cc058b77c85f02a",
       "intents": [
         "reservation.cancel",
         "reservation.checkin",
@@ -739,12 +749,14 @@
       "signals": [],
       "basisCodes": [
         "auth.required",
+        "reservation.ambiguous",
         "reservation.customer.blocked",
         "reservation.default.deny",
         "reservation.not_cancellable",
         "reservation.not_found",
         "reservation.not_modifiable",
         "reservation.party_size.invalid",
+        "reservation.slot.ambiguous",
         "reservation.slot.full",
         "reservation.slot.in_past",
         "reservation.slot.not_found",
@@ -781,6 +793,10 @@
           "category": "auth"
         },
         {
+          "basisCode": "reservation.ambiguous",
+          "category": "reservation"
+        },
+        {
           "basisCode": "reservation.customer.blocked",
           "category": "reservation"
         },
@@ -802,6 +818,10 @@
         },
         {
           "basisCode": "reservation.party_size.invalid",
+          "category": "reservation"
+        },
+        {
+          "basisCode": "reservation.slot.ambiguous",
           "category": "reservation"
         },
         {
@@ -837,7 +857,7 @@
         "eu-ai-act",
         "nist-ai-rmf"
       ],
-      "bomDigest": "2ccf7b7f225947006e3b6f02832872f9a735e0389ecdc4a5d8e1bb73b622e8fe"
+      "bomDigest": "e3f1d4bf4eb6bcd5b1da1beb14dd49c5f5724088aeede098149bc2c959249705"
     },
     {
       "bomVersion": "1.0",
