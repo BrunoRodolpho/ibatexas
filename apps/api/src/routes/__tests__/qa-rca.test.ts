@@ -189,7 +189,14 @@ describe("qa-rca — merged turn view", () => {
       },
     ]);
     // VL is stubbed unreachable in tests → the lane degrades AND is flagged.
-    expect(res.json().turn.degraded).toEqual({ adj: false, vl: true, wire: false });
+    expect(res.json().turn.degraded).toEqual({
+      adj: false,
+      vl: true,
+      wire: false,
+      // LE2-030 — the delivery lane answered (empty = no SIDs captured for this
+      // turn), so its absence IS a signal.
+      delivery: false,
+    });
     await app.close();
   });
 
@@ -309,6 +316,103 @@ describe("qa-rca — merged turn view", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().turn.wire).toEqual([]);
     expect(res.json().turn.degraded.wire).toBe(true);
+    await app.close();
+  });
+
+  // ── LE2-030 delivery lane ───────────────────────────────────────────────────
+
+  it("surfaces the turn's per-part Twilio delivery confirmation", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at, max(recorded_at) AS ended_at")) {
+        return { rows: [{ conversation_id: "conv-abc", started_at: null, ended_at: null }] };
+      }
+      if (sql.includes("FROM whatsapp_delivery")) {
+        return {
+          rows: [
+            {
+              message_sid: "SM_p0",
+              part_index: 0,
+              status: "delivered",
+              sent_at: "2026-07-24T10:00:00.000Z",
+              status_at: "2026-07-24T10:00:04.000Z",
+              error_code: null,
+              error_message: null,
+              callback_count: 2,
+              source: "send",
+            },
+            {
+              message_sid: "SM_p1",
+              part_index: 1,
+              // No callback has arrived yet → pending, NOT an error.
+              status: null,
+              sent_at: "2026-07-24T10:00:01.000Z",
+              status_at: null,
+              error_code: null,
+              error_message: null,
+              callback_count: 0,
+              source: "send",
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/turns/turn-123",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn.delivery).toEqual([
+      {
+        messageSid: "SM_p0",
+        partIndex: 0,
+        status: "delivered",
+        sentAt: "2026-07-24T10:00:00.000Z",
+        statusAt: "2026-07-24T10:00:04.000Z",
+        errorCode: null,
+        errorMessage: null,
+        callbackCount: 2,
+        source: "send",
+      },
+      {
+        messageSid: "SM_p1",
+        partIndex: 1,
+        status: null,
+        sentAt: "2026-07-24T10:00:01.000Z",
+        statusAt: null,
+        errorCode: null,
+        errorMessage: null,
+        callbackCount: 0,
+        source: "send",
+      },
+    ]);
+    expect(res.json().turn.degraded.delivery).toBe(false);
+    await app.close();
+  });
+
+  it("degrades to an empty delivery lane when whatsapp_delivery is unavailable", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at, max(recorded_at) AS ended_at")) {
+        return { rows: [{ conversation_id: "conv-abc", started_at: null, ended_at: null }] };
+      }
+      if (sql.includes("FROM whatsapp_delivery")) {
+        throw new Error('relation "whatsapp_delivery" does not exist');
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/turns/turn-123",
+      headers: AUTH,
+    });
+    // Never a 500 — the lane reports its own outage instead.
+    expect(res.statusCode).toBe(200);
+    expect(res.json().turn.delivery).toEqual([]);
+    expect(res.json().turn.degraded.delivery).toBe(true);
     await app.close();
   });
 
@@ -550,6 +654,140 @@ describe("qa-rca — preflight status", () => {
     expect(status.victoriaLogs.ok).toBe(false);
     expect(status.victoriaLogs.error).toContain("no VL in tests");
     expect(status.flags).toEqual({ redactSecretSet: true, claimsPipeline: true });
+    await app.close();
+  });
+});
+
+// ── LE2-030 AC4 — the undelivered query surface ──────────────────────────────
+
+describe("qa-rca — undelivered replies", () => {
+  it("returns failed rows and silent rows, tagged by reason", async () => {
+    let captured: { sql: string; params: unknown[] } | null = null;
+    db.query = async (sql: string, params?: unknown[]) => {
+      if (!sql.includes("FROM whatsapp_delivery")) return { rows: [] };
+      captured = { sql, params: params ?? [] };
+      return {
+        rows: [
+          {
+            message_sid: "SM_failed",
+            turn_id: "turn-1",
+            conversation_id: "conv-1",
+            part_index: 0,
+            phone_hash: "h1",
+            source: "send",
+            sent_at: "2026-07-24T10:00:00.000Z",
+            status: "undelivered",
+            status_at: "2026-07-24T10:00:05.000Z",
+            error_code: "63024",
+            error_message: "Invalid recipient",
+            callback_count: 2,
+            reason: "failed",
+          },
+          {
+            message_sid: "SM_silent",
+            turn_id: null,
+            conversation_id: null,
+            part_index: 0,
+            phone_hash: "h2",
+            source: "sendMedia",
+            sent_at: "2026-07-24T09:00:00.000Z",
+            status: null,
+            status_at: null,
+            error_code: null,
+            error_message: null,
+            callback_count: 0,
+            reason: "no_confirmation",
+          },
+        ],
+      };
+    };
+
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered?thresholdMinutes=30",
+      headers: AUTH,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.degraded).toBe(false);
+    expect(body.thresholdMinutes).toBe(30);
+    expect(
+      body.rows.map((r: { messageSid: string; reason: string }) => [r.messageSid, r.reason]),
+    ).toEqual([
+      ["SM_failed", "failed"],
+      ["SM_silent", "no_confirmation"],
+    ]);
+    expect(body.rows[0]).toMatchObject({
+      turnId: "turn-1",
+      status: "undelivered",
+      errorCode: "63024",
+      errorMessage: "Invalid recipient",
+      callbackCount: 2,
+    });
+
+    // The failure vocabulary is BOUND, not interpolated, and shared with the writer.
+    const q = captured as unknown as { sql: string; params: unknown[] };
+    expect(q.params[0]).toEqual(["failed", "undelivered", "canceled"]);
+    expect(q.params[1]).toBe(30);
+    expect(q.sql).toContain("status IS NULL AND sent_at < now() - make_interval(mins => $2::int)");
+    await app.close();
+  });
+
+  it("defaults the threshold and clamps a hostile one", async () => {
+    const seen: number[] = [];
+    db.query = async (sql: string, params?: unknown[]) => {
+      if (sql.includes("FROM whatsapp_delivery")) seen.push((params ?? [])[1] as number);
+      return { rows: [] };
+    };
+    const app = await build();
+
+    await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered",
+      headers: AUTH,
+    });
+    await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered?thresholdMinutes=-99",
+      headers: AUTH,
+    });
+    await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered?thresholdMinutes=999999999",
+      headers: AUTH,
+    });
+
+    expect(seen).toEqual([15, 0, 7 * 24 * 60]);
+    await app.close();
+  });
+
+  it("degrades to an empty list — never a 500 — when the store is unavailable", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("FROM whatsapp_delivery")) {
+        throw new Error('relation "whatsapp_delivery" does not exist');
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered",
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ thresholdMinutes: 15, degraded: true, rows: [] });
+    await app.close();
+  });
+
+  it("requires the bearer like every other RCA route", async () => {
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: "/internal/qa/rca/deliveries/undelivered",
+    });
+    expect(res.statusCode).toBe(401);
     await app.close();
   });
 });

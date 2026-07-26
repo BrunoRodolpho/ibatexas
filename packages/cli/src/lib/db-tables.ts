@@ -124,6 +124,12 @@ export const KERNEL_TABLES = [
   // (apps/api llm-wire-writer ensureTable at boot — no platform migration:
   // audit-postgres is frozen); trace-class data, `db clean` truncates it.
   "llm_wire",
+  // LE2-030 WhatsApp delivery confirmation — one row per outbound reply part,
+  // keyed by the Twilio message SID captured at send, folded forward by the
+  // delivery-status callbacks. Writer-owned DDL (apps/api whatsapp/
+  // delivery-store.ts ensureWhatsAppDeliveryTable at boot); trace-class data, so
+  // `db clean` truncates it like the others.
+  "whatsapp_delivery",
 ] as const
 
 /**
@@ -134,6 +140,7 @@ export const KERNEL_TABLES = [
  */
 export const WRITER_OWNED_KERNEL_TABLES: ReadonlySet<string> = new Set([
   "llm_wire", // apps/api/src/claustrum/llm-wire-writer.ts
+  "whatsapp_delivery", // apps/api/src/whatsapp/delivery-store.ts
 ])
 
 /**

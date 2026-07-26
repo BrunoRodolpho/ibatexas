@@ -293,6 +293,12 @@ import {
   loadPromptOverrides,
 } from "./claustrum/prompts/prompt-overrides.js";
 import { closeRcaReadPool } from "./routes/qa-rca.js";
+// LE2-030 — the WhatsApp delivery-confirmation store (writer-owned DDL + its own
+// module-singleton pool, the prompt-overrides idiom).
+import {
+  closeWhatsAppDeliveryPool,
+  ensureWhatsAppDeliveryTable,
+} from "./whatsapp/delivery-store.js";
 import {
   createTurnTraceWriter,
   type TurnTraceWriter,
@@ -756,6 +762,10 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
   // Same class of leak for the dev-only RCA read routes' module-singleton pool
   // (lazily warmed on first /internal/qa/rca/* read, not owned by _pgPool).
   await closeRcaReadPool();
+
+  // LE2-030 — and for the WhatsApp delivery store's own module-singleton pool
+  // (warmed at boot by ensureWhatsAppDeliveryTable, not owned by _pgPool).
+  await closeWhatsAppDeliveryPool();
 
   __resetAuditSink();
   _resetMetricsSink();
@@ -2870,6 +2880,12 @@ export async function bootstrapClaustrum(
   // personas unchanged (byte-identical to today; golden + drift guards green).
   await ensurePromptOverrideTable();
   await loadPromptOverrides();
+
+  // LE2-030 — WhatsApp delivery confirmation (`whatsapp_delivery`): writer-owned
+  // DDL, created here so the send path never pays a DDL round-trip and a Twilio
+  // status callback always finds a table. Best-effort like the store above: on
+  // error delivery status degrades to "pending everywhere", never blocks boot.
+  await ensureWhatsAppDeliveryTable();
 
   const modelProvider = resolveModelProvider(options);
 

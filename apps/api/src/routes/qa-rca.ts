@@ -38,6 +38,8 @@ import { Pool } from "pg";
 import type { FastifyInstance } from "fastify";
 import { createAuditRedactor } from "@ibatexas/audit-sink";
 import { logger } from "../lib/logger.js";
+// LE2-030 — one vocabulary for "this reply did not land", shared with the writer.
+import { FAILED_WHATSAPP_STATUSES } from "../whatsapp/delivery-store.js";
 
 // Dedicated lazy read pool (own connection, not the bootstrap writer pool — the
 // RCA surface is dev-only and strictly read-only). connectionString mirrors
@@ -575,7 +577,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       const endedAt = iso(h.ended_at);
       const catalogVersion = num(h.catalog_version);
 
-      const degraded = { adj: false, vl: false, wire: false };
+      const degraded = { adj: false, vl: false, wire: false, delivery: false };
 
       // 2) [LLM] the model calls, then [ADJ] via this turn's intent hashes —
       //    the [LLM]→[ADJ] chain, the [VL] fetch, and the context enrichment
@@ -707,11 +709,50 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
         }
       })();
 
-      const [{ llm, adj }, vl, enrich, wire] = await Promise.all([
+      // [DELIVERY] LE2-030 — the Twilio delivery confirmation per outbound reply
+      // part (whatsapp_delivery, one row per SID captured at send). Same
+      // fail-safe posture as the wire lane: an unreachable/absent store degrades
+      // to empty AND flags it, so the workbench can tell "no callback yet"
+      // (pending — the normal early state) from "the store did not answer".
+      const deliveryBranch = (async () => {
+        try {
+          const res = await pool().query(
+            `SELECT message_sid, part_index, status, sent_at, status_at,
+                    error_code, error_message, callback_count, source
+             FROM whatsapp_delivery WHERE turn_id = $1 ORDER BY part_index, sent_at`,
+            [turnId],
+          );
+          return res.rows.map((r) => {
+            const row = r as Record<string, unknown>;
+            return {
+              messageSid: str(row.message_sid),
+              partIndex: num(row.part_index) ?? 0,
+              // null = no callback has ever arrived for this SID → "pending".
+              status: str(row.status),
+              sentAt: iso(row.sent_at),
+              statusAt: iso(row.status_at),
+              errorCode: str(row.error_code),
+              errorMessage: str(row.error_message),
+              callbackCount: num(row.callback_count) ?? 0,
+              source: str(row.source),
+            };
+          });
+        } catch (err) {
+          degraded.delivery = true;
+          logger.warn(
+            { component: "qa-rca", err: (err as Error).message },
+            "[DELIVERY] read degraded to empty",
+          );
+          return [];
+        }
+      })();
+
+      const [{ llm, adj }, vl, enrich, wire, delivery] = await Promise.all([
         llmAdjBranch,
         vlBranch,
         enrichBranch,
         wireBranch,
+        deliveryBranch,
       ]);
       const channel = enrich.channel;
       const chatCuid = enrich.chatCuid;
@@ -771,11 +812,91 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
             fields: vlFields(l),
           })),
           wire,
+          // LE2-030 — per-reply-part Twilio delivery confirmation.
+          delivery,
           degraded,
         },
       };
     },
   );
+
+  // ── undelivered replies (LE2-030 AC4) ─────────────────────────────────────
+  // The queryable surface for "which replies never landed": rows whose LATEST
+  // status is a failure (failed / undelivered / canceled), UNION rows that
+  // carry no delivery confirmation at all after a threshold — the silent case,
+  // which is the one that used to be invisible. A reply sent 3 seconds ago with
+  // no callback yet is NOT undelivered, it is pending; the threshold (default
+  // 15 min, Twilio's own delivery window is far shorter) is what separates them.
+  //
+  // Same fail-safe posture as every other read here: an unreachable/absent
+  // store answers `{ rows: [], degraded: true }`, never a 500.
+  server.get<{
+    Querystring: { thresholdMinutes?: string; limit?: string; from?: string; to?: string };
+  }>("/internal/qa/rca/deliveries/undelivered", RL, async (request) => {
+    const thresholdMinutes = Math.min(
+      Math.max(num(request.query.thresholdMinutes) ?? 15, 0),
+      7 * 24 * 60,
+    );
+    const limit = Math.min(Math.max(num(request.query.limit) ?? 100, 1), 500);
+    const from = isoParam(request.query.from);
+    const to = isoParam(request.query.to);
+
+    const params: unknown[] = [[...FAILED_WHATSAPP_STATUSES], thresholdMinutes];
+    let range = "";
+    if (from !== null) {
+      params.push(from);
+      range += ` AND sent_at >= $${params.length}`;
+    }
+    if (to !== null) {
+      params.push(to);
+      range += ` AND sent_at <= $${params.length}`;
+    }
+    params.push(limit);
+
+    try {
+      const { rows } = await pool().query(
+        `SELECT message_sid, turn_id, conversation_id, part_index, phone_hash, source,
+                sent_at, status, status_at, error_code, error_message, callback_count,
+                CASE WHEN status = ANY($1::text[]) THEN 'failed' ELSE 'no_confirmation' END AS reason
+         FROM whatsapp_delivery
+         WHERE (status = ANY($1::text[])
+                OR (status IS NULL AND sent_at < now() - make_interval(mins => $2::int)))
+               ${range}
+         ORDER BY sent_at DESC
+         LIMIT $${params.length}`,
+        params,
+      );
+      return {
+        thresholdMinutes,
+        degraded: false,
+        rows: rows.map((r) => {
+          const row = r as Record<string, unknown>;
+          return {
+            messageSid: str(row.message_sid),
+            turnId: str(row.turn_id),
+            conversationId: str(row.conversation_id),
+            partIndex: num(row.part_index) ?? 0,
+            phoneHash: str(row.phone_hash),
+            source: str(row.source),
+            sentAt: iso(row.sent_at),
+            status: str(row.status),
+            statusAt: iso(row.status_at),
+            errorCode: str(row.error_code),
+            errorMessage: str(row.error_message),
+            callbackCount: num(row.callback_count) ?? 0,
+            /** 'failed' = Twilio said so; 'no_confirmation' = silence past the threshold. */
+            reason: str(row.reason),
+          };
+        }),
+      };
+    } catch (err) {
+      logger.warn(
+        { component: "qa-rca", err: (err as Error).message },
+        "undelivered query degraded to empty",
+      );
+      return { thresholdMinutes, degraded: true, rows: [] };
+    }
+  });
 
   // ── find a message by text (ibx-find-msg.sh as a route) ───────────────────
   // Searches the audit ledger's archived message content (populated on
