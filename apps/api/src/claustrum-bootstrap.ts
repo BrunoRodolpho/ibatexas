@@ -132,6 +132,9 @@ import {
   medusaAdjudicated,
   // BKL-034 — boot-time embeddings provider/dimension gate.
   assertEmbeddingProviderDimension,
+  // LE2-018 — boot-time external-reference reconciliation (refuse-to-start).
+  assertExternalReferencesReconcile,
+  type ExternalReferenceProbes,
 } from "@ibatexas/tools";
 import type { AgentContext, UserType } from "@ibatexas/types";
 import { publishNatsEvent } from "@ibatexas/nats-client";
@@ -241,6 +244,14 @@ import {
   generateChatDrivableToolKinds,
   generateOpsForbiddenDestructiveKinds,
 } from "@ibatexas/packs-composed/capability-definitions";
+// LE2-014 — the catalog version stamped into every turn's trace (see
+// `flushTurnTraces`). Imported from `@ibatexas/catalog` directly rather than
+// through the packs-composed compatibility barrel: the barrel exists to keep
+// PRE-EXISTING import sites working, not to route new ones. The capability
+// imports above stay on the barrel deliberately — moving them would be churn
+// with no behavior change, and the barrel also carries the eager
+// guard-resolution boot assertion this module depends on.
+import { CATALOG_VERSION } from "@ibatexas/catalog";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
@@ -271,14 +282,10 @@ import {
 } from "./claustrum/claims-pipeline.js";
 import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
 import { renderCustomerActionAnswer } from "./claustrum/customer-action-render.js";
-// BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate (flag-gated in
-// buildResponder): the pure discriminator + the safe template render source.
-import { shouldDegradeToSafeUnknown } from "./claustrum/interrogative-discriminator.js";
-import {
-  renderPropositionFreeText,
-  SAFE_TEMPLATES,
-} from "./claustrum/slot-grammar.js";
-import { asksAboutStoreState, closedHoursDisclosure } from "./claustrum/closed-hours.js";
+// BKL-078 — the question-shape SAFE-UNKNOWN gate (flag-gated in buildResponder).
+// LE2 decision 6: the construction moved to `safe-unknown-gate.ts` so the ops
+// conductor composes the SAME object instead of forking one (D5 dissolved).
+import { createSafeUnknownGate } from "./claustrum/safe-unknown-gate.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -286,10 +293,21 @@ import {
   loadPromptOverrides,
 } from "./claustrum/prompts/prompt-overrides.js";
 import { closeRcaReadPool } from "./routes/qa-rca.js";
+// LE2-030 — the WhatsApp delivery-confirmation store (writer-owned DDL + its own
+// module-singleton pool, the prompt-overrides idiom).
+import {
+  closeWhatsAppDeliveryPool,
+  ensureWhatsAppDeliveryTable,
+} from "./whatsapp/delivery-store.js";
 import {
   createTurnTraceWriter,
   type TurnTraceWriter,
 } from "./claustrum/turn-trace-writer.js";
+import {
+  createLlmWireWriter,
+  flushWireExchanges,
+  type LlmWireWriter,
+} from "./claustrum/llm-wire-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import {
   sessionTokenKey,
@@ -610,6 +628,20 @@ export interface ClaustrumBootstrapOptions {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
+  /**
+   * Store probes for the LE2-018 external-reference boot gate. Default: the
+   * real ones (Medusa admin for promotions, the delivery_zones table for
+   * zones).
+   *
+   * Injectable for the same reason `pgPool` and `modelProvider` are — an
+   * in-process suite that composes a real conductor has no live Medusa. Note
+   * what this does NOT do: it does not skip the gate. The reconciliation still
+   * runs over the real declaration table, still resolves every key from
+   * config, and still refuses the boot on a miss; only the "does the store
+   * hold it" question is answered by an injected function. There is no option,
+   * env var or flag anywhere that turns the gate off — see the call site.
+   */
+  readonly externalReferenceProbes?: ExternalReferenceProbes;
   // BKL-126 — resolveStoreHours / resolveHoursForDate options removed (values
   // bind from the investigator ledger at core stage 4b; no fresh re-read).
 }
@@ -730,6 +762,10 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
   // Same class of leak for the dev-only RCA read routes' module-singleton pool
   // (lazily warmed on first /internal/qa/rca/* read, not owned by _pgPool).
   await closeRcaReadPool();
+
+  // LE2-030 — and for the WhatsApp delivery store's own module-singleton pool
+  // (warmed at boot by ensureWhatsAppDeliveryTable, not owned by _pgPool).
+  await closeWhatsAppDeliveryPool();
 
   __resetAuditSink();
   _resetMetricsSink();
@@ -2227,13 +2263,35 @@ function redisSessionStore(): SessionPort {
  * keyed (turnId, callIndex); the writer redacts the completion. The trace
  * write is additive — token accounting stays separate (no double count).
  * Module-local helper extracted from emitTurn to keep its complexity bounded.
+ *
+ * LE2-014 — this is also where the CATALOG VERSION is stamped. It is the
+ * turn's single once-per-turn persistence seam, so it is the only honest place
+ * to record a per-turn fact: `turn_trace` is one row per model call and has no
+ * root row. The value is therefore repeated onto every row the turn writes,
+ * exactly as `conversationId` already is. Reading it back per turn is a
+ * `max(catalog_version)` over the turn's rows (see `routes/qa-rca.ts`).
+ *
+ * Read from the module-level `CATALOG_VERSION` import rather than threaded
+ * through as a parameter: it is a build-time constant of the deployed bundle,
+ * not turn state, and pretending otherwise would invite a future caller to
+ * pass a different one — which would corrupt replay, the exact thing the stamp
+ * exists to enable.
  */
 async function flushTurnTraces(
   record: TurnRecord,
   turnTrace: TurnTraceWriter | undefined,
   pendingTraces: Map<string, LLMTrace[]>,
+  llmWire?: LlmWireWriter,
 ): Promise<void> {
   if (turnTrace === undefined) return;
+  // Wire Truth — persist this turn's sealed wire exchanges (llm_wire)
+  // alongside the trace rows. Claim-and-write is fail-open and runs even if
+  // the trace writes below fail: the exchanges are already attributed
+  // (callIndex sealed at emit time), and an unclaimed buffer would only
+  // TTL-expire.
+  if (llmWire !== undefined) {
+    await flushWireExchanges(llmWire, record.turnId, record.conversationId);
+  }
   const traces = pendingTraces.get(record.turnId);
   pendingTraces.delete(record.turnId);
   if (traces === undefined || traces.length === 0) return;
@@ -2256,6 +2314,7 @@ async function flushTurnTraces(
           ...(t.schemaVersion === undefined
             ? {}
             : { schemaVersion: t.schemaVersion }),
+          catalogVersion: CATALOG_VERSION,
         }),
       ),
     );
@@ -2290,6 +2349,7 @@ function fastifyTelemetry(
   usageStore: TokenUsageStore,
   turnTrace?: TurnTraceWriter,
   tokenUsageSink?: TokenUsageSink,
+  llmWire?: LlmWireWriter,
 ): TelemetryPort {
   // C1/C2 — per-turn LLMTrace buffer. The planner/responder emit an LLMTrace
   // per model call DURING the turn (emitLLMTrace); that trace carries turnId but
@@ -2437,7 +2497,7 @@ function fastifyTelemetry(
       }
       // C2 — flush this turn's buffered LLM-call traces to the REDACTED
       // turn_trace store, attaching the conversationId only available here.
-      await flushTurnTraces(record, turnTrace, pendingTraces);
+      await flushTurnTraces(record, turnTrace, pendingTraces, llmWire);
     },
     async emitLLMTrace(trace) {
       // C1 — buffer the per-model-call trace for the emitTurn flush (which
@@ -2821,6 +2881,12 @@ export async function bootstrapClaustrum(
   await ensurePromptOverrideTable();
   await loadPromptOverrides();
 
+  // LE2-030 — WhatsApp delivery confirmation (`whatsapp_delivery`): writer-owned
+  // DDL, created here so the send path never pays a DDL round-trip and a Twilio
+  // status callback always finds a table. Best-effort like the store above: on
+  // error delivery status degrades to "pending everywhere", never blocks boot.
+  await ensureWhatsAppDeliveryTable();
+
   const modelProvider = resolveModelProvider(options);
 
   // The chat model id stamped on each planner/responder CompletionRequest. The
@@ -2939,6 +3005,36 @@ export async function bootstrapClaustrum(
   // bare stack), so this gate never blocks a key-less box.
   await assertEmbeddingProviderDimension();
 
+  // LE2-018 — EXTERNAL-REFERENCE RECONCILIATION. Every reference @ibatexas/catalog
+  // declares (src/external-references.ts) must exist in its live store: the welcome
+  // and loyalty coupons in Medusa today, zones in the domain DB when one is declared.
+  // Any miss — the config var unset, the promotion absent, the store unreachable —
+  // REFUSES THE BOOT, naming the reference, its store, the config variable and the
+  // code sites that break. Same posture as toolRosterDrift() above, one gate later.
+  //
+  // Strict on purpose (LE2 Implementation Decision 16, owner-ratified): no flag, no
+  // dev-mode warning, no allowlist. This gate replaced a `// must be created in
+  // Medusa admin before going live` comment, and a bypassable version of it would be
+  // that comment with more steps. The mitigation for the blast radius is that the
+  // SAME check runs standalone — `ibx catalog check --live`, wired into the staging
+  // deploy pipeline — so a dangling reference surfaces when someone changes it
+  // rather than when something restarts.
+  //
+  // Placed after the roster gates and after config load, before the conductor is
+  // composed: nothing has taken traffic yet, so a refusal costs a failed boot rather
+  // than a half-live process handing customers a coupon Medusa will reject.
+  //
+  // `probes` is the SAME kind of seam as `pgPool` and `modelProvider` above: an
+  // in-process suite has no live Medusa, so it answers the store question itself.
+  // The gate still runs — real declaration table, real config resolution, real
+  // refusal on a miss. Omitted in production, where the defaults are the real
+  // clients. Nothing here reads a flag.
+  await assertExternalReferencesReconcile(
+    options.externalReferenceProbes === undefined
+      ? {}
+      : { probes: options.externalReferenceProbes },
+  );
+
   // The ibx prisma/redis are real clients that legitimately lack the memory
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),
   // so the cast is irreducible — but name the exact contracts the adapter consumes
@@ -3002,6 +3098,12 @@ export async function bootstrapClaustrum(
   const promptComposer = createIbatexasPromptComposer();
   const turnTraceWriter: TurnTraceWriter = createTurnTraceWriter(pgPool);
   await turnTraceWriter.ensureTable(); // best-effort (writer swallows failures)
+  // Wire Truth — the durable llm_wire store (request/response per model call).
+  // Same pool, same fail-open posture, writer-owned DDL (the canonical
+  // turn_trace migration lives in the frozen audit-postgres package; llm_wire
+  // is an in-repo concern). Pinned in packages/cli's KERNEL_TABLES registry.
+  const llmWireWriter: LlmWireWriter = createLlmWireWriter(pgPool);
+  await llmWireWriter.ensureTable(); // best-effort
   // ERDS-059 — durable token→USD sink (llm_token_usage). Best-effort; the sink
   // swallows write failures so cost telemetry never breaks a turn.
   const tokenUsageSink = createPostgresTokenUsageSink(prisma);
@@ -3009,6 +3111,7 @@ export async function bootstrapClaustrum(
     tokenUsageStore,
     turnTraceWriter,
     tokenUsageSink,
+    llmWireWriter,
   );
   // fix B (Stage 1) — the per-turn structured closed-hours signal. Sourced from
   // the Redis read-through schedule cache (loadSchedule) + the env timezone, it
@@ -3096,33 +3199,13 @@ export async function bootstrapClaustrum(
       // Closes the `prose_preserved` hallucination leak on the conversational
       // fallback: a non-smalltalk info-question that produced no validated claim
       // degrades to the deterministic proposition-free SAFE_UNKNOWN reply instead of
-      // a model-authored prose draft. The ops conductor NEVER wires this (D5,
-      // ops-conductor.ts). Flag-OFF → omitted → byte-identical.
-      ...(claimsPipelineEnabled()
-        ? {
-            safeUnknown: {
-              gate: (text: string) => shouldDegradeToSafeUnknown(text),
-              render: (
-                schedule: ScheduleSignal | undefined,
-                userText: string,
-              ): string => {
-                const base = renderPropositionFreeText(SAFE_TEMPLATES.unknown);
-                // D3 (relevance-gated) — append the closed-hours disclosure ONLY when
-                // the degraded question is about ordering / hours / availability. On a
-                // topically-unrelated question the scheduled-pickup offer is
-                // unsolicited noise, so the bare epistemic SAFE_UNKNOWN ships alone.
-                const orderingOrHours =
-                  asksAboutStoreState(userText) ||
-                  /\b(pedid|pedir|encomend|entreg|retirad|agend|compr|reserv|cardapio|card[aá]pio|menu)/i.test(
-                    userText,
-                  );
-                return schedule?.isClosed && orderingOrHours
-                  ? `${base} ${closedHoursDisclosure(schedule)}`
-                  : base;
-              },
-            },
-          }
-        : {}),
+      // a model-authored prose draft. Flag-OFF → omitted → byte-identical.
+      //
+      // LE2 decision 6 — the OPS conductor now composes this SAME gate (D5, "ops
+      // never wires safe-unknown", is DISSOLVED). The construction lives in
+      // `safe-unknown-gate.ts`; the customer plane keeps the closed-hours offer
+      // (the default), the staff plane opts out of that customer copy.
+      ...(claimsPipelineEnabled() ? { safeUnknown: createSafeUnknownGate() } : {}),
     });
 
   // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner

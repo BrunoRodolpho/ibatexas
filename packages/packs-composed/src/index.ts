@@ -41,18 +41,27 @@ import {
   whatsappCapabilityPlanner,
 } from "@ibatexas/pack-whatsapp"
 // FE-4 CONTRACT (FE-T26): CHAT_DRIVABLE_TOOL_KINDS below is now COMPUTED,
-// not hand-typed — see its own doc comment. Imports the two specific
-// modules directly, NOT the `./capability-definitions/index.js` barrel:
-// that barrel's `guard-resolution.ts` itself imports `IBATEXAS_COMPOSED_
-// PACKS` from THIS file (to verify guard refs against the live installed
-// packs) — importing the barrel here would form a genuine ESM circular
-// import (this file → the barrel → guard-resolution.ts → this file again),
-// which breaks at module-eval time (`generateChatDrivableToolKinds` reads
-// as `undefined` mid-cycle). Importing the two leaf modules directly
-// avoids pulling in guard-resolution.ts (and its eager `assertGuardRefs
-// Resolve` side effect) at all from this file.
-import { CAPABILITY_DEFINITIONS } from "./capability-definitions/definitions.js"
-import { generateChatDrivableToolKinds } from "./capability-definitions/generate-chat-drivable-tool-kinds.js"
+// not hand-typed — see its own doc comment.
+//
+// LE2-014: both names now come from `@ibatexas/catalog`, where the authored
+// definitions and their generators moved. This import is SAFE and the old
+// hazard is gone: it used to reach past `./capability-definitions/index.js`
+// into two leaf modules on purpose, because that barrel pulls in
+// `guard-resolution.ts`, which imports `IBATEXAS_COMPOSED_PACKS` from THIS
+// file — a genuine ESM cycle (this file → barrel → guard-resolution → this
+// file) that broke at module-eval time with `generateChatDrivableToolKinds`
+// reading as `undefined` mid-cycle. `@ibatexas/catalog` contains no
+// guard-resolution and depends on nothing in this package, so importing its
+// root barrel forms no cycle at all.
+//
+// Keep it that way: if anything in this file ever needs a guard-resolution
+// export, import it from `./capability-definitions/guard-resolution.js`
+// directly and re-examine the cycle — do NOT import
+// `./capability-definitions/index.js` here.
+import {
+  CAPABILITY_DEFINITIONS,
+  generateChatDrivableToolKinds,
+} from "@ibatexas/catalog"
 
 // ── Composed pack list ───────────────────────────────────────────────────────
 

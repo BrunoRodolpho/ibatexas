@@ -67,7 +67,10 @@
 // the narrow eligible set.
 
 import type { CandidateClaim, EvidenceLedger } from "@adjudicate/core";
-import { orderReferenceAppearsInMessage } from "../ops/ops-order-resolution.js";
+import {
+  matchNamedOwnedOrders,
+  type OwnedOrderRef,
+} from "../ops/ops-order-resolution.js";
 import {
   ownerScopedBaseKey,
   selectCandidateClaim,
@@ -76,6 +79,8 @@ import {
   type RegistryClaimType,
 } from "./claim-registry.js";
 import type { EvidenceLedgerLike } from "./ibatexas-claims-kernel-deps.js";
+import { DELIVERY_NEEDS_CEP_MARKER_KEY } from "./delivery-coverage-resolver.js";
+import { COUPON_NEEDS_CODE_MARKER_KEY } from "./coupon-validity-resolver.js";
 import type { ClaimAuthContext } from "./ibatexas-planner.js";
 import {
   classifyRequestSpans,
@@ -168,6 +173,34 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // safety marker; an allergen-adjacent one is excluded upstream).
     "MENU_DIETARY",
     "STORE_INFO",
+    // LE2-002 / NEW-007 — the PUBLIC delivery-coverage PAIR joins the eligible set
+    // (the same conscious growth this header documents). Both are FIXED single-key
+    // public types (`delivery:coverage` / `delivery:no_coverage`, ownership
+    // `not_applicable`, no perResourceKey), so the candidate subject is "" and the
+    // spec is never parameterized — exactly the MENU_OVERVIEW / STORE_INFO shape.
+    // They join in LOCKSTEP: the DELIVERY_COVERAGE_Q closure row requires BOTH
+    // (the complementary pair), and `classifyOnlyRequiredTypes` declines WHOLESALE
+    // when any required type is outside this set — omitting one would silently
+    // disable the deterministic path for every coverage question. FE-D12 residual
+    // grows identically (a pure coverage-read turn skips the model's §O#9
+    // self-report); a coverage ask carries no safety marker, and an allergen-
+    // adjacent one is already excluded by the wholesale allergen carve-out.
+    "DELIVERY_COVERAGE",
+    "DELIVERY_NO_COVERAGE",
+    // LE2-019 — the PUBLIC coupon-validity PAIR joins the eligible set (the same
+    // conscious growth this header documents). Both are FIXED single-key public
+    // types (`coupon:valid` / `coupon:invalid`, ownership `not_applicable`, no
+    // perResourceKey), so the candidate subject is "" and the spec is never
+    // parameterized — exactly the DELIVERY_COVERAGE / STORE_INFO shape. They join
+    // in LOCKSTEP: the COUPON_VALIDITY_Q closure row requires BOTH (the
+    // complementary pair), and `classifyOnlyRequiredTypes` declines WHOLESALE when
+    // any required type is outside this set — omitting one would silently disable
+    // the deterministic path for every coupon question. FE-D12 residual grows
+    // identically (a pure coupon-read turn skips the model's §O#9 self-report); a
+    // coupon ask carries no safety marker, and an allergen-adjacent one is already
+    // excluded by the wholesale allergen carve-out.
+    "COUPON_VALID",
+    "COUPON_INVALID",
   ]);
 
 /**
@@ -310,6 +343,12 @@ const ORDER_SUBJECT_BASE_KEYS: ReadonlySet<string> = new Set([
  *
  * Returns the SINGLE matched owned id, or `undefined` (0 or ≥2 matches → the
  * caller keeps the ambiguity CLARIFY — never a guess). Pure over (data, ledger).
+ *
+ * BKL-216 — the match itself now runs through the SHARED
+ * {@link matchNamedOwnedOrders} (ops-order-resolution.ts), so the mutation plane's
+ * amend resolver reuses this exact heuristic rather than growing a second one.
+ * This function keeps its ledger-shaped contract: extract the owned
+ * `(id, displayId)` pairs from the PRESENT owner-scoped entries, then match.
  */
 export function resolveNamedOwnedOrderSubject(
   baseKey: string,
@@ -318,18 +357,57 @@ export function resolveNamedOwnedOrderSubject(
   messageText: string,
 ): string | undefined {
   if (!ORDER_SUBJECT_BASE_KEYS.has(baseKey)) return undefined;
-  const text = messageText.trim();
-  if (text === "") return undefined;
-  const matched: string[] = [];
+  const owned: OwnedOrderRef[] = [];
   for (const id of ownedIds) {
     const res = ledger.resolve(`${baseKey}:${id}`);
     if (res.state !== "present") continue;
     const displayId = (res.entry?.value as { displayId?: unknown } | undefined)
       ?.displayId;
     if (typeof displayId !== "number") continue;
-    if (orderReferenceAppearsInMessage(String(displayId), text)) matched.push(id);
+    owned.push({ id, displayId });
   }
-  return matched.length === 1 ? matched[0] : undefined;
+  const matched = matchNamedOwnedOrders(owned, messageText);
+  return matched.length === 1 ? matched[0]?.id : undefined;
+}
+
+/**
+ * LE2-002 — is THIS turn a coverage question that must ASK for the CEP? True iff
+ * the coverage span pulled the delivery pair into the required set AND the
+ * investigator recorded the needs-CEP marker PRESENT. Pure over (data, ledger).
+ *
+ * This is the third branch of spec Implementation Decision 4 expressed at the
+ * planner seam: the resolver refuses to nearest-neighbour an unrecognised place
+ * onto the closest zone, so instead of a claim the turn gets a forced CLARIFY and
+ * the renderer's delivery-CEP ask. It is a CLARIFY, not an UNKNOWN, because the
+ * turn is not ignorant — it knows exactly which one datum would settle the answer.
+ */
+export function deliveryCoverageNeedsCep(
+  required: ReadonlySet<RegistryClaimType>,
+  ledger: EvidenceLedgerLike | undefined,
+): boolean {
+  if (ledger === undefined) return false;
+  if (!required.has("DELIVERY_COVERAGE")) return false;
+  return ledger.resolve(DELIVERY_NEEDS_CEP_MARKER_KEY).state === "present";
+}
+
+/**
+ * LE2-019 — is THIS turn a coupon question that must ASK for the code? True iff
+ * the coupon span pulled the pair into the required set AND the investigator
+ * recorded the needs-code marker PRESENT. Pure over (data, ledger).
+ *
+ * The `deliveryCoverageNeedsCep` shape, for the same reason: the resolver refuses
+ * to guess WHICH coupon an ambiguous utterance meant, so instead of a claim the
+ * turn gets a forced CLARIFY and the renderer's coupon-code ask. It is a CLARIFY,
+ * not an UNKNOWN, because the turn is not ignorant — it knows exactly which one
+ * datum would settle the answer.
+ */
+export function couponValidityNeedsCode(
+  required: ReadonlySet<RegistryClaimType>,
+  ledger: EvidenceLedgerLike | undefined,
+): boolean {
+  if (ledger === undefined) return false;
+  if (!required.has("COUPON_VALID")) return false;
+  return ledger.resolve(COUPON_NEEDS_CODE_MARKER_KEY).state === "present";
 }
 
 export function buildClassifyOnlyCandidates(
@@ -417,7 +495,21 @@ export function buildClassifyOnlyCandidates(
     // always yields a candidate — the guard is defense-in-depth.
     if (candidate !== undefined) candidates.push(candidate);
   }
-  const forcedClarify = ambiguousOwnedSets.length > 0 || publicAmbiguity;
+  // LE2-002 / NEW-007 — the needs-CEP CLARIFY. Structurally the SAME "we will not
+  // guess" disposition as the ≥2-owned / ≥2-public ambiguities above: the candidate
+  // claims stay in the batch (they resolve honest UNKNOWN off their absent keys) and
+  // the turn is FORCED to CLARIFY, so the renderer asks for the CEP instead of
+  // picking a nearby zone. Additive: on every non-coverage turn the marker is absent
+  // and this is byte-identical to before.
+  const needsCep = deliveryCoverageNeedsCep(required, ledger);
+  // LE2-019 — the needs-CODE CLARIFY, structurally identical to the needs-CEP one
+  // above: the candidate claims stay in the batch (they resolve honest UNKNOWN off
+  // their absent keys) and the turn is FORCED to CLARIFY, so the renderer asks for
+  // the code instead of answering about a coupon nobody named. Additive: on every
+  // non-coupon turn the marker is absent and this is byte-identical to before.
+  const needsCode = couponValidityNeedsCode(required, ledger);
+  const forcedClarify =
+    ambiguousOwnedSets.length > 0 || publicAmbiguity || needsCep || needsCode;
   return forcedClarify
     ? {
         candidates,

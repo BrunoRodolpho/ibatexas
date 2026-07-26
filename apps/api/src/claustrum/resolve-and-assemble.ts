@@ -35,7 +35,7 @@ import {
 import { parseAgentSessionNamespace } from "./agent-guards.js";
 // FE-T13 — reuse the ops-plane displayId parser (pure, no ops-specific
 // dependency) rather than re-deriving the same `#1234`-style parse rule.
-import { parseDisplayIdRef } from "../ops/ops-order-resolution.js";
+import { matchNamedOwnedOrders, parseDisplayIdRef } from "../ops/ops-order-resolution.js";
 // BKL-140 — reuse the SINGLE non-terminal-stage set the discovery-fallback read
 // already uses (turn-reads.ts), rather than re-deriving a byte-parallel copy
 // (FE-D07 duplication lesson). No cycle: turn-reads never imports this module.
@@ -606,6 +606,27 @@ const ORDER_AUTORESOLVE_KINDS = new Set([
   // public review posts. MUST stay in lockstep with AUTORESOLVE_CONFIRM_KINDS.
   "order.review.submit",
 ]);
+
+/**
+ * BKL-216 — the AMEND kinds whose auto-resolve first honors an order the customer
+ * EXPLICITLY NAMED in the message (`resolveAmendOrderReference`). The
+ * mutation-plane sibling of BKL-203/#350: before this, every kind above
+ * blind-resolved to the most-recent order, so "tira a coca do pedido 933869"
+ * amended whichever order happened to be newest — the customer's named order was
+ * read, then ignored.
+ *
+ * Scoped to `order.amend.*` ONLY — exactly the ticket. `order.cancel` /
+ * `order.note.add` / `order.address.change` / `order.type.switch` /
+ * `payment.pix.regenerate` keep the unchanged blind most-recent resolution behind
+ * their confirm gate (widening the mutation-plane reference resolution to them is
+ * BKL-198's row, not this one).
+ */
+const ORDER_NAMED_REFERENCE_KINDS = new Set([
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+]);
 // FE-T14 — reservation.modify's schema never shows the model a
 // `reservationId` field (Identity-class, forbidden) and, before this
 // change, had NO auto-resolve path at all: `resolveReservationId` below is
@@ -858,6 +879,80 @@ export async function resolveCustomerOrderReference(
   return resolveIdless(await loadCustomerOrderRows(customerId, 20));
 }
 
+/** BKL-216 — the outcome of resolving an amend's target order. `orderId: null` with
+ *  a non-empty `ambiguousDisplayIds` is the CLARIFY case; `autoResolved` marks the
+ *  blind most-recent fallback (the only branch that forces a confirm). */
+export interface ResolvedAmendOrderReference {
+  readonly orderId: string | null;
+  readonly autoResolved: boolean;
+  /** The ≥2 OWNED display numbers the message named (CLARIFY case only). */
+  readonly ambiguousDisplayIds: readonly number[];
+}
+
+/**
+ * BKL-216 — the MUTATION-plane order-reference resolution for `order.amend.*`
+ * ({@link ORDER_NAMED_REFERENCE_KINDS}). The sibling of the READ-plane BKL-203 fix
+ * (#350): a customer who NAMES one of their orders must amend THAT order, not
+ * whichever one is newest.
+ *
+ * Precedence, and what each branch preserves:
+ *   1. an EXPLICIT `payload.orderId` wins, unchanged ({@link resolveOrderId}).
+ *   2. the message names exactly ONE of the customer's OWN orders by display
+ *      number → bind it. `autoResolved` is FALSE: nothing was guessed, so the
+ *      confirm-on-autoresolve gate (whose shared prompt asserts "o seu pedido mais
+ *      RECENTE" — compose-policy-packs.ts) must not fire and assert a falsehood
+ *      about a named older order. This mirrors branch 1's posture for an explicit
+ *      id, and it is NOT a money-safety relaxation: `order.amend.add_item` still
+ *      confirms via its own `requireAmendItemDisambiguation` guard, and the Inv 11
+ *      amount bands are untouched.
+ *   3. the message names ≥2 of them → resolve NOTHING and stamp
+ *      `orderReferenceAmbiguousCount` + `orderReferenceAmbiguousDisplayIds` so the
+ *      pack-side `clarifyAmbiguousOrderReference` guard asks WHICH order (the
+ *      BKL-223 reservation idiom). Never a guess between two named orders.
+ *   4. no owned order is named → the pre-existing blind most-recent auto-resolve,
+ *      byte-for-byte (`autoResolved: true` → the confirm still gates it).
+ *
+ * IDOR-safe BY CONSTRUCTION: the candidate set is `listByCustomer`'s owner-scoped
+ * rows and the match runs through the SHARED {@link matchNamedOwnedOrders}, so a
+ * message naming ANOTHER customer's display number matches nothing and lands in
+ * branch 4 — it can never bind, and the customer still sees a confirm naming their
+ * own resolved order before anything mutates. Fail-safe: a read error yields no
+ * rows (`loadCustomerOrderRows`), i.e. the same `orderId: null` `resolveOrderId`
+ * returns on a throw.
+ */
+export async function resolveAmendOrderReference(
+  payload: Ctx,
+  customerId: string,
+  utteranceText: string | undefined,
+): Promise<ResolvedAmendOrderReference> {
+  if (typeof payload.orderId === "string") {
+    return { orderId: payload.orderId, autoResolved: false, ambiguousDisplayIds: [] };
+  }
+  // Same owner-scoped read + limit the id-less read plane uses (resolveIdless), so
+  // `rows[0]` IS the most-recent order branch 4 falls back to.
+  const rows = await loadCustomerOrderRows(customerId, 20);
+  const mostRecent: ResolvedAmendOrderReference = {
+    orderId: rows[0]?.id ?? null,
+    autoResolved: rows.length > 0,
+    ambiguousDisplayIds: [],
+  };
+  if (typeof utteranceText !== "string" || utteranceText.trim() === "") {
+    return mostRecent;
+  }
+  const named = matchNamedOwnedOrders(rows, utteranceText);
+  if (named.length === 1) {
+    return { orderId: named[0]!.id, autoResolved: false, ambiguousDisplayIds: [] };
+  }
+  if (named.length >= 2) {
+    return {
+      orderId: null,
+      autoResolved: false,
+      ambiguousDisplayIds: named.map((o) => o.displayId),
+    };
+  }
+  return mostRecent;
+}
+
 /** 034-F1: resolve the orderId that OWNS a payment, for the refund ownership
  *  binding (finding 6/7). Fail-safe to null → resolver leaves the guard inert
  *  (service-layer scoping still applies) rather than REFUSE-ing on a read error. */
@@ -963,6 +1058,7 @@ async function applyAutoResolve(
   kind: string,
   payload: Ctx,
   customerId: string,
+  utteranceText: string | undefined,
 ): Promise<{ payload: Ctx; autoResolvedMoneyRef: boolean }> {
   if (ORDER_AUTORESOLVE_KINDS.has(kind)) {
     // FE-D28 — order.review.submit resolves its reviewed order via the FE-T13
@@ -978,6 +1074,35 @@ async function applyAutoResolve(
       );
       if (r.orderId !== null) {
         return { payload: { ...payload, orderId: r.orderId }, autoResolvedMoneyRef: true };
+      }
+      return { payload, autoResolvedMoneyRef: false };
+    }
+    // BKL-216 — the amend kinds honor an EXPLICITLY-NAMED owned order before
+    // falling back to the (unchanged) blind most-recent resolution. Every other
+    // autoresolve kind keeps `resolveOrderId` verbatim.
+    if (ORDER_NAMED_REFERENCE_KINDS.has(kind)) {
+      const r = await resolveAmendOrderReference(payload, customerId, utteranceText);
+      if (r.ambiguousDisplayIds.length >= 2) {
+        // ≥2 OWNED orders named: stamp the ambiguity markers (the BKL-223 shape) so
+        // the pack-side `clarifyAmbiguousOrderReference` guard asks which one. NOT an
+        // autoresolve — orderId stays unstamped so `requireOrderIdForMutation` still
+        // fails closed if the clarify guard is ever unwired.
+        return {
+          payload: {
+            ...payload,
+            orderReferenceAmbiguousCount: r.ambiguousDisplayIds.length,
+            orderReferenceAmbiguousDisplayIds: [...r.ambiguousDisplayIds],
+          },
+          autoResolvedMoneyRef: false,
+        };
+      }
+      if (r.orderId !== null) {
+        return {
+          payload: { ...payload, orderId: r.orderId },
+          // A NAMED order was given, not guessed → no forced confirm (the shared
+          // prompt would claim "mais recente"). Only the blind fallback confirms.
+          autoResolvedMoneyRef: r.autoResolved,
+        };
       }
       return { payload, autoResolvedMoneyRef: false };
     }
@@ -2207,7 +2332,7 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   );
 
   // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.
-  const auto = await applyAutoResolve(kind, normalizedPayload, customerId);
+  const auto = await applyAutoResolve(kind, normalizedPayload, customerId, utteranceText);
   const autoResolvedMoneyRef = auto.autoResolvedMoneyRef;
   const boundPayload = await bindRefundOwnership(kind, auto.payload);
   // FE-D27 — ground an NL date/time to a REAL timeSlotId (create/waitlist) or

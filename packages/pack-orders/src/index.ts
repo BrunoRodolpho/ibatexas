@@ -118,6 +118,7 @@ export {
 
 export {
   refuseAllergensNotExplicit,
+  refuseAmbiguousOrderReference,
   refuseAmountExceedsLimit,
   refuseCartEmpty,
   refuseCheckoutMissingPaymentMethod,
@@ -201,8 +202,21 @@ export const ordersPack = {
     "order.cart.empty",
     "order.cart.missing",
     "order.not_found",
+    // BKL-216 — the amend in-message order-reference ambiguity CLARIFY
+    // (`clarifyAmbiguousOrderReference`): the customer named ≥2 of their OWN
+    // orders, so the resolver bound none and this asks which.
+    "order.ambiguous_reference",
     "order.already_cancelled",
     "order.already_shipped",
+    // BKL-251 — emitted since BKL-036/034-F1 but never declared here, so the
+    // AI-BOM and the config seal under-reported the Pack's refusal vocabulary.
+    // `order.past_ponr` fires from `requireCancellable` (a customer cancel past
+    // the point-of-no-return); `order.ownership_denied` from the 034-F1
+    // ownership/IDOR guard `enforceOrderOwnership`, which is inert unless the
+    // host injects `state.authority` — the reason AC-004's empty-state sampling
+    // could never reach it.
+    "order.past_ponr",
+    "order.ownership_denied",
     "order.checkout.slots_incomplete",
     "order.checkout.payment_method_missing",
     "order.checkout.payment_method_invalid",

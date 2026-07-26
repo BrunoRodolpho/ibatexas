@@ -1,0 +1,160 @@
+// LE2-016 — the compiler entry point: registration, determinism, fail-closed
+// behavior, and the v0 gate's absorption.
+
+import { describe, expect, it } from "vitest"
+
+import { CAPABILITY_DEFINITIONS } from "../../capability-definitions/definitions.js"
+import type { CapabilityDefinition } from "../../capability-definitions/types.js"
+import {
+  assertClaimReferencesResolve,
+  CatalogCrossReferenceError,
+  findClaimReferenceDanglers,
+} from "../../build-gates/check-claim-references.js"
+import { CATALOG_VERSION } from "../../version.js"
+import {
+  assertCatalogCompiles,
+  CATALOG_PASS_IDS,
+  CATALOG_PASSES,
+  CatalogCompileError,
+  compileCatalog,
+  formatCatalogReport,
+} from "../index.js"
+
+/** A catalog that violates ALL FOUR passes at once. */
+const QUADRUPLY_BROKEN: readonly CapabilityDefinition[] = [
+  {
+    kind: "order.ghost",
+    pack: "ibatexas/pack-orders",
+    mutating: true,
+    tier: "chat",
+    surfaces: ["chat"],
+    auth: "guest",
+    legacyNames: ["ghost"],
+    description: "Fixture.",
+    // referential: a claim id nothing defines
+    // safety:      an allergen edge
+    successClaimLinks: ["no-such-claim", "MENU_ITEM_ALLERGENS"],
+    // slot:        a slot the contract has never heard of
+    refusalCodes: "order.default.deny",
+    // terminal:    a chain with no floor
+    guardRefs: [{ phase: "business", name: "executeW5Kinds" }],
+  },
+] as unknown as readonly CapabilityDefinition[]
+
+describe("compileCatalog — registration and reporting", () => {
+  it("registers exactly the declared passes, in declared order", () => {
+    expect(CATALOG_PASSES.map((p) => p.id)).toEqual([...CATALOG_PASS_IDS])
+  })
+
+  it("reports the catalog version and capability count it compiled", () => {
+    const result = compileCatalog(CAPABILITY_DEFINITIONS)
+    expect(result.catalogVersion).toBe(CATALOG_VERSION)
+    expect(result.capabilities).toBe(CAPABILITY_DEFINITIONS.length)
+  })
+
+  it("runs EVERY pass even after one rejects — fail-closed is the exit code, not the silence", () => {
+    const result = compileCatalog(QUADRUPLY_BROKEN)
+    expect(result.ok).toBe(false)
+    expect(result.passes).toHaveLength(CATALOG_PASS_IDS.length)
+    expect(new Set(result.diagnostics.map((d) => d.pass))).toEqual(
+      new Set(CATALOG_PASS_IDS),
+    )
+  })
+
+  it("emits diagnostics in a STABLE total order (the golden-gate prerequisite)", () => {
+    const once = compileCatalog(QUADRUPLY_BROKEN).diagnostics
+    const twice = compileCatalog([...QUADRUPLY_BROKEN]).diagnostics
+    expect(JSON.stringify(twice)).toBe(JSON.stringify(once))
+    // Pass order first, then object/field within a pass.
+    const passOrder = once.map((d) => CATALOG_PASS_IDS.indexOf(d.pass))
+    expect([...passOrder].sort((a, b) => a - b)).toEqual(passOrder)
+  })
+
+  it("names object, slot and rule in every diagnostic (ticket AC3)", () => {
+    for (const d of compileCatalog(QUADRUPLY_BROKEN).diagnostics) {
+      expect(d.object).not.toBe("")
+      expect(d.field).not.toBe("")
+      expect(d.rule).not.toBe("")
+      expect(d.severity).toBe("error")
+    }
+  })
+})
+
+describe("assertCatalogCompiles — fail-closed", () => {
+  it("throws a CatalogCompileError carrying the full result", () => {
+    expect(() => assertCatalogCompiles(QUADRUPLY_BROKEN)).toThrow(CatalogCompileError)
+    try {
+      assertCatalogCompiles(QUADRUPLY_BROKEN)
+    } catch (err) {
+      expect(err).toBeInstanceOf(CatalogCompileError)
+      expect((err as CatalogCompileError).result.ok).toBe(false)
+      expect((err as CatalogCompileError).message).toContain("catalog check FAILED")
+    }
+  })
+
+  it("returns the clean result — with non-zero `checked` on every pass", () => {
+    const result = assertCatalogCompiles(CAPABILITY_DEFINITIONS)
+    expect(result.ok).toBe(true)
+    for (const pass of result.passes) expect(pass.checked).toBeGreaterThan(0)
+  })
+
+  it("formats a clean report that names every pass", () => {
+    const report = formatCatalogReport(compileCatalog(CAPABILITY_DEFINITIONS))
+    expect(report).toContain("catalog check OK")
+    for (const id of CATALOG_PASS_IDS) expect(report).toContain(id)
+  })
+})
+
+describe("the cross-reference check v0 is ABSORBED, not weakened", () => {
+  it("keeps its exact v0 API shape over the compiler's shared edge table", () => {
+    const withDangler: readonly CapabilityDefinition[] = [
+      {
+        kind: "order.cancel",
+        pack: "ibatexas/pack-orders",
+        mutating: true,
+        tier: "identity",
+        successClaimLinks: ["order-canceled", "order-nuked"],
+      } as CapabilityDefinition,
+    ]
+    expect(findClaimReferenceDanglers(withDangler)).toEqual([
+      {
+        kind: "order.cancel",
+        field: "successClaimLinks",
+        reference: "order-nuked",
+        vocabulary: "CLAIM_CLASS_REFERENCES",
+      },
+    ])
+    expect(() => assertClaimReferencesResolve(withDangler)).toThrow(
+      CatalogCrossReferenceError,
+    )
+  })
+
+  it("still counts the references it checked on the real catalog", () => {
+    expect(assertClaimReferencesResolve(CAPABILITY_DEFINITIONS)).toBeGreaterThan(20)
+  })
+
+  it("reports the same fault as a referential-integrity diagnostic", () => {
+    const result = compileCatalog([
+      {
+        kind: "order.cancel",
+        pack: "ibatexas/pack-orders",
+        mutating: true,
+        tier: "identity",
+        successClaimLinks: ["order-nuked"],
+      } as CapabilityDefinition,
+    ])
+    expect(
+      result.diagnostics.some(
+        (d) => d.rule === "claim-reference-dangling" && d.reference === "order-nuked",
+      ),
+    ).toBe(true)
+  })
+})
+
+describe("the REAL catalog compiles clean (the control for every pass)", () => {
+  it("has zero diagnostics", () => {
+    const result = compileCatalog(CAPABILITY_DEFINITIONS)
+    expect(formatCatalogReport(result)).toContain("catalog check OK")
+    expect(result.diagnostics).toEqual([])
+  })
+})

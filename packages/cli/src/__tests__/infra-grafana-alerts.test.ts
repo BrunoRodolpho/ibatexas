@@ -287,15 +287,23 @@ describe("Prometheus alert rules", () => {
     expect(parsed.groups!.length).toBeGreaterThan(0)
   })
 
-  it("declares exactly 11 rules (13 minus the 2 shadow-divergence alerts retired with shadow mode)", () => {
+  it("declares exactly 10 rules (13 minus 2 shadow-divergence alerts minus the dead ledger alert)", () => {
     // The KernelDivergenceDecisionKind + KernelDivergencePayloadRewrite
     // alerts were retired with the `kernel_shadow_divergence_total` metric
     // (shadow mode removed — CLAUDE.md rule #9; commit 1024028).
+    //
+    // BKL-244 retired KernelLedgerUnavailable: it fired on
+    // `kernel_ledger_op_total{outcome="error"}`, a label value nothing
+    // emits (@adjudicate/core emits only hit/miss on check and ok/duplicate
+    // on record). Fail-closed ledger unavailability emits no kernel metric
+    // at all, so there was nothing truthful to re-point it at — see the
+    // NOTE in infra/alerts/kernel.yaml. This name-level gate could not have
+    // caught it: it validates metric NAMES, not label VALUES.
     const totalRules = (parsed.groups ?? []).reduce(
       (acc, g) => acc + (g.rules?.length ?? 0),
       0,
     )
-    expect(totalRules).toBe(11)
+    expect(totalRules).toBe(10)
   })
 
   it("every rule has alert / expr / for / labels / annotations", () => {

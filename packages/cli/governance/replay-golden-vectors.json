@@ -34,7 +34,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[6] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
+          "detail": "Guard panic in state phase[7] (requireCartItemsForCheckout): TypeError: Cannot read properties of undefined (reading 'items')"
         },
         "basis": [
           {
@@ -46,7 +46,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 6,
+              "index": 7,
               "guardName": "requireCartItemsForCheckout",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'items')"
@@ -80,7 +80,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[8] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
+          "detail": "Guard panic in state phase[9] (deferOnPendingPix): TypeError: Cannot read properties of undefined (reading 'paymentStatus')"
         },
         "basis": [
           {
@@ -92,7 +92,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 8,
+              "index": 9,
               "guardName": "deferOnPendingPix",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'paymentStatus')"
@@ -125,7 +125,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[1] (requireOrderIdForMutation): TypeError: Cannot read properties of undefined (reading 'orderId')"
+          "detail": "Guard panic in state phase[2] (requireOrderIdForMutation): TypeError: Cannot read properties of undefined (reading 'orderId')"
         },
         "basis": [
           {
@@ -137,7 +137,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 1,
+              "index": 2,
               "guardName": "requireOrderIdForMutation",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'orderId')"
@@ -172,7 +172,7 @@
           "kind": "SECURITY",
           "code": "guard_panic",
           "userFacing": "System is temporarily unavailable.",
-          "detail": "Guard panic in state phase[4] (requireSlotInFuture): TypeError: Cannot read properties of undefined (reading 'slot')"
+          "detail": "Guard panic in state phase[5] (requireSlotInFuture): TypeError: Cannot read properties of undefined (reading 'slot')"
         },
         "basis": [
           {
@@ -184,7 +184,7 @@
             "code": "guard_panic",
             "detail": {
               "phase": "state",
-              "index": 4,
+              "index": 5,
               "guardName": "requireSlotInFuture",
               "errorName": "TypeError",
               "message": "Cannot read properties of undefined (reading 'slot')"

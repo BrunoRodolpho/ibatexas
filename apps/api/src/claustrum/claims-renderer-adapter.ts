@@ -36,6 +36,7 @@ import { logger } from "../lib/logger.js";
 import {
   decideRenderPrecedence,
   type RenderPrecedenceContext,
+  type RenderPrecedenceSignals,
 } from "./claims-render-precedence.js";
 import {
   type ActiveResourceOwnership,
@@ -43,10 +44,26 @@ import {
   classifyRequestSpans,
   decomposeRequiredClaims,
   isAllergenFamilyAsk,
+  isCouponValidityAsk,
+  isDeliveryCoverageAsk,
   isMedicalEmergencyAsk,
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
 import { render } from "./renderer-from-claims.js";
+import { REGISTRY_SPECS } from "./claim-registry.js";
+import type { Template } from "./slot-grammar.js";
+
+/**
+ * LE2-012 — the CUSTOMER-SCOPED registry types, derived from the ONE source of
+ * truth (`REGISTRY_SPECS[type].customerScoped`) so a future customer-scoped type
+ * is covered automatically. Consumed ONLY by the
+ * {@link IbatexasClaimsRendererOptions.customerScopedCompanionsApply} gate below.
+ */
+const CUSTOMER_SCOPED_REQUIRED_TYPES: ReadonlySet<string> = new Set(
+  Object.entries(REGISTRY_SPECS)
+    .filter(([, spec]) => spec.customerScoped)
+    .map(([type]) => type),
+);
 
 /** De-dupe a type-name list, preserving first-seen order (deterministic). */
 function distinctTypes(types: readonly string[]): string[] {
@@ -210,6 +227,35 @@ export interface IbatexasClaimsRendererOptions {
    * (a throw here would break the render); wire it to swallow its own errors.
    */
   readonly onSafetyEmergency?: (ctx: { readonly turnId?: string }) => void;
+  /**
+   * LE2-012 — the PLANE's validated-template table (customer ∪ plane). Defaults to
+   * the customer grammar, so every existing composition is byte-identical.
+   */
+  readonly templates?: Readonly<Record<string, Template>>;
+  /**
+   * LE2-012 — does the §O#15 required-claim gate's CUSTOMER-SCOPED companion set
+   * apply on this plane? Default `true` (the customer plane — byte-identical).
+   *
+   * The OPS plane passes `false`. Its principal is a STAFF actor (`admin:<staffId>`)
+   * who, by construction, owns NO customer order / payment / reservation / cart —
+   * so every `customerScoped` companion the customer span classifier force-requires
+   * is CATEGORICALLY unsatisfiable there. Left applying, the classifier's keyword
+   * nets fire on ordinary STORE-LEVEL staff questions ("quantos pedidos hoje?" trips
+   * ORDER_STATUS_Q; "quais reservas hoje?" trips RESERVATION_STATUS_Q) and the gate
+   * degrades an otherwise-VALIDATED ops render to UNKNOWN for a companion that could
+   * never have resolved.
+   *
+   * SOUNDNESS: this only ever REMOVES a required companion — it adds no claim, sets
+   * no verdict and grants no prose authority. Every rendered proposition still comes
+   * from an independently-VALIDATED claim (Inv 6), and a dropped companion is a
+   * claim about a CUSTOMER's own resource, which is not a half of the staff
+   * question being answered. BOUNDED RESIDUAL, stated openly: a MIXED staff turn
+   * ("quantos pedidos hoje? e o pedido #4242 já saiu?") renders the store-level half
+   * without an honest UNKNOWN for the owner-scoped half — that half is answered on
+   * the ops plane by the deterministic ops read/verb roster, never by a
+   * customer-scoped claim, so no customer-scoped answer is being suppressed.
+   */
+  readonly customerScopedCompanionsApply?: boolean;
 }
 
 export function createIbatexasClaimsRenderer(
@@ -217,6 +263,8 @@ export function createIbatexasClaimsRenderer(
 ): ClaimsRendererPort {
   const renderCarriersActive = opts?.renderCarriersActive === true;
   const onSafetyEmergency = opts?.onSafetyEmergency;
+  const templates = opts?.templates;
+  const customerScopedCompanionsApply = opts?.customerScopedCompanionsApply !== false;
   return {
     render(
       claims: ClaimsKernelResult,
@@ -229,7 +277,7 @@ export function createIbatexasClaimsRenderer(
       // BKL-152-edge: the dateAnchor signal (seam-active + the 0.8.0 clock-resolved
       // resolvedQueryDate) makes the date-anchor STORE_OPEN_NOW suppression exact on
       // weekday==today; seam-inactive falls back to the pure #301 rule.
-      const required = decomposeRequiredClaims(
+      const decomposed = decomposeRequiredClaims(
         classifyRequestSpans(context?.requestText ?? ""),
         ownershipFromActiveResources(context?.activeResources),
         {
@@ -239,6 +287,13 @@ export function createIbatexasClaimsRenderer(
             : { resolvedQueryDate: context.resolvedQueryDate }),
         },
       );
+      // LE2-012 — on a plane whose actor owns no customer resources (ops), drop the
+      // CUSTOMER-SCOPED companions the customer span classifier force-required. See
+      // {@link IbatexasClaimsRendererOptions.customerScopedCompanionsApply}: removal
+      // only, never an addition; the customer plane keeps the set verbatim.
+      const required = customerScopedCompanionsApply
+        ? decomposed
+        : new Set([...decomposed].filter((t) => !CUSTOMER_SCOPED_REQUIRED_TYPES.has(t)));
       // §O#15 completeness reads a per-TYPE verdict map. When one turn resolves
       // MULTIPLE claims of the SAME type (e.g. a multi-order request that binds two
       // ORDER_FULFILLMENT_STAGE instances to distinct owned subjects), a later
@@ -294,6 +349,17 @@ export function createIbatexasClaimsRenderer(
         // emergency safe variant (deterministic net; absent requestText → false →
         // generic escalate, byte-identical).
         emergencyAsk,
+        // LE2-012 — the PLANE's template table (customer ∪ plane). `undefined`
+        // selects `render`'s own default (the customer grammar) — byte-identical.
+        templates,
+        // LE2-002 — a delivery-COVERAGE ask landing on CLARIFY renders the
+        // ask-for-the-CEP variant (the classifier's own net decides; absent
+        // requestText → false → generic clarify, byte-identical).
+        isDeliveryCoverageAsk(context?.requestText ?? ""),
+        // LE2-019 — a coupon-VALIDITY ask landing on CLARIFY renders the
+        // ask-for-the-code variant (the classifier's own net decides; absent
+        // requestText → false → generic clarify, byte-identical).
+        isCouponValidityAsk(context?.requestText ?? ""),
       );
       // BKL-209 — fire the best-effort SAFETY sink when the turn resolved to a
       // medical-emergency ESCALATE, so staff are notified ("vou avisar nossa
@@ -328,11 +394,16 @@ export function createIbatexasClaimsRenderer(
 function emitRenderPrecedence(
   ctx: RenderPrecedenceContext,
   verdict: ReturnType<typeof decideRenderPrecedence>,
+  plane: string,
 ): void {
   logger.info(
     {
       component: "claims",
       event: "claims.render_precedence",
+      // LE2 decision 6 — BOTH planes now consult this seam, so the line must say
+      // WHICH one decided (otherwise a converged-ops verdict is indistinguishable
+      // from a customer one in the same log stream).
+      plane,
       // The seam outcome + WHICH lattice rule produced it (rules 1-4).
       decision: verdict.decision,
       mechanism: verdict.mechanism,
@@ -346,24 +417,54 @@ function emitRenderPrecedence(
   );
 }
 
+/** Construction opts for the ibatexas render-precedence seam. */
+export interface IbatexasClaimsRenderPrecedenceOptions {
+  /**
+   * Which plane composed this seam — an observability label only (it appears on the
+   * `claims.render_precedence` line and steers NO decision). Defaults to
+   * `"customer"`, so the customer wiring is byte-identical apart from the new field.
+   */
+  readonly plane?: string;
+  /**
+   * LE2 decision 6 — resolve the per-turn
+   * {@link RenderPrecedenceSignals.deterministicReadRender} signal at decision time.
+   * The OPS composition passes a closure over its per-turn read-capture buffer, so a
+   * degenerate claims render never clobbers the deterministic BKL-100 read answer.
+   * Absent (customer plane) → no signal → the lattice is byte-identical.
+   */
+  readonly hasDeterministicReadRender?: () => boolean;
+}
+
 /**
  * Build the ibatexas `ClaimsRenderPrecedence` seam (@claustrum/core 0.7.0). PAIRED
  * with {@link createIbatexasClaimsRenderer}: `buildClaimsSeams` wires the two
- * together so the RENDER-vs-DRAFT decision is only ever consulted on the claims-ON
- * customer plane where the renderer also runs. handleTurn calls this AFTER invoking
- * the render (so `claims.terminal` telemetry + observability side-effects already
+ * together so the RENDER-vs-DRAFT decision is only ever consulted on a claims-ON
+ * plane where the renderer also runs. handleTurn calls this AFTER invoking the
+ * render (so `claims.terminal` telemetry + observability side-effects already
  * fired); the seam gates ONLY whether that render OVERWRITES the responder draft.
  *
  * Thin bridge: it evaluates the PURE {@link decideRenderPrecedence} lattice, emits
  * the observe-only `claims.render_precedence` telemetry, and returns the seam
  * `"render" | "keep_draft"`. All policy lives in the pure lattice; this adds only
- * the side-channel log. Absent seam (flag OFF) → core defaults to "render" →
- * byte-identical to 0.6.0's unconditional supersession.
+ * the side-channel log and (LE2 decision 6) the per-turn plane SIGNAL lookup. Absent
+ * seam (flag OFF) → core defaults to "render" → byte-identical to 0.6.0's
+ * unconditional supersession.
+ *
+ * LE2 decision 6 — the OPS conductor composes this SAME factory (it no longer
+ * "keeps its own render path"): one lattice, one telemetry line, two planes.
  */
-export function createIbatexasClaimsRenderPrecedence(): ClaimsRenderPrecedence {
+export function createIbatexasClaimsRenderPrecedence(
+  opts?: IbatexasClaimsRenderPrecedenceOptions,
+): ClaimsRenderPrecedence {
+  const plane = opts?.plane ?? "customer";
+  const hasDeterministicReadRender = opts?.hasDeterministicReadRender;
   return (ctx) => {
-    const verdict = decideRenderPrecedence(ctx);
-    emitRenderPrecedence(ctx, verdict);
+    const signals: RenderPrecedenceSignals =
+      hasDeterministicReadRender === undefined
+        ? {}
+        : { deterministicReadRender: hasDeterministicReadRender() };
+    const verdict = decideRenderPrecedence(ctx, signals);
+    emitRenderPrecedence(ctx, verdict, plane);
     return verdict.decision;
   };
 }

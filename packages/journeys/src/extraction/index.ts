@@ -28,7 +28,9 @@ export {
 export {
   compileExpectPayload,
   evaluateExpectPayload,
+  type EvaluateExpectPayloadOptions,
   type ExpectPayloadEvaluation,
+  type ExpectPayloadRecordLike,
 } from "./expect-payload.js"
 
 export {
@@ -70,6 +72,89 @@ export {
   type ExtractionAccuracyCliResult,
   type RunExtractionAccuracyCliOptions,
 } from "./accuracy-cli.js"
+
+// ── LE2-05 — the OFFLINE eval harness (the THIRD AccuracyCaseResult producer) ──
+
+export {
+  EVAL_ARTIFACT_SOURCES,
+  EVAL_REFUSAL_CAPABILITY,
+  EVAL_REFUSAL_CAPABILITY_IS_WAIVABLE,
+  EvalArtifactSourceSchema,
+  EvalFixtureFileSchema,
+  RefusalCaseSchema,
+  RefusalCorpusFileSchema,
+  validateEvalFixture,
+  validateRefusalCorpus,
+  type EvalArtifactSource,
+  type EvalAuditGoldArtifact,
+  type EvalFixtureFile,
+  type EvalFixtureValidation,
+  type EvalSchemaError,
+  type EvalSchemaErrorCode,
+  type EvalWireArtifact,
+  type RefusalCase,
+  type RefusalCorpusFile,
+  type RefusalCorpusValidation,
+} from "./eval-schema.js"
+
+export {
+  EVAL_UNSCOREABLE_REASONS,
+  computeClassification,
+  computeRefusalCategory,
+  computeUnscoreableSummary,
+  envelopeFromAuditGold,
+  envelopeFromWire,
+  normalizeStructuralValue,
+  normalizeUtterance,
+  parseWireCompletion,
+  scoreEvalCase,
+  structuralEquals,
+  unscoreableReason,
+  type EvalCase,
+  type EvalCaseOutcome,
+  type EvalClassRow,
+  type EvalObservation,
+  type EvalParseCase,
+  type EvalRefusalCase,
+  type EvalRefusalCategory,
+  type EvalRefusalLeak,
+  type EvalUnscoreableReason,
+  type EvalUnscoreableRow,
+  type EvalUnscoreableSummary,
+  type ParsedEnvelope,
+} from "./eval-score.js"
+
+export {
+  DEFAULT_EVAL_ASSET_DIR,
+  DEFAULT_EVAL_FIXTURES_DIR,
+  DEFAULT_REFUSAL_CORPUS_PATH,
+  ExtractionEvalLoadError,
+  buildEvalIntake,
+  envelopesFromFixtures,
+  evalCasesFromCorpus,
+  evalCasesFromRefusalCorpus,
+  indexEnvelopesByUtterance,
+  loadEvalFixtures,
+  loadRefusalCorpus,
+  parseEvalFixtureJson,
+  parseRefusalCorpusYaml,
+  type BuildEvalIntakeOptions,
+  type EvalIntake,
+  type IndexedEnvelope,
+  type LoadedEvalFixture,
+} from "./eval-intake.js"
+
+export {
+  DEFAULT_EVAL_BASELINE_PATH,
+  DEFAULT_EVAL_FLAKE_LEDGER_PATH,
+  DEFAULT_EVAL_WAIVERS_PATH,
+  runExtractionEvalCli,
+  type EvalSourceCoverage,
+  type EvalTotals,
+  type ExtractionEvalCliResult,
+  type ExtractionEvalReport,
+  type RunExtractionEvalCliOptions,
+} from "./eval-cli.js"
 
 export {
   ExtractionSchemaBindingSchema,

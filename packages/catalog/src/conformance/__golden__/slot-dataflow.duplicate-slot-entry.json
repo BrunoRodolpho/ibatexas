@@ -1,0 +1,50 @@
+{
+  "fixture": "slot-dataflow.duplicate-slot-entry",
+  "targets": "slot-dataflow/duplicate-slot-entry",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "slot-dataflow/duplicate-slot-entry"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "duplicate-slot-entry",
+      "severity": "error",
+      "object": "capability:conformance.slot.duplicate-entry",
+      "field": "legacyNames[1]",
+      "message": "\"conformance_tool\" is already declared at legacyNames[0]. Slot arrays are read as sets; a repeat carries no information and skews every count derived from them."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/duplicate-slot-entry: capability:conformance.slot.duplicate-entry · legacyNames[1] — \"conformance_tool\" is already declared at legacyNames[0]. Slot arrays are read as sets; a repeat carries no information and skews every count derived from them."
+  ]
+}

@@ -684,12 +684,35 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // fallback `${id}:refund:${refundAmount}:${staffId}` when no
       // header was supplied. PR #62 review found that fallback
       // collides for two LEGITIMATE sequential partial refunds of the
-      // same amount on the same order by the same staff within the
-      // Execution Ledger's 14-day default TTL: the second refund's
-      // intentHash matches the first, the ledger SETNX returns
-      // "exists", the kernel flips EXECUTE → REPLAY_SUPPRESSED, the
-      // route returns 200 but no Stripe money movement happens. The
-      // customer never receives the second refund.
+      // same amount on the same order by the same staff: both derive the
+      // same nonce, so both build the same `intentHash`.
+      //
+      // BKL-244 — this block previously claimed the collision made "the
+      // ledger SETNX return exists" and "the kernel flip EXECUTE →
+      // REPLAY_SUPPRESSED". It does not, on THIS path. The route calls
+      // `paymentCmdSvc.issueRefundFromEnvelope` → `withAdjudicate`
+      // (packages/domain/src/services/__shared__/with-adjudicate.ts),
+      // which runs the PURE `adjudicate()` and emits a best-effort audit
+      // record. No execution ledger is wired into the domain/HTTP plane —
+      // `adjudicateOptions` in payment-command.service.ts carries only
+      // auditSink/authGuards/log — so a duplicate `intentHash` is never
+      // replay-suppressed here and REPLAY_SUPPRESSED is unreachable on
+      // this route. (The ledger is wired on the conversational plane, in
+      // claustrum-bootstrap.ts.)
+      //
+      // What a colliding nonce actually costs here:
+      //   1. Traceability. The nonce is an `intentHash` input, so two
+      //      distinct refunds become indistinguishable in `intent_audit`.
+      //      The audit unique index is (intent_hash, recorded_at)
+      //      (audit-postgres migration 009), which only DO-NOTHINGs a
+      //      re-emit at the SAME instant — and the emit is
+      //      fire-and-forget, so it gates nothing.
+      //   2. Balance is the only execution-level stop.
+      //      `executeRefundIssue` re-reads the payment row inside its
+      //      `$transaction` and throws on terminal status or
+      //      `refundAmountCentavos > refundable`. That defeats a replayed
+      //      FULL refund; a replayed PARTIAL refund still fits the
+      //      remaining balance and would execute a second time.
       //
       // Fix: require the `Idempotency-Key` header on every refund.
       // Admin tooling should already be idempotency-aware; absence is

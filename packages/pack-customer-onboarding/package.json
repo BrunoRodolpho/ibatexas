@@ -11,6 +11,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./refusals": {
+      "types": "./dist/refusals.d.ts",
+      "import": "./dist/refusals.js",
+      "default": "./dist/refusals.js"
+    },
     "./signals": {
       "types": "./dist/signals.d.ts",
       "import": "./dist/signals.js",

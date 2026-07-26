@@ -74,7 +74,17 @@
 import { readGuardMetadata, type Guard, type PolicyBundle } from "@adjudicate/core/kernel"
 
 import { IBATEXAS_COMPOSED_PACKS, type ComposedPack } from "../index.js"
-import type { CapabilityDefinition, CapabilityGuardRef, CapabilityPackId } from "./types.js"
+// LE2-014 — the capability TYPES moved to `@ibatexas/catalog` (the versioned
+// business-definition root). This module stayed behind deliberately: it binds
+// a definition's guard REFERENCE to a real guard FUNCTION in an installed
+// pack, which is runtime authority, not definition (Decision 13). See
+// `./index.js`'s doc for the full rationale (and for the turbo build cycle
+// that moving it would create).
+import type {
+  CapabilityDefinition,
+  CapabilityGuardRef,
+  CapabilityPackId,
+} from "@ibatexas/catalog"
 
 const PHASES_WITH_GUARD_ARRAYS = ["stateGuards", "authGuards", "business"] as const
 type PhaseWithGuardArray = (typeof PHASES_WITH_GUARD_ARRAYS)[number]

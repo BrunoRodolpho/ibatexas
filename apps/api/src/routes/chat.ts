@@ -35,6 +35,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import { beginWireTurn } from "../claustrum/wire-capture.js";
 import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { Channel, type StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken, getOrCreateCart } from "@ibatexas/tools";
@@ -510,7 +511,7 @@ async function runConductorTurn(params: {
         }
       }
 
-      const turn = await handleTurn(capsule, inbound);
+      const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
       // The conductor produced a result — the inner classify below now owns the
       // no-delivery decision, so a later (post-result) throw must not re-open in
       // the catch (F2 gate).

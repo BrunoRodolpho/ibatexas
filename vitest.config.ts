@@ -17,6 +17,14 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    // BKL-245: match the 60s budget CI already runs with
+    // (ci.yml `turbo test -- --testTimeout=60000`) so local full-suite
+    // runs have the same headroom instead of flaking at the 5s default.
+    // This file governs only the packages that do NOT carry their own
+    // vitest config (admin, commerce, web, cli, domain, nats-client, types);
+    // a package-level config shadows it entirely, so the same key is
+    // repeated in each of the 14 own-config packages.
+    testTimeout: 60_000,
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],

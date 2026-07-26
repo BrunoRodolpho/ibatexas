@@ -1,0 +1,62 @@
+{
+  "fixture": "safety-implication-edges.unrecognized-safety-marker-conservatively-denied",
+  "targets": "safety-implication-edges/unrecognized-safety-marker-conservatively-denied",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "rulesEmitted": [
+    "referential-integrity/claim-reference-dangling",
+    "safety-implication-edges/unrecognized-safety-marker-conservatively-denied"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 1
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 1,
+      "diagnostics": 1
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "referential-integrity",
+      "rule": "claim-reference-dangling",
+      "severity": "error",
+      "object": "capability:conformance.safety.unrecognized-marker",
+      "field": "successClaimLinks[0]",
+      "message": "\"sem-gluten-list\" does not resolve against CLAIM_CLASS_REFERENCES. Correct the reference, or — if the claim genuinely exists now — add it to src/claim-references.ts AND to the runtime source it mirrors (apps/api/src/claustrum/ibatexas-responder.ts's SUCCESS_CLAIM_CLASSES).",
+      "reference": "sem-gluten-list"
+    },
+    {
+      "pass": "safety-implication-edges",
+      "rule": "unrecognized-safety-marker-conservatively-denied",
+      "severity": "error",
+      "object": "capability:conformance.safety.unrecognized-marker",
+      "field": "successClaimLinks[0]",
+      "message": "claim edge target \"sem-gluten-list\" resolves against no known claim vocabulary AND carries the dietary-restriction marker \"gluten\". An unrecognized safety-bearing reference routes conservatively to DENY — it is refused under BKL-171 (no dietary \"sem gluten/lactose\" renders; vegano/vegetariano-only renders REMAIN out too — the scope-creep firewall; dietary questions keep self-report + handoff) rather than assumed harmless because the compiler does not recognize it.",
+      "reference": "sem-gluten-list"
+    }
+  ],
+  "formatted": [
+    "referential-integrity/claim-reference-dangling: capability:conformance.safety.unrecognized-marker · successClaimLinks[0] — \"sem-gluten-list\" does not resolve against CLAIM_CLASS_REFERENCES. Correct the reference, or — if the claim genuinely exists now — add it to src/claim-references.ts AND to the runtime source it mirrors (apps/api/src/claustrum/ibatexas-responder.ts's SUCCESS_CLAIM_CLASSES).",
+    "safety-implication-edges/unrecognized-safety-marker-conservatively-denied: capability:conformance.safety.unrecognized-marker · successClaimLinks[0] — claim edge target \"sem-gluten-list\" resolves against no known claim vocabulary AND carries the dietary-restriction marker \"gluten\". An unrecognized safety-bearing reference routes conservatively to DENY — it is refused under BKL-171 (no dietary \"sem gluten/lactose\" renders; vegano/vegetariano-only renders REMAIN out too — the scope-creep firewall; dietary questions keep self-report + handoff) rather than assumed harmless because the compiler does not recognize it."
+  ]
+}

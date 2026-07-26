@@ -45,12 +45,12 @@ beforeEach(() => {
   cmd.exitOverride() // Don't call process.exit on errors.
   registerKernelCommands(cmd)
   stdout = captureStdout()
+  // BKL-244: the IBX_LEDGER_ENABLED / IBX_LEDGER_ENFORCE / IBX_LEDGER_FAIL_OPEN
+  // saves are gone with the reads — `status` no longer consults any ledger env
+  // var, because the ledger is always-on (CLAUDE.md Hard Rule #9).
   savedEnv = {
     IBX_AUDIT_POSTGRES_ENABLED: process.env.IBX_AUDIT_POSTGRES_ENABLED,
     POSTHOG_API_KEY: process.env.POSTHOG_API_KEY,
-    IBX_LEDGER_ENABLED: process.env.IBX_LEDGER_ENABLED,
-    IBX_LEDGER_ENFORCE: process.env.IBX_LEDGER_ENFORCE,
-    IBX_LEDGER_FAIL_OPEN: process.env.IBX_LEDGER_FAIL_OPEN,
   }
 })
 
@@ -102,6 +102,62 @@ describe("ibx kernel status", () => {
     expect(out).toContain("Intent kinds conhecidos")
     expect(out).toContain("Execution Ledger")
     expect(out).toContain("Audit sink")
+  })
+
+  // ── BKL-244: ledger status must report the always-on truth ──────────────
+  //
+  // The command used to read three env vars that exist nowhere else in the
+  // repo (IBX_LEDGER_ENABLED / _ENFORCE / _FAIL_OPEN), all defaulting to
+  // false, so a healthy deployment was told "enabled: não" while the runtime
+  // ledger was running. It is wired unconditionally in claustrum-bootstrap.ts.
+  it("reports the ledger as always-on and fail-closed in JSON", async () => {
+    await cmd.parseAsync(["status", "--json"], { from: "user" })
+    const parsed = JSON.parse(stdout.getOutput())
+    expect(parsed.ledger).toEqual({
+      alwaysOn: true,
+      failClosed: true,
+      backend: "redis",
+    })
+  })
+
+  it("does not expose the retired ledger env-var flags in JSON", async () => {
+    await cmd.parseAsync(["status", "--json"], { from: "user" })
+    const parsed = JSON.parse(stdout.getOutput())
+    expect(parsed.ledger).not.toHaveProperty("enabled")
+    expect(parsed.ledger).not.toHaveProperty("enforce")
+    expect(parsed.ledger).not.toHaveProperty("failOpen")
+  })
+
+  it("ignores the retired IBX_LEDGER_* env vars entirely", async () => {
+    // Setting every retired var to a truthy value must not change a thing —
+    // proof the dead reads are gone rather than merely re-defaulted.
+    process.env.IBX_LEDGER_ENABLED = "true"
+    process.env.IBX_LEDGER_ENFORCE = "true"
+    process.env.IBX_LEDGER_FAIL_OPEN = "true"
+    try {
+      await cmd.parseAsync(["status", "--json"], { from: "user" })
+      const parsed = JSON.parse(stdout.getOutput())
+      expect(parsed.ledger).toEqual({
+        alwaysOn: true,
+        failClosed: true,
+        backend: "redis",
+      })
+    } finally {
+      delete process.env.IBX_LEDGER_ENABLED
+      delete process.env.IBX_LEDGER_ENFORCE
+      delete process.env.IBX_LEDGER_FAIL_OPEN
+    }
+  })
+
+  it("states always-on + fail-closed in text mode, never 'enabled: não'", async () => {
+    await cmd.parseAsync(["status"], { from: "user" })
+    const out = stdout.getOutput()
+    // Anchored on the ledger's own line — "sempre ativo" alone would also
+    // match the console/NATS audit-sink rows below it.
+    expect(out).toMatch(/estado\s+:.*sempre ativo/)
+    expect(out).toContain("fail-closed")
+    expect(out).not.toMatch(/enabled\s*:/)
+    expect(out).not.toMatch(/fail-open\s*:/)
   })
 
   it("reports the full Pack roster count (7 packs) in text mode", async () => {
