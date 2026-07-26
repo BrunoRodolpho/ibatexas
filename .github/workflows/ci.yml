@@ -9,6 +9,16 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # BKL-249 — same pinned version + checksum as e2e-smoke.yml and
+      # journeys-nightly.yml. Needed HERE because the dev-stack profile gate
+      # (packages/cli/src/__tests__/process-compose-validate.test.ts) skip-guards
+      # on the binary's absence: without this install the process-compose
+      # profiles would go UNVALIDATED in the required job while the suite still
+      # reported green.
+      PROCESS_COMPOSE_VERSION: v1.103.0
+      # sha256 of process-compose_linux_amd64.tar.gz for the pinned version.
+      PROCESS_COMPOSE_SHA256: 79f79f4efcb26b7abb29d5ce7aa2b9807afa1333b1ef1c5dee607b12fbc0ba89
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -27,6 +37,19 @@ jobs:
       # clear error rather than a cryptic mid-suite testcontainer-boot failure.
       - name: Verify Docker is available (testcontainer prerequisite)
         run: docker info
+      # BKL-249 — process-compose is the validator behind the dev-stack profile
+      # gate in the cli suite (`--dry-run` loads process-compose.yaml /
+      # .test.yaml / .e2e.yaml without booting anything). Installed as a suite
+      # prerequisite, in the same spirit as the docker probe above: the gate
+      # skips itself when the binary is missing, so a silent skip here would
+      # make it decorative.
+      - name: Install process-compose (pinned + checksum-verified)
+        run: |
+          curl -fsSL -o /tmp/pc.tar.gz "https://github.com/F1bonacc1/process-compose/releases/download/${PROCESS_COMPOSE_VERSION}/process-compose_linux_amd64.tar.gz"
+          echo "${PROCESS_COMPOSE_SHA256}  /tmp/pc.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/pc.tar.gz -C /tmp process-compose
+          sudo mv /tmp/process-compose /usr/local/bin/process-compose
+          process-compose version
       # Force the lcov reporter for EVERY package so SonarCloud gets coverage
       # from all of them. The root vitest.config sets reporter=[text,lcov], but
       # packages with their OWN vitest.config (apps/api, domain, …) don't inherit
