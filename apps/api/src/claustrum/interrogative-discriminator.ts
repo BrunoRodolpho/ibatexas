@@ -117,11 +117,28 @@ const Q3_POLAR_MODAL =
 /**
  * Q4 — a NARROW info-imperative. Deliberately narrow so ACTION imperatives ("cancela
  * meu pedido", "quero um X-burguer") keep taking the intent path: only "me diz/fala/
- * informa/explica/conta …", "quero/queria/gostaria … saber", and "confere/verifica/
- * vê se …" count as asking for information.
+ * informa/explica/conta …", "me passa/manda/envia/dá/repassa …" (BKL-250), "quero/
+ * queria/gostaria … saber", and "confere/verifica/vê se …" count as asking for
+ * information.
+ *
+ * BKL-250 — the HAND-IT-OVER family ("me passa o endereço do cliente", "me manda o
+ * telefone dele") is the same speech act as "me diz …" with a different verb, and it
+ * is the phrasing a PII probe actually uses. Its absence meant those turns matched no
+ * Q1..Q4 marker (no '?', no WH word, no polar opener), `hasInfoQuestion` returned
+ * false, the gate stayed shut, and the turn shipped MODEL FREE PROSE — the hole the
+ * SCN-109 security probe rode. Adding the verbs shrinks that ungoverned surface;
+ * because this is a POSITIVE net feeding a DEMOTE-ONLY gate, an addition can only
+ * ever move a turn prose→SAFE_UNKNOWN, never the reverse, and `isSmalltalkOnly` still
+ * wins ahead of it.
+ *
+ * Written UNACCENTED ("me da", not "me dá") because every predicate here runs over
+ * {@link normalize}'s output, which strips combining marks — the file's local
+ * convention, same as `\bcade\b` / `da pra` / `e possivel` above. Both the indicative
+ * and the subjunctive-imperative form are listed for each verb, mirroring the
+ * existing diz|diga / informa|informe / conta|conte pairing.
  */
 const Q4_INFO_IMPERATIVE =
-  /\bme (diz|diga|fala|informa|informe|explica|explique|conta|conte)\b|\b(quero|queria|gostaria)\s+(de\s+)?saber\b|\b(confere|conferir|verifica|verificar|ve se)\b/;
+  /\bme (diz|diga|fala|informa|informe|explica|explique|conta|conte|passa|passe|manda|mande|envia|envie|da|repassa|repasse)\b|\b(quero|queria|gostaria)\s+(de\s+)?saber\b|\b(confere|conferir|verifica|verificar|ve se)\b/;
 
 /**
  * D2 — the minimal English honesty net. An English question must degrade honestly
