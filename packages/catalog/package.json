@@ -17,7 +17,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "check": "tsx scripts/check-catalog.ts",
-    "check:claim-refs": "tsx scripts/check-claim-references.ts"
+    "check:claim-refs": "tsx scripts/check-claim-references.ts",
+    "conformance:regen": "tsx scripts/regenerate-conformance-goldens.ts"
   },
   "dependencies": {
     "@adjudicate/core": "^1.6.0"

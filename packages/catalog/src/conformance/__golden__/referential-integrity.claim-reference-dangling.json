@@ -1,0 +1,45 @@
+{
+  "fixture": "referential-integrity.claim-reference-dangling",
+  "targets": "referential-integrity/claim-reference-dangling",
+  "ok": false,
+  "capabilities": 1,
+  "rulesEmitted": [
+    "referential-integrity/claim-reference-dangling"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 1
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "referential-integrity",
+      "rule": "claim-reference-dangling",
+      "severity": "error",
+      "object": "capability:conformance.claim.dangling",
+      "field": "successClaimLinks[0]",
+      "message": "\"order-nuked\" does not resolve against CLAIM_CLASS_REFERENCES. Correct the reference, or — if the claim genuinely exists now — add it to src/claim-references.ts AND to the runtime source it mirrors (apps/api/src/claustrum/ibatexas-responder.ts's SUCCESS_CLAIM_CLASSES).",
+      "reference": "order-nuked"
+    }
+  ],
+  "formatted": [
+    "referential-integrity/claim-reference-dangling: capability:conformance.claim.dangling · successClaimLinks[0] — \"order-nuked\" does not resolve against CLAIM_CLASS_REFERENCES. Correct the reference, or — if the claim genuinely exists now — add it to src/claim-references.ts AND to the runtime source it mirrors (apps/api/src/claustrum/ibatexas-responder.ts's SUCCESS_CLAIM_CLASSES)."
+  ]
+}

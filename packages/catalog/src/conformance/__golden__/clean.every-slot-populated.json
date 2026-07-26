@@ -1,0 +1,31 @@
+{
+  "fixture": "clean.every-slot-populated",
+  "targets": null,
+  "ok": true,
+  "capabilities": 2,
+  "rulesEmitted": [],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 10,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 54,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 6,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [],
+  "formatted": []
+}

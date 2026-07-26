@@ -1,0 +1,44 @@
+{
+  "fixture": "slot-dataflow.slot-type-mismatch",
+  "targets": "slot-dataflow/slot-type-mismatch",
+  "ok": false,
+  "capabilities": 1,
+  "rulesEmitted": [
+    "slot-dataflow/slot-type-mismatch"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 19,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "slot-type-mismatch",
+      "severity": "error",
+      "object": "capability:conformance.slot.type-mismatch",
+      "field": "mutating",
+      "message": "slot must be a boolean; got string (\"true\")."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/slot-type-mismatch: capability:conformance.slot.type-mismatch · mutating — slot must be a boolean; got string (\"true\")."
+  ]
+}

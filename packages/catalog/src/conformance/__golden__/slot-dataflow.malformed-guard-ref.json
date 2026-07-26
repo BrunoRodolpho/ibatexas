@@ -1,0 +1,44 @@
+{
+  "fixture": "slot-dataflow.malformed-guard-ref",
+  "targets": "slot-dataflow/malformed-guard-ref",
+  "ok": false,
+  "capabilities": 1,
+  "rulesEmitted": [
+    "slot-dataflow/malformed-guard-ref"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 25,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 4,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "malformed-guard-ref",
+      "severity": "error",
+      "object": "capability:conformance.slot.malformed-guard-ref",
+      "field": "guardRefs[0].name",
+      "message": "guard ref must name a guard; got string (\"\"). The name must equal the guard's resolvable identity (its GuardMetadata.name, else its Function.name)."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/malformed-guard-ref: capability:conformance.slot.malformed-guard-ref · guardRefs[0].name — guard ref must name a guard; got string (\"\"). The name must equal the guard's resolvable identity (its GuardMetadata.name, else its Function.name)."
+  ]
+}

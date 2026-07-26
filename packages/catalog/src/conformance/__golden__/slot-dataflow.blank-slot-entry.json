@@ -1,0 +1,44 @@
+{
+  "fixture": "slot-dataflow.blank-slot-entry",
+  "targets": "slot-dataflow/blank-slot-entry",
+  "ok": false,
+  "capabilities": 1,
+  "rulesEmitted": [
+    "slot-dataflow/blank-slot-entry"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 20,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "blank-slot-entry",
+      "severity": "error",
+      "object": "capability:conformance.slot.blank-entry",
+      "field": "legacyNames[1]",
+      "message": "array slot carries a blank entry; every entry must name something."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/blank-slot-entry: capability:conformance.slot.blank-entry · legacyNames[1] — array slot carries a blank entry; every entry must name something."
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "fixture": "slot-dataflow.slot-enum-violation",
+  "targets": "slot-dataflow/slot-enum-violation",
+  "ok": false,
+  "capabilities": 1,
+  "rulesEmitted": [
+    "slot-dataflow/slot-enum-violation"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 25,
+      "diagnostics": 1
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 4,
+      "diagnostics": 0
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "slot-dataflow",
+      "rule": "slot-enum-violation",
+      "severity": "error",
+      "object": "capability:conformance.slot.enum-violation",
+      "field": "auth",
+      "message": "\"root\" is not a member of CAPABILITY_AUTH_LEVELS (guest | customer | staff | system)."
+    }
+  ],
+  "formatted": [
+    "slot-dataflow/slot-enum-violation: capability:conformance.slot.enum-violation · auth — \"root\" is not a member of CAPABILITY_AUTH_LEVELS (guest | customer | staff | system)."
+  ]
+}
