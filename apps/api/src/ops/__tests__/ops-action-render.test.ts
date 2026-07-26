@@ -292,6 +292,251 @@ describe("BKL-149 — rewritten_and_executed + a transactional multi-envelope pl
   });
 });
 
+// ── BKL-240 — template selection is gated on the BUSINESS OUTCOME ─────────────
+//
+// An `executed` dispatch proves only that `tool.execute` RETURNED WITHOUT THROWING
+// (@claustrum's dispatcher never inspects the returned value), so a tool that RETURNS
+// `{ success:false }` landed here as fully executed and drew its full success
+// template — a false success reported to STAFF, who then act on it. The gate is
+// `success === false` ⇒ abstain (the ratified BKL-247 polarity), and it sits BEFORE
+// template selection so the generic fallback cannot leak a success claim either.
+
+describe("BKL-240 — a REPORTED executor failure renders NO success template", () => {
+  /** A failure result in the shape a tool returns rather than throws. */
+  const FAILED = { success: false, message: "Falha ao aplicar a alteração." };
+
+  it.each(OPS_ACTION_RENDER_TEMPLATE_KEYS.map((k) => [k] as const))(
+    "%s → undefined (falls through to the honest grounded path)",
+    (kind) => {
+      // The payload is deliberately the WELL-FORMED one for each verb where it
+      // matters: the gate must win even when the template would have rendered
+      // perfectly. Uniform across every registered template — a future verb
+      // inherits the safety without editing this file.
+      expect(
+        renderOpsActionAnswer(
+          executed(
+            kind,
+            { date: "2026-07-11", isOpen: false, available: false, priceCentavos: 9_500 },
+            { ...FAILED, newStatus: "ready", displayId: 42, refundAmountCentavos: 100 },
+          ),
+        ),
+      ).toBeUndefined();
+    },
+  );
+
+  it("the headline: a FAILED schedule.override.set never says 'fechei a loja'", () => {
+    const out = renderOpsActionAnswer(
+      executed(
+        "schedule.override.set",
+        { date: "2026-07-11", isOpen: false },
+        { success: false, message: "Não foi possível salvar o horário." },
+      ),
+    );
+    expect(out).toBeUndefined();
+    // The operator must never be told the store was closed when the write failed.
+    expect(out ?? "").not.toContain("fechei");
+  });
+
+  it("a FAILED unregistered verb does not leak the GENERIC success line either", () => {
+    // "Pronto — ação concluída." is truthful only of a verb that actually ran, so the
+    // gate has to precede the fallback, not just the per-kind templates.
+    const out = renderOpsActionAnswer(executed("some.future.verb", { any: 1 }, FAILED));
+    expect(out).toBeUndefined();
+    expect(out).not.toBe(OPS_ACTION_GENERIC_PTBR);
+  });
+
+  it("rewritten_and_executed carrying a FAILED result renders nothing", () => {
+    expect(
+      renderOpsActionAnswer({
+        kind: "rewritten_and_executed",
+        envelope: { kind: "schedule.override.set", payload: { date: "2026-07-11", isOpen: false } },
+        toolId: "t",
+        result: FAILED,
+        reason: "clamped",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("a MIXED executed_plan (one committed, one failed) renders NOTHING, not a partial success", () => {
+    // Rendering only the successful line would read as a COMPLETE success for the
+    // turn and silently swallow the failure — the same false-success class one level
+    // up. The whole turn falls to the grounded path, which voices both.
+    const out = renderOpsActionAnswer({
+      kind: "executed_plan",
+      executions: [
+        {
+          envelope: { kind: "product.availability.set", payload: { productId: "p1", available: false } },
+          toolId: "t1",
+          result: {},
+        },
+        {
+          envelope: { kind: "schedule.override.set", payload: { date: "2026-07-11", isOpen: false } },
+          toolId: "t2",
+          result: FAILED,
+        },
+      ],
+    });
+    expect(out).toBeUndefined();
+    expect(out ?? "").not.toContain("esgotado");
+  });
+
+  it("an EXPLICIT success:true renders exactly as before", () => {
+    expect(
+      renderOpsActionAnswer(
+        executed(
+          "schedule.override.set",
+          { date: "2026-07-11", isOpen: false },
+          { success: true, date: "2026-07-11", isOpen: false },
+        ),
+      ),
+    ).toBe("Pronto — fechei a loja em 11/07/2026.");
+  });
+
+  it.each([
+    ["absent success (every ops executor today)", { date: "2026-07-11", isOpen: false }],
+    ["empty result", {}],
+    ["undefined result", undefined],
+    ["null result", null],
+    ["non-record result", "ok"],
+  ])(
+    "%s still renders — the `!== false` polarity, not `=== true`",
+    (_label, result) => {
+      // Every registered ops executor returns a DOMAIN-shaped result with no
+      // `success` field, so a `=== true` gate would silently stop rendering all of
+      // them and reintroduce the false-FAILURE this module was built to kill. Only
+      // an EXPLICIT `success: false` withholds the render.
+      expect(
+        renderOpsActionAnswer(
+          executed("schedule.override.set", { date: "2026-07-11", isOpen: false }, result),
+        ),
+      ).toBe("Pronto — fechei a loja em 11/07/2026.");
+    },
+  );
+});
+
+// ── BKL-240 — the REACHABLE ops failure signals ────────────────────────────────
+//
+// The audit found NO ops executor sets a `success` field, so the gate above is
+// forward-looking only. The signals that are actually reachable today are per-kind
+// committed SHAPES, and each one is a real production path, not a hypothetical:
+//
+//  · ops.alert.resolve.staff / incident.ticket.close.staff — their SYSTEM-write layer
+//    adjudicates the inner envelope itself and its contract makes `result` OPTIONAL
+//    (ops-tool-registry.ts:199 / :211), so a non-EXECUTE inner decision yields no
+//    result and the executors coerce it to `status: null` (:732 / :761). Nothing
+//    threw ⇒ `executed` ⇒ the fixed line was stated over a still-OPEN alert.
+//  · menu.special.set — `OpsDailySpecialWriter.update` is ROW-OR-NULL
+//    (daily-special.service.ts:67) and the executor DISCARDED that null, reporting
+//    `existing.id` regardless: a row deleted between the day's `list` and the
+//    `update` announced a special that does not exist. The executor now propagates
+//    the null as `specialId: null` and this render gates on it.
+
+describe("BKL-240 — alert/incident abstain unless the SYSTEM write reported a status", () => {
+  it("ops.alert.resolve.staff with status:null (inner adjudication did NOT execute) → undefined", () => {
+    const out = renderOpsActionAnswer(
+      executed("ops.alert.resolve.staff", { alertId: "alert_1" }, {
+        alertId: "alert_1",
+        status: null,
+      }),
+    );
+    expect(out).toBeUndefined();
+    // The operator must never be told a still-OPEN alert was resolved.
+    expect(out ?? "").not.toContain("resolvido");
+  });
+
+  it("incident.ticket.close.staff with status:null → undefined", () => {
+    const out = renderOpsActionAnswer(
+      executed("incident.ticket.close.staff", { incidentId: "inc_1" }, {
+        incidentId: "inc_1",
+        status: null,
+      }),
+    );
+    expect(out).toBeUndefined();
+    expect(out ?? "").not.toContain("fechado");
+  });
+
+  it.each([
+    ["absent status", { alertId: "alert_1" }],
+    ["blank status", { alertId: "alert_1", status: "   " }],
+    ["non-string status", { alertId: "alert_1", status: 200 }],
+    ["non-record result", undefined],
+  ])("%s also abstains — both executors ALWAYS report the key", (_label, result) => {
+    expect(
+      renderOpsActionAnswer(executed("ops.alert.resolve.staff", { alertId: "alert_1" }, result)),
+    ).toBeUndefined();
+  });
+
+  it("a COMMITTED status still renders both lines (the gate is not over-broad)", () => {
+    expect(
+      renderOpsActionAnswer(
+        executed("ops.alert.resolve.staff", { alertId: "a" }, { alertId: "a", status: "RESOLVED" }),
+      ),
+    ).toBe("Pronto — alerta operacional resolvido.");
+    expect(
+      renderOpsActionAnswer(
+        executed("incident.ticket.close.staff", { incidentId: "i" }, {
+          incidentId: "i",
+          status: "RESOLVED",
+        }),
+      ),
+    ).toBe("Pronto — incidente fechado.");
+  });
+
+  it("a MIXED plan whose alert leg reported no status renders NOTHING", () => {
+    const out = renderOpsActionAnswer({
+      kind: "executed_plan",
+      executions: [
+        {
+          envelope: { kind: "schedule.override.set", payload: { date: "2026-07-11", isOpen: false } },
+          toolId: "t1",
+          result: { date: "2026-07-11", isOpen: false },
+        },
+        {
+          envelope: { kind: "ops.alert.resolve.staff", payload: { alertId: "alert_1" } },
+          toolId: "t2",
+          result: { alertId: "alert_1", status: null },
+        },
+      ],
+    });
+    expect(out).toBeUndefined();
+    expect(out ?? "").not.toContain("fechei a loja");
+  });
+});
+
+describe("BKL-240 — menu.special.set abstains when the write touched NO row", () => {
+  it("specialId:null (the row vanished between list and update) → undefined", () => {
+    const out = renderOpsActionAnswer(
+      executed(
+        "menu.special.set",
+        { productId: "prod_1", date: "2026-07-11", promoPriceCentavos: 7_900 },
+        { specialId: null, productId: "prod_1", date: "2026-07-11", created: false },
+      ),
+    );
+    expect(out).toBeUndefined();
+    expect(out ?? "").not.toContain("especial");
+  });
+
+  it("a committed specialId renders the special line", () => {
+    expect(
+      renderOpsActionAnswer(
+        executed(
+          "menu.special.set",
+          { productId: "prod_1", date: "2026-07-11", promoPriceCentavos: 7_900 },
+          { specialId: "special_1", productId: "prod_1", date: "2026-07-11", created: true },
+        ),
+      ),
+    ).toBe("Pronto — especial de 11/07/2026 definido por R$ 79,00.");
+  });
+
+  it("a result with NO specialId key still renders — this template is PAYLOAD-grounded", () => {
+    // The committed SCN-114 fixtures carry no result at all; demanding the id would
+    // silently stop rendering all of them (the false-FAILURE trap).
+    expect(
+      renderOpsActionAnswer(executed("menu.special.set", { productId: "p", date: "2026-07-11" })),
+    ).toBe("Pronto — especial de 11/07/2026 definido.");
+  });
+});
+
 describe("BKL-149 — registry parity: every registered ops EXECUTE verb has a template", () => {
   it("OPS_ACTION_RENDER_TEMPLATE_KEYS ⊇ every registered ops mutating verb kind", () => {
     // The deps are only read at EXECUTE time (closures), never at definition time,
