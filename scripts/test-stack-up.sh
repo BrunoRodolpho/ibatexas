@@ -13,7 +13,10 @@
 #                    user) — all against the test DB
 #   [3/4] apps       process-compose up -f process-compose.test.yaml -e .env.test
 #                    -D -p <pc-port>  → api :3001 + commerce :9000, then wait for
-#                    both readiness endpoints
+#                    both readiness endpoints. BKL-263: the profile interposes a
+#                    `seed-promotions` one-shot between them — the api is GATED
+#                    on it because LE2-018's boot reconciliation refuses to start
+#                    without the declared promotions in this stack's Medusa.
 #   [4/4] seed       ibx db reindex (creates the Typesense collection missing
 #                    on virgin test infra), then ibx test seed (products →
 #                    reindex → domain → homepage → delivery → orders →
@@ -57,6 +60,8 @@ PROJECT="${IBX_TEST_COMPOSE_PROJECT:-ibx-test}"
 PC_PORT="${IBX_TEST_PC_PORT:-28505}"
 APP_WAIT_SECONDS="${IBX_TEST_APP_WAIT_SECONDS:-600}"
 E2E="${IBX_TEST_E2E:-0}"
+# BKL-263: how much of a stuck process's own log a readiness failure prints.
+FAILURE_LOG_LINES="${IBX_TEST_FAILURE_LOG_LINES:-120}"
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 now() { date +%s; }
@@ -99,16 +104,33 @@ for port in "${APP_PORTS[@]}"; do
 done
 
 wait_http() {
-  # wait_http <url> <name> — poll until 2xx (curl -f also rejects the api's
-  # 503 degraded-boot responses), bounded by APP_WAIT_SECONDS.
+  # wait_http <url> <name> [process...] — poll until 2xx (curl -f also rejects
+  # the api's 503 degraded-boot responses), bounded by APP_WAIT_SECONDS.
+  #
+  # BKL-263: on timeout, DUMP the named processes' logs, don't just name the
+  # command that would. An unreachable endpoint says nothing about why, and on
+  # CI nobody can run the follow-up — the process-compose server dies with the
+  # job. The four runs that motivated this ticket each left exactly one line
+  # ("api (:3001) not ready after 600s") for a process that had printed a
+  # complete refusal report to its own log, which cost a whole diagnosis cycle.
   local url="$1" name="$2"
+  shift 2
+  local logs=("$@")
   local deadline=$(( $(now) + APP_WAIT_SECONDS ))
   until curl -fsS -o /dev/null --max-time 5 "$url" 2>/dev/null; do
     if (( $(now) >= deadline )); then
       echo "error: $name not ready after ${APP_WAIT_SECONDS}s ($url)" >&2
       echo "--- process-compose state (port $PC_PORT) ---" >&2
       process-compose process list -p "$PC_PORT" >&2 || true
-      echo "inspect logs: process-compose process logs api -p $PC_PORT (or commerce)" >&2
+      local proc
+      # `${a[@]+"${a[@]}"}`: bash 3.2 (still the /bin/bash a macOS dev runs this
+      # with) treats an empty array's "${a[@]}" as unbound under `set -u`. Every
+      # call site names a process today, so this only protects the next one.
+      for proc in ${logs[@]+"${logs[@]}"}; do
+        echo "--- last ${FAILURE_LOG_LINES} log lines: $proc ---" >&2
+        process-compose process logs "$proc" -n "$FAILURE_LOG_LINES" -p "$PC_PORT" >&2 || true
+      done
+      echo "full logs: process-compose process logs <process> -p $PC_PORT" >&2
       return 1
     fi
     sleep 3
@@ -161,10 +183,13 @@ process-compose up "${PC_FILE_ARGS[@]}" -e "$ENV_FILE" -D -p "$PC_PORT"
 # FE-D25: poll the parameterized ports — polling the hardcoded :9000/:3001 would
 # silently succeed against DEV's already-healthy endpoints (a false-green that
 # never waits for THIS stack) whenever the ports were reassigned to coexist.
-wait_http "http://localhost:${TEST_COMMERCE_PORT:-9000}/health" "commerce (:${TEST_COMMERCE_PORT:-9000})"
-wait_http "http://localhost:${TEST_API_PORT:-3001}/health" "api (:${TEST_API_PORT:-3001})"
+wait_http "http://localhost:${TEST_COMMERCE_PORT:-9000}/health" "commerce (:${TEST_COMMERCE_PORT:-9000})" commerce
+# BKL-263: seed-promotions is named alongside api because the api is GATED on it
+# (process-compose.test.yaml) — when that one-shot fails, the api never starts at
+# all and its own log is empty, so the answer is only in the seeder's.
+wait_http "http://localhost:${TEST_API_PORT:-3001}/health" "api (:${TEST_API_PORT:-3001})" api seed-promotions
 if [[ "$E2E" == "1" ]]; then
-  wait_http "http://localhost:3000/" "web (:3000)"
+  wait_http "http://localhost:3000/" "web (:3000)" web
 fi
 T3=$(now)
 
