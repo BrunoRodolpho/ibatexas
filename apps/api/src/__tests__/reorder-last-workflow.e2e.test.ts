@@ -830,6 +830,53 @@ describe("LE2-021 — what the CUSTOMER READS, at the production reply seam", ()
     expect(turn2.response).toBe(acted.result?.message);
   });
 
+  it("an order that VANISHES between the confirm and the \"sim\" is caught by the RESUME re-adjudication", async () => {
+    // MEASURED, and not what I expected: I wrote this case expecting the run to
+    // reach its `failed` template via `executeReorder`'s throw. It does not, and
+    // the reason is the stronger guarantee.
+    //
+    // The receipt satisfies only the "ask first" threshold — every guard re-runs
+    // on the confirming turn against FRESH state — so `confirmReorderLast` sees
+    // the now-absent projection and REFUSEs before the anchor can EXECUTE. The
+    // activity sequence is never entered, so there is no run to fail.
+    //
+    // That makes `executeReorder`'s throw a defence-in-depth branch a turn
+    // cannot reach, which is why it is covered directly in
+    // `src/tools/__tests__/workflow-tool-registration.test.ts` rather than here.
+    // Recorded rather than deleted: the next person to read that throw will want
+    // to know why no e2e reaches it.
+    const { harness, sink, medusa } = buildHarness({ realResponder: true });
+
+    const turn1 = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+    expect(turn1.decision.kind).toBe("REQUEST_CONFIRMATION");
+
+    // The projection changes between the confirm and the approval.
+    orderRowsFake.rows = [];
+
+    const turn2 = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: "sim",
+    });
+
+    // The resumed anchor REFUSEs — the guard re-ran and saw the truth.
+    expect(turn2.decision.kind).toBe("REFUSE");
+    expect(refusalCodeOf(turn2.decision)).toBe("order.reorder.no_history");
+
+    // Nothing ran and nothing was built.
+    expect(workflowTrace(turn2.turnId)).toBeUndefined();
+    expect(executed(sink, "order.reorder")).toBe(0);
+    expect(medusa.calls.filter((c) => c.path === "/store/carts")).toHaveLength(0);
+
+    // And the customer is never told a cart was built.
+    expect(turn2.response).not.toContain("Montei um carrinho novo");
+    expect(turn2.response).toContain("Ainda não encontrei nenhum pedido anterior");
+  });
+
   it("the NO-HISTORY turn reads as the honest refusal", async () => {
     const { harness } = buildHarness({ withHistory: false, realResponder: true });
 

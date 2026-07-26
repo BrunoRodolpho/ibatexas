@@ -372,6 +372,11 @@ import {
 // ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
 import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
 import { buildLanguageEngineAuditMetadata } from "./claustrum/language-engine/audit-metadata.js";
+import {
+  activityIdentityBase,
+  activitySessionArg,
+  resolveActivityTool,
+} from "./claustrum/workflow/workflow-composition.js";
 import { registerWorkflowAnchorTools } from "./tools/register-workflow-anchor-tools.js";
 import { registerWorkflowScopedTools } from "./tools/register-workflow-scoped-tools.js";
 import {
@@ -1836,28 +1841,28 @@ function buildWorkflowRuntime(deps: {
   readonly auditSink: AuditSink;
   readonly toolsRef: { current?: ReturnType<typeof createToolRegistry> };
 }): WorkflowRuntime {
-  /** Project the grounded state ONE activity is adjudicated against. */
+  /**
+   * Project the grounded state ONE activity is adjudicated against.
+   *
+   * The identity half — which channel, which customer, whether authenticated —
+   * is `activityIdentityBase`, extracted to `workflow/workflow-composition.ts`
+   * because it is a DECISION with a wrong answer (a mis-read channel adjudicates
+   * a WhatsApp order against web rules) and was unreachable from a test in here.
+   * What remains is the glue: hand that identity to the same `loadCartCtx` the
+   * conductor's resolver runs, so an activity meets the grounded state a direct
+   * request would rather than a stub the workflow layer chose for itself.
+   */
   const activityState = async (envelope: IntentEnvelope): Promise<unknown> => {
-    const actor = (envelope.actor ?? {}) as {
-      customerId?: string;
-      sessionId?: string;
-    };
     const ctx = await loadCartCtx(
-      {
-        tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
-        // From the turn binding, NOT hardcoded. `adjudicateActivity` receives
-        // only an envelope and an `IntentActor` carries no channel, so without
-        // the binding this would have to guess — and `"web"` would silently
-        // adjudicate every WhatsApp workflow activity against the wrong channel
-        // (`requireCheckoutEligibility`'s `canCheckout` reads it). Falls back to
-        // "web" ONLY outside a bound turn, which no conversational path is.
-        channel: currentWorkflowChannel() ?? "web",
-        customerId: actor.customerId ?? null,
-        staffId: null,
-        isAuthenticated: (actor.customerId ?? null) !== null,
-      } as never,
+      activityIdentityBase(
+        envelope,
+        // From the turn binding, NOT hardcoded — see the extracted function's
+        // doc for why a guess here would be a money-guard bug.
+        currentWorkflowChannel(),
+        process.env.KERNEL_TENANT_ID,
+      ) as never,
       {} as never,
-      actor.sessionId === undefined ? {} : { sessionId: actor.sessionId },
+      activitySessionArg(envelope),
     );
     return { ctx };
   };
@@ -1873,25 +1878,15 @@ function buildWorkflowRuntime(deps: {
           { sink: deps.auditSink, metadataProvider: buildLanguageEngineAuditMetadata },
         )
       ).decision,
-    dispatchActivity: async (envelope, ctx) => {
-      const registry = deps.toolsRef.current;
-      if (registry === undefined) {
-        // Unreachable in a composed process: `registerWorkflowScopedTools`
-        // throws at boot for an activity kind with no handler. Kept because a
-        // silent no-op here would look like a successful step in the trace.
-        throw new Error(
-          `[workflow] no tool registry for activity kind ${String(envelope.kind)}`,
-        );
-      }
-      // `resolveTool`, NOT `list().find(...)`. The registry keeps every
-      // registration for a capability and `list()` returns them in insertion
-      // order, so a `find` takes the FIRST one registered while the conductor's
-      // own dispatch takes the last-write-wins winner. An activity must run the
-      // same implementation a directly-parsed mutation would, so it has to ask
-      // the same question the conductor asks.
-      const tool = registry.resolveTool(envelope.kind as never, ctx);
-      return tool.execute(envelope.payload, ctx);
-    },
+    // `resolveActivityTool` asks the registry the same question the conductor's
+    // own dispatch asks (last-write-wins, not first-registered) and throws for a
+    // missing registry rather than reporting a phantom successful step. Both are
+    // decisions rather than glue, so both live — and are tested — next door.
+    dispatchActivity: async (envelope, ctx) =>
+      resolveActivityTool(deps.toolsRef.current, envelope, ctx).execute(
+        envelope.payload,
+        ctx,
+      ),
   });
 }
 
