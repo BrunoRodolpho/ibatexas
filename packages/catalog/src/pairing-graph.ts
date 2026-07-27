@@ -99,12 +99,34 @@
 // CONTAINS; the catalog holds no ingredient knowledge and this table does not
 // give it any.
 //
-// The customer-safety half is unchanged and lives where it always did: §O#9's
-// closed-taxonomy safety routing means an utterance carrying an allergen or
-// dietary marker ESCALATES before any of this is consulted, so "o que combina
-// com brisket que seja sem glúten?" never reaches a pairing render at all. That
-// routing is asserted directionally by the read's own tests, because it is the
-// half a table cannot enforce about itself.
+// The customer-safety half is a RUNTIME guard, because a table cannot enforce
+// it about itself — and getting that half right cost this ticket a correction
+// worth recording here, where the next author will be tempted to make the same
+// assumption.
+//
+// This header, the ticket, and the pass's own doc originally asserted that
+// §O#9's closed-taxonomy safety routing ESCALATES an utterance carrying an
+// allergen or dietary marker before any of this is consulted, so that "o que
+// combina com brisket que seja sem glúten?" could never reach a pairing render.
+// MEASURED AT THE REAL CUSTOMER TURN SEAM, IT DOES NOT. §O#9's deterministic
+// contribution keys on ACTIVE DISTRESS and is deliberately disjoint from merely
+// naming a diet — correctly so, since the ratified policy for an allergen INFO
+// question is honest self-report, not a handoff for every "tem amendoim?". The
+// only other channel is a model-populated marker array. That utterance flagged
+// nothing, and the turn rendered the full suggestion list.
+//
+// Which is BKL-143's forbidden implication reached by a different road: a
+// customer asking which of these is gluten-free got a list, reading as an
+// assurance, sourced from a hand-authored TASTE table, with no staff member in
+// the loop. The read now carries its OWN allergen guard and degrades to the
+// honest self-report plus handoff; the argument sits at that guard in
+// `apps/api/src/claustrum/pairing-resolver.ts`, and a directional e2e pins it.
+//
+// The lesson for this file: the compiler can prove the DATA encodes no allergen
+// or dietary semantics, and that is all it can prove. What a customer is told
+// when they attach a dietary condition to an ordinary question is a runtime
+// question, and asserting a safety property this package cannot observe is how
+// a false assurance ends up in the one file people trust on safety.
 //
 // ## `why` states the PAIRING reason and nothing else — measured, not assumed
 //

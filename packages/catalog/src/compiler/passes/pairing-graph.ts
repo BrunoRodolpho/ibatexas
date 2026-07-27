@@ -79,10 +79,12 @@
 // and lactose in the seed and is a legal pairing object, because its HANDLE
 // asserts nothing about allergens — suggesting it is the house saying "this
 // goes with that", not a dietary claim. The pass governs what the DATA
-// ASSERTS, never what a product CONTAINS. The customer-safety half is §O#9's
-// closed-taxonomy routing, which escalates a marker-carrying utterance before
-// this read is ever consulted; that is asserted by the read's own tests,
-// because it is the half a table cannot enforce about itself.
+// ASSERTS, never what a product CONTAINS. The customer-safety half is a RUNTIME
+// guard on the read itself — NOT, as this comment once claimed, §O#9's routing,
+// which was measured at the turn seam and does not fire on a merely
+// diet-naming utterance. See `src/pairing-graph.ts` for the correction and
+// `apps/api/src/claustrum/pairing-resolver.ts` for the guard that replaced the
+// assumption.
 //
 // The deliberate false positives (the seed's `pudim-de-leite-condensado` is
 // permanently unpairable) are worked through in `src/pairing-graph.ts`.
