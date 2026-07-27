@@ -11,6 +11,7 @@ import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import {
   activityIdentityBase,
   activitySessionArg,
+  feasibilityActor,
   ORDER_CTX_ACTIVITY_KINDS,
   resolveActivityTool,
   stampOrderActivityPayload,
@@ -208,5 +209,54 @@ describe("stampOrderActivityPayload — LE2-023", () => {
 
   it("gates on order.cancel and nothing else, for now", () => {
     expect([...ORDER_CTX_ACTIVITY_KINDS]).toEqual(["order.cancel"]);
+  });
+});
+
+describe("feasibilityActor — WHICH identity a pre-check projection is grounded under", () => {
+  // The LE2-023 defect this closes: `checkFeasibility` was called with the bare
+  // `plannerEnvelopeActor`, which carries no customerId, so every auth-gated fact
+  // read absent and the FIRST pre-check refused the workflow for every customer
+  // alive. See the function's own doc.
+  const ENVELOPE_ACTOR = { principal: "llm", sessionId: "conv-1" } as never;
+
+  it("adds the customer the planner already derived, keeping the rest intact", () => {
+    const actor = feasibilityActor(ENVELOPE_ACTOR, { ctx: { customerId: "cus_1" } });
+    expect(actor.customerId).toBe("cus_1");
+    // The envelope actor's own fields survive — the session handle is what the
+    // cart read is keyed on, so dropping it would break the other half.
+    expect(actor.principal).toBe("llm");
+    expect(actor.sessionId).toBe("conv-1");
+  });
+
+  it("returns the actor UNCHANGED when there is no customer", () => {
+    // Fail-closed, and the same object rather than a copy: a guest projection
+    // must stay customer-less so every owner-scoped read is skipped rather than
+    // run against an empty id.
+    for (const derived of [
+      undefined,
+      {},
+      { ctx: {} },
+      { ctx: { customerId: null } },
+      { ctx: { customerId: "" } },
+      { ctx: { customerId: "   " } },
+      { ctx: { customerId: 42 } },
+    ]) {
+      expect(feasibilityActor(ENVELOPE_ACTOR, derived)).toBe(ENVELOPE_ACTOR);
+    }
+  });
+
+  it("trims, because a padded id is not an id", () => {
+    expect(feasibilityActor(ENVELOPE_ACTOR, { ctx: { customerId: " cus_2 " } }).customerId).toBe(
+      "cus_2",
+    );
+  });
+
+  it("NON-VACUITY — the bare envelope actor really does carry no customer", () => {
+    // Without this, the first case above could be passing because every actor
+    // happens to have a customerId already. It does not, and that absence IS the
+    // bug this function exists to close.
+    expect(
+      (ENVELOPE_ACTOR as { customerId?: unknown }).customerId,
+    ).toBeUndefined();
   });
 });

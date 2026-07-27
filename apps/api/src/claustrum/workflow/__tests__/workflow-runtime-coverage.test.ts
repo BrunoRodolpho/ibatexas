@@ -8,7 +8,7 @@
 // never pass because coverage silently became the default.
 
 import { describe, expect, it } from "vitest";
-import type { Decision } from "@adjudicate/core";
+import { BASIS_CODES, basis, type Decision } from "@adjudicate/core";
 import type { WorkflowDefinition } from "@ibatexas/catalog";
 import { FIXTURE_LINEAR_WORKFLOW } from "@ibatexas/catalog";
 import { createWorkflowRuntime, type WorkflowRuntime } from "../workflow-runtime.js";
@@ -20,19 +20,30 @@ const SELECT_TURN = "turn_select";
 const CONFIRM_TURN = "turn_confirm";
 const COVERED_REASON = "paid_cancel_requires_confirmation";
 
+// EVERY basis below is built by the KERNEL'S OWN `basis()` factory, never by a
+// hand-written object literal — LE2-023's turn-seam e2e is why.
+//
+// These fixtures used to spell the entries `{ kind: "confirmation", code:
+// "received" }`. A `DecisionBasis` has no `kind`; the field is `category`, and
+// it always was. The runtime's reader had the same typo, so the fixtures agreed
+// with the READER instead of with the wire and the whole coverage mechanism
+// tested green while being dead against every decision the kernel has ever
+// emitted. Using the factory makes that disagreement unrepresentable: these
+// objects are now the same shape a guard produces, by construction.
+
 /** The kernel's own witness that a customer affirmatively confirmed. */
 const AFFIRMED_ANCHOR = {
   kind: "EXECUTE",
   basis: [
-    { kind: "business", code: "rule_satisfied" },
-    { kind: "confirmation", code: "received" },
+    basis("business", BASIS_CODES.business.RULE_SATISFIED),
+    basis("confirmation", BASIS_CODES.confirmation.RECEIVED),
   ],
 } as unknown as Decision;
 
 /** An anchor EXECUTE with NO confirmation basis — the un-affirmed twin. */
 const UNAFFIRMED_ANCHOR = {
   kind: "EXECUTE",
-  basis: [{ kind: "business", code: "rule_satisfied" }],
+  basis: [basis("business", BASIS_CODES.business.RULE_SATISFIED)],
 } as unknown as Decision;
 
 /** A REQUEST_CONFIRMATION carrying a business basis whose detail names `reason`. */
@@ -40,7 +51,7 @@ function confirmWithReason(reason: string): Decision {
   return {
     kind: "REQUEST_CONFIRMATION",
     prompt: "Confirma?",
-    basis: [{ kind: "business", code: "rule_satisfied", detail: { reason } }],
+    basis: [basis("business", BASIS_CODES.business.RULE_SATISFIED, { reason })],
   } as unknown as Decision;
 }
 
@@ -57,7 +68,7 @@ const ESCALATE: Decision = {
   kind: "ESCALATE",
   reason: "paid_cancel_refund_above_escalate_threshold",
   basis: [
-    { kind: "business", code: "rule_violated", detail: { reason: COVERED_REASON } },
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, { reason: COVERED_REASON }),
   ],
 } as unknown as Decision;
 

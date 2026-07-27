@@ -17,7 +17,7 @@
 // Extracted here so each is a named function with its own tests and exactly one
 // definition.
 
-import type { IntentEnvelope } from "@adjudicate/core";
+import type { IntentActor, IntentEnvelope } from "@adjudicate/core";
 import type { ToolRegistry } from "@claustrum/core";
 
 /** The identity fields an activity's `SystemState.ctx` is built on. */
@@ -92,6 +92,58 @@ export function actorIdentityBase(
     staffId: null,
     isAuthenticated: customerId !== null,
   };
+}
+
+/**
+ * An actor carrying the customer identity a FEASIBILITY projection is grounded
+ * under — LE2-023.
+ *
+ * ── THE BUG THIS EXISTS TO CLOSE ────────────────────────────────────────────
+ *
+ * `checkFeasibility` is called from the PLANNER, and the only actor the planner
+ * has at that moment is `plannerEnvelopeActor`'s — `{principal: "llm",
+ * sessionId: conversationId}`, with NO customerId, because an ENVELOPE's actor
+ * describes who mechanically proposed the intent, not who is authenticated. The
+ * customer identity reaches an envelope's guards a different way entirely: the
+ * conductor's RESOLVE stage reads it off the Capsule.
+ *
+ * A feasibility projection has no resolver in front of it, so handing it that
+ * actor made every AUTH-GATED fact unreachable: `loadPreviousOrder` is skipped
+ * for a null customer, `customerHasPreviousOrder` reads FALSE, and the first
+ * pre-check over it refuses — for EVERY customer, including one with a shelf of
+ * orders. The workflow is then never offered to anybody, and it fails in the
+ * quiet direction: the customer gets an authored, plausible sentence saying they
+ * have no previous order.
+ *
+ * It was unreachable until this ticket only because reorder-last — the one
+ * workflow that shipped before it — declares NO pre-checks, so
+ * `checkFeasibility` returned early and the actor was never read. LE2-022 built
+ * the gate and proved it against a fixture corpus with a synthetic actor; this
+ * is the first definition to route a REAL turn through it.
+ *
+ * ── WHY IT WIDENS NOTHING ───────────────────────────────────────────────────
+ *
+ * The result is used for ONE thing — `projectFacts` — and never becomes an
+ * envelope, so no adjudication, audit row or intentHash sees it. The identity it
+ * carries is the one the planner ALREADY derived for its own capability roster
+ * (`deriveIbatexasPlannerContext`, off the Capsule-sourced memory snapshot), and
+ * it is the same identity the anchor envelope will be resolved under a moment
+ * later. Passing anything else would let a workflow be OFFERED on one customer's
+ * facts and CONFIRMED on another's.
+ *
+ * Absent or guest ⟹ the actor is returned UNCHANGED, so the projection stays
+ * customer-less and every auth-gated fact stays absent. That is the fail-closed
+ * direction and it is what a guest should get.
+ */
+export function feasibilityActor(
+  envelopeActor: IntentActor,
+  derivedPlannerState: unknown,
+): IntentActor & { readonly customerId?: string } {
+  const ctx = (derivedPlannerState as { ctx?: { customerId?: unknown } } | undefined)?.ctx;
+  const raw = ctx?.customerId;
+  const customerId = typeof raw === "string" ? raw.trim() : "";
+  if (customerId === "") return envelopeActor;
+  return { ...envelopeActor, customerId };
 }
 
 /** The session handle an activity's cart state is loaded under, if it has one. */

@@ -146,6 +146,7 @@ import {
   isWorkflowScopedKind,
   withoutWorkflowScopedKinds,
 } from "./workflow/workflow-access.js";
+import { feasibilityActor } from "./workflow/workflow-composition.js";
 import {
   isStartWorkflowInput,
   sanitizeWorkflowSlots,
@@ -1895,9 +1896,17 @@ export function createIbatexasPlanner(
       // Absent runtime, or a turn that selected no workflow, or one whose
       // workflow declares no pre-check ⟹ `undefined` ⟹ byte-identical to
       // pre-LE2-022.
+      //
+      // The actor is `feasibilityActor`, NOT `envelopeActor`: an envelope's
+      // actor carries no customerId (it describes who PROPOSED, and the
+      // authenticated identity reaches a real envelope through the conductor's
+      // RESOLVE stage instead), while a pre-check projection has no resolver in
+      // front of it — so handing it the bare envelope actor made every
+      // auth-gated fact unreachable and refused the workflow for everybody. See
+      // that function's doc for the full failure and why this widens nothing.
       const infeasible = await deps.workflowRuntime?.checkFeasibility({
         turnId: state.turnId,
-        actor: envelopeActor,
+        actor: feasibilityActor(envelopeActor, derived.state),
       });
       if (infeasible !== undefined) {
         logger.info(

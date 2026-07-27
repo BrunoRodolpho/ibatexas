@@ -66,7 +66,13 @@
 // trace records exactly how far it got.
 
 import { randomUUID } from "node:crypto";
-import { buildEnvelope, type Decision, type IntentActor, type IntentEnvelope } from "@adjudicate/core";
+import {
+  buildEnvelope,
+  type Decision,
+  type DecisionBasis,
+  type IntentActor,
+  type IntentEnvelope,
+} from "@adjudicate/core";
 import {
   CATALOG_VERSION,
   findWorkflow,
@@ -408,10 +414,22 @@ function basisCodeOf(decision: Decision): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
-/** Every basis entry a decision carries, structurally. */
-function basisEntriesOf(decision: Decision): readonly Record<string, unknown>[] {
+/**
+ * Every basis entry a decision carries.
+ *
+ * TYPED as `DecisionBasis`, not as `Record<string, unknown>`, and that is a fix
+ * rather than a tidy-up. An index-signature read compiles for ANY key, so
+ * `entry["kind"]` type-checked cleanly while the kernel has only ever emitted
+ * `category` — which made {@link carriesConfirmationReceipt} a permanent
+ * `false` and the whole declared-coverage mechanism dead on every real turn.
+ * Nothing static could have caught it, and the unit fixtures could not either:
+ * they were hand-built with the same wrong key, so they agreed with the reader
+ * instead of with the wire. Under this type a misspelled field is a compile
+ * error.
+ */
+function basisEntriesOf(decision: Decision): readonly DecisionBasis[] {
   const basis = (decision as { basis?: unknown }).basis;
-  return Array.isArray(basis) ? (basis as Record<string, unknown>[]) : [];
+  return Array.isArray(basis) ? (basis as DecisionBasis[]) : [];
 }
 
 /**
@@ -426,7 +444,7 @@ function basisEntriesOf(decision: Decision): readonly Record<string, unknown>[] 
 function basisReasonsOf(decision: Decision): readonly string[] {
   const reasons: string[] = [];
   for (const entry of basisEntriesOf(decision)) {
-    const detail = entry["detail"];
+    const detail = entry.detail;
     if (detail === null || typeof detail !== "object") continue;
     const reason = (detail as { reason?: unknown }).reason;
     if (typeof reason === "string" && reason !== "") reasons.push(reason);
@@ -443,12 +461,19 @@ function basisReasonsOf(decision: Decision): readonly string[] {
  * reading it rather than inferring it is the point: "we got here, so they must
  * have agreed" is an argument about control flow, and control flow is exactly
  * what a future edit changes without noticing.
+ *
+ * The field is `category` — the ONLY name `basis()` has ever produced. It was
+ * `kind` here until LE2-023's turn-seam e2e, and because a `DecisionBasis`
+ * carries no such key the predicate was false for every decision the kernel has
+ * ever emitted: no coverage could resolve, every covered activity stopped at its
+ * own confirm, and the saga failed with 0/3 executed. See {@link basisEntriesOf}
+ * for why nothing caught it.
  */
 function carriesConfirmationReceipt(decision: Decision | undefined): boolean {
   if (decision === undefined) return false;
   if (String((decision as { kind?: unknown }).kind ?? "") !== "EXECUTE") return false;
   return basisEntriesOf(decision).some(
-    (entry) => entry["kind"] === "confirmation" && entry["code"] === "received",
+    (entry) => entry.category === "confirmation" && entry.code === "received",
   );
 }
 
