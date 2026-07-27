@@ -30,6 +30,7 @@ import {
   funnelTurnContext,
   openFunnelTurn,
   renderL0Reply,
+  tierAuthorsOwnReply,
   type SocialKind,
 } from "../funnel-tier.js";
 
@@ -421,5 +422,53 @@ describe("the per-turn stage store + seam", () => {
     expect(funnelStage("t_leak_0")).toBeUndefined();
     expect(funnelStage("t_leak_699")).toBeDefined();
     for (let i = 0; i < 700; i += 1) closeFunnelTurn(`t_leak_${i}`);
+  });
+});
+
+/**
+ * BKL-276 — the tier predicate the claim short-circuit reads.
+ *
+ * A funnel STAMP alone never meant "this turn already has a reply", but the claim
+ * path used to treat it that way (`stageFor(turnId) !== undefined`), which silenced
+ * the claims plane on every L2 turn once a retriever was configured. These pins are
+ * the cheap guard on the SPLIT itself; the turn-seam proof is in
+ * `apps/api/src/__tests__/bkl276-funnel-claims-suppression.e2e.test.ts`.
+ */
+describe("BKL-276 — tierAuthorsOwnReply", () => {
+  it("only L0 and ALIAS author their own reply", () => {
+    // These two RESOLVE the turn from a deterministic template — no parse, no model
+    // call — so the claim plane is correctly skipped for them.
+    expect(tierAuthorsOwnReply("L0")).toBe(true);
+    expect(tierAuthorsOwnReply("ALIAS")).toBe(true);
+    // These two still PARSE; their reply is produced downstream exactly as on a
+    // miss, and on a miss the claim plane runs — so it must run for them too.
+    expect(tierAuthorsOwnReply("L1")).toBe(false);
+    expect(tierAuthorsOwnReply("L2")).toBe(false);
+  });
+
+  it("agrees with the responder seam's reply(): the authoring tiers are exactly the ones that return a sentence", () => {
+    const funnel = createL0Funnel();
+    // L1/L2 stage records get no deterministic reply from the seam …
+    for (const tier of ["L1", "L2"] as const) {
+      const stage = {
+        tier,
+        reason: "scoped_parse",
+        detail: {},
+        at: new Date().toISOString(),
+      };
+      expect(funnel.reply(stage as never)).toBeUndefined();
+      expect(tierAuthorsOwnReply(tier)).toBe(false);
+    }
+    // … while L0 does, for every social kind.
+    for (const socialKind of ["greeting", "thanks", "farewell"] as const) {
+      const stage = {
+        tier: "L0",
+        reason: "social_only",
+        detail: { socialKind },
+        at: new Date().toISOString(),
+      };
+      expect(funnel.reply(stage as never)).toBe(renderL0Reply(socialKind));
+      expect(tierAuthorsOwnReply("L0")).toBe(true);
+    }
   });
 });

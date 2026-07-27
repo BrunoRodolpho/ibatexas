@@ -68,16 +68,48 @@ import {
  *
  * All three are LIVE: `L0` social short-circuit (LE2-007), `L1` byte-identical
  * repeat → memoized parse (LE2-009), `L2` parse scoped to K plausible capabilities
- * (LE2-008). The extensibility LE2-007 designed for held: each tier added its own
- * member and its own {@link FunnelStageRecord} detail keys, and no consumer (the
- * planner short-circuit, the responder, the per-turn telemetry stamp) needed a change,
- * because none of them switches on the tier value.
+ * (LE2-008). The extensibility LE2-007 designed for held for the tiers' own detail
+ * keys: each tier added its own member and its own {@link FunnelStageRecord} keys.
+ *
+ * BKL-276 — but "no consumer switches on the tier value" was NEVER safe for the
+ * CLAIM short-circuit, and this comment used to assert it was. A stamp means only
+ * "some tier attributed this turn"; it does NOT mean "this turn already has a
+ * reply". Skipping the claim plane on a bare `stageFor(turnId) !== undefined`
+ * therefore silenced claims on every L2 turn — see {@link tierAuthorsOwnReply},
+ * which is now the ONE discriminator both the planner and the responder read.
  *
  * EXACTLY ONE TIER PER TURN. L0 and L1 CLAIM a turn (they resolve it without a model
  * call); L2 does not — it still parses, just against a narrower surface. So the planner
  * stamps L2 only after L1 has missed, and a turn can never carry two attributions.
  */
 export type FunnelTier = "L0" | "L1" | "L2" | "ALIAS";
+
+/**
+ * Does this tier AUTHOR the turn's reply itself?
+ *
+ * The funnel's tiers split cleanly in two, and the split — not the mere presence of
+ * a stage record — is what every "has this turn already been answered?" consumer
+ * actually means:
+ *
+ *  - `L0` (social template) and `ALIAS` (the ambiguous-surface CLARIFY question)
+ *    RESOLVE the turn: no parse, no model call, and {@link FunnelResponderSeam.reply}
+ *    returns their deterministic pt-BR sentence. Proposing claims for them would put
+ *    a completion back on the wire for a turn that already has its answer — exactly
+ *    the cost the tier exists to remove — and (L0's original reason, BKL-110) let an
+ *    over-proposed claim clobber the template.
+ *  - `L1` (replayed parse) and `L2` (scoped parse) DO NOT author a reply. They still
+ *    parse; the reply is produced downstream from the re-minted envelopes "exactly as
+ *    on a miss" (see {@link FunnelResponderSeam.reply}). On a miss the claim plane
+ *    runs — so on L1/L2 it must run too, or the same utterance answers differently
+ *    depending on whether a retriever happens to be configured.
+ *
+ * Keeping this ONE predicate is the anti-drift measure: a future tier is opted into
+ * the short-circuit only by being named here, next to the `reply()` that must also
+ * answer for it.
+ */
+export function tierAuthorsOwnReply(tier: FunnelTier): boolean {
+  return tier === "L0" || tier === "ALIAS";
+}
 
 /**
  * WHY a tier claimed the turn — the machine-stable join field for the trace.
@@ -864,6 +896,10 @@ export function createParseFunnel(
       return funnelStage(turnId);
     },
     reply(stage: FunnelStageRecord): string | undefined {
+      // The same predicate the planner's claim short-circuit reads (BKL-276), so
+      // "authors its own reply" can never mean two different things in the two
+      // places that ask. Behaviour-preserving: L1/L2 returned undefined here before.
+      if (!tierAuthorsOwnReply(stage.tier)) return undefined;
       if (stage.tier === "ALIAS") {
         // Rebuilt from the stamped detail rather than held in a closure, so the
         // reply is a pure function of the record the trace already shows.
