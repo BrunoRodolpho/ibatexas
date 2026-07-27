@@ -1186,3 +1186,128 @@ describe("BKL-209 — deterministic medical-EMERGENCY net (§O#9 safety)", () =>
     expect(detectMedicalEmergencyMarkers("qual o horário de domingo?")).toEqual([]);
   });
 });
+
+// BKL-271 — the mutation-root nets false-matched the PREFIX "por" inside ordinary
+// READ vocabulary, and every classify-only READ span is gated on `!mutationImperative`,
+// so those turns lost ALL their spans and fell off the deterministic path entirely
+// (the failure BKL-273/LE2-029 established is NOT fail-safe: with no span, §O#15 has
+// nothing to complete and the model authors the sentence itself).
+//
+// Root-specific fixes, each with its true-positive control pinned alongside:
+//   `p[õo]r`  -> `p[õô]r(?![a-zà-ÿ])` + the real forms (ponh)  — the ticket
+//   `cancel`  -> `cancel(?!ad)`                                — status participle
+//   `coloc`   -> `colo[cq]`   and  `troc` -> `tro[cq]`         — c→q orthography
+describe("classifyRequestSpans — BKL-271 mutation-root false positives", () => {
+  // (a) pulled pork is core BBQ vocabulary AND a seeded product (handle `pulled-pork`).
+  // It is NOT an alias-gazetteer surface, so the raw bytes reach this classifier.
+  it("MUST-FIRE the menu reads on a pulled-pork ask ('por' inside 'pork')", () => {
+    expect(classifyRequestSpans("o que vem no pulled pork?")).toContain(
+      "MENU_ITEM_CONTENTS_Q",
+    );
+    expect(classifyRequestSpans("quanto custa o pulled pork?")).toContain(
+      "MENU_ITEM_PRICE_Q",
+    );
+  });
+
+  // (b) `porção` is the variant title of six seeded products. It is the case a naive
+  // ASCII trailing guard `(?![a-z])` does NOT close — `ç` (U+00E7) sits outside [a-z].
+  it("MUST-FIRE the price read on a 'porção' ask (ç is outside [a-z])", () => {
+    expect(classifyRequestSpans("qual o preço da porção de linguiça?")).toContain(
+      "MENU_ITEM_PRICE_Q",
+    );
+  });
+
+  // (b) the BARE preposition. "por favor" / "por gentileza" are politeness markers that
+  // attach to reads and writes alike — 77% of this repo's word-initial "por" bigrams —
+  // so matching them suppressed the read span on every polite utterance.
+  it("MUST-FIRE the reads on bare-'por' question and politeness forms", () => {
+    const cases: Array<[string, string]> = [
+      ["quanto custa por pessoa?", "MENU_ITEM_PRICE_Q"],
+      ["me mostra o cardápio, por favor", "MENU_OVERVIEW_Q"],
+      ["onde fica o restaurante, por favor?", "STORE_INFO_Q"],
+      ["o que tem no meu carrinho, por gentileza?", "CART_CONTENTS_Q"],
+      ["meu pedido já saiu por acaso?", "ORDER_STATUS_Q"],
+    ];
+    for (const [text, span] of cases) {
+      expect(classifyRequestSpans(text), text).toContain(span);
+    }
+  });
+
+  // (c) TRUE-POSITIVE controls for the PUT family. The IMPERATIVE forms carry the
+  // mutation and must still suppress — `p[õo]e` unchanged, `ponh` newly covered.
+  it("STILL-SUPPRESSES on genuine põe/ponha imperatives", () => {
+    for (const text of [
+      "põe uma coca no carrinho",
+      "poe mais farofa no pedido",
+      "ponha uma coca no meu carrinho",
+      "ponha mais um brisket junto",
+    ]) {
+      expect(classifyRequestSpans(text), text).toEqual([]);
+    }
+  });
+
+  // (c) …and the counter-direction that forced the branch to be DELETED rather than
+  // re-pointed at `ô`: the INFINITIVE `pôr` is not a mutation verb in this domain. It
+  // arrives in the modal frame "o que posso pôr no lugar?" — a SUBSTITUTION question,
+  // which LE2-029's committed pairing e2e pins as a READ. Spelling the root `p[õô]r`
+  // to "finally match pôr" makes that turn a mutation and takes the e2e red.
+  it("MUST-FIRE the pairing read on the 'posso pôr no lugar' substitution ask", () => {
+    expect(classifyRequestSpans("o que posso pôr no lugar da costela?")).toContain(
+      "PAIRING_Q",
+    );
+  });
+
+  // (d) `cancel(?!ad)` — the participle is a STATUS ask, the imperative is a mutation.
+  it("MUST-FIRE the status reads on a 'cancelado/cancelada' participle ask", () => {
+    expect(classifyRequestSpans("meu pedido foi cancelado?")).toContain("ORDER_STATUS_Q");
+    expect(classifyRequestSpans("minha reserva está cancelada?")).toContain(
+      "RESERVATION_STATUS_Q",
+    );
+  });
+
+  it("STILL-SUPPRESSES on the cancel IMPERATIVE family (past the (?!ad) guard)", () => {
+    for (const text of [
+      "cancela meu pedido",
+      "cancelar a minha reserva",
+      "cancele o pedido por favor",
+      "quero o cancelamento do meu pedido",
+    ]) {
+      expect(classifyRequestSpans(text), text).toEqual([]);
+    }
+  });
+
+  // (d) `colo[cq]` / `tro[cq]` — pt-BR conjugation swaps c→q before -e, so "coloque" and
+  // "troque" escaped the old `coloc`/`troc` roots. "coloque uma coca no carrinho" fired
+  // CART_CONTENTS_Q: the read rendered and the add was SILENTLY DROPPED (BKL-201's own
+  // defect, still live). "troque … POR …" is load-bearing for this ticket — it only
+  // suppressed before via the "por" false positive being fixed here.
+  it("STILL-SUPPRESSES on the c→q imperative forms (coloque / troque)", () => {
+    for (const text of [
+      "coloque uma coca no carrinho",
+      "troque a costela por brisket no meu carrinho",
+      "coloquei o item errado no carrinho",
+    ]) {
+      expect(classifyRequestSpans(text), text).toEqual([]);
+    }
+  });
+
+  // The roots the audit left DELIBERATELY untouched must keep their coverage — these
+  // pin that this ticket narrowed only the four roots it names.
+  it("STILL-SUPPRESSES on every UNCHANGED edit/lifecycle root", () => {
+    for (const text of [
+      "adiciona uma coca no carrinho",
+      "acrescenta farofa no pedido",
+      "remove a costela do carrinho",
+      "tira o refrigerante do carrinho",
+      "muda o endereço do restaurante",
+      "limpa o meu carrinho",
+      "esvazia o carrinho",
+      "aumenta a quantidade no carrinho",
+      "diminui a quantidade no carrinho",
+      "fecha o meu pedido",
+      "finaliza o meu pedido",
+    ]) {
+      expect(classifyRequestSpans(text), text).toEqual([]);
+    }
+  });
+});
