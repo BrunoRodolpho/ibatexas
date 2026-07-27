@@ -201,6 +201,11 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // excluded by the wholesale allergen carve-out.
     "COUPON_VALID",
     "COUPON_INVALID",
+    // LE2-029 — the pairing pair, on the same footing: PUBLIC store knowledge
+    // (ownership `not_applicable`, no owner-scoped key prefix), so a classify-only
+    // turn may resolve them without an authenticated customer.
+    "MENU_PAIRINGS",
+    "MENU_SUBSTITUTIONS",
   ]);
 
 /**

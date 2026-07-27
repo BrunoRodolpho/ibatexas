@@ -6,6 +6,7 @@
   "externalReferences": 0,
   "aliases": 0,
   "workflows": 1,
+  "pairings": 0,
   "rulesEmitted": [
     "workflow-runtime-shape/policy-gated-activity-not-scoped"
   ],
@@ -54,6 +55,11 @@
       "pass": "workflow-runtime-shape",
       "checked": 14,
       "diagnostics": 1
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 0,
+      "diagnostics": 0
     }
   ],
   "diagnostics": [

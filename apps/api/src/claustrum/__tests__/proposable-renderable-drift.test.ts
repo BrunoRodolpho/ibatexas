@@ -164,6 +164,13 @@ const NON_TRIAD_RENDERABLE = [
   // RENDERABLE) is UNCHANGED: both ship WITH their templates.
   "COUPON_VALID",
   "COUPON_INVALID",
+  // LE2-029 — the pairing PAIR, on exactly the same footing: a validated
+  // pre-composed-scalar template each, `not_applicable` ownership (what the house
+  // serves together is store knowledge owned by nobody — the same answer
+  // regardless of who asks), so intentionally OUT of TRIAD_SCOPED_TYPES. The gap
+  // pin (PROPOSABLE \ RENDERABLE) is UNCHANGED: both ship WITH their templates.
+  "MENU_PAIRINGS",
+  "MENU_SUBSTITUTIONS",
 ] as const;
 
 describe("BKL-112 — context: RENDERABLE == the triadScoped definitions ∪ the deliberate non-Triad public reads", () => {

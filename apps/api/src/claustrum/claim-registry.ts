@@ -220,6 +220,58 @@ export const CLAIM_REGISTRY = [
   // WITHOUT attempting an apply, which is the whole point of Decision 18.
   "COUPON_VALID",
   "COUPON_INVALID",
+  // LE2-029 — the PAIRING pair ("o que combina com brisket?", "não tem costela,
+  // o que peço no lugar?"). CUSTOMER-scoped by construction (they live in this
+  // enum, so `CUSTOMER_CLAIM_SCOPE` carries them; the ops plane reaches them only
+  // through its SUPERSET scope). PUBLIC (`not_applicable` ownership, like
+  // STORE_INFO / COUPON_VALID): what the house serves together is store knowledge
+  // owned by nobody — the same answer regardless of who asks — so a guest gets
+  // the same grounded suggestion as an authenticated customer.
+  //
+  // A COMPLEMENTARY PAIR: the resolver classifies the utterance as a pairing ask
+  // or a substitution ask and records at most ONE key, so exactly one can ever
+  // validate in a turn and the other resolves honest UNKNOWN and is dropped by
+  // the kernel's §D filter (never a rendered contradiction). Both are registered
+  // in PRESENCE_COMPLEMENT_PAIRS (required-claim-decomposer.ts) in the same
+  // commit as their §O#15 closure row — the LE2-002 defect, refused again.
+  //
+  // WHY A PAIR AND NOT ONE TYPE WITH A RELATION FIELD: the two answers carry
+  // genuinely DIFFERENT static frames ("vai bem com" invites an addition, "no
+  // lugar" answers an absence), and under the frozen single-C6-field kernel a
+  // single type would have to hide the whole difference inside its one scalar,
+  // leaving a template frame that can say nothing true in both branches. The same
+  // argument the delivery and coupon pairs made.
+  //
+  // ── THERE IS NO MENU_NO_PAIRINGS, AND THERE MUST NOT BE ────────────────────
+  //
+  // If you came here looking for the negative twin — the CART_EMPTY to this
+  // CART_CONTENTS, the COUPON_INVALID to this COUPON_VALID — it is deliberately
+  // absent, and the reason is a property of the DATA rather than a style
+  // preference. Adding one would be a regression, so the argument is recorded
+  // here rather than in a pull request nobody will find.
+  //
+  // A validated negative is only sound when the store behind it is COMPLETE.
+  // CART_EMPTY is honest because the cart is complete: the system knows every
+  // line in it, so "it is empty" is a fact. COUPON_INVALID is honest because a
+  // promotion lookup is complete: Medusa holds every promotion that exists, so
+  // "no such code" is a fact.
+  //
+  // `PAIRING_GRAPH` is not complete and never claims to be. It is a hand-authored
+  // seed of ten edges (its own header says so), grown one owner review at a time,
+  // covering a fraction of the menu. So the absence of an edge carries NO
+  // information about the world — it means "nobody has written this down yet",
+  // and a MENU_NO_PAIRINGS claim would render as "nothing goes with this", which
+  // is an assertion the data cannot support and is usually false. That is Inv 7
+  // exactly ("could not check" is a distinct state from "the answer is no"), and
+  // ticket 29 states the required behaviour in its own words: "unknown item or
+  // empty pairing data → honest unknown".
+  //
+  // The day this graph becomes complete — a reconciled, exhaustive pairing set
+  // the owner attests to — the negative twin becomes sound and this comment is
+  // the thing to revisit. Until then the empty case degrades, and the honest
+  // UNKNOWN is the whole answer.
+  "MENU_PAIRINGS",
+  "MENU_SUBSTITUTIONS",
   "PURCHASE_COMPLETED",
 ] as const;
 
@@ -1164,6 +1216,80 @@ export const REGISTRY_SPECS = {
     ],
     valueBinding: { key: "coupon:invalid", path: ["invalidityText"] },
   },
+  // LE2-029 — MENU_PAIRINGS: the PUBLIC "what goes with this" read. FIXED-SUBJECT
+  // single-key (the STORE_INFO / COUPON_VALID shape — no perResourceKey): the
+  // answer is about the STORE's own authored advice, so there is one key and no
+  // owner. `must_read_this_turn` (NOT cacheable): the SENTENCE names live product
+  // titles resolved from the catalog this turn, and an object that stopped being
+  // sold must stop being suggested — a cacheable TTL would license the kernel to
+  // accept a suggestion for something off the menu. The
+  // `menu:pairings_changed` W6 falsifier is DECLARED (escaping the W6 UNKNOWN-only
+  // cap so the type can VALIDATE) but DELIBERATELY UNREAD — the same disposition
+  // STORE_INFO's `store:info_changed` and COUPON_VALID's `coupon:promotions_changed`
+  // carry, and for the same reason: the only available "changed" signal derives
+  // from the SAME catalog read the base read already performed this turn, so
+  // firing it would be a tautology that demotes every truthful answer while
+  // catching zero staleness.
+  MENU_PAIRINGS: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:pairings",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:pairings_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    // C6 — bind the rendered sentence to the read's ACTUAL `suggestionsText`, the
+    // scalar pairing-resolver.ts composes IN CODE from the authored graph's edges
+    // and the LIVE product titles those edges resolve to. Ledger-sourced, never
+    // model-authored: the model cannot invent a suggestion, and cannot invent the
+    // pt-BR name of one either.
+    valueBinding: { key: "menu:pairings", path: ["suggestionsText"] },
+  },
+  // LE2-029 — MENU_SUBSTITUTIONS: the presence-COMPLEMENT of MENU_PAIRINGS. The
+  // investigator records `menu:substitutions` PRESENT *only* when the utterance
+  // asked what to have INSTEAD, so exactly one of the pair can ever be present in
+  // a turn. A read that found no subject, no edges, or no live product records
+  // NEITHER key → honest UNKNOWN.
+  MENU_SUBSTITUTIONS: {
+    kind: "read_claim",
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key: "menu:substitutions",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+    falsifierComplete: true,
+    falsifiers: [
+      {
+        key: "menu:pairings_changed",
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    valueBinding: { key: "menu:substitutions", path: ["substitutionsText"] },
+  },
   PURCHASE_COMPLETED: {
     kind: "action_claim",
     minSourceIntegrity: "structured",
@@ -1496,6 +1622,15 @@ export interface FirstPartyDerivationReads {
    *  POSITIVE not-usable determination off a SUCCESSFUL lookup (never on an
    *  error). */
   readonly couponInvalid?: { readonly invalidityText?: unknown };
+  /** LE2-029 — the PAIRING read, recorded under `menu:pairings`. Same per-turn
+   *  memo (turnId + text) as the investigator's read, so the derived value is
+   *  byte-equal (C6 passes by construction). Absent (no known item, an ambiguous
+   *  alias, no edge of that relation, or no live product behind the edges) → value
+   *  stays undefined → C6 ABSTAIN → honest UNKNOWN, never an invented suggestion. */
+  readonly menuPairings?: { readonly suggestionsText?: unknown };
+  /** LE2-029 — the SUBSTITUTION twin, recorded under `menu:substitutions` only
+   *  when the utterance asked what to have INSTEAD. */
+  readonly menuSubstitutions?: { readonly substitutionsText?: unknown };
 }
 
 /**
@@ -1608,6 +1743,29 @@ export function deriveBoundValue(
     return {
       ...candidate,
       value: { invalidityText: reads.couponInvalid.invalidityText },
+    };
+  }
+
+  if (candidate.type === "MENU_PAIRINGS") {
+    // LE2-029 — FIXED subject (single-key, like COUPON_VALID): bind
+    // `suggestionsText` from the single pairing read. Absent read (no item the
+    // graph knows, an ambiguous alias the canonicaliser declined to resolve, no
+    // edge of that relation, or no live product behind the edges) → value stays
+    // undefined → C6 ABSTAINs → honest UNKNOWN, never an invented suggestion.
+    if (reads.menuPairings === undefined) return candidate;
+    return {
+      ...candidate,
+      value: { suggestionsText: reads.menuPairings.suggestionsText },
+    };
+  }
+
+  if (candidate.type === "MENU_SUBSTITUTIONS") {
+    // LE2-029 — the substitution twin. Bound ONLY when the utterance asked what to
+    // have INSTEAD and the graph had a live answer.
+    if (reads.menuSubstitutions === undefined) return candidate;
+    return {
+      ...candidate,
+      value: { substitutionsText: reads.menuSubstitutions.substitutionsText },
     };
   }
 

@@ -181,4 +181,32 @@
 // activity, the HTTP cancel routes' kind, the escalation-resume kind. What the
 // serial records is the loss of ONE ROUTE to it, and the reason: on that route a
 // paid cancel never stated the refund consequence and never issued the refund.
-export const CATALOG_VERSION: number = 14
+// v15 (LE2-029) — the PAIRING GRAPH. `src/pairing-graph.ts` arrives with ten
+// authored subject/relation/object edges, and `pairing-graph` joins the compiler
+// as its tenth pass. No capability was added and no capability field changed, so
+// the README's FIRST trigger does not fire; the THIRD does, read the way v4's
+// alias-gazetteer note read it — this is a projection-semantics change, and the
+// projection in question is what the house SAYS BACK.
+//
+// TWO triggers fire, and the second is worth recording because the precedent for
+// it is broken. `src/claim-references.ts` gains MENU_PAIRINGS and
+// MENU_SUBSTITUTIONS, and the README's bump list names that file explicitly
+// ("src/claim-references.ts — either claim name space"). NEITHER of the two prior
+// changes to that mirror bumped this serial: NEW-007/LE2-002 added the delivery
+// pair and LE2-019 added the coupon pair, and neither left an entry here. That is
+// an oversight in both, not a ratified exception — the README's plain text is the
+// discipline and this bump follows it. The two earlier serials are NOT retro-
+// bumped (a pushed catalog's version is immutable; "never reuse a value" cuts
+// both ways), so the gap stays visible in this file's history rather than being
+// papered over.
+//
+// It is load-bearing for replay in a way the gazetteer's bump was not, and the
+// difference is worth stating because it is the reason this is a serial rather
+// than a footnote. An alias edge changes how an utterance is UNDERSTOOD; a
+// pairing edge changes what the customer is TOLD. A turn compiled under v14
+// answers "o que combina com brisket?" with the honest unknown — there was no
+// graph to read — and a turn compiled under v15 answers it with mandioca frita
+// and limonada suíça. Re-running a v14 turn against this catalog does not
+// reproduce it; it produces a better answer to the same question, which is
+// exactly the distinction the stamp exists to preserve.
+export const CATALOG_VERSION: number = 15

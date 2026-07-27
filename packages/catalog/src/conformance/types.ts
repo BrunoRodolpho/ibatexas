@@ -31,6 +31,7 @@
 import type { AliasEdge } from "../alias-gazetteer.js"
 import type { CapabilityDefinition } from "../capability-definitions/types.js"
 import type { ExternalReferenceDeclaration } from "../external-references.js"
+import type { PairingEdge } from "../pairing-graph.js"
 import type { WorkflowDefinition } from "../workflows/types.js"
 
 /** One fixture catalog and the rule it exists to prove. */
@@ -84,6 +85,15 @@ export interface ConformanceFixture {
    * pass today and change meaning the day the first workflow is authored.
    */
   readonly workflows?: readonly WorkflowDefinition[]
+  /**
+   * The fixture's pairing graph (LE2-029). Omitted means NONE, for exactly the
+   * same reason as the three tables above: a fixture that inherited the real
+   * graph would change meaning every time somebody declared a pairing — and
+   * here that would be a golden diff on twelve safety fixtures caused by an
+   * unrelated menu edit, which is the noise that teaches reviewers to
+   * regenerate without reading.
+   */
+  readonly pairings?: readonly PairingEdge[]
 }
 
 /**
@@ -131,6 +141,17 @@ export function fixtureWorkflows(
   ...objects: readonly unknown[]
 ): readonly WorkflowDefinition[] {
   return objects as readonly WorkflowDefinition[]
+}
+
+/**
+ * Widen hand-authored pairing objects into the graph a pass receives — the same
+ * single-cast discipline, for the same reason: a relation outside the closed
+ * set, a provenance tag that is merely plausible, or a `why` that is whitespace
+ * is precisely what the pass exists to reject and the authored type will not
+ * express it.
+ */
+export function fixturePairings(...objects: readonly unknown[]): readonly PairingEdge[] {
+  return objects as readonly PairingEdge[]
 }
 
 /** `<pass>/<rule>` — the suite's stable id for one rejection class. */

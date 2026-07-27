@@ -1,0 +1,78 @@
+{
+  "fixture": "pairing-graph.unnecessary-pairing-review-flag",
+  "targets": "pairing-graph/unnecessary-pairing-review-flag",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/unnecessary-pairing-review-flag"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 6,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "unnecessary-pairing-review-flag",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "ownerReview",
+      "message": "this edge is grounded in the store's own menu data and still carries `ownerReview: true`. An edge read off the menu is not awaiting anybody's opinion, and a flag on it is not harmless: the flag's whole value is that counting it counts the UNGROUNDED rows, and a review queue padded with rows nobody needs to look at is a queue nobody looks at."
+    }
+  ],
+  "formatted": [
+    "pairing-graph/unnecessary-pairing-review-flag: pairing:conformance-item-sujeito · ownerReview — this edge is grounded in the store's own menu data and still carries `ownerReview: true`. An edge read off the menu is not awaiting anybody's opinion, and a flag on it is not harmless: the flag's whole value is that counting it counts the UNGROUNDED rows, and a review queue padded with rows nobody needs to look at is a queue nobody looks at."
+  ]
+}

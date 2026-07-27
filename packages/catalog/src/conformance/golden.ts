@@ -73,6 +73,8 @@ export interface ConformanceGolden {
   readonly aliases: number
   /** How many workflow definitions the fixture carried (LE2-020). */
   readonly workflows: number
+  /** How many pairing edges the fixture carried (LE2-029). */
+  readonly pairings: number
   /** Every `<pass>/<rule>` the fixture actually emitted, sorted. */
   readonly rulesEmitted: readonly string[]
   readonly passes: readonly GoldenPass[]
@@ -125,6 +127,7 @@ export function computeGolden(fixture: ConformanceFixture): ConformanceGolden {
     fixture.externalReferences ?? [],
     fixture.aliases ?? [],
     fixture.workflows ?? [],
+    fixture.pairings ?? [],
   )
   return {
     fixture: fixture.name,
@@ -134,6 +137,7 @@ export function computeGolden(fixture: ConformanceFixture): ConformanceGolden {
     externalReferences: result.externalReferences,
     aliases: result.aliases,
     workflows: result.workflows,
+    pairings: result.pairings,
     rulesEmitted: [...new Set(result.diagnostics.map(ruleId))].sort(),
     passes: result.passes.map((pass) => ({
       pass: pass.pass,

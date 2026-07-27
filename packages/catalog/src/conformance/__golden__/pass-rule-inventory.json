@@ -136,7 +136,27 @@
         "predicate-malformed",
         "route-target-dangling"
       ]
+    },
+    {
+      "pass": "pairing-graph",
+      "sources": [
+        "passes/pairing-graph.ts"
+      ],
+      "rules": [
+        "contradictory-pairing-relations",
+        "duplicate-pairing-edge",
+        "malformed-pairing-handle",
+        "malformed-pairing-rationale",
+        "safety-restricted-pairing-object",
+        "safety-restricted-pairing-rationale",
+        "safety-restricted-pairing-subject",
+        "self-referential-pairing-edge",
+        "unknown-pairing-provenance",
+        "unknown-pairing-relation",
+        "unnecessary-pairing-review-flag",
+        "unreviewed-authored-pairing"
+      ]
     }
   ],
-  "ruleCount": 65
+  "ruleCount": 77
 }

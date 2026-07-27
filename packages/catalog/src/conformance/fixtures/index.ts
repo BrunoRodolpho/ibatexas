@@ -22,6 +22,10 @@ import {
   CLEAN_EXTERNAL_REFERENCE_FIXTURE,
   EXTERNAL_REFERENCES_FIXTURES,
 } from "./external-references.js"
+import {
+  CLEAN_PAIRING_GRAPH_FIXTURE,
+  PAIRING_GRAPH_FIXTURES,
+} from "./pairing-graph.js"
 import { REFERENTIAL_INTEGRITY_FIXTURES } from "./referential-integrity.js"
 import { SAFETY_IMPLICATION_EDGES_FIXTURES } from "./safety-implication-edges.js"
 import { SLOT_DATAFLOW_FIXTURES } from "./slot-dataflow.js"
@@ -50,11 +54,13 @@ export const CONFORMANCE_FIXTURES: readonly ConformanceFixture[] = [
   ...WORKFLOW_SHAPE_FIXTURES,
   ...WORKFLOW_RUNTIME_SHAPE_FIXTURES,
   ...LE2_023_WORKFLOW_RUNTIME_FIXTURES,
+  ...PAIRING_GRAPH_FIXTURES,
   ...CLEAN_FIXTURES,
   CLEAN_EXTERNAL_REFERENCE_FIXTURE,
   CLEAN_ALIAS_GAZETTEER_FIXTURE,
   CLEAN_WORKFLOW_FIXTURE,
   CLEAN_WORKFLOW_RUNTIME_FIXTURE,
+  CLEAN_PAIRING_GRAPH_FIXTURE,
 ]
 
 /** The fixtures that must FAIL to compile — everything with a target rule. */

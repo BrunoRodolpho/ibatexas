@@ -161,7 +161,12 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     // byproduct" rule — never re-sorted green.
     // LE2-019 GREW it 14 → 16 (the COUPON_VALID / COUPON_INVALID fixed-key public
     // pair), by the same conscious act.
-    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(16);
+    // LE2-029 GREW it 16 → 18 (the MENU_PAIRINGS / MENU_SUBSTITUTIONS fixed-key
+    // public pair — the house's own authored pairing advice, subject-free like the
+    // coupon and delivery pairs), by the same conscious act.
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(18);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_PAIRINGS")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_SUBSTITUTIONS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("PAYMENT_STATUS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("RESERVATION_STATUS")).toBe(true);

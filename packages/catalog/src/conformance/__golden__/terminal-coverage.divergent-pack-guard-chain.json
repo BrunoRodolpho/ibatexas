@@ -6,6 +6,7 @@
   "externalReferences": 0,
   "aliases": 0,
   "workflows": 0,
+  "pairings": 0,
   "rulesEmitted": [
     "terminal-coverage/divergent-pack-guard-chain"
   ],
@@ -52,6 +53,11 @@
     },
     {
       "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
       "checked": 0,
       "diagnostics": 0
     }

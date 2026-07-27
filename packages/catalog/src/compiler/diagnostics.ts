@@ -57,6 +57,16 @@ export const CATALOG_PASS_IDS = [
   // UNACCOUNTED FOR, and an author reading a build log wants the two statements
   // about one definition next to each other.
   "workflow-runtime-shape",
+  // LE2-029 — the pairing graph. Placed LAST rather than beside the other two
+  // customer-vocabulary passes, despite reading a table of the same kind, and
+  // the reason is what the pass is FOR: `conversation-projection` and
+  // `alias-gazetteer` govern how a customer NAMES things, while this one
+  // governs what the house SAYS BACK. Its safety rules are the sharpest in the
+  // compiler — an object handle here is spoken as a recommendation — and a
+  // reader scanning a failed build should meet the "we told a customer
+  // something" findings as their own block, not folded into the vocabulary
+  // ones.
+  "pairing-graph",
 ] as const
 
 /** One static pass's stable id. */
@@ -191,4 +201,23 @@ export function aliasObjectName(surface: unknown, index: number): string {
   return typeof surface === "string" && surface.trim() !== ""
     ? `alias:${surface}`
     : `alias:#${index}`
+}
+
+/**
+ * Name a pairing edge for {@link CatalogDiagnostic.object} (LE2-029).
+ *
+ * The SUBJECT handle is the name — the thing a customer asked about, and what
+ * an author searches `pairing-graph.ts` for. Every edge out of one subject
+ * therefore shares an object name, which is what the sorted build log wants: a
+ * subject's suggestions are reviewed as a set, and a fault in one of them is a
+ * fault in the answer the customer would have received. Which edge is meant is
+ * carried by `field` and by the array position the message names, the same way
+ * `alias-gazetteer` distinguishes two readings of one surface. The
+ * array-position fallback is the same discipline as {@link
+ * capabilityObjectName}.
+ */
+export function pairingObjectName(subject: unknown, index: number): string {
+  return typeof subject === "string" && subject.trim() !== ""
+    ? `pairing:${subject}`
+    : `pairing:#${index}`
 }

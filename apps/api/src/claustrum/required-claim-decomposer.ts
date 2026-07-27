@@ -28,6 +28,7 @@
 // import beyond the `RegistryClaimType` it quantifies over.
 
 import type { ClaimVerdict } from "@adjudicate/core";
+import type { PairingRelation } from "@ibatexas/catalog";
 import {
   isRegistryClaimType,
   type RegistryClaimType,
@@ -91,6 +92,12 @@ export type SpanClass =
   // BKL-201/206 discipline, and Decision 14's negative space: no apply path
   // exists for a read to be mistaken for).
   | "COUPON_VALIDITY_Q"
+  // LE2-029 — a PAIRING / SUBSTITUTION question ("o que combina com brisket?",
+  // "não tem costela, o que peço no lugar?"). A READ over the house's OWN
+  // authored pairing graph — deliberately DISJOINT from any add/swap IMPERATIVE
+  // ("põe uma farofa junto"), which is a mutation and must never ride a read span
+  // (the BKL-201/206 discipline).
+  | "PAIRING_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
@@ -190,6 +197,16 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // (`not_applicable`) → never Triad-scoped, and no unrelated span force-requires
   // either type.
   COUPON_VALIDITY_Q: ["COUPON_VALID", "COUPON_INVALID"],
+  // LE2-029 — a pairing/substitution question requires the complementary PAIR, on
+  // the COUPON_VALIDITY_Q shape. The resolver classifies the utterance as ONE ask
+  // or the other and records at most one key, so exactly one can validate and the
+  // other resolves honest UNKNOWN and is dropped by the kernel's §D filter — never
+  // a rendered contradiction. Requiring both here is also what auto-enrols the
+  // pair into the classify-only candidate set and into RELEVANCE_GOVERNED_TYPES.
+  // The pair is ALSO registered in PRESENCE_COMPLEMENT_PAIRS below — without that
+  // registration this row would make §O#15 completeness STRUCTURALLY unsatisfiable
+  // (the LE2-002 defect). PUBLIC (`not_applicable`) → never Triad-scoped.
+  PAIRING_Q: ["MENU_PAIRINGS", "MENU_SUBSTITUTIONS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -356,6 +373,107 @@ const COUPON_APPLY_IMPERATIVE_RE =
 /** A MODAL/interrogative frame that makes an apply-shaped verb a QUESTION. */
 const COUPON_MODAL_QUESTION_RE =
   /(?<![a-z])(?:posso|consigo|d[áa]\s+(?:pra|para)|ser[áa]\s+que|quero\s+saber|gostaria\s+de\s+saber|como\s+(?:fa[çc]o|uso|usar))/;
+
+// ── LE2-029: the PAIRING / SUBSTITUTION ask ──────────────────────────────────
+// Pure regexes, defined HERE beside the other span nets and imported by
+// `pairing-resolver.ts`, so the SPAN and the READ are the same judgement.
+
+/**
+ * SUBSTITUTION phrasing — "no lugar", "em vez de", "substitui", "troco por",
+ * "acabou o X, e agora". Tested FIRST: "o que vai bem no lugar da costela"
+ * carries both vocabularies but asks ONE question, and the customer's operative
+ * word is the one saying they cannot have the thing they asked for. Pure.
+ *
+ * A genuine TWO-question utterance is a different case and is NOT resolved by
+ * this precedence — see {@link isBothPairingAsk}.
+ */
+const SUBSTITUTION_PHRASE_RE =
+  /(?<![a-z])(?:no\s+lugar|em\s+vez|ao\s+inv[ée]s|substitui(?:r|ção|cao)?|substitut[oa]s?|troc(?:o|ar|a)\s+por|parecid[oa]\s+com|similar\s+a|acabou|esgotad[oa]|sem\s+estoque|n[ãa]o\s+tem\s+mais)/;
+
+/**
+ * PAIRING phrasing — "combina", "vai bem", "acompanha", "harmoniza", "pedir
+ * junto", "o que peço com". Pure.
+ */
+const PAIRING_PHRASE_RE =
+  /(?<![a-z])(?:combina(?:m|ç[ãa]o|coes|ções)?|vai\s+bem|v[ãa]o\s+bem|acompanha(?:m|mento)?s?|harmoniza(?:m)?|junto\s+com|pedir\s+junto|pra\s+acompanhar|para\s+acompanhar|sugest[ãa]o|sugere|recomenda)/;
+
+/**
+ * The interrogative clause heads this family is asked with. Counted, not
+ * merely detected: the COUNT is what tells a two-question utterance from a
+ * one-question one (see {@link isBothPairingAsk}).
+ */
+const INTERROGATIVE_HEAD_RE = /(?<![a-z])(?:o\s+que|qual|quais)/g;
+
+/**
+ * Does this utterance ask BOTH questions at once — "o que combina com a costela
+ * e o que posso pôr no lugar?" Pure.
+ *
+ * WHY THIS IS ITS OWN PREDICATE, and not something the precedence above
+ * resolves. The two questions are two different acts, and the pair backing them
+ * is a PRESENCE COMPLEMENT: at most one key may ever be recorded in a turn, so
+ * answering both is structurally forbidden. That leaves two candidate
+ * behaviours for a both-ask, and only one of them is honest:
+ *
+ *   · Let the precedence pick. For a subject carrying edges of only ONE relation
+ *     that happens to be harmless (the other half finds nothing and the turn
+ *     degrades). For a subject carrying edges of BOTH — `costela-bovina-defumada`
+ *     is exactly that, with a frozen substitute AND two pairings — it answers the
+ *     substitution half CONFIDENTLY and drops the pairing half without a word.
+ *     Nothing said is false, but the reply reads as a complete answer to a
+ *     question that was only half heard. That is the P4 silent-drop direction.
+ *   · Degrade. The read records NEITHER key, both claims resolve UNKNOWN, and
+ *     the turn says so out loud.
+ *
+ * The second is what this predicate is for. It costs a turn that could have
+ * half-answered, and buys never passing off half an answer as a whole one.
+ * The span still FIRES (see {@link isPairingAsk}), so the question stays
+ * accounted for by §O#15 rather than falling through to a prose path.
+ */
+export function isBothPairingAsk(text: string): boolean {
+  const t = text.toLowerCase();
+  if (!SUBSTITUTION_PHRASE_RE.test(t) || !PAIRING_PHRASE_RE.test(t)) return false;
+  // Both vocabularies firing is NECESSARY and NOT SUFFICIENT. "o que vai bem no
+  // lugar da costela" carries both and is ONE question — the single ask that
+  // borrows the other's words, which the precedence in `classifyPairingAsk`
+  // exists to resolve. Measured, not assumed: the first cut of this predicate
+  // tested only the two vocabularies and degraded that utterance to UNKNOWN,
+  // which is the ticket's own primary use case answered with a shrug.
+  //
+  // What actually separates the two is TWO INTERROGATIVE CLAUSES. A genuine
+  // both-ask states each question with its own head ("o que combina com a
+  // costela e O QUE posso pôr no lugar?"); the borrowed-vocabulary single ask
+  // has exactly one.
+  //
+  // The threshold is deliberately conservative in the ANSWERING direction. A
+  // false positive here degrades a question the system could have answered — the
+  // worse failure, and the one that breaks the ticket. A false negative
+  // half-answers a rare unheaded two-question form ("o que combina com a costela
+  // e um substituto"), which is the behaviour that already shipped everywhere
+  // else and says nothing untrue. Given the choice, this errs toward answering.
+  return (t.match(INTERROGATIVE_HEAD_RE) ?? []).length >= 2;
+}
+
+/**
+ * Which relation is this utterance asking about, or `undefined` when neither
+ * vocabulary fires? Pure.
+ *
+ * Exported so the span classifier and the render seam select the same branch
+ * without a second, drifting regex (the BKL-184 / LE2-002 idiom). A both-ask is
+ * NOT disambiguated here — the caller asks {@link isBothPairingAsk} first and
+ * degrades; this function's precedence exists for the single question that
+ * merely borrows the other's vocabulary ("o que vai bem no lugar da costela").
+ */
+export function classifyPairingAsk(text: string): PairingRelation | undefined {
+  const t = text.toLowerCase();
+  if (SUBSTITUTION_PHRASE_RE.test(t)) return "substitutes-for";
+  if (PAIRING_PHRASE_RE.test(t)) return "pairs-with";
+  return undefined;
+}
+
+/** Does this text ask a pairing/substitution question at all? Pure. */
+export function isPairingAsk(text: string): boolean {
+  return classifyPairingAsk(text) !== undefined;
+}
 
 /**
  * LE2-019 — does this request text ask whether a COUPON is valid? Pure. Exported
@@ -579,6 +697,18 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // CLARIFY-for-code ask, never a guessed validity answer.
   if (!mutationImperative && isCouponValidityAsk(t)) {
     classes.push("COUPON_VALIDITY_Q");
+  }
+
+  // LE2-029 — a PAIRING / SUBSTITUTION question. Gated on `!mutationImperative`
+  // like every other classify-only-eligible READ span: "põe uma farofa junto do
+  // brisket" is an add, not a question about what goes with what. The resolver
+  // applies the SAME `classifyPairingAsk` net to pick which relation was asked
+  // about, so the span and the read can never disagree about the question (the
+  // BKL-184 / LE2-002 one-net idiom). Over-inclusion is DEMOTE-ONLY safe: an
+  // utterance naming no item the graph knows resolves to the honest UNKNOWN,
+  // never a guessed suggestion.
+  if (!mutationImperative && isPairingAsk(t)) {
+    classes.push("PAIRING_Q");
   }
 
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —
@@ -981,6 +1111,14 @@ const PRESENCE_COMPLEMENT_PAIRS: ReadonlyArray<
   // would degrade RENDER→UNKNOWN through the §O#15 gate one layer up in
   // `claims-renderer-adapter.ts` — invisible to any renderer-level test.
   ["COUPON_VALID", "COUPON_INVALID"],
+  // LE2-029 — the PAIRING pair, registered HERE IN THE SAME COMMIT that
+  // introduces it (the standing lesson above, applied rather than relearned).
+  // `menu:pairings` is recorded only when the utterance asked about `pairs-with`
+  // AND the graph had edges whose objects exist live; `menu:substitutions` only
+  // for the `substitutes-for` ask — complementary by construction, so exactly one
+  // can ever VALIDATE and the PAIRING_Q closure row (which requires BOTH) is
+  // satisfiable only because of this line.
+  ["MENU_PAIRINGS", "MENU_SUBSTITUTIONS"],
 ];
 
 /** Partner lookup for {@link PRESENCE_COMPLEMENT_PAIRS} (symmetric). */

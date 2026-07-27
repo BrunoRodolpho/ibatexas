@@ -1,0 +1,79 @@
+{
+  "fixture": "pairing-graph.duplicate-pairing-edge",
+  "targets": "pairing-graph/duplicate-pairing-edge",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 2,
+  "rulesEmitted": [
+    "pairing-graph/duplicate-pairing-edge"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 10,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "duplicate-pairing-edge",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "object",
+      "message": "this edge repeats the one at array position 0 — the same subject, the same relation and the same object (\"conformance-item-objeto\"). The second row can never change what the read renders; it can only drift away from the first one when somebody edits the wrong copy, and it would make the suggestion appear twice in one sentence.",
+      "reference": "conformance-item-objeto"
+    }
+  ],
+  "formatted": [
+    "pairing-graph/duplicate-pairing-edge: pairing:conformance-item-sujeito · object — this edge repeats the one at array position 0 — the same subject, the same relation and the same object (\"conformance-item-objeto\"). The second row can never change what the read renders; it can only drift away from the first one when somebody edits the wrong copy, and it would make the suggestion appear twice in one sentence."
+  ]
+}
