@@ -62,7 +62,7 @@ import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 // and the second is WORKFLOW-SCOPED, so NEITHER is planner-advertised and
 // CHAT_DRIVABLE stays 20 again) ──
 
-describe("count assertions — 66 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014 + LE2-021 + LE2-023 + LE2-024)", () => {
+describe("count assertions — 66 KNOWN / 19 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014 + LE2-021 + LE2-023 + LE2-024)", () => {
   it("KNOWN_INTENT_KINDS has exactly 66 kinds", () => {
     // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds)
     // → 61 (BKL-177 PR-B: whatsapp.message.send + template.send) → 62
@@ -72,10 +72,10 @@ describe("count assertions — 66 KNOWN / 20 CHAT_DRIVABLE pinned against the pr
     expect(KNOWN_INTENT_KINDS.size).toBe(66)
   })
 
-  it("CHAT_DRIVABLE_TOOL_KINDS has exactly 20 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
-    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(20)
+  it("CHAT_DRIVABLE_TOOL_KINDS has exactly 19 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
+    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(19)
     const generated = generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)
-    expect(generated).toHaveLength(20)
+    expect(generated).toHaveLength(19)
     expect(generated).toEqual([...CHAT_DRIVABLE_TOOL_KINDS])
   })
 
@@ -108,9 +108,9 @@ describe("count assertions — 66 KNOWN / 20 CHAT_DRIVABLE pinned against the pr
 // ── Registered tool roster — capability descriptions (value side) ───────
 
 describe("generateCapabilityDescriptions — the registered tool roster's VALUE side (FE-T21)", () => {
-  it("projects exactly 20 pt-BR descriptions, one per chat-tier capability", () => {
+  it("projects exactly 19 pt-BR descriptions, one per chat-tier capability", () => {
     const generated = generateCapabilityDescriptions(CAPABILITY_DEFINITIONS)
-    expect(Object.keys(generated)).toHaveLength(20)
+    expect(Object.keys(generated)).toHaveLength(19)
     for (const kind of CHAT_DRIVABLE_TOOL_KINDS) {
       expect(generated).toHaveProperty(kind)
       expect(typeof generated[kind]).toBe("string")

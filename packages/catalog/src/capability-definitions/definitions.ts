@@ -451,31 +451,68 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     refusalCode: "order.default.deny",
   },
   { kind: "order.pix.details.set", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // LE2-024 RETIREMENT — the ad-hoc paid-cancel path, retired now that parity is
+  // green. This row is the whole of the cut on the catalog side.
+  //
+  // ── WHAT MOVED, AND WHY IT IS EXACTLY THIS ──────────────────────────────────
+  //
+  // `tier: "chat"` → `"identity"`, and `plannerAdvertisedBy` +
+  // `conversationTriggers` + `surfaces` removed. That takes `order.cancel` off
+  // the `express_intent` enum, so a cancel utterance can only reach
+  // `workflow.orders.paid-cancel`. It does NOT retire the capability: this kind
+  // is still the workflow's own cancel ACTIVITY, still what the HTTP cancel
+  // routes adjudicate, still the `ESCALATION_RESUMABLE_KINDS` member the approve
+  // path resumes, and still what `createApprovedOrderCancelExecutor` executes.
+  // What is retired is one ROUTE TO IT — the parse.
+  //
+  // ── WHY THE REGISTERED TOOL GOES IN THE SAME COMMIT ─────────────────────────
+  //
+  // `CHAT_DRIVABLE_TOOL_KINDS` is DERIVED from this table's chat tier, and
+  // `chat-drivable-roster-drift.test.ts` pins it set-equal to
+  // `listIbatexasToolPacks()` IN BOTH DIRECTIONS. So dropping the tier here
+  // without dropping `ibatexas.order.cancel.v1` from the roster breaks the
+  // mirror, and vice versa. The two edits are not independent and the gate is
+  // what says so — see that registration's own retirement note.
+  //
+  // ── THE EVIDENCE THIS RESTS ON ──────────────────────────────────────────────
+  //
+  // `paid-cancel-parity.e2e.test.ts` drives both paths over one fixture set and
+  // pins them to the same terminal verdict and basis reason on every money band
+  // (including the exact `>=` threshold), the same escalation park, and the same
+  // approve/deny/replay semantics through the real approval engine. What it also
+  // measured is why this is urgent rather than tidy: on the path being retired a
+  // paid cancel NEVER states the refund consequence and NEVER returns the money.
+  //
+  // ── REVERTING ───────────────────────────────────────────────────────────────
+  //
+  // Restore `tier: "chat"`, `plannerAdvertisedBy`, `surfaces` and the ten
+  // `conversationTriggers` below; re-add the tool registration; bump
+  // `CATALOG_VERSION`; re-run the derived artifacts. One row, one registration.
+  //
+  // The ten retired `conversationTriggers` are kept here, commented, because
+  // they are the PROVENANCE record (5 production-grounded) and because the
+  // revert recipe above needs them verbatim:
+  //   /* S */ "cancela meu pedido, por favor, mudei de ideia"
+  //   /* P */ "cancela meu pedido"
+  //   /* P */ "quero cancelar meu pedido"
+  //   /* P */ "cancela o pedido 4 aí que mudei de ideia"
+  //   /* P */ "quero cancelar o pedido 12345 e receber meu dinheiro de volta"
+  //   /* A */ "desisti do pedido"      /* A */ "não quero mais o pedido"
+  //   /* A */ "anula meu pedido"       /* A */ "quero desfazer a compra"
+  //   /* A */ "cancela tudo, mudei de ideia"
   {
     kind: "order.cancel",
     pack: "ibatexas/pack-orders",
     mutating: true,
-    tier: "chat",
-    plannerAdvertisedBy: ["ibatexas/pack-orders"],
-    surfaces: ["chat"],
-    auth: "customer",
+    tier: "identity",
+    // KEPT: `legacyNames` is grounded history (the retired `cancel_order` tool
+    // name still appears in stored envelopes) and `successClaimLinks` still
+    // describes what a successful cancel licenses a renderer to say — neither is
+    // about model advertisement. `description` / `guardRefs` / `refusalCode` /
+    // `surfaces` / `auth` are CHAT-tier fields the identity shape does not carry:
+    // they exist to furnish a prompt surface this kind no longer has.
     legacyNames: ["cancel_order"],
-    description: "Cancelar um pedido do cliente (irreversível).",
     successClaimLinks: ["order-canceled"],
-    conversationTriggers: [
-      /* S */ "cancela meu pedido, por favor, mudei de ideia",
-      /* P */ "cancela meu pedido",
-      /* P */ "quero cancelar meu pedido",
-      /* P */ "cancela o pedido 4 aí que mudei de ideia",
-      /* P */ "quero cancelar o pedido 12345 e receber meu dinheiro de volta",
-      /* A */ "desisti do pedido",
-      /* A */ "não quero mais o pedido",
-      /* A */ "anula meu pedido",
-      /* A */ "quero desfazer a compra",
-      /* A */ "cancela tudo, mudei de ideia",
-    ],
-    guardRefs: ORDERS_GUARD_REFS,
-    refusalCode: "order.default.deny",
     // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS —
     // deliberately different text from `description` above (separate
     // audience: admin-inbox operator vs. chat prompt hint).

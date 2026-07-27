@@ -30,8 +30,8 @@ describe("ibatexasPromptFragments — capability fragments mirror generateCapabi
   const fragments = ibatexasPromptFragments();
   const byId = new Map(fragments.map((f) => [f.id, f]));
 
-  it("projects exactly 20 capability descriptions, matching the 20 chat-tier definitions (post-FE-T09 D-a: 18→20)", () => {
-    expect(Object.keys(generated)).toHaveLength(20);
+  it("projects exactly 19 capability descriptions, matching the 19 chat-tier definitions (post-FE-T09 D-a: 18→20; LE2-024: 20→19)", () => {
+    expect(Object.keys(generated)).toHaveLength(19);
   });
 
   it("every generated {kind: description} has a matching capability fragment, byte-identical content", async () => {
