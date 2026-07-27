@@ -127,8 +127,15 @@ ibx dev start --no-observability           # skip the obs stack (drops funnel re
 ```bash
 ibx dev stop          # stop all processes + Docker
 ibx dev stop web      # stop only web (keeps others running)
-ibx dev stop -f       # force-kill by port
+ibx dev stop -f       # force-kill by port (skips process-compose entirely)
+ibx dev stop tunnel   # stop only the ngrok tunnel
 ```
+
+> `-f` bypasses `process-compose down`, so each process's own graceful shutdown
+> never runs — prefer plain `ibx dev stop` and keep `-f` for a hung supervisor.
+> The force path sweeps the service ports plus process-compose (:8080) and
+> ngrok's inspector (:4040), and also kills any ngrok agent pointed at the API
+> port by argv — an ngrok started with `--inspect=false` holds no port at all.
 
 ### Restart a service
 

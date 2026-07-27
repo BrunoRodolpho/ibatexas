@@ -51,7 +51,8 @@ ibx dev start --no-observability # skip the obs stack (see the warning below)
 
 ibx dev stop                     # stop all + Docker
 ibx dev stop web                 # stop one service
-ibx dev stop -f                  # force-kill ports
+ibx dev stop tunnel              # stop only the ngrok tunnel
+ibx dev stop -f                  # force-kill ports (skips process-compose)
 
 ibx dev restart                  # restart all app services
 ibx dev restart api              # restart one service
@@ -456,6 +457,12 @@ Starts an ngrok tunnel and prints:
 Use this for testing WhatsApp webhooks locally. Requires `ngrok` (`brew install ngrok`).
 
 > **Recommended:** Use `ibx dev start --with-tunnel` to integrate the tunnel into the dev TUI. `ibx tunnel` still works standalone.
+
+> **Orphaned agents / `ERR_NGROK_334`:** if a new tunnel refuses to start because
+> "the endpoint is already online", an earlier ngrok agent is still holding the
+> account's reserved domain — typically one orphaned to pid 1 when its supervisor
+> was killed. `ibx dev stop tunnel` (or `ibx dev stop -f`) now clears it, by both
+> the :4040 sweep and an argv match on `ngrok http 3001`.
 
 ### Chat — `ibx chat`
 
