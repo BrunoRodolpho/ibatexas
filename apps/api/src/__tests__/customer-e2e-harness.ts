@@ -95,6 +95,7 @@ import {
   IBATEXAS_COMPOSED_PACKS,
   IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
 } from "@ibatexas/packs-composed";
+import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { buildIbatexasPolicyPacks, type ErasedPack } from "../claustrum/compose-policy-packs.js";
 import { composePolicyRouter } from "../claustrum/capability-policy.js";
 import { createIbatexasPlanner } from "../claustrum/ibatexas-planner.js";
@@ -745,6 +746,33 @@ export interface CustomerConductorDeps {
    * observed ⟹ every pre-existing harness turn is byte-identical.
    */
   readonly workflowRuntime?: WorkflowRuntime;
+  /**
+   * LE2-024 — ALSO wire the REAL `WhatsAppChannel`, so a turn driven with
+   * `channel: "whatsapp"` can resume a parked confirm.
+   *
+   * ── WHY THIS HAD TO BE A REAL DRIVER ────────────────────────────────────────
+   *
+   * `matchToParked` is CHANNEL-OWNED by design (the class's own doc says so:
+   * matching is "a channel-shaped concern — regex against natural language,
+   * hash-prefix conventions, locale variants"). This composition previously wired
+   * the web driver alone, so a `channel: "whatsapp"` turn PARKED normally and
+   * then silently failed to resume: the customer's "sim" read as a fresh
+   * utterance, no re-adjudication happened, and every assertion about the second
+   * turn measured the missing driver rather than the product.
+   *
+   * That failure is symmetric across paths, so it does not bias a parity diff —
+   * but it makes the confirm half of cross-channel parity UNPROVABLE, which for a
+   * ticket whose acceptance criterion is "the ladder behaves identically on every
+   * channel it exists on" is the whole question.
+   *
+   * Outbound `render` is pointed at an injected no-op rather than global `fetch`,
+   * using the config's own test seam: a suite that stubs `fetch` for Medusa must
+   * not have a Twilio POST land in that fake, and a channel that silently
+   * swallowed an unroutable egress would be the wrong kind of quiet.
+   *
+   * Omitted ⟹ the web driver alone ⟹ every pre-existing caller is byte-identical.
+   */
+  readonly withWhatsApp?: boolean;
 }
 
 export interface CustomerHarness {
@@ -854,6 +882,24 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     gateway: "customer-e2e-harness",
   });
 
+  // LE2-024 — the REAL WhatsApp driver, opt-in. See `withWhatsApp`.
+  const whatsAppChannel =
+    deps.withWhatsApp === true
+      ? new WhatsAppChannel({
+          accountSid: "ACharness",
+          authToken: "harness-twilio-auth-token",
+          twilioFrom: "whatsapp:+14155238886",
+          gatewaySigningKey: "harness-wa-signing-key",
+          // The config's own test seam — never global `fetch`, which suites
+          // stub for Medusa and which throws on an unrouted egress.
+          fetch: (async () =>
+            new Response(JSON.stringify({ sid: "SMharness" }), {
+              status: 201,
+              headers: { "content-type": "application/json" },
+            })) as typeof globalThis.fetch,
+        })
+      : undefined;
+
   // BKL-234 — the REAL customer claims seams, opt-in. Same builder the customer
   // composition root uses, parameterized only by this harness's planner; `{}`
   // both when not requested and when ENABLE_CLAIMS_PIPELINE is off.
@@ -884,7 +930,7 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
     telemetry: deps.telemetry ?? noopTelemetry,
     session: deps.session,
     tools,
-    channels: [webChannel],
+    channels: whatsAppChannel === undefined ? [webChannel] : [webChannel, whatsAppChannel],
     tenantResolver: singleTenant,
     resolver: createIbatexasResolver(),
     sessionLock: inMemoryLock,
@@ -896,16 +942,29 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
 
 // ── Turn driver ───────────────────────────────────────────────────────────────
 
+/**
+ * LE2-024 — the channels a harness turn can arrive on.
+ *
+ * A UNION rather than `string`, because the channel is not a label: it reaches
+ * `activityIdentityBase`, `canCheckout` reads it, and a typo would silently
+ * adjudicate against another plane's rules while every assertion still passed.
+ * Two members because those are the two customer planes the production ingresses
+ * bind (`routes/chat.ts`, `routes/whatsapp-webhook.ts`).
+ */
+export type CustomerChannel = "web" | "whatsapp";
+
 export function customerInbound(
   customerId: string,
   conversationId: string,
   text: string,
+  /** LE2-024 — defaults to `"web"`, so every pre-existing caller is unchanged. */
+  channel: CustomerChannel = "web",
 ): ChannelMessage {
   return {
-    channel: "web",
+    channel,
     customerId,
     conversationId,
-    externalId: `web-${randomUUID()}`,
+    externalId: `${channel}-${randomUUID()}`,
     text,
     receivedAt: HARNESS_NOW,
     locale: "pt-BR",
@@ -930,14 +989,37 @@ export interface CustomerTurnResult {
  */
 export async function runCustomerTurn(
   harness: CustomerHarness,
-  args: { customerId: string; conversationId: string; text: string },
+  args: {
+    customerId: string;
+    conversationId: string;
+    text: string;
+    /**
+     * LE2-024 — the plane this turn arrives on. Defaults to `"web"`, so every
+     * pre-existing caller is byte-identical.
+     *
+     * It is threaded to all THREE places the production ingresses thread it —
+     * the inbound message, the Capsule, and `beginWorkflowTurn` — because they
+     * are read by different layers and agreeing on two of them is how a
+     * WhatsApp workflow activity ends up adjudicated against web rules
+     * (`activityIdentityBase`'s own header says so).
+     *
+     * The Capsule's `sessionKey` is channel-scoped to match, but note that
+     * {@link makeStatefulCustomerSession} still keys its parks on the id IT
+     * returns (`web:<customerId>`), so within one harness a park is shared
+     * across planes. That is fine for the cross-channel suites, which build a
+     * FRESH harness per channel, and it is called out here so nobody reads the
+     * scoped key as a cross-plane isolation guarantee it does not make.
+     */
+    channel?: CustomerChannel;
+  },
 ): Promise<CustomerTurnResult> {
   const { customerId, conversationId, text } = args;
-  const message = customerInbound(customerId, conversationId, text);
+  const channel = args.channel ?? "web";
+  const message = customerInbound(customerId, conversationId, text, channel);
   const capsule = await harness.conductor.openCapsule({
-    channel: "web",
+    channel,
     customerId,
-    sessionKey: `web:${customerId}`,
+    sessionKey: `${channel}:${customerId}`,
     actor: {
       principal: "llm",
       role: "customer",
@@ -963,7 +1045,7 @@ export async function runCustomerTurn(
     // `handleTurn` exactly as the production ingresses do (routes/chat.ts,
     // routes/whatsapp-webhook.ts). The binding is the async call tree's, not the
     // module's, so a caller driving two turns concurrently gets two bindings.
-    const turn = await beginWorkflowTurn({ turnId: capsule.turnId, channel: "web" }, () =>
+    const turn = await beginWorkflowTurn({ turnId: capsule.turnId, channel }, () =>
       handleTurn(capsule, message),
     );
     return {

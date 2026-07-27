@@ -8,7 +8,7 @@
  * See `types.ts` for the field contract, `definitions.ts` for the authored
  * data, and the `generate-*.ts` modules for the generated families.
  *
- * The registry is currently 61 capabilities — 20 chat-tier, 41 identity-tier.
+ * The registry is currently 62 capabilities — 20 chat-tier, 42 identity-tier.
  * (The pre-move barrel's doc said "18 chat-tier + 48 identity-tier"; that was
  * the FE-T19/T20 authoring-time count and had gone stale; 59/20/39 was
  * ratified by the LE2 spec's own "count corrections" note and then went stale

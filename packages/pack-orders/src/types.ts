@@ -82,6 +82,19 @@ import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
  *                                     `order.cancel` / `order.reorder` /
  *                                     `order.coupon.apply` activities each do
  *                                     one governed piece of the work.
+ *   - `order.cancel.request`       — UNTRUSTED. LE2-024. ASK to cancel a placed
+ *                                     order. The governance ANCHOR of the
+ *                                     `workflow.orders.paid-cancel` workflow, on
+ *                                     the same ASK/ACT split as the two anchors
+ *                                     above — with one difference that is the
+ *                                     whole point of that ticket: the ACT it
+ *                                     fronts is `order.cancel`, which ALREADY
+ *                                     exists as a directly-parseable capability.
+ *                                     So `confirmPaidCancel` does not author a
+ *                                     new question; it asks `gatePaidCancel`'s
+ *                                     own, through the shared
+ *                                     `paidCancelConfirmText`, and a parity suite
+ *                                     pins the two renders byte-identical.
  *   - `order.coupon.adjust`        — DECLARED AND UNEXECUTABLE. LE2-023. Apply a
  *                                     coupon to an ALREADY-PLACED order by
  *                                     adjusting its price. It is workflow-scoped
@@ -128,6 +141,7 @@ export type OrderIntentKind =
   | "order.reorder"
   | "order.reorder.request"
   | "order.coupon.swap.request"
+  | "order.cancel.request"
   | "order.coupon.adjust"
   | "order.projection.create"
   | "order.status.transition"

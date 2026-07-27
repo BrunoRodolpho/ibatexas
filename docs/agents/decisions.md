@@ -71,7 +71,7 @@ f96246a (P0-7), 1dc2364 (P0-9), a32392f + adjudicate 99ec4dd (P0-5), 3bee5e5 (P0
 - **ANTHROPIC_MODEL + EMBEDDING_MODEL_ID** are now fail-fast required at boot (first statements of
   bootstrapClaustrum) — the T1a-11a env contract must set both; .env.example documents both as REQUIRED.
 - **packs-composed surface (P0-8)**: exports `IBATEXAS_COMPOSED_PACKS`,
-  `IBATEXAS_COMPOSED_CAPABILITY_PLANNERS`, `composedIntentKinds()` (61-kind dedup union; `pix.*`/
+  `IBATEXAS_COMPOSED_CAPABILITY_PLANNERS`, `composedIntentKinds()` (62-kind dedup union; `pix.*`/
   `loyalty.*` deliberately excluded — those live in @ibatexas/intent-kinds). @adjudicate/pack-payments-pix
   is NOT in the composed list (platform pack, not first-party). T1a-2's lint gate imports this package.
 - **Roster drift (P0-7)**: `toolRosterDrift(tools, intents, {planners, contexts, onWarn})` — context legs

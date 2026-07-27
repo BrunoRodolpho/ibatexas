@@ -61,7 +61,7 @@ const ALL_PACKS: readonly CapabilityPackId[] = [
 // ── Family 1: KNOWN_INTENT_KINDS ─────────────────────────────────────────
 
 describe("codegen-freshness gate — KNOWN_INTENT_KINDS (FE-T20 family 1)", () => {
-  it("reproduces KNOWN_INTENT_KINDS byte-for-byte (set contents) from the 61 authored definitions + the two real external inputs", () => {
+  it("reproduces KNOWN_INTENT_KINDS byte-for-byte (set contents) from the 62 authored definitions + the two real external inputs", () => {
     const generated = generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
       // Real runtime materialization — the actual installed PIX pack's own
       // declared intents, never a hand-retyped literal.
@@ -75,7 +75,7 @@ describe("codegen-freshness gate — KNOWN_INTENT_KINDS (FE-T20 family 1)", () =
     expect([...paymentsPixPack.intents].sort()).toEqual([...PIX_INTENT_KINDS].sort())
   })
 
-  it("the 61 authored definitions alone (no external inputs) cover exactly KNOWN_INTENT_KINDS minus the 3 pix + 1 loyalty kinds", () => {
+  it("the 62 authored definitions alone (no external inputs) cover exactly KNOWN_INTENT_KINDS minus the 3 pix + 1 loyalty kinds", () => {
     // 66 → 61 (BKL-176 retired 5 dead payment.charge.*) → 59 (BKL-177 PR-A
     // retired order.cancel.system + reservation.waitlist.notify) → 57 (BKL-177
     // PR-B retired whatsapp.message.send + template.send) → 58 (NEW-014 added
@@ -85,12 +85,13 @@ describe("codegen-freshness gate — KNOWN_INTENT_KINDS (FE-T20 family 1)", () =
     // order.coupon.adjust, the workflow-scoped target of that workflow's
     // coupon_on_placed_order branch — declared so the branch can name it while
     // shipping CLOSED, and refused by the kernel's default_deny if it ever ran).
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(61)
+    // → 62 (LE2-024: +order.cancel.request, the paid-cancel workflow's anchor)
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(62)
     const registryOnly = generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
       pixIntentKinds: [],
       loyaltyIntentKinds: [],
     })
-    expect(registryOnly.size).toBe(61)
+    expect(registryOnly.size).toBe(62)
     const pixSet = new Set<string>(PIX_INTENT_KINDS)
     const expected = new Set(
       [...KNOWN_INTENT_KINDS].filter((k) => !pixSet.has(k) && !LOYALTY_INTENT_KINDS.has(k)),

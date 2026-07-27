@@ -70,6 +70,7 @@ import {
   refuseCouponNotUsable,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseNoOrderToCancel,
   refuseNoPreviousOrder,
   refuseFiscalNotEligible,
   refuseFiscalRetryExceeded,
@@ -1060,6 +1061,48 @@ const confirmLargeTicket = nameGuard(
 ) as OrderGuard
 
 /**
+ * THE PAID-CANCEL CONFIRM SENTENCE — ONE definition, TWO callers (LE2-024).
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT TWO STRING LITERALS ───────────────────────
+ *
+ * `gatePaidCancel` asks this question when a customer cancels a paid order
+ * DIRECTLY. `confirmPaidCancel` asks the SAME question when the same customer
+ * reaches the same act through `workflow.orders.paid-cancel`, whose confirm
+ * template quotes it verbatim through `{confirmation}`.
+ *
+ * LE2-024's parity pin asserts those two renders are BYTE-IDENTICAL, and a pin
+ * over two copies of a sentence is a pin over an agreement somebody has to keep
+ * remembering. Copy-editing one band's copy — a comma, "ao cliente", the
+ * R$-format — would move one render and not the other, the parity test would go
+ * red in a suite nobody was touching, and the honest reading of that failure
+ * ("the workflow lies about what the direct path says") is not the one a reader
+ * would reach for. Under one function there is no agreement to keep: the two
+ * renders are the same bytes because they are the same call.
+ *
+ * ── THE ABSENT-TOTAL BRANCH IS NOT A FALLBACK ────────────────────────────────
+ *
+ * A `null` total still asks, and asks WITHOUT a number, because the alternative
+ * readings are both worse: quoting R$ 0,00 would state a refund amount that is
+ * false, and declining to ask would let a paid cancel EXECUTE unconfirmed. The
+ * customer is told the consequence they can act on (their money comes back)
+ * without a figure the projection could not ground.
+ *
+ * @param refundEquivalentCentavos The order total — the amount a cancel returns.
+ *   `null` when the host projected none.
+ */
+export function paidCancelConfirmText(
+  refundEquivalentCentavos: number | null,
+): string {
+  if (typeof refundEquivalentCentavos !== "number") {
+    return "Esse pedido já foi pago. Cancelar implica reembolso — confirma o cancelamento?"
+  }
+  return (
+    `Esse pedido já foi pago (R$ ${formatCentavosBrl(refundEquivalentCentavos)}).` +
+    " Cancelar implica reembolso ao cliente — confirma o cancelamento?"
+  )
+}
+
+/**
  * BKL-036 finding 2 (J015) — PAID-state cancel gating.
  *
  * A customer `order.cancel` on an order whose payment is already SETTLED
@@ -1193,9 +1236,7 @@ const gatePaidCancel: OrderGuard = (envelope, state) => {
   // Low / medium band: park for explicit confirmation — a paid cancel is a
   // real-money refund and must never silently EXECUTE.
   return decisionRequestConfirmation(
-    reais === null
-      ? "Esse pedido já foi pago. Cancelar implica reembolso — confirma o cancelamento?"
-      : `Esse pedido já foi pago (R$ ${reais}). Cancelar implica reembolso ao cliente — confirma o cancelamento?`,
+    paidCancelConfirmText(refundEquivalentCentavos),
     [
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         reason: "paid_cancel_requires_confirmation",
@@ -1531,6 +1572,139 @@ const confirmSwapForCoupon: OrderGuard = (envelope, state) => {
   )
 }
 
+/**
+ * LE2-024 — the WHOLE-WORKFLOW confirm for `workflow.orders.paid-cancel`, the
+ * PARITY RE-PLATFORM of the direct paid-cancel ladder.
+ *
+ * Same shape and same warrant as `confirmSwapForCoupon` and `confirmReorderLast`
+ * above: the guard authors the sentence from host-projected `ctx`, the workflow's
+ * confirm template quotes it verbatim through `{confirmation}`, and no
+ * probabilistic model supplies, relays or influences an identifier or an amount.
+ *
+ * ── WHAT MAKES THIS ONE DIFFERENT: IT MUST NOT INVENT A QUESTION ─────────────
+ *
+ * The other two anchors ask about acts that had no direct-intent form, so their
+ * sentences were free to be authored. This anchor fronts an act the system has
+ * ALWAYS had, and the parity pin asserts that a customer reaching it through the
+ * workflow reads EXACTLY what a customer reaching it directly reads. So the
+ * sentence is not authored here at all — it is {@link paidCancelConfirmText},
+ * the one `gatePaidCancel` itself asks with. See that function on why one call
+ * beats two agreeing copies.
+ *
+ * ── THE THREE BANDS, AND WHY ONLY ONE OF THEM SPEAKS HERE ───────────────────
+ *
+ * The direct ladder has three outcomes and this guard deliberately reproduces
+ * only the middle one, letting the chain reach the other two unchanged:
+ *
+ *   UNPAID          → `null`. Falls through to `executeW5Kinds`, so the anchor
+ *                     EXECUTEs on the SELECTING turn and the route's cancel
+ *                     activity runs in that same turn — which is parity, because
+ *                     the direct path does not ask either. Asking would be a
+ *                     confirmation the direct customer never sees, and a
+ *                     workflow that adds friction to the unpaid path would be a
+ *                     re-platform that changed the thing it was pinning.
+ *   PAID, SUB-BAND  → REQUEST_CONFIRMATION, this guard, the shared sentence. The
+ *                     `cancel` activity then meets `gatePaidCancel` on its own
+ *                     terms and its REQUEST_CONFIRMATION is resolved by the
+ *                     DECLARED COVERAGE — which is honest precisely because the
+ *                     question the customer answered was, byte for byte, the
+ *                     question that guard would have asked.
+ *   PAID, ≥ BAND    → ALSO this guard's REQUEST_CONFIRMATION, and the escalation
+ *                     happens one layer down, at the ACTIVITY. See below.
+ *
+ * ── WHY THE ESCALATE BAND IS NOT REPRODUCED HERE (the load-bearing choice) ───
+ *
+ * The tempting symmetry is to mirror `gatePaidCancel` exactly and ESCALATE at or
+ * above the band, so the customer is never asked a question whose answer cannot
+ * be acted on. It is the wrong call, and BKL-103 is the reason.
+ *
+ * An ESCALATE raised HERE parks the envelope this guard was given — an
+ * `order.cancel.request`. That kind is not in `ESCALATION_RESUMABLE_KINDS`,
+ * carries no `ESCALATION_PROPOSER_STAMPS` entry, and has no
+ * `createApprovedOrderCancelExecutor` behind it. The escalation would surface to
+ * staff and then be UNAPPROVABLE — the exact audit-row-only, nobody-can-act-on-it
+ * hole BKL-103 spent a ticket closing, re-opened through a new door and for the
+ * same customers.
+ *
+ * Raised at the ACTIVITY, the parked envelope is a real `order.cancel`: resumable
+ * kind, `actorId` proposer stamp (host-stamped by `stampOrderActivityPayload`),
+ * owner-approval overlay, approved-cancel executor, refund-first write path. The
+ * whole BKL-103 contract applies unchanged, because it is literally the same
+ * envelope shape that contract was built for.
+ *
+ * The cost is stated rather than hidden, and the parity suite measures it: on the
+ * escalate band the workflow asks the confirm question FIRST and escalates on the
+ * following turn, where the direct ladder escalates immediately. The customer is
+ * asked something they are then told needs approval. That is one extra turn and
+ * one extra question — against an escalation a human can actually approve. It is
+ * the ticket's one intentional divergence and it is recorded in the PR's parity
+ * table, not smoothed over.
+ *
+ * ── ORDERING ─────────────────────────────────────────────────────────────────
+ *
+ * `business[]`, BEFORE the EXECUTE producers, for the same reason the other two
+ * anchors are: `executeW5Kinds` matches this kind too and first-non-null wins, so
+ * behind it this guard would be dead code and the workflow would cancel a paid
+ * order without ever asking.
+ */
+const confirmPaidCancel: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.cancel.request") return null
+  const {
+    previousOrderId,
+    previousOrderTotalInCentavos,
+    previousOrderIsCancelable,
+    previousOrderPaymentIsSettled,
+  } = state.ctx
+
+  const refusalBasis = (reason: string): ReturnType<typeof basis> =>
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+      rule: reason,
+      kind: envelope.kind,
+    })
+
+  // FAIL-SAFE, and in the order a customer can act on. An unwired host, an
+  // anonymous caller and a first-time customer all land on the first branch and
+  // all get an honest sentence rather than a confirmation for an order nobody
+  // could name.
+  if (previousOrderId === undefined) {
+    return decisionRefuse(refuseNoOrderToCancel(), [
+      refusalBasis("paid_cancel_requires_previous_order"),
+    ])
+  }
+  // The SAME sentence `requireCancellable` refuses a direct cancel with — the
+  // parity pin asserts it, and reusing the factory is how it stays true.
+  if (previousOrderIsCancelable !== true) {
+    return decisionRefuse(refuseOrderPastPonr(), [
+      refusalBasis("paid_cancel_order_not_cancelable"),
+    ])
+  }
+  // UNPAID ⟹ SILENT. `gatePaidCancel` returns null here too, and for the same
+  // reason: a cancel that implies no refund is not a money decision, so there is
+  // nothing to ask about. The chain carries on to `executeW5Kinds`.
+  if (previousOrderPaymentIsSettled !== true) return null
+
+  return decisionRequestConfirmation(
+    paidCancelConfirmText(previousOrderTotalInCentavos ?? null),
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        // NOT `paid_cancel_requires_confirmation`. That reason is the ACTIVITY's,
+        // and the `cancel` activity's declared coverage matches on it verbatim —
+        // a coverage naming a reason this anchor also emitted would be satisfied
+        // by the anchor's own decision rather than by the guard whose question it
+        // claims to have asked.
+        rule: "paid_cancel_workflow_requires_confirmation",
+        kind: envelope.kind,
+        // First-party (owner-scoped projection), and between them the join keys
+        // an operator needs to check WHAT a customer approved: which order, and
+        // the amount the sentence quoted.
+        previousOrderId,
+        refundEquivalentCentavos: previousOrderTotalInCentavos ?? null,
+        escalateThreshold: ESCALATE_REFUND_THRESHOLD_CENTAVOS,
+      }),
+    ],
+  )
+}
+
 // ── EXECUTE producers (default is REFUSE; positive matches required) ────
 
 /**
@@ -1663,6 +1837,13 @@ const W5_EXECUTE_KINDS: ReadonlySet<string> = new Set([
   // earlier in `business[]`), so this entry is what the RESUMED anchor lands on,
   // never a way around the confirm.
   "order.coupon.swap.request",
+  // LE2-024 — the paid-cancel anchor, and the ONE entry here that is reachable
+  // WITHOUT a receipt: `confirmPaidCancel` returns null for an UNPAID order, so
+  // this is what an unpaid workflow cancel lands on, on the selecting turn. That
+  // is deliberate parity — the direct ladder does not ask about an unpaid cancel
+  // either (see that guard's three-band doc). On a PAID order the guard fires
+  // first and this entry is, as above, only what the RESUMED anchor reaches.
+  "order.cancel.request",
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",
@@ -1805,6 +1986,11 @@ export const ordersPolicyBundle: PolicyBundle<
     // `executeW5Kinds`, which also matches `order.reorder.request`: below it
     // this guard is dead code and the workflow runs unasked.
     confirmReorderLast,
+    // LE2-024 — the paid-cancel whole-workflow confirm. MUST stay above
+    // `executeW5Kinds`, which also matches `order.cancel.request`: below it a
+    // PAID workflow cancel would EXECUTE unasked, which is the one thing the
+    // whole paid ladder exists to prevent.
+    confirmPaidCancel,
     // NEW-014 — bounded fiscal-emit retries BEFORE the fiscal EXECUTE producer.
     fiscalEmitRetryCapGuard,
     executeCartOps,

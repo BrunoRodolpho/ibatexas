@@ -112,11 +112,51 @@ const COUPON_SWAP_REQUEST_ANCHOR: ToolDefinition<unknown, unknown> = {
   execute: () => Promise.resolve({ approved: true }),
 };
 
+/**
+ * The paid-cancel anchor — LE2-024.
+ *
+ * Does nothing, for the third time and with the sharpest version of the reason.
+ * Reaching this executor means one of exactly two things: the customer approved a
+ * PAID cancel (`confirmPaidCancel` parked the envelope and only a resumed,
+ * receipt-bearing adjudication returns EXECUTE), or the order was UNPAID and that
+ * guard deliberately said nothing, so `executeW5Kinds` let the anchor through on
+ * the selecting turn. In both cases the approval — or the considered absence of a
+ * question — IS the whole content of the act.
+ *
+ * Cancelling here would be the worst instance of the mistake the other two
+ * anchors avoid. The route's one activity IS the cancel, and it reaches
+ * `executeOrderCancel` through the workflow runtime's refund-first dispatch, with
+ * its own adjudication, its own money ladder and its own audit row. A cancel
+ * riding THIS executor would be an ungoverned real-money mutation on the anchor's
+ * EXECUTE — and worse, it would run BEFORE the activity, so the activity's
+ * `gatePaidCancel` would then adjudicate an order that was already cancelled. The
+ * escalate band would evaluate against a fait accompli.
+ *
+ * The same no-soft-failure rule applies: the wrapper overwrites `message` with
+ * the outcome template, so a `{success: false}` returned here would be silently
+ * discarded and the customer would read "Pronto, cancelei seu pedido" over a
+ * failed anchor. Future work in this executor must THROW.
+ */
+const PAID_CANCEL_REQUEST_ANCHOR: ToolDefinition<unknown, unknown> = {
+  id: "ibatexas.order.cancelRequest.v1",
+  capability: "order.cancel.request" as CapabilityId,
+  intentKind: "order.cancel.request" as IntentKind,
+  description: "Confirmar o cancelamento de um pedido já pago do cliente.",
+  inputSchema: {},
+  outputSchema: {},
+  // The anchor itself moves nothing. The risk of the ROUTE lives on
+  // `order.cancel` (irreversible) and is adjudicated there, by the kernel,
+  // against the full money ladder.
+  riskLevel: "low",
+  execute: () => Promise.resolve({ approved: true }),
+};
+
 /** The anchor handlers this composition can supply, by capability kind. */
 const WORKFLOW_ANCHOR_TOOLS: ReadonlyMap<string, ToolDefinition<unknown, unknown>> =
   new Map([
     ["order.reorder.request", REORDER_REQUEST_ANCHOR],
     ["order.coupon.swap.request", COUPON_SWAP_REQUEST_ANCHOR],
+    ["order.cancel.request", PAID_CANCEL_REQUEST_ANCHOR],
   ]);
 
 /**

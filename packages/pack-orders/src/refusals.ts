@@ -92,6 +92,32 @@ export function refuseNoPreviousOrder(): Refusal {
   )
 }
 
+/**
+ * LE2-024 — "cancela meu pedido" from a customer who has no order to cancel.
+ *
+ * Its OWN sentence rather than {@link refuseNoPreviousOrder}'s, under the same
+ * warrant that gave that one its own code. Both are the no-history fact, but
+ * they are read by customers who asked opposite questions, and the reorder
+ * sentence ends *"pra repetir. Quer montar um novo?"* — an offer to BUILD
+ * something, cheerfully proposed to somebody who just asked to DESTROY
+ * something. A customer who believes they have an order they want gone, being
+ * told about a new one, will read it as the system having misunderstood them at
+ * best and as an upsell at worst.
+ *
+ * It reuses the `order.reorder.no_history` CODE deliberately: the underlying
+ * state fact is identical (no owner-scoped previous order), and a second code
+ * for one fact would split the basis-code surface — and every drift gate over
+ * it — on a difference that is purely about which sentence a reader needs. The
+ * code is what an operator groups by; the text is what a customer reads.
+ */
+export function refuseNoOrderToCancel(): Refusal {
+  return refuse(
+    "STATE",
+    "order.reorder.no_history",
+    "Ainda não encontrei nenhum pedido seu pra cancelar. Se você fez um pedido agora há pouco, me chama que eu procuro de novo.",
+  )
+}
+
 /** Max candidate order numbers voiced inline before summarising the remainder. */
 const MAX_AMBIGUOUS_ORDERS_SHOWN = 6
 

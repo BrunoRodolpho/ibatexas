@@ -564,6 +564,15 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   // payload only through the workflow's CLOSED slot surface, so
   // `sanitizeWorkflowSlots` drops every other key the model tries to attach.
   "order.coupon.swap.request",
+  // LE2-024 — the paid-cancel anchor, and as PII-free as `order.reorder.request`
+  // above and for the same structural reason: the workflow declares ZERO slots,
+  // so `sanitizeWorkflowSlots` drops every key the model tries to attach, and the
+  // only key that ever rides the payload is the runtime-written
+  // `_workflowInstanceId` (a UUID the workflow runtime mints). There is no
+  // free-form string slot for PII to reach, smuggled or otherwise. The order id
+  // this route acts on never touches this envelope at all — it is stamped
+  // host-side onto the `order.cancel` ACTIVITY, which is classified separately.
+  "order.cancel.request",
   // LE2-023 — same `code` + cartId/orderId shape as the two coupon kinds above.
   // In practice its payload never reaches an audit row at all: the kind has no
   // EXECUTE path, so every envelope of it is REFUSEd. Classified anyway, because

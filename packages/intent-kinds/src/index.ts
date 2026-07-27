@@ -137,6 +137,7 @@ export const ORDER_INTENT_KINDS = [
   "order.reorder",
   "order.reorder.request",
   "order.coupon.swap.request",
+  "order.cancel.request",
   "order.coupon.adjust",
   "order.projection.create",
   "order.status.transition",

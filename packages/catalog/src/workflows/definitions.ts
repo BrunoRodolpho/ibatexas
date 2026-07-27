@@ -539,6 +539,257 @@ export const SWAP_FOR_COUPON_WORKFLOW: WorkflowDefinition = {
   },
 }
 
+/** The paid-cancel workflow's id — exported so nothing re-spells the string. */
+export const PAID_CANCEL_WORKFLOW_ID = "workflow.orders.paid-cancel"
+
+/**
+ * PAID-CANCEL — LE2-024, and the ONLY workflow here that re-platforms an act the
+ * system already had.
+ *
+ * *"quero cancelar meu pedido"* on an order that has been PAID FOR. The customer
+ * is shown what the order cost and that cancelling refunds it, and only on their
+ * "sim" is the cancel adjudicated — against the same money ladder, by the same
+ * kernel, as a directly-parsed cancel.
+ *
+ * ── THIS ONE IS A MIGRATION, NOT A NEW ROUTE ─────────────────────────────────
+ *
+ * Reorder-last and swap-for-coupon added routes that had no direct-intent form.
+ * This one fronts `order.cancel`, which has been a chat-tier capability all
+ * along, and that changes what "correct" means for every part of it. There is an
+ * existing behaviour to REPRODUCE, so nothing here may be authored on its merits
+ * — the confirm sentence, the refusals and the money bands are all the direct
+ * ladder's, reached through the same functions rather than through agreeing
+ * copies:
+ *
+ *   the confirm     — `paidCancelConfirmText`, the sentence `gatePaidCancel`
+ *                     itself asks with. ONE function, two callers.
+ *   the PONR refuse — `refuseOrderPastPonr`, the factory `requireCancellable`
+ *                     refuses a direct cancel with.
+ *   the bands       — not reproduced at all. The `cancel` activity meets the
+ *                     REAL `gatePaidCancel`, so the ladder is not mirrored here,
+ *                     it is ENCOUNTERED.
+ *
+ * `apps/api/src/__tests__/paid-cancel-parity.e2e.test.ts` drives the same
+ * utterances and the same states down BOTH paths and diffs the observations. A
+ * parity suite that only drove this one would be pinning a copy against itself.
+ *
+ * ── THE THREE BANDS, AND THE ONE THAT DIVERGES ───────────────────────────────
+ *
+ *   UNPAID          — `confirmPaidCancel` returns null, the anchor EXECUTEs on
+ *                     the selecting turn, and the cancel runs in that same turn.
+ *                     The direct ladder does not ask either. PARITY.
+ *   PAID, SUB-BAND  — one confirm, quoting the shared sentence; the activity's
+ *                     own `paid_cancel_requires_confirmation` is resolved by the
+ *                     declared coverage below. PARITY on the question asked.
+ *   PAID, ≥ R$1.000 — the activity ESCALATEs, and the customer reads the
+ *                     `escalated` template. DIVERGENT, deliberately: the direct
+ *                     ladder escalates on the FIRST turn without asking, and this
+ *                     route asks first and escalates on the second. The reason is
+ *                     BKL-103 and it is written out in `confirmPaidCancel`'s doc —
+ *                     an escalation raised at the anchor would park an
+ *                     `order.cancel.request`, which no approval path can act on.
+ *                     One extra question, against an escalation a human can
+ *                     actually approve.
+ *
+ * ── WHY THE PHRASINGS ARE THE ONES THE DIRECT PATH DOES NOT ALREADY CLAIM ────
+ *
+ * `order.cancel` declares ten `conversationTriggers`, and the compiler's
+ * `trigger-phrasing-collides` rule forbids this workflow from re-declaring any of
+ * them — *"two routes advertising one sentence do not degrade selection, they
+ * make it a coin flip"*. Every phrasing below is therefore a production utterance
+ * that capability did NOT take, and the overlap that remains is SEMANTIC rather
+ * than textual: both routes answer "cancel my order", and only retirement can
+ * settle which one owns that ask. The live drive measures the split; the ticket
+ * stages the decision.
+ */
+export const PAID_CANCEL_WORKFLOW: WorkflowDefinition = {
+  id: PAID_CANCEL_WORKFLOW_ID,
+  title: "Cancelar um pedido já pago",
+  description:
+    "Cancelar um pedido do cliente que já foi pago, confirmando com ele o valor do pedido e que o cancelamento devolve o dinheiro.",
+  // PROVENANCE (LE2-033). EVERY phrasing here is `production-utterance` — the
+  // first workflow in this file for which that is true of the whole body, and it
+  // is not a lucky draw: cancelling is an act customers have been asking for in
+  // production since before any of this existed, so the store had real sentences
+  // to read. They were mined from `claustrum_memory_episodic.user_text` (1568
+  // rows, 602 distinct) and PII-SCRUBBED per the legend — order ids became
+  // `12345`. Counts below are occurrences of the pre-scrub original.
+  //
+  // Every one of them was checked against `order.cancel`'s own
+  // `conversationTriggers` and none collides; the ones that did are noted in the
+  // module doc above. No phrasing is drawn from
+  // `packages/journeys/extraction-corpus` or the extraction-eval fixtures — that
+  // corpus is LE2-008's gate and authoring against it would test-fit the
+  // measurement. None carries PII, and none is an allergen or dietary disclosure.
+  //
+  // Strongest-evidence-first: the surface truncates from the end.
+  triggerPhrasings: [
+    {
+      phrasing: "cancela o último pedido",
+      provenance: "production-utterance",
+      why: "15 production rows — the most-said cancel sentence in the store that `order.cancel` does not already claim; names the order by RECENCY rather than by id, which is how a customer who has one open order actually refers to it",
+    },
+    {
+      phrasing: "poderia cancelar meu pedido mais recente, por gentileza?",
+      provenance: "production-utterance",
+      why: "14 production rows, and the only polite-interrogative cancel in the corpus — a different neighbourhood of the embedding space from every imperative here",
+    },
+    {
+      phrasing: "quero cancelar meu pedido por favor",
+      provenance: "production-utterance",
+      why: "3 production rows across two spellings that fold together (one capitalised and punctuated); the plain desiderative, which is the register the corpus repeats most",
+    },
+    {
+      phrasing: "quero cancelar o pedido 12345",
+      provenance: "production-utterance",
+      why: "3 production rows under distinct order ids — the customer names the order by NUMBER, the form that most needs the resolver rather than the model to pick the target",
+    },
+    {
+      phrasing: "quero cancelar meu pedido 12345",
+      provenance: "production-utterance",
+      why: "the possessive-plus-number form; shares almost every token with the entry above and selects differently often enough in past drives to be worth carrying both",
+    },
+    {
+      phrasing: "cancela o pedido 12345",
+      provenance: "production-utterance",
+      why: "the bare imperative with a number and no politeness marker or possessive — the shortest cancel in the corpus, and the one with the fewest tokens for retrieval to work with",
+    },
+    {
+      phrasing: "cancela o pedido 12345 de 1200 reais",
+      provenance: "production-utterance",
+      why: "the ONE production cancel that states an AMOUNT, and it states one above the escalate band — the exact shape this workflow's divergent case is about, so it is here to be measured rather than because it is common",
+    },
+  ],
+  // CONJUNCTIVE, and every conjunct NARROWS. `order.cart.ensure` is the
+  // always-proposable cart floor; `order.checkout.create` is the AUTHENTICATION
+  // conjunct (the orders planner's `if (isAuthenticated)` branch) — offering a
+  // cancel to a guest would advertise a route whose anchor must REFUSE at
+  // `requireAuthenticated`. `order.cancel` is the conjunct that says the ACT this
+  // route exists to perform is available at all: it is the orders planner's
+  // authenticated branch too, so it never narrows further than the line above in
+  // practice — and it is here so that the day `order.cancel` stops being offered
+  // (the retirement question, or an ops kill), this workflow stops being offered
+  // WITH it rather than outliving the capability it fronts.
+  matchers: [
+    { capability: "order.cart.ensure" },
+    { capability: "order.checkout.create" },
+    { capability: "order.cancel" },
+  ],
+  selection: { capability: "order.cancel.request" },
+  // NONE, and for the reason reorder-last has none: the one value this route
+  // needs — WHICH order — is an IDENTIFIER, and neither admissible
+  // `WorkflowParamSource` may carry one. No registry claim exposes an order id,
+  // and a slot would be model-EXTRACTED, which for an identifier is precisely the
+  // confabulation that union exists to prevent. It is stamped host-side from the
+  // OWNER-SCOPED previous-order projection that grounded the confirm sentence, so
+  // the order this cancels is the order the customer was shown.
+  params: [],
+  prechecks: [
+    {
+      id: "has-previous-order",
+      predicate: { fact: "customerHasPreviousOrder", op: "isTrue" },
+      template: "no-order-to-cancel",
+    },
+    {
+      id: "order-is-cancelable",
+      predicate: { fact: "previousOrderIsCancelable", op: "isTrue" },
+      template: "past-ponr",
+    },
+    {
+      // THE THIRD ONE EXISTS TO KEEP `statesFacts` HONEST. `paidCancelConfirmText`
+      // has an absent-total branch that asks WITHOUT naming a figure, and the
+      // confirm below declares that it states `orderAmount`. Without this
+      // pre-check that declaration would be false exactly when the projection came
+      // back thin — and the coverage that rests on it would be claiming the
+      // customer read a number nobody showed them.
+      id: "amount-is-known",
+      predicate: { fact: "previousOrderTotalInCentavos", op: "present" },
+      template: "amount-unknown",
+    },
+  ],
+  activities: [
+    {
+      id: "cancel",
+      capability: "order.cancel",
+      payload: {
+        // The ONE authored binding, and it is not an identifier: the pt-BR reason
+        // written into the order's own cancellation record. `orderId` and the
+        // BKL-103 `actorId` proposer stamp are host-resolved before the envelope
+        // is minted (`stampOrderActivityPayload`), because an order id a model
+        // named is an order id a model could have invented.
+        reason: { const: "Cancelado a pedido do cliente" },
+      },
+      compensation: {
+        terminal: "irreversible",
+        why: "an order cannot be un-cancelled; the catalog declares no capability that reinstates one, and reordering it would restore a different order at a different price while calling itself a rollback",
+      },
+      // THE DECLARED COVERAGE, and here it is doing something the swap-for-coupon
+      // one could not: asserting that the covering question and the covered
+      // question are THE SAME SENTENCE. `confirmPaidCancel` and `gatePaidCancel`
+      // both call `paidCancelConfirmText`, so the two facts below are stated by
+      // the confirm because they are stated by the covered guard — not because an
+      // author judged the two sentences close enough.
+      confirmCoveredBy: {
+        basisReason: "paid_cancel_requires_confirmation",
+        statesFacts: ["orderAmount", "refundConsequence"],
+        why: "the whole-workflow confirm is BYTE-IDENTICAL to gatePaidCancel's own question — the same paidCancelConfirmText call, stating this order's amount and that cancelling refunds it — and the customer answered THAT question with a witnessed affirmation",
+      },
+    },
+  ],
+  confirm: {
+    template: "confirm",
+    // WHAT THE SENTENCE STATES. Two facts, not three: `paidCancelConfirmText`
+    // names the amount and the refund consequence and says nothing about any new
+    // total, so declaring `newTotal` here would be claiming coverage of a question
+    // this route never asks.
+    statesFacts: ["orderAmount", "refundConsequence"],
+  },
+  templates: [
+    // `{confirmation}` ALONE — and here the rule that framing must be additive is
+    // load-bearing in a way it was not for the other two workflows. The parity pin
+    // asserts this render is byte-identical to what a direct paid cancel shows;
+    // ANY word added around the placeholder breaks that, so the degenerate form is
+    // not a stylistic choice here, it is the acceptance criterion.
+    { id: "confirm", text: "{confirmation}" },
+    {
+      id: "no-order-to-cancel",
+      text: "Ainda não encontrei nenhum pedido seu pra cancelar. Se você fez um pedido agora há pouco, me chama que eu procuro de novo.",
+    },
+    {
+      id: "past-ponr",
+      // The same fact `refuseOrderPastPonr` states, in the pre-check's own voice.
+      text: "Esse pedido já passou do ponto de cancelamento, então não dá mais pra cancelar por aqui. Fala com a gente que a equipe te ajuda.",
+    },
+    {
+      id: "amount-unknown",
+      text: "Não consegui confirmar o valor desse pedido agora, então preferi não mexer nele. Me chama de novo em instantes ou fala com a equipe que a gente resolve.",
+    },
+    {
+      id: "completed",
+      text: "Pronto, cancelei seu pedido. O reembolso já foi solicitado e o valor volta pra você pelo mesmo meio de pagamento.",
+    },
+    { id: "declined", text: "Tudo bem, não cancelei nada e seu pedido continua como estava." },
+    {
+      id: "failed",
+      text: "Não consegui cancelar seu pedido e não mexi em nada. Já chamei alguém da equipe para te ajudar.",
+    },
+    {
+      id: "escalated",
+      // THE WHOLE TRUTH, both halves — the same shape swap-for-coupon's carries
+      // and for the same reason, minus its second clause: this route has no steps
+      // after the cancel, so there is nothing the customer must ask for again. An
+      // approval here completes the whole request.
+      text: "Esse cancelamento precisa da aprovação de um responsável, então mandei pra equipe revisar e ainda não mexi no seu pedido. Assim que aprovarem, o cancelamento e o reembolso acontecem e eu te aviso.",
+    },
+  ],
+  outcomes: {
+    completed: "completed",
+    declined: "declined",
+    failed: "failed",
+    escalated: "escalated",
+  },
+}
+
 /**
  * Every workflow the production catalog declares. See the module doc for what
  * an entry costs structurally.
@@ -546,4 +797,5 @@ export const SWAP_FOR_COUPON_WORKFLOW: WorkflowDefinition = {
 export const WORKFLOW_DEFINITIONS: readonly WorkflowDefinition[] = [
   REORDER_LAST_WORKFLOW,
   SWAP_FOR_COUPON_WORKFLOW,
+  PAID_CANCEL_WORKFLOW,
 ]
