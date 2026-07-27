@@ -151,6 +151,36 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
           // exercise its fail-open path against a connection refusal, never
           // accidentally publish into a developer's live dev-stack broker.
           NATS_URL: "nats://127.0.0.1:1",
+          // BKL-279 — PIN THE FUNNEL'S L2 TIER OFF FOR THIS SUITE.
+          //
+          // `bootstrapClaustrum` wires the LE2-008 capability retriever whenever
+          // BOTH `OLLAMA_EMBED_URL` and `OLLAMA_EMBED_MODEL` are readable from
+          // the ambient process env (`createOllamaEmbedder()` reads
+          // `process.env` directly — there is no injection seam), and with a
+          // retriever wired the planner advertises a RETRIEVED SUBSET of the
+          // tool roster instead of the full roster.
+          //
+          // This suite resolves completions by a CONTENT KEY digested over
+          // `{system, messages, tools}`, and its fixtures were recorded against
+          // the full-roster surface. So a developer who merely has the local
+          // embedder exported in their shell — it is in the repo's own `.env` —
+          // silently changes the tool block, misses every fixture, and turns
+          // `order.item.add` into `system.extraction_failure`. All four tests
+          // fail, and they fail identically in a subset run and in the full
+          // suite: the dependence was on the ENVIRONMENT, never on run shape.
+          //
+          // Worse, the live embedder is reached over the NETWORK, which breaks
+          // this suite's hermeticity contract outright ("zero tokens BY
+          // CONSTRUCTION", no I/O outside the throwaway containers).
+          //
+          // Empty string is the DECLARED "not configured" value in
+          // `createOllamaEmbedder()` (it tests `=== ""` alongside `undefined`),
+          // so this pins L2 to its designed full-roster no-op. The harness
+          // restores both variables verbatim on teardown, so a suite that DOES
+          // want a retriever is unaffected — including one that opts in by
+          // passing its own values here (`options.env` is spread last).
+          OLLAMA_EMBED_URL: "",
+          OLLAMA_EMBED_MODEL: "",
         },
       });
 
