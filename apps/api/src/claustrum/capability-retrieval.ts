@@ -229,22 +229,73 @@ export interface EmbedderPort {
 }
 
 /**
- * The ratified local embedder (BKL-034 env idiom: `OLLAMA_EMBED_URL` /
- * `OLLAMA_EMBED_MODEL`, read at CALL time per FE-D26's lazy-env discipline).
+ * What the ratified local embedder needs, as an EXPLICIT VALUE (BKL-283).
  *
- * `undefined` when either var is unset — which is not an error but the honest
- * "no retriever configured" state, and it makes L2 a designed no-op (full roster)
- * on any stack that has not provisioned the embedder.
+ * This used to be read from `process.env` inside `createOllamaEmbedder()`, which
+ * made the funnel's L2 tier — and therefore the TOOL SURFACE the planner
+ * advertises — a function of whatever the ambient shell happened to export.
+ * Two consequences were measured:
+ *
+ *   1. A content-keyed fixture suite recorded against one surface and replayed
+ *      against another, because a developer's shell had the pair (BKL-279 /
+ *      PR #450). That failed LOUDLY — the fixtures digest the surface correctly.
+ *   2. The BKL-275 emission factorial varied the surface BETWEEN ARMS by this
+ *      exact mechanism while reading rates across arms as fixed, corrupting a
+ *      money-path measurement. That did not fail at all.
+ *
+ * The defect was never a missing key component — both the L1 parse-cache key and
+ * the fixture digest already cover the surface. Nothing CONTROLLED it. So the
+ * configuration is an argument now: the production composition root reads env
+ * ONCE and passes it in, and every other composition gets NOT-CONFIGURED unless
+ * it STATES a surface.
  */
-export function createOllamaEmbedder(
-  opts: { readonly timeoutMs?: number } = {},
-): EmbedderPort | undefined {
-  const baseUrl = process.env.OLLAMA_EMBED_URL;
-  const model = process.env.OLLAMA_EMBED_MODEL;
+export interface OllamaEmbedderConfig {
+  /** Ollama base URL; the client POSTs `<baseUrl>/api/embeddings`. */
+  readonly baseUrl: string;
+  /** A PULLED Ollama embed model (e.g. `nomic-embed-text`). */
+  readonly model: string;
+  /** Per-embed request timeout. Default 5s. */
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Decode an {@link OllamaEmbedderConfig} from an environment bag (BKL-034 env
+ * idiom: `OLLAMA_EMBED_URL` / `OLLAMA_EMBED_MODEL`).
+ *
+ * `env` is a REQUIRED parameter with NO DEFAULT on purpose. There is no way to
+ * call this and accidentally inherit the ambient process env, so the one call in
+ * the system that does read it is grep-able and lives at the composition root
+ * (see `productionCapabilityEmbedderOptions` in claustrum-bootstrap.ts). Restore
+ * a `= process.env` default here and you restore BKL-283.
+ *
+ * `undefined` when either var is unset OR empty — not an error but the honest
+ * "no retriever configured" state, which makes L2 a designed no-op (full roster).
+ * Empty string stays a declared not-configured value: it is what an env-level
+ * caller writes to state "no L2 surface".
+ */
+export function resolveOllamaEmbedderConfig(
+  env: NodeJS.ProcessEnv,
+): OllamaEmbedderConfig | undefined {
+  const baseUrl = env.OLLAMA_EMBED_URL;
+  const model = env.OLLAMA_EMBED_MODEL;
   if (baseUrl === undefined || model === undefined || baseUrl === "" || model === "") {
     return undefined;
   }
-  const timeoutMs = opts.timeoutMs ?? 5_000;
+  return { baseUrl, model };
+}
+
+/**
+ * The ratified local embedder over an EXPLICIT config.
+ *
+ * Always returns a port: "is it configured" is a question for
+ * {@link resolveOllamaEmbedderConfig}, answered before this is called. The wire
+ * behaviour (native `/api/embeddings`, `{ model, prompt }`, 5s timeout) is
+ * byte-identical to the pre-BKL-283 client — only where the two strings come
+ * from changed.
+ */
+export function createOllamaEmbedder(config: OllamaEmbedderConfig): EmbedderPort {
+  const { baseUrl, model } = config;
+  const timeoutMs = config.timeoutMs ?? 5_000;
   return {
     async embed(text: string): Promise<readonly number[]> {
       const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/embeddings`, {

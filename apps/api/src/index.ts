@@ -7,7 +7,10 @@ import { buildServer } from "./server.js";
 import { bootstrapKernel } from "./plugins/kernel-bootstrap.js";
 import { bootstrapAuditSinkDI } from "./audit-sink-bootstrap.js";
 import { bootstrapLearningSinkDI } from "./learning-sink-bootstrap.js";
-import { bootstrapClaustrum } from "./claustrum-bootstrap.js";
+import {
+  bootstrapClaustrum,
+  productionCapabilityEmbedderOptions,
+} from "./claustrum-bootstrap.js";
 import { startCartIntelligenceSubscribers } from "./subscribers/cart-intelligence.js";
 import { startIngredientDepletionSubscriber } from "./subscribers/ingredient-depletion.js";
 import { startHandoffSubscriber } from "./subscribers/handoff-subscriber.js";
@@ -102,7 +105,16 @@ const start = async (): Promise<void> => {
   // only installs its observability-only sink when none is present (i.e. when
   // claustrum is bootstrapped standalone). The WS5 resume-intent dispatcher is
   // already wired below via `startDeferResolverSubscriber({ dispatcher })`.
-  await bootstrapClaustrum();
+  // BKL-283 — THE production composition root's one ambient read of the L2
+  // embedder pair (OLLAMA_EMBED_URL / OLLAMA_EMBED_MODEL). The funnel's L2 tier
+  // narrows the tool roster the planner advertises, so leaving that read inside
+  // the library made the advertised surface a property of whatever shell started
+  // the process — which silently changed the surface under a fixture-recording
+  // suite (BKL-279) and, worse, between the arms of a money-path measurement
+  // (BKL-275). Reading it HERE and passing the port in keeps production
+  // byte-identical while every other composition gets the designed full-roster
+  // no-op unless it declares an embedder of its own.
+  await bootstrapClaustrum(productionCapabilityEmbedderOptions(process.env));
   server.log.info("[startup] claustrum Conductor bootstrapped and live");
 
   // Graceful shutdown: stop BullMQ workers, drain NATS, close Fastify, close Redis, disconnect Prisma

@@ -5,7 +5,10 @@
 // The comment above it said L0 — but L2's `stampScope` writes the SAME per-turn map
 // on EVERY turn it scopes, and production wires ONE `createParseFunnel()` instance as
 // both `funnel` and `scopeSeam` the moment `OLLAMA_EMBED_URL`/`OLLAMA_EMBED_MODEL`
-// are configured (claustrum-bootstrap.ts). So with the ratified local embedder on —
+// are configured (read at the composition root — apps/api/src/index.ts — and passed
+// to bootstrapClaustrum as an injected embedder port since BKL-283; before that the
+// library read them itself, so ANY process with the pair got a retriever).
+// So with the ratified local embedder on —
 // the funnel's PRIMARY path — every L2 turn silently skipped `proposeClaims`, the
 // `propose_claim` tool never reached the wire, and a grounded read question
 // ("qual o horário de funcionamento?") degraded to a REFUSE.
