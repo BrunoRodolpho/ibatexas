@@ -152,10 +152,28 @@ ibx dev stop          # tear the running stack down
 ibx dev start         # bring it back up on the fresh deps
 ```
 
-Guard rail: `ibx dev build` (the build-packages path) now **fails closed** when
-`pnpm-lock.yaml` is newer than `node_modules`, printing
-`pnpm-lock.yaml is newer than node_modules — … Run: pnpm install` instead of
-proceeding with a stale build. If you see that error, run `pnpm install` and retry.
+Guard rail: `ibx dev build` (the build-packages path) **fails closed** when the
+installed tree does not match the lockfile, printing
+`pnpm-lock.yaml differs from the lockfile pnpm last installed — … Run: pnpm install`
+instead of proceeding with a stale build. If you see that error, run
+`pnpm install` and retry.
+
+The guard compares **content**, not timestamps: pnpm keeps the lockfile it
+actually installed at `node_modules/.pnpm/lock.yaml`, so you can ask the same
+question by hand at any time:
+
+```bash
+diff -q pnpm-lock.yaml node_modules/.pnpm/lock.yaml   # DIFFERS ⇒ run pnpm install
+```
+
+> Until 2026-07-26 the guard compared `pnpm-lock.yaml`'s mtime against
+> `node_modules`' mtime. That was wrong in both directions and produced a
+> recurring false alarm: a directory's mtime only advances when an entry is
+> created or removed inside it, and `pnpm install` rewrites `.modules.yaml`,
+> `.pnpm/` and `.bin/` **in place** — so a correct install did not clear the
+> error, while an unrelated tool writing a new top-level entry (vite's
+> `.vite-temp`) silently did. If you remember "run `pnpm install` twice and it
+> goes away", that was why.
 
 ---
 

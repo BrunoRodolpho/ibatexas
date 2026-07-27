@@ -386,26 +386,69 @@ async function stopDockerContainers(): Promise<void> {
 /**
  * BKL-151 (local half) — fail CLOSED on a dependency skew before building.
  *
- * When `pnpm-lock.yaml` is NEWER than `node_modules` the lockfile changed (a
- * merge touched a package.json / a dep bump) but `pnpm install` never ran, so
- * `node_modules` is stale. Building against a stale tree surfaces DOWNSTREAM as
- * an opaque ghost (the claims-validate `TypeError` on a shape that a newer dep
- * added) rather than an actionable message. Turn that into a DETERMINISTIC,
- * self-explaining skew error at the build seam. Returns the reason string when
- * skewed (for testing); `null` when in sync or indeterminate (fresh clone /
- * missing path → let pnpm itself surface it). Exported for unit testing.
+ * When the lockfile changed (a merge touched a package.json / a dep bump) but
+ * `pnpm install` never ran, `node_modules` is stale. Building against a stale
+ * tree surfaces DOWNSTREAM as an opaque ghost (the claims-validate `TypeError`
+ * on a shape that a newer dep added) rather than an actionable message. Turn
+ * that into a DETERMINISTIC, self-explaining skew error at the build seam.
+ *
+ * The signal is CONTENT, never mtimes. The original mtime heuristic
+ * (`pnpm-lock.yaml` newer than `node_modules`) compared two clocks that measure
+ * neither side of the question, and was wrong in both directions — measured
+ * 2026-07-26:
+ *   · `node_modules`' own mtime only advances when an ENTRY is created/removed
+ *     in that one directory. `pnpm install` rewrites `.modules.yaml` / `.pnpm/`
+ *     / `.bin/` IN PLACE, so a correct install left the root dir's mtime two
+ *     days stale and the guard fired again on the very next build. (The stamp
+ *     it was reading had been set by vite creating `.vite-temp` — not by pnpm.)
+ *   · Conversely ANY tool dropping a new top-level entry silences the guard
+ *     while the tree is genuinely stale.
+ *   · And `pnpm install` rewrites `pnpm-lock.yaml` as its last act, re-arming
+ *     the guard it was supposed to clear.
+ *
+ * pnpm keeps the lockfile it ACTUALLY installed at `node_modules/.pnpm/lock.yaml`
+ * (the "current" lockfile, kept in sync with the tree). Byte-comparing the two
+ * answers the real question exactly, with no clock involved. Fallback for trees
+ * without that file: pnpm 10's own validation clock in
+ * `node_modules/.pnpm-workspace-state-v1.json`.
+ *
+ * Returns the reason string when skewed (for testing); `null` when in sync or
+ * indeterminate (fresh clone / missing path → let pnpm itself surface it).
+ * Exported for unit testing.
  */
 export function depsSkewReason(root: string = ROOT): string | null {
+  let lockBytes: Buffer
   try {
+    lockBytes = fs.readFileSync(path.join(root, "pnpm-lock.yaml"))
+  } catch {
+    // No lockfile (e.g. a fresh clone) — not a skew we can assert.
+    return null
+  }
+
+  // Primary: the lockfile pnpm last installed, byte-for-byte.
+  try {
+    const installed = fs.readFileSync(path.join(root, "node_modules", ".pnpm", "lock.yaml"))
+    if (installed.equals(lockBytes)) return null
+    return "pnpm-lock.yaml differs from the lockfile pnpm last installed (node_modules/.pnpm/lock.yaml) — dependencies changed but were not installed"
+  } catch {
+    // No installed-lock (never installed, or a pnpm that does not write it) —
+    // fall through to pnpm's own validation clock.
+  }
+
+  // Fallback: pnpm 10 stamps when it last validated node_modules against the
+  // lockfile. Unlike a directory mtime this IS advanced by every install.
+  try {
+    const statePath = path.join(root, "node_modules", ".pnpm-workspace-state-v1.json")
+    const validatedAt = JSON.parse(fs.readFileSync(statePath, "utf8")).lastValidatedTimestamp
+    if (typeof validatedAt !== "number") return null
     const lockMtime = fs.statSync(path.join(root, "pnpm-lock.yaml")).mtimeMs
-    const nmMtime = fs.statSync(path.join(root, "node_modules")).mtimeMs
-    if (lockMtime > nmMtime) {
-      return "pnpm-lock.yaml is newer than node_modules — dependencies changed but were not installed"
+    if (lockMtime > validatedAt) {
+      return "pnpm-lock.yaml changed after pnpm last validated node_modules — dependencies changed but were not installed"
     }
     return null
   } catch {
-    // Missing lockfile or node_modules (e.g. a fresh clone) — not a skew we can
-    // assert; let the build / pnpm surface the real problem.
+    // No node_modules at all / unreadable state — indeterminate; let the build
+    // or pnpm surface the real problem.
     return null
   }
 }
