@@ -151,34 +151,37 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
           // exercise its fail-open path against a connection refusal, never
           // accidentally publish into a developer's live dev-stack broker.
           NATS_URL: "nats://127.0.0.1:1",
-          // BKL-279 — PIN THE FUNNEL'S L2 TIER OFF FOR THIS SUITE.
+          // BKL-279 / BKL-283 — pin the local embedder pair OFF for this suite.
           //
-          // `bootstrapClaustrum` wires the LE2-008 capability retriever whenever
-          // BOTH `OLLAMA_EMBED_URL` and `OLLAMA_EMBED_MODEL` are readable from
-          // the ambient process env (`createOllamaEmbedder()` reads
-          // `process.env` directly — there is no injection seam), and with a
-          // retriever wired the planner advertises a RETRIEVED SUBSET of the
-          // tool roster instead of the full roster.
+          // WHAT THIS NO LONGER GUARDS. BKL-279 added this pin because
+          // `bootstrapClaustrum` called `createOllamaEmbedder()`, which read the
+          // pair straight off `process.env`: a developer whose shell carried it
+          // — it is in the repo's own `.env` — silently wired the funnel's L2
+          // tier, the planner advertised a RETRIEVED SUBSET instead of the full
+          // roster, this suite's `{system, messages, tools}` content keys missed
+          // every fixture, and `order.item.add` became
+          // `system.extraction_failure`. BKL-283 closed that STRUCTURALLY: the
+          // embedder is now an injected port (`ClaustrumBootstrapOptions.
+          // capabilityEmbedder`), production reads env once at the composition
+          // root, and a composition that declares nothing — like this one — gets
+          // the designed full-roster no-op whatever the shell exports. Verified:
+          // this suite passes 4/4 with the pair exported and pointed at a
+          // REACHABLE embedder that logs every request, and that embedder
+          // receives ZERO requests.
           //
-          // This suite resolves completions by a CONTENT KEY digested over
-          // `{system, messages, tools}`, and its fixtures were recorded against
-          // the full-roster surface. So a developer who merely has the local
-          // embedder exported in their shell — it is in the repo's own `.env` —
-          // silently changes the tool block, misses every fixture, and turns
-          // `order.item.add` into `system.extraction_failure`. All four tests
-          // fail, and they fail identically in a subset run and in the full
-          // suite: the dependence was on the ENVIRONMENT, never on run shape.
-          //
-          // Worse, the live embedder is reached over the NETWORK, which breaks
-          // this suite's hermeticity contract outright ("zero tokens BY
-          // CONSTRUCTION", no I/O outside the throwaway containers).
+          // WHY IT STAYS ANYWAY. The pair has a SECOND, independent consumer
+          // that BKL-283 did not touch: `@ibatexas/tools`' product-search
+          // `generateEmbedding` (BKL-034), which the resolve stage reaches when
+          // it maps NL → product id. That one is gated on
+          // `EMBEDDINGS_PROVIDER=ollama` rather than on this pair alone, so it
+          // is a narrower hazard — but it is still a live network call out of a
+          // suite whose contract is "no I/O outside the throwaway containers",
+          // and pinning the pair off closes it for any shell.
           //
           // Empty string is the DECLARED "not configured" value in
-          // `createOllamaEmbedder()` (it tests `=== ""` alongside `undefined`),
-          // so this pins L2 to its designed full-roster no-op. The harness
-          // restores both variables verbatim on teardown, so a suite that DOES
-          // want a retriever is unaffected — including one that opts in by
-          // passing its own values here (`options.env` is spread last).
+          // `resolveOllamaEmbedderConfig()` (it tests `=== ""` alongside
+          // `undefined`). The harness restores both variables verbatim on
+          // teardown, so a suite that DOES want an embedder is unaffected.
           OLLAMA_EMBED_URL: "",
           OLLAMA_EMBED_MODEL: "",
         },

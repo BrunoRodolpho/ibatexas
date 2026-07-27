@@ -318,6 +318,8 @@ import { createRedisParseCacheStore } from "./claustrum/parse-memo.js";
 import {
   createCapabilityRetriever,
   createOllamaEmbedder,
+  resolveOllamaEmbedderConfig,
+  type EmbedderPort,
 } from "./claustrum/capability-retrieval.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
@@ -710,8 +712,53 @@ export interface ClaustrumBootstrapOptions {
    * env var or flag anywhere that turns the gate off — see the call site.
    */
   readonly externalReferenceProbes?: ExternalReferenceProbes;
+  /**
+   * The embedder that backs the funnel's LE2-008 L2 capability retriever.
+   *
+   * Default: ABSENT ⟹ no retriever ⟹ the planner advertises the FULL roster,
+   * exactly as it did pre-L2. A composition must STATE its surface to get one.
+   *
+   * BKL-283 — this used to be `createOllamaEmbedder()` reading `process.env`
+   * from inside the library, so the funnel's L2 tier switched on for ANY process
+   * whose shell exported `OLLAMA_EMBED_URL` + `OLLAMA_EMBED_MODEL` (the repo's
+   * own `.env` carries them). Because L2 narrows the advertised tool roster,
+   * that made the TOOL SURFACE an ambient-environment variable: a content-keyed
+   * fixture suite recorded against one surface and replayed against another
+   * (BKL-279 / PR #450), and — silently — the BKL-275 emission factorial varied
+   * the surface between arms while reading rates across arms as fixed.
+   *
+   * Same kind of seam as `pgPool` / `modelProvider` / `externalReferenceProbes`
+   * above, with ONE deliberate difference: those default to a real client built
+   * from env, because env-derived defaults are correct for them. Here an
+   * env-derived default IS the defect, so the default is not-configured and the
+   * env read lives at the production composition root instead — see
+   * {@link productionCapabilityEmbedderOptions}, whose only caller is
+   * `apps/api/src/index.ts`.
+   */
+  readonly capabilityEmbedder?: EmbedderPort;
   // BKL-126 — resolveStoreHours / resolveHoursForDate options removed (values
   // bind from the investigator ledger at core stage 4b; no fresh re-read).
+}
+
+/**
+ * The PRODUCTION composition root's bootstrap options for the L2 embedder — the
+ * one place in the system that turns ambient environment into a funnel surface.
+ *
+ * `env` is a required parameter: this function reads the bag it is handed and
+ * nothing else, so `apps/api/src/index.ts` passing `process.env` is the single
+ * grep-able ambient read (BKL-283). Every other composition — suites, harnesses,
+ * the ops/agent plane — omits `capabilityEmbedder` and therefore gets the
+ * designed full-roster no-op, whatever the shell happens to export.
+ *
+ * Production behaviour is preserved exactly: with both variables set the wired
+ * retriever is the same Ollama-backed one, over the same URL and model, as
+ * before the seam existed.
+ */
+export function productionCapabilityEmbedderOptions(
+  env: NodeJS.ProcessEnv,
+): Pick<ClaustrumBootstrapOptions, "capabilityEmbedder"> {
+  const config = resolveOllamaEmbedderConfig(env);
+  return config === undefined ? {} : { capabilityEmbedder: createOllamaEmbedder(config) };
 }
 
 /**
@@ -3693,20 +3740,28 @@ export async function bootstrapClaustrum(
   // lookup to a miss and every write to a no-op, so the turn path is unchanged
   // when the cache is down — it just costs a completion again.
   const funnel = createParseFunnel({ parseCacheStore: createRedisParseCacheStore() });
-  // LE2-008 — the L2 retriever, wired ONLY when the ratified local embedder is
-  // configured (OLLAMA_EMBED_URL / OLLAMA_EMBED_MODEL). Absent ⟹ no retriever ⟹
-  // the planner advertises the full roster exactly as it did pre-L2. That is the
-  // honest degrade, not a flag: a stack with no embedder provisioned should keep
-  // today's coverage rather than scope on nothing. The retriever itself is
-  // fail-safe on top of that (see capability-retrieval.ts) — every error path,
-  // including an unreachable embedder mid-turn, returns the full roster.
-  const l2Embedder = createOllamaEmbedder();
+  // LE2-008 — the L2 retriever, wired ONLY when this composition DECLARED an
+  // embedder. Absent ⟹ no retriever ⟹ the planner advertises the full roster
+  // exactly as it did pre-L2. That is the honest degrade, not a flag: a stack
+  // with no embedder provisioned should keep today's coverage rather than scope
+  // on nothing. The retriever itself is fail-safe on top of that (see
+  // capability-retrieval.ts) — every error path, including an unreachable
+  // embedder mid-turn, returns the full roster.
+  //
+  // BKL-283 — the embedder ARRIVES here; it is never constructed here. This line
+  // used to be `createOllamaEmbedder()`, which read OLLAMA_EMBED_URL /
+  // OLLAMA_EMBED_MODEL straight off `process.env`, so any shell holding the pair
+  // silently rewired the advertised tool surface of every composition in the
+  // process — including fixture-recording suites and measurement harnesses that
+  // never asked for a retriever. Production reads the pair once, at the root
+  // (`productionCapabilityEmbedderOptions(process.env)` in index.ts).
+  const l2Embedder = options.capabilityEmbedder;
   const capabilityRetriever =
     l2Embedder === undefined ? undefined : createCapabilityRetriever({ embedder: l2Embedder });
   if (capabilityRetriever === undefined) {
     logger.info(
       { component: "funnel", event: "funnel.l2.disabled" },
-      "funnel L2: no local embedder configured (OLLAMA_EMBED_URL/OLLAMA_EMBED_MODEL) — full-roster surface",
+      "funnel L2: no embedder declared by this composition — full-roster surface",
     );
   }
   const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>

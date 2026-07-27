@@ -17,7 +17,6 @@ import {
   buildRetrievalQuery,
   cosineSimilarity,
   createCapabilityRetriever,
-  createOllamaEmbedder,
   decideScope,
   fullRosterDecision,
   marginConfidence,
@@ -149,20 +148,11 @@ describe("the retrieval document is built from authored catalog data", () => {
   });
 });
 
-describe("createOllamaEmbedder — absent config is a state, not an error", () => {
-  it("returns undefined when the env idiom is unset", async () => {
-    const prevUrl = process.env.OLLAMA_EMBED_URL;
-    const prevModel = process.env.OLLAMA_EMBED_MODEL;
-    delete process.env.OLLAMA_EMBED_URL;
-    delete process.env.OLLAMA_EMBED_MODEL;
-    try {
-      expect(createOllamaEmbedder()).toBeUndefined();
-    } finally {
-      if (prevUrl !== undefined) process.env.OLLAMA_EMBED_URL = prevUrl;
-      if (prevModel !== undefined) process.env.OLLAMA_EMBED_MODEL = prevModel;
-    }
-  });
-});
+// BKL-283 — `createOllamaEmbedder` no longer reads env and no longer answers
+// "is it configured": that question moved to `resolveOllamaEmbedderConfig`, and
+// the whole seam (including the property that a fully-exported shell inherits
+// NOTHING) is proven in
+// `apps/api/src/__tests__/bkl283-embedder-injection-seam.test.ts`.
 
 describe("createCapabilityRetriever — every failure direction WIDENS", () => {
   const okEmbedder = (vec: number[]): EmbedderPort => ({ embed: async () => vec });
