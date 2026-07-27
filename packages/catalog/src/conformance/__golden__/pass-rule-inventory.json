@@ -126,7 +126,11 @@
         "compensator-not-terminal",
         "compensator-routed",
         "compensator-target-dangling",
+        "confirm-coverage-fact-unknown",
+        "confirm-coverage-unstated",
+        "escalated-outcome-template-missing",
         "mutating-activity-uncompensated",
+        "policy-gated-activity-not-scoped",
         "precheck-template-missing",
         "predicate-fact-unknown",
         "predicate-malformed",
@@ -134,5 +138,5 @@
       ]
     }
   ],
-  "ruleCount": 61
+  "ruleCount": 65
 }

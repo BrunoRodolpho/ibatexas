@@ -79,6 +79,21 @@ export interface PromotionRecord {
     readonly type?: string;
     readonly currency_code?: string | null;
   };
+  /**
+   * LE2-023 — the promotion's TARGETING RULES, transcribed for one purpose: to
+   * know whether this record's discount can be arithmetically applied to an
+   * order total at all.
+   *
+   * {@link evaluatePromotionRecord} deliberately does not INTERPRET rules (only
+   * Medusa's engine can), and nothing here changes that. But a caller that wants
+   * to state a resulting total needs to know whether the discount applies to the
+   * whole basket or only to part of it, and a rules-bearing promotion is one
+   * where "total − discount" is simply the wrong sum. So the field is
+   * transcribed as raw `unknown` and read only through
+   * {@link promotionHasTargetingRules}, which answers that one question and
+   * nothing else.
+   */
+  readonly rules?: unknown;
 }
 
 /** The admin list response shape `GET /admin/promotions?code=…` returns. */
@@ -87,14 +102,49 @@ export interface PromotionListResponse {
 }
 
 /**
- * The ONE store path either caller may use to look a promotion up BY CODE.
+ * The ONE store path EVERY caller uses to look a promotion up BY CODE.
  * `limit=1` because the code filter is exact — at most one row can match.
- * No `fields=` parameter: the default admin promotion fields already carry every
- * field {@link evaluatePromotionRecord} reads (see {@link PromotionRecord}).
- * Pure.
+ * The default admin promotion fields already carry every field
+ * {@link evaluatePromotionRecord} reads; `fields=+rules` ADDS the one field
+ * {@link promotionHasTargetingRules} needs without dropping any of them. Pure.
  */
 export function promotionByCodePath(code: string): string {
-  return `/admin/promotions?code=${encodeURIComponent(code)}&limit=1`;
+  // `fields=+rules` ADDS to the default admin promotion fields rather than
+  // replacing them (Medusa v2's `+` prefix), so every field the two validity
+  // callers already read comes back byte-identically and LE2-023's arithmetic
+  // gate gains the one field it needs. A SECOND path would have re-created
+  // exactly the drift this module's header exists to prevent — two callers
+  // querying different endpoints and disagreeing about the same coupon.
+  //
+  // If the `+` syntax were ever ignored, `rules` comes back ABSENT, and
+  // {@link promotionHasTargetingRules} reads absence as UNCERTAIN (⇒ "has
+  // rules") rather than as "none". So a silently-ignored field parameter makes
+  // the swap workflow refuse to quote a total — loudly wrong in the safe
+  // direction — instead of quoting one computed as if the coupon applied to
+  // everything.
+  return `/admin/promotions?code=${encodeURIComponent(code)}&limit=1&fields=%2Brules`;
+}
+
+/**
+ * Does this promotion carry TARGETING RULES — i.e. is its discount scoped to
+ * some subset of a basket rather than to the whole of it?
+ *
+ * FAIL-CLOSED ON UNCERTAINTY, and the asymmetry is the whole point. Only one
+ * shape answers "no": a `rules` key that is PRESENT and is an EMPTY ARRAY. An
+ * absent key, a non-array value, or a non-empty array all answer "yes", because
+ * the only consumer is a decision about whether it is safe to state a resulting
+ * total to a customer, and every uncertain case must land on "do not state one".
+ *
+ * Reading absence as "no rules" would be the fail-OPEN version of this function
+ * and would quote a wrong total on exactly the promotions whose shape we failed
+ * to read — which is the population most likely to be unusual in the first
+ * place. Pure.
+ */
+export function promotionHasTargetingRules(promo: PromotionRecord | undefined): boolean {
+  if (promo === undefined) return true;
+  const rules = promo.rules;
+  if (!Array.isArray(rules)) return true;
+  return rules.length > 0;
 }
 
 /**

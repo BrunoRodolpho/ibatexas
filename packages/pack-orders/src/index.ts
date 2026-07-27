@@ -112,6 +112,7 @@ export {
   type OrderFiscalEmitPayload,
   type OrderReorderPayload,
   type OrderReorderRequestPayload,
+  type OrderCouponSwapRequestPayload,
   type OrderState,
   type OrderStatusTransitionPayload,
   type OrderStatusReconcilePayload,
@@ -130,7 +131,9 @@ export {
   refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseCouponNotUsable,
   refuseNoPreviousOrder,
+  refuseSwapTotalUnknown,
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
@@ -144,6 +147,15 @@ export {
 } from "./refusals.js"
 
 export { ordersPolicyBundle } from "./policies.js"
+
+// LE2-023 — the two sets a workflow FEASIBILITY PRE-CHECK must agree with,
+// exported so the host reads the pack's own transcription instead of making a
+// second one. See each set's comment for why a duplicate would be a real defect
+// rather than a style point.
+export {
+  CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES,
+  CUSTOMER_POST_PONR_FULFILLMENT,
+} from "./policies.js"
 
 export {
   ORDER_TOOL_TO_INTENT,
@@ -186,6 +198,8 @@ export const ordersPack = {
     "order.review.submit",
     "order.reorder",
     "order.reorder.request",
+    "order.coupon.swap.request",
+    "order.coupon.adjust",
     "order.projection.create",
     "order.status.transition",
     "order.status.reconcile",
@@ -215,6 +229,12 @@ export const ordersPack = {
     // same time the builder was written, which is the whole lesson of the
     // BKL-251 note below.
     "order.reorder.no_history",
+    // LE2-023 — `confirmSwapForCoupon`'s two OWN refusals, declared in the same
+    // commit as their builders for the reason the BKL-251 note below records.
+    // The guard's other two exits reuse `order.reorder.no_history` and
+    // `order.past_ponr`, which are already declared here and are the same facts.
+    "order.coupon.not_usable",
+    "order.coupon.swap.total_unknown",
     // BKL-251 — emitted since BKL-036/034-F1 but never declared here, so the
     // AI-BOM and the config seal under-reported the Pack's refusal vocabulary.
     // `order.past_ponr` fires from `requireCancellable` (a customer cancel past

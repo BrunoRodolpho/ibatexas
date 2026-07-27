@@ -90,4 +90,59 @@
 // park, and no compensator to run on the way out. That is precisely the
 // no-reuse rule's load-bearing case, and LE2-022's own park/resume AC is a test
 // of it.
-export const CATALOG_VERSION: number = 8
+// v9 (LE2-023) — the SWAP-FOR-COUPON contract. `src/workflows/types.ts` gains
+// four things, and the README's workflow-contract trigger fires on all of them
+// because each changes what a definition MEANS, not only what it may say:
+// `WorkflowConfirmCoverage` + `WorkflowConfirmPoint.statesFacts` (an activity's
+// own REQUEST_CONFIRMATION may be declared already-asked by the whole-workflow
+// confirm — the narrowest possible refinement of LE2-022's blanket rule, and the
+// first time a definition can say anything about what its confirm TOLD the
+// customer); the `whenPolicyOpen` route step plus `policyOpen` (a branch that is
+// compiled in and closed by absence); and the `escalated` outcome (a run that
+// stopped because a human must now decide — the first outcome whose story is not
+// over when the run ends). `src/workflows/facts.ts` gains five members, which is
+// a projection-semantics change under the README's fifth trigger.
+//
+// It matters for replay in the way v8's note describes and then some: an
+// instance pins this serial and RESUMES on the shape it pinned, and a workflow
+// instantiated under v8 had no way to express that its confirm covered a step's
+// own confirm. The same authored bytes therefore do not describe the same run
+// across the boundary — a v8 instance stops at an activity confirm that a v9 one
+// resolves, which is a different set of mutations for one customer "sim".
+// v10 (LE2-023, second slice) — the CAPABILITY CONTRACT gains `escalatable?:
+// true`, so the README's SECOND trigger fires at its letter ("src/capability-
+// definitions/types.ts — the field contract itself"), and four capabilities gain
+// the field (`order.cancel`, `payment.refund.issue`, `payment.dispute.open`,
+// `reservation.create`), which is the FIRST trigger as well.
+//
+// Bumped from 9 rather than folded into it because v9 is already pushed, and the
+// README's "never reuse a value" is unconditional. It is load-bearing here for
+// the usual reason and one more: the new `escalated-outcome-template-missing`
+// rule reads this field, so a workflow that compiled clean under v9 can fail to
+// compile under v10 without a single byte of its own definition changing.
+// v11 (LE2-023, third slice) — a new CAPABILITY: `order.coupon.swap.request`,
+// the swap-for-coupon workflow's identity-tier governance anchor. The README's
+// FIRST trigger, at its letter ("adding… a capability").
+//
+// Bumped from 10 rather than folded into it for the same unconditional reason
+// the last two slices were, and with the same replay consequence: this serial is
+// what an instance PINS, and a turn adjudicated when this kind did not exist is
+// not reproducible against a catalog where it does. The anchor is also the one
+// kind whose absence changes what the PARSER is offered — `advertise` gates the
+// workflow on its matchers, and a definition anchored on a kind the catalog does
+// not declare is `capability-reference-dangling`, a build error — so v10 and v11
+// genuinely describe two different surfaces rather than two spellings of one.
+// v12 (LE2-023, final slice) — the WORKFLOW ITSELF. `WORKFLOW_DEFINITIONS` gains
+// `workflow.orders.swap-for-coupon`, and with it a new capability
+// (`order.coupon.adjust`, workflow-scoped and refused by policy) and a new
+// compiler rule (`policy-gated-activity-not-scoped`). The README's FIRST trigger
+// fires on the capability and its workflow-contract trigger on the corpus.
+//
+// The replay consequence is the sharpest of the four LE2-023 slices, because
+// this is the one that changes what a CUSTOMER IS OFFERED: `advertise` now
+// returns two workflows, so `start_workflow`'s enum and description differ, the
+// wire differs, and every L1 parse cached under v11's surface is unreachable by
+// construction (the cache key digests the tool array). A turn adjudicated under
+// v11 and one under v12 were shown different choices, which is exactly the
+// distinction the serial exists to preserve.
+export const CATALOG_VERSION: number = 12

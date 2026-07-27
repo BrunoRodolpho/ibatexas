@@ -69,6 +69,34 @@ import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
  *                                     parse-reachable (a workflow's selection
  *                                     envelope is minted from a parse), the act
  *                                     never is.
+ *   - `order.coupon.swap.request`  — UNTRUSTED. LE2-023. ASK to cancel a placed
+ *                                     order and rebuild it with a coupon
+ *                                     applied. The governance ANCHOR of the
+ *                                     `workflow.orders.swap-for-coupon`
+ *                                     workflow, on the same ASK/ACT split as
+ *                                     `order.reorder.request` above: it carries
+ *                                     the whole-workflow CONFIRM
+ *                                     (`confirmSwapForCoupon`, which states the
+ *                                     order amount, the refund consequence and
+ *                                     the new total) while the route's own
+ *                                     `order.cancel` / `order.reorder` /
+ *                                     `order.coupon.apply` activities each do
+ *                                     one governed piece of the work.
+ *   - `order.coupon.adjust`        — DECLARED AND UNEXECUTABLE. LE2-023. Apply a
+ *                                     coupon to an ALREADY-PLACED order by
+ *                                     adjusting its price. It is workflow-scoped
+ *                                     (no parse can reach it) AND no guard in
+ *                                     this bundle produces EXECUTE for it, so
+ *                                     the kernel's default REFUSE is the only
+ *                                     verdict it can ever receive. It exists so
+ *                                     the swap-for-coupon workflow's
+ *                                     `coupon_on_placed_order` policy branch can
+ *                                     NAME a real capability while shipping
+ *                                     closed — see that workflow's route and
+ *                                     `WORKFLOW_POLICY_SWITCHES`. Opening the
+ *                                     branch is a catalog edit; making it RUN
+ *                                     additionally requires a pack policy change
+ *                                     here, which is the second of the two locks.
  *   - `order.projection.create`    — SYSTEM. Initial projection row for an
  *                                     order on cart-intelligence subscriber.
  *   - `order.status.transition`    — SYSTEM/TRUSTED. Direct status flip
@@ -99,6 +127,8 @@ export type OrderIntentKind =
   | "order.review.submit"
   | "order.reorder"
   | "order.reorder.request"
+  | "order.coupon.swap.request"
+  | "order.coupon.adjust"
   | "order.projection.create"
   | "order.status.transition"
   | "order.status.reconcile"
@@ -297,6 +327,42 @@ export interface OrderReorderRequestPayload {
   readonly _workflowInstanceId?: string
 }
 
+/**
+ * LE2-023 — the swap-for-coupon ASK (`order.coupon.swap.request`).
+ *
+ * ── WHY THIS ONE CARRIES AN AUTHORED FIELD AND THE REORDER ASK DOES NOT ──────
+ *
+ * `OrderReorderRequestPayload` above carries nothing because the value its act
+ * needs is an ORDER ID, and an order id a language model reported is
+ * indistinguishable from one it invented. This ask needs a COUPON CODE, which is
+ * the opposite case in the one way that matters: the customer TYPED it. The model
+ * is reporting a string the customer authored in the selecting utterance, not
+ * originating an identifier that names somebody's money — and it arrives through
+ * the workflow's closed slot surface, so `sanitizeWorkflowSlots` drops every key
+ * the workflow does not declare before this payload is built.
+ *
+ * That is exactly the `WorkflowParamSource` `"slot"` member's warrant, and it is
+ * why the swap route can be parameterised at all while the reorder route cannot.
+ *
+ * ── AND WHY THE GUARD STILL DOES NOT QUOTE THIS STRING BACK ──────────────────
+ *
+ * `confirmSwapForCoupon` names the coupon from `ctx.couponCode` — the code the
+ * STORE matched — never from this field. The two differ whenever the customer
+ * types `bemvindo15` and the promotion is `BEMVINDO15`, and quoting the store's
+ * own spelling is both more accurate and structurally safer: an untrusted string
+ * that reached a customer-facing sentence verbatim would be a prose-injection
+ * surface on the one sentence the customer is asked to approve a cancellation
+ * against. The projection round-trips it through the store first; see
+ * `couponCode` on the ctx below.
+ */
+export interface OrderCouponSwapRequestPayload {
+  /** The coupon code the customer authored, verbatim. See the doc above. */
+  readonly code?: string
+  /** Written by the WORKFLOW RUNTIME, never by a parse — the instance handle
+   *  that survives the confirm park. No guard in this Pack reads it. */
+  readonly _workflowInstanceId?: string
+}
+
 export interface OrderProjectionCreatePayload {
   readonly orderId: string
   readonly customerId: string
@@ -370,6 +436,7 @@ export type OrderPayload =
   | OrderReviewSubmitPayload
   | OrderReorderPayload
   | OrderReorderRequestPayload
+  | OrderCouponSwapRequestPayload
   | OrderFiscalEmitPayload
   | OrderProjectionCreatePayload
   | OrderStatusTransitionPayload
@@ -536,6 +603,55 @@ export interface OrderState {
       readonly title: string
       readonly quantity: number
     }>
+    /**
+     * LE2-023 — the five fields `confirmSwapForCoupon` reads, on the same terms
+     * as the four `previousOrder*` fields above: host-stamped from first-party
+     * reads, all optional, and LENIENT-WHEN-ABSENT MEANING FAIL-SAFE.
+     *
+     * That last property is the one to hold on to, because for this guard it is
+     * doing more work than it does for the reorder ask. Every one of these is a
+     * precondition for a sentence that asks a customer to approve CANCELLING A
+     * REAL ORDER, so the guard REFUSEs on any absence rather than confirming
+     * around it — an unwired host, a failed promotion lookup and a genuinely
+     * unusable coupon all converge on an honest sentence, and none of them can
+     * produce a confirmation for a swap the system could not price.
+     *
+     * The first two are DERIVED host-side (in `previousOrderCtxFields`) from
+     * sets this Pack itself exports — `CUSTOMER_POST_PONR_FULFILLMENT` and
+     * `CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES` — rather than transcribed, so
+     * the projection that decides whether to OFFER the swap and the guards that
+     * will later decide whether to ALLOW the cancel (`requireCancellable`,
+     * `gatePaidCancel`) cannot drift apart.
+     */
+    readonly previousOrderIsCancelable?: boolean
+    /**
+     * Whether the previous order's money is already captured — what makes the
+     * confirm's REFUND CLAUSE true. The sentence states the refund consequence
+     * exactly when this is `true`, because "cancelar implica reembolso" is a
+     * promise about money moving back, and on an unpaid order there is no money
+     * to move. It is also the precise condition under which `gatePaidCancel`
+     * asks its own confirm, which is the question the workflow's declared
+     * coverage covers.
+     */
+    readonly previousOrderPaymentIsSettled?: boolean
+    /** Whether the named coupon is usable RIGHT NOW, from the same
+     *  `evaluatePromotionRecord` predicate the display route and the
+     *  COUPON_VALID claim read. ABSENT when the lookup could not be made at all
+     *  — which is NOT `false`, and the guard treats the two the same way only
+     *  because both refuse (see `coupon-price-projection.ts` on Inv 7). */
+    readonly couponIsValid?: boolean
+    /** What the rebuilt basket costs with the coupon applied, integer centavos
+     *  (Hard Rule #2). ABSENT for every promotion shape this system cannot price
+     *  soundly, so the guard refuses to quote rather than quoting a number
+     *  checkout would not honour. */
+    readonly couponNewTotalInCentavos?: number
+    /**
+     * The coupon code AS THE STORE SPELLS IT — read off the matched promotion
+     * record, never off the envelope payload. See
+     * `OrderCouponSwapRequestPayload` above for why the difference is
+     * load-bearing rather than cosmetic.
+     */
+    readonly couponCode?: string
     /**
      * BKL-103 / AUT-017 — the ESCALATE→OWNER-approve→executable-resume marker for
      * the RESUMABLE `order.cancel` escalation. Structural mirror of

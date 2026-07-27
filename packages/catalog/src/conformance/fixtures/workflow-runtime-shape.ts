@@ -15,6 +15,7 @@
 // the compensation rules fire at all — and is also why that file's own base had
 // to grow a compensation statement in this ticket.
 
+import type { CapabilityDefinition } from "../../capability-definitions/types.js"
 import { fixtureWorkflows, type ConformanceFixture } from "../types.js"
 import {
   FIXTURE_ANCHOR_KIND,
@@ -341,6 +342,131 @@ export const WORKFLOW_RUNTIME_SHAPE_FIXTURES: readonly ConformanceFixture[] = [
         failed: "failed",
         compensated: "compensated",
       },
+    }),
+  },
+]
+
+/**
+ * The fixture capabilities, with the STEP kind declared `escalatable: true`.
+ *
+ * A separate builder rather than a flag on `workflowCapabilities()` because only
+ * the escalated-outcome fixture wants it: the field changes which rule fires, so
+ * leaking it into the shared builder would make every other fixture in this file
+ * one silent edit away from demanding an `escalated` template too — and a
+ * control that quietly requires more than it says is not a control.
+ */
+function escalatableCapabilities(): readonly CapabilityDefinition[] {
+  return workflowCapabilities().map((definition) => {
+    // Read STRUCTURALLY, like every other fixture builder here: a fixture
+    // catalog is deliberately allowed to be any shape (that is what lets one
+    // witness a malformed slot), so the union's own narrowing does not apply.
+    const record = definition as unknown as Record<string, unknown>
+    return (
+      record["kind"] === FIXTURE_STEP_KIND ? { ...record, escalatable: true } : record
+    ) as unknown as CapabilityDefinition
+  })
+}
+
+/** LE2-023 — the three rejection classes the coverage + escalation rules add. */
+export const LE2_023_WORKFLOW_RUNTIME_FIXTURES: readonly ConformanceFixture[] = [
+  {
+    name: "workflow-runtime-shape.confirm-coverage-unstated",
+    targets: "workflow-runtime-shape/confirm-coverage-unstated",
+    why:
+      "The activity declares that the whole-workflow confirm already asked its " +
+      "own confirm question, and names the facts that question stated — but the " +
+      "confirm itself declares none of them. This is the rule that keeps " +
+      "coverage from becoming a rubber stamp: a customer who approved a bare " +
+      "\"confirma?\" has not been told an amount or a refund consequence, so " +
+      "resolving a money guard's confirm on the strength of it would execute a " +
+      "governed mutation against a sentence that never mentioned their money.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows({
+      ...runtimeBase(),
+      activities: [
+        {
+          id: "step",
+          capability: FIXTURE_STEP_KIND,
+          payload: { summary: { param: "history" } },
+          compensation: { by: "undo" },
+          confirmCoveredBy: {
+            basisReason: "paid_cancel_requires_confirmation",
+            statesFacts: ["orderAmount", "refundConsequence"],
+            why: "conformance fixture",
+          },
+        },
+        {
+          id: "undo",
+          capability: FIXTURE_STEP_KIND,
+          payload: {},
+          compensation: { terminal: "harmless", why: "the rollback itself" },
+        },
+        {
+          id: "second",
+          capability: FIXTURE_STEP_KIND,
+          payload: {},
+          compensation: { terminal: "irreversible", why: "conformance fixture" },
+        },
+      ],
+    }),
+  },
+  {
+    name: "workflow-runtime-shape.confirm-coverage-fact-unknown",
+    targets: "workflow-runtime-shape/confirm-coverage-fact-unknown",
+    why:
+      "The confirm declares it states a fact outside WORKFLOW_CONFIRM_FACTS. A " +
+      "name the vocabulary does not know cannot be checked against a coverage " +
+      "claim in either direction, so it would be a statement about what the " +
+      "customer was told that is neither true nor false — the same closed-" +
+      "vocabulary discipline `predicate-fact-unknown` applies one field over.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows({
+      ...runtimeBase(),
+      confirm: { template: "confirm", statesFacts: ["theCustomerWasToldEverything"] },
+    }),
+  },
+  {
+    name: "workflow-runtime-shape.escalated-outcome-template-missing",
+    targets: "workflow-runtime-shape/escalated-outcome-template-missing",
+    why:
+      "The route reaches a capability the catalog declares `escalatable: true` " +
+      "and the workflow authors no `escalated` template. A run can therefore end " +
+      "with a step on a staff queue and nothing authored to say so; the runtime " +
+      "would fall back to `failed`, which means NOTHING RAN — literally true for " +
+      "a first-step escalation and still a lie about the future, because an " +
+      "owner is about to decide the very thing the customer was told did not " +
+      "happen.",
+    definitions: escalatableCapabilities(),
+    workflows: fixtureWorkflows(runtimeBase()),
+  },
+  {
+    name: "workflow-runtime-shape.policy-gated-activity-not-scoped",
+    targets: "workflow-runtime-shape/policy-gated-activity-not-scoped",
+    why:
+      "The route gates `second` behind a POLICY SWITCH, but `second`'s " +
+      "capability is not declared `workflowScoped: true`. A policy switch closes " +
+      "a ROUTE, and a route is catalog DATA — one edited line from being open. " +
+      "Behind it must sit a kind no parse can propose in the first place, or the " +
+      "whole protection is a single line in a file anyone who can edit data may " +
+      "change. This is the rule `workflows/types.ts` promised from ac290eb3 and " +
+      "which did not exist until LE2-023 built it; a doc citing a gate that is " +
+      "not there is worse than no doc, because a reviewer reads it and stops " +
+      "checking.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows({
+      ...runtimeBase(),
+      route: [
+        { activity: "step" },
+        // The OPEN arm is the gated one. `otherwise` is the shipped path and is
+        // deliberately NOT required to be scoped — requiring it would forbid a
+        // policy branch from ever falling back to an ordinary capability, which
+        // is exactly what a shipped arm must do.
+        {
+          whenPolicyOpen: "coupon_on_placed_order",
+          then: ["second"],
+          otherwise: [],
+        },
+      ],
     }),
   },
 ]

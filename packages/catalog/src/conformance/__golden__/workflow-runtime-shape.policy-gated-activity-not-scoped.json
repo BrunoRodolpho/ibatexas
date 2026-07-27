@@ -1,0 +1,73 @@
+{
+  "fixture": "workflow-runtime-shape.policy-gated-activity-not-scoped",
+  "targets": "workflow-runtime-shape/policy-gated-activity-not-scoped",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/policy-gated-activity-not-scoped"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 44,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 14,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "policy-gated-activity-not-scoped",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "route[1].then[0]",
+      "message": "is gated on the policy switch \"coupon_on_placed_order\" and routes to \"second\", whose capability \"conformance.workflow.step\" is NOT declared `workflowScoped: true`. A policy switch closes a route, not an execution: it is catalog DATA, so it is one edited line from being open, and behind it must sit a kind no parse can propose in the first place. Declare the capability workflow-scoped, or do not gate it on a policy switch.",
+      "reference": "conformance.workflow.step"
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/policy-gated-activity-not-scoped: workflow:conformance.workflow.runtime · route[1].then[0] — is gated on the policy switch \"coupon_on_placed_order\" and routes to \"second\", whose capability \"conformance.workflow.step\" is NOT declared `workflowScoped: true`. A policy switch closes a route, not an execution: it is catalog DATA, so it is one edited line from being open, and behind it must sit a kind no parse can propose in the first place. Declare the capability workflow-scoped, or do not gate it on a policy switch."
+  ]
+}

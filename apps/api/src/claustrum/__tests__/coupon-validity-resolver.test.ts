@@ -201,9 +201,19 @@ describe("LE2-019 — evaluatePromotionRecord (the ONE shared transcription)", (
     }
   });
 
-  it("names ONE store path for both callers", () => {
+  it("names ONE store path for every caller", () => {
+    // The property under test is UNCHANGED and is the reason this assertion is
+    // spelled out rather than computed: every caller queries the same endpoint,
+    // so two of them can never disagree about the same coupon.
+    //
+    // LE2-023 added `fields=+rules` to that one path rather than introducing a
+    // second one. The `+` prefix ADDS to Medusa's default admin promotion
+    // fields, so the two validity callers receive every field they already read,
+    // byte-identically, plus one they ignore — and the swap-for-coupon
+    // projection gets the field its arithmetic gate needs
+    // (`promotionHasTargetingRules`) without forking the path.
     expect(promotionByCodePath("BEM VINDO/15")).toBe(
-      "/admin/promotions?code=BEM%20VINDO%2F15&limit=1",
+      "/admin/promotions?code=BEM%20VINDO%2F15&limit=1&fields=%2Brules",
     );
   });
 });

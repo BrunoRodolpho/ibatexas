@@ -27,8 +27,25 @@
 //
 // Money is the sharpest case and it is handled by doing nothing special: an
 // activity that crosses a money band meets the same band it would meet outside
-// a workflow, because it is the same kernel over the same guards. A workflow
-// confirm does NOT pre-authorize a step's own confirm.
+// a workflow, because it is the same kernel over the same guards.
+//
+// ── THE CONFIRM RULE, AS REFINED BY LE2-023 ──────────────────────────────────
+//
+// LE2-022 stated it as "a workflow confirm does not pre-authorize a step's own
+// confirm". The rule it was protecting is the SEMANTIC one — *the customer must
+// actually be asked the question the guard would ask* — and blanket
+// non-coverage was the cheapest way to guarantee it while nothing could express
+// "and this time they were".
+//
+// The rule now reads: A STEP'S OWN CONFIRM IS RESOLVED ONLY WHERE THE CATALOG
+// DECLARES THAT THE WHOLE-WORKFLOW CONFIRM ASKED THAT EXACT QUESTION, AND ONLY
+// WITH THE CUSTOMER'S OWN WITNESSED AFFIRMATION. Everything undeclared behaves
+// exactly as it did before — the step does not execute, the run stops, the
+// compensators fire — and the fixture corpus still pins that (the conditional
+// fixture's `finishCheckout` meets `confirmLargeTicket` and compensates).
+//
+// An ESCALATE is never coverable, so the money ladder's upper band is untouched
+// by construction: `resolveCoveredConfirm` acts on REQUEST_CONFIRMATION alone.
 //
 // ── THE PIN, AND WHY IT IS NOT A LICENCE ─────────────────────────────────────
 //
@@ -49,7 +66,13 @@
 // trace records exactly how far it got.
 
 import { randomUUID } from "node:crypto";
-import { buildEnvelope, type Decision, type IntentActor, type IntentEnvelope } from "@adjudicate/core";
+import {
+  buildEnvelope,
+  type Decision,
+  type DecisionBasis,
+  type IntentActor,
+  type IntentEnvelope,
+} from "@adjudicate/core";
 import {
   CATALOG_VERSION,
   findWorkflow,
@@ -102,6 +125,29 @@ export interface WorkflowInstance {
   readonly params: ReadonlyMap<string, ResolvedParam>;
   /** Params that did not resolve; a non-empty list fails the run. */
   readonly unresolved: readonly string[];
+  /**
+   * LE2-023 — the CUSTOMER-AUTHORED SLOTS this instance was selected with,
+   * already stripped to the workflow's declared names by the parse seam's
+   * `sanitizeWorkflowSlots`.
+   *
+   * Carried on the instance because a FACT PROJECTION may need one. LE2-022's
+   * facts were all questions about the customer's stored world — their cart,
+   * their last order — which a projection can answer from an actor alone.
+   * LE2-023 adds facts that are questions about the customer's world AND
+   * SOMETHING THEY SAID: `couponIsValid` is not a property of the customer, it
+   * is a property of the customer's order and THIS coupon code. Without the
+   * slots reaching `projectFacts`, every coupon fact would be permanently
+   * ABSENT, every pre-check over one would refuse, and the workflow could never
+   * be offered — the silent always-false failure `predicate-fact-unknown`
+   * exists to prevent one layer up.
+   *
+   * It grants NO new authority. These are the same values `resolveWorkflowParams`
+   * already consumed, from the same closed slot surface, and the projection they
+   * feed does what every other projection here does: a first-party read. A slot
+   * is model-EXTRACTED but customer-AUTHORED (see `WorkflowParamSource`), and
+   * handing one to a store lookup is exactly what the `"slot"` member is for.
+   */
+  readonly slots: WorkflowSlots;
   readonly startedAt: string;
 }
 
@@ -151,9 +197,89 @@ export interface WorkflowRuntimeDeps {
    * has no access to a policy bundle, which is what makes "the runtime cannot
    * adjudicate against a policy of its own choosing" structural.
    */
-  readonly adjudicateActivity: (envelope: IntentEnvelope) => Promise<Decision>;
+  readonly adjudicateActivity: (
+    envelope: IntentEnvelope,
+    /**
+     * LE2-023 — the CONFIRMATION RECEIPT for a declared-covered activity, and
+     * the ONLY way this runtime can resolve an activity's own
+     * REQUEST_CONFIRMATION. Absent on every ordinary submission, which is every
+     * submission a workflow without `confirmCoveredBy` ever makes.
+     *
+     * The composition root forwards it to `adjudicateAndAudit`'s own
+     * `confirmationReceipt` slot, so the kernel's rules apply unchanged: the
+     * hash must match, EVERY state/taint/auth/business guard still runs, and
+     * only the threshold-style "ask the user first" step is satisfied. A REFUSE
+     * or an ESCALATE comes back untouched — the receipt cannot rescue either.
+     */
+    opts?: { readonly confirmationReceipt: WorkflowActivityReceipt },
+  ) => Promise<Decision>;
+  /**
+   * LE2-023 — where an ESCALATED activity goes so a HUMAN can see it.
+   *
+   * The conductor routes an ESCALATE through `capsule.handoff.queue`, which is
+   * what parks the envelope and publishes `support.handoff_requested` — the
+   * Escalações row, the pending-escalations KPI and the staff ping. The workflow
+   * runtime never reaches that stage: it adjudicates and dispatches directly, so
+   * before this port an escalated activity wrote ONE audit row and was visible
+   * nowhere else. That is exactly the hole BKL-103 closed for the direct plane,
+   * and it was latent here for EVERY activity and compensator, not only the
+   * cancel this ticket adds.
+   *
+   * INJECTED for the same structural reason `adjudicateActivity` is: the runtime
+   * must not be able to reach a broker or a park store on its own, so the only
+   * escalation surface it has is the one its composition handed it. Production
+   * passes the SAME `natsHandoff(publishNatsEvent, escalationHandoffParkDeps)`
+   * the customer conductor uses, so the workflow plane inherits the
+   * conversational park contract — including the sessionId the approve path
+   * already matches on — rather than a second, drifting copy of it.
+   *
+   * ABSENT ⟹ nothing is surfaced, which is what a composition that has not
+   * wired it gets. The step still records `ESCALATE` and the run still reaches
+   * the honest `escalated` outcome; what is lost is the staff surface, and it is
+   * lost loudly (see the warn in `submitActivity`).
+   */
+  readonly escalationHandoff?: {
+    queue: (envelope: IntentEnvelope, reason: string) => Promise<void>;
+  };
   /** Dispatch an EXECUTE-d activity through the real tool registry. */
   readonly dispatchActivity: (envelope: IntentEnvelope, ctx: unknown) => Promise<unknown>;
+  /**
+   * LE2-023 — HOST-RESOLVED PAYLOAD FIELDS, stamped before the envelope is minted.
+   *
+   * ── WHY THIS SEAM HAS TO EXIST, AND HAS TO BE HERE ──────────────────────────
+   *
+   * Two fields a workflow activity needs cannot come from `WorkflowParamSource`,
+   * and both are needed by `order.cancel`:
+   *
+   *   `orderId` — an IDENTIFIER. The two admissible param sources are a validated
+   *     claim and a customer slot, and an order id is exactly what neither may
+   *     carry: no registry claim exposes one, and a slot would be model-extracted,
+   *     which for an identifier is the confabulation that union exists to prevent.
+   *     It is resolved host-side from the same OWNER-SCOPED previous-order read
+   *     that grounded the confirm sentence, so the order the saga cancels is the
+   *     order the customer was shown.
+   *   `actorId` — the BKL-103 PROPOSER STAMP. `ESCALATION_PROPOSER_STAMPS` reads
+   *     `payload.actorId` to park a resumable escalation, and `gatePaidCancel`'s
+   *     owner-approval overlay refuses to convert without a non-empty proposer.
+   *     Unstamped, an escalated in-saga cancel would be unapprovable — the
+   *     customer told a human would review it, and no human able to.
+   *
+   * It runs BEFORE `buildEnvelope` because `intentHash` covers the payload.
+   * Stamping after would produce a hash that does not describe what the kernel
+   * adjudicates, and every downstream identity — the park's hash match, the
+   * confirmation receipt, the audit row — is keyed on it.
+   *
+   * INJECTED for the reason every other port here is: the runtime must not be
+   * able to reach a store on its own, so the only fields it can add are the ones
+   * its composition resolves for it. ABSENT ⟹ the payload is used verbatim,
+   * which is LE2-022's behaviour exactly and is what every workflow without a
+   * host-resolved field gets.
+   */
+  readonly resolveActivityPayload?: (args: {
+    readonly capability: string;
+    readonly payload: Readonly<Record<string, WorkflowParamValue>>;
+    readonly actor: IntentActor;
+  }) => Promise<Readonly<Record<string, WorkflowParamValue>>>;
   /** This turn's VALIDATED claims, for claim-sourced params. */
   readonly claimsFor?: (turnId: string) => ValidatedClaimValues | undefined;
   /**
@@ -171,6 +297,12 @@ export interface WorkflowRuntimeDeps {
   readonly projectFacts?: (args: {
     readonly turnId: string;
     readonly actor: IntentActor;
+    /**
+     * LE2-023 — the selecting turn's customer-authored slots. See
+     * {@link WorkflowInstance.slots} for why a projection needs them and why
+     * passing them widens nothing.
+     */
+    readonly slots: WorkflowSlots;
   }) => Promise<WorkflowFacts>;
   /**
    * LE2-022 — the catalog serial IN FORCE NOW, as against the one an instance
@@ -282,6 +414,93 @@ function basisCodeOf(decision: Decision): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+/**
+ * Every basis entry a decision carries.
+ *
+ * TYPED as `DecisionBasis`, not as `Record<string, unknown>`, and that is a fix
+ * rather than a tidy-up. An index-signature read compiles for ANY key, so
+ * `entry["kind"]` type-checked cleanly while the kernel has only ever emitted
+ * `category` — which made {@link carriesConfirmationReceipt} a permanent
+ * `false` and the whole declared-coverage mechanism dead on every real turn.
+ * Nothing static could have caught it, and the unit fixtures could not either:
+ * they were hand-built with the same wrong key, so they agreed with the reader
+ * instead of with the wire. Under this type a misspelled field is a compile
+ * error.
+ */
+function basisEntriesOf(decision: Decision): readonly DecisionBasis[] {
+  const basis = (decision as { basis?: unknown }).basis;
+  return Array.isArray(basis) ? (basis as DecisionBasis[]) : [];
+}
+
+/**
+ * The `reason` a decision's business basis states — the value a
+ * {@link WorkflowConfirmCoverage} matches against.
+ *
+ * A REASON, not a guard name, because the reason is what actually rides into
+ * the audit row and because one guard can ask two different questions under two
+ * reasons. Covering "the guard" would silently cover both; covering the reason
+ * covers the question that was actually asked.
+ */
+function basisReasonsOf(decision: Decision): readonly string[] {
+  const reasons: string[] = [];
+  for (const entry of basisEntriesOf(decision)) {
+    const detail = entry.detail;
+    if (detail === null || typeof detail !== "object") continue;
+    const reason = (detail as { reason?: unknown }).reason;
+    if (typeof reason === "string" && reason !== "") reasons.push(reason);
+  }
+  return reasons;
+}
+
+/**
+ * Did THIS decision reach EXECUTE because the customer affirmatively confirmed?
+ *
+ * The kernel appends a `confirmation:received` basis whenever a matching
+ * `confirmationReceipt` turned a REQUEST_CONFIRMATION into an EXECUTE. That
+ * basis is the ONLY evidence this runtime accepts that a customer said yes, and
+ * reading it rather than inferring it is the point: "we got here, so they must
+ * have agreed" is an argument about control flow, and control flow is exactly
+ * what a future edit changes without noticing.
+ *
+ * The field is `category` — the ONLY name `basis()` has ever produced. It was
+ * `kind` here until LE2-023's turn-seam e2e, and because a `DecisionBasis`
+ * carries no such key the predicate was false for every decision the kernel has
+ * ever emitted: no coverage could resolve, every covered activity stopped at its
+ * own confirm, and the saga failed with 0/3 executed. See {@link basisEntriesOf}
+ * for why nothing caught it.
+ */
+function carriesConfirmationReceipt(decision: Decision | undefined): boolean {
+  if (decision === undefined) return false;
+  if (String((decision as { kind?: unknown }).kind ?? "") !== "EXECUTE") return false;
+  return basisEntriesOf(decision).some(
+    (entry) => entry.category === "confirmation" && entry.code === "received",
+  );
+}
+
+/**
+ * THE RECEIPT a covered activity is re-adjudicated with — LE2-023.
+ *
+ * Minted by the runtime, for ONE envelope, from an affirmation the kernel itself
+ * witnessed. Every field is deliberately narrow:
+ *
+ *   `intentHash` — THIS activity envelope's own hash. The kernel refuses to
+ *     substitute anything whose hash does not match, so a receipt cannot be
+ *     carried from one step to another, replayed onto a different payload, or
+ *     reused after a resolved param changed the envelope.
+ *   `at` — when the customer's affirmation was observed on this turn.
+ *
+ * There is no token, and deliberately no `binding`: this receipt is not the
+ * product of a confirmation STORE exchange, and dressing it as one would put a
+ * forensic marker in the audit row asserting a token flow that did not happen.
+ * What the row does carry is the truth — a `confirmation:received` basis on an
+ * envelope whose coverage the catalog declared, which is exactly as much as was
+ * actually established.
+ */
+export interface WorkflowActivityReceipt {
+  readonly intentHash: string;
+  readonly at: string;
+}
+
 /** The customer-facing sentence a CONFIRM decision carries, if any. */
 function confirmPromptOf(decision: Decision): string | undefined {
   const record = decision as {
@@ -310,6 +529,184 @@ function confirmPromptOf(decision: Decision): string | undefined {
  * adjudication — and it is worth being able to read it without the loop's
  * bookkeeping around it.
  */
+/**
+ * Resolve a DECLARED-COVERED activity confirm — LE2-023, the whole of ruling (a).
+ *
+ * Returns the original decision untouched in every case but one. The single case
+ * it acts on requires ALL FOUR of these to hold at once:
+ *
+ *   1. the kernel said REQUEST_CONFIRMATION — never ESCALATE, never REFUSE. An
+ *      escalation means a human must look, and no amount of customer agreement
+ *      substitutes for that, so the money ladder's upper band is untouched here
+ *      by construction rather than by care;
+ *   2. the ACTIVITY declares `confirmCoveredBy` — absent is the default and the
+ *      default is LE2-022's behaviour, byte-for-byte: the step does not execute,
+ *      the run stops, the compensators fire;
+ *   3. the decision's own basis states the EXACT reason the coverage names, so a
+ *      guard that starts asking a second, different question under a second
+ *      reason is not covered and stops the run;
+ *   4. the customer AFFIRMED this run's anchor on this turn, witnessed by the
+ *      kernel's own `confirmation:received` basis — not inferred from the fact
+ *      that we are executing.
+ *
+ * Then, and only then, the IDENTICAL envelope is re-adjudicated with a receipt
+ * for its own hash. Every guard runs again; only the ask-first threshold is
+ * satisfied. If that second pass returns anything other than EXECUTE, that is
+ * the answer — the coverage is not a second chance, it is an answer to one
+ * specific question that had already been asked.
+ */
+async function resolveCoveredConfirm(args: {
+  readonly deps: WorkflowRuntimeDeps;
+  readonly decision: Decision;
+  readonly envelope: IntentEnvelope;
+  readonly activity: WorkflowActivity;
+  readonly affirmed: boolean;
+  readonly turnId: string;
+  readonly instanceId: string;
+  readonly now: () => number;
+}): Promise<Decision> {
+  const { deps, decision, envelope, activity, turnId, instanceId, now } = args;
+  if (String((decision as { kind?: unknown }).kind ?? "") !== "REQUEST_CONFIRMATION") {
+    return decision;
+  }
+  const coverage = activity.confirmCoveredBy;
+  if (coverage === undefined) return decision;
+
+  const reasons = basisReasonsOf(decision);
+  if (!reasons.includes(coverage.basisReason)) {
+    logger.info(
+      {
+        component: "workflow",
+        event: "workflow.coverage.reason_mismatch",
+        turnId,
+        instanceId,
+        activityId: activity.id,
+        declaredReason: coverage.basisReason,
+        decisionReasons: reasons,
+      },
+      "workflow: an activity confirm was NOT the covered question — stopping the run as an uncovered confirm",
+    );
+    return decision;
+  }
+
+  if (!args.affirmed) {
+    // No witnessed affirmation ⟹ no receipt ⟹ the confirm stands. Reached when a
+    // composition drives the anchor to EXECUTE without a confirm cycle, which is
+    // exactly the shape a coverage must never trust.
+    logger.warn(
+      {
+        component: "workflow",
+        event: "workflow.coverage.unaffirmed",
+        turnId,
+        instanceId,
+        activityId: activity.id,
+        declaredReason: coverage.basisReason,
+      },
+      "workflow: a covered activity confirm had NO witnessed customer affirmation on this turn — refusing to resolve it",
+    );
+    return decision;
+  }
+
+  const intentHash = (envelope as { intentHash?: unknown }).intentHash;
+  if (typeof intentHash !== "string" || intentHash === "") {
+    logger.warn(
+      {
+        component: "workflow",
+        event: "workflow.coverage.no_hash",
+        turnId,
+        instanceId,
+        activityId: activity.id,
+      },
+      "workflow: a covered activity envelope carries no intentHash — refusing to mint a receipt",
+    );
+    return decision;
+  }
+
+  const second = await deps.adjudicateActivity(envelope, {
+    confirmationReceipt: { intentHash, at: new Date(now()).toISOString() },
+  });
+  logger.info(
+    {
+      component: "workflow",
+      event: "workflow.coverage.resolved",
+      turnId,
+      instanceId,
+      activityId: activity.id,
+      capability: activity.capability,
+      coveredReason: coverage.basisReason,
+      outcome: String((second as { kind?: unknown }).kind ?? "UNKNOWN"),
+    },
+    "workflow: resolved a DECLARED-COVERED activity confirm with the customer's own affirmation",
+  );
+  return second;
+}
+
+/**
+ * Hand an ESCALATED activity to the staff surface — LE2-023.
+ *
+ * Best-effort and LOUD when it fails, mirroring `natsHandoff`'s own posture: the
+ * customer's reply must not die on a broker hiccup, and the kernel audit row is
+ * the fallback truth. What must never happen silently is the port being absent —
+ * that is a composition that promises a human review nobody will see, so it logs
+ * at warn even though it changes no behaviour.
+ */
+async function surfaceEscalation(args: {
+  readonly deps: WorkflowRuntimeDeps;
+  readonly envelope: IntentEnvelope;
+  readonly decision: Decision;
+  readonly activityId: string;
+  readonly turnId: string;
+  readonly instanceId: string;
+}): Promise<void> {
+  const { deps, envelope, decision, activityId, turnId, instanceId } = args;
+  const reason =
+    typeof (decision as { reason?: unknown }).reason === "string" &&
+    (decision as { reason: string }).reason !== ""
+      ? (decision as { reason: string }).reason
+      : `workflow activity ${activityId} requires human review`;
+
+  if (deps.escalationHandoff === undefined) {
+    logger.warn(
+      {
+        component: "workflow",
+        event: "workflow.escalation.unsurfaced",
+        turnId,
+        instanceId,
+        activityId,
+        capability: String(envelope.kind),
+      },
+      "workflow: an activity ESCALATED but this composition wired no handoff port — the escalation is audit-row-only and no staff surface will show it",
+    );
+    return;
+  }
+  try {
+    await deps.escalationHandoff.queue(envelope, reason);
+    logger.info(
+      {
+        component: "workflow",
+        event: "workflow.escalation.surfaced",
+        turnId,
+        instanceId,
+        activityId,
+        capability: String(envelope.kind),
+      },
+      "workflow: an escalated activity was queued to the staff handoff surface",
+    );
+  } catch (error) {
+    logger.error(
+      {
+        component: "workflow",
+        event: "workflow.escalation.surface_failed",
+        turnId,
+        instanceId,
+        activityId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "workflow: queueing an escalated activity to the staff surface FAILED — the kernel audit row is the only record",
+    );
+  }
+}
+
 async function submitActivity(args: {
   readonly deps: WorkflowRuntimeDeps;
   readonly instance: WorkflowInstance;
@@ -327,13 +724,30 @@ async function submitActivity(args: {
   readonly role: WorkflowStepRecord["role"];
   /** On a rollback, the forward activity id being undone. */
   readonly compensates?: string;
+  /**
+   * LE2-023 — did the customer AFFIRM this run's anchor on this turn, witnessed
+   * by the kernel's own `confirmation:received` basis? The precondition for
+   * resolving any declared coverage; false makes every coverage inert.
+   */
+  readonly affirmed: boolean;
 }): Promise<WorkflowStepRecord> {
   const { deps, instance, activity, stepIndex, payload, actor, ctx, turnId, now } = args;
   const stepStartedAt = now();
 
+  // LE2-023 — host-resolved fields FIRST, so `intentHash` covers them. See
+  // `resolveActivityPayload`.
+  const resolved =
+    deps.resolveActivityPayload === undefined
+      ? payload
+      : await deps.resolveActivityPayload({
+          capability: activity.capability,
+          payload,
+          actor,
+        });
+
   const envelope = buildEnvelope({
     kind: activity.capability,
-    payload,
+    payload: resolved,
     // The SAME actor the selection ran under: a workflow acts for the customer
     // who confirmed it, never for a broader principal.
     actor,
@@ -348,8 +762,32 @@ async function submitActivity(args: {
 
   // EACH ACTIVITY, INDIVIDUALLY. Its own envelope, its own adjudication, its
   // own audit row.
-  const decision = await deps.adjudicateActivity(envelope);
+  const first = await deps.adjudicateActivity(envelope);
+  const decision = await resolveCoveredConfirm({
+    deps,
+    decision: first,
+    envelope,
+    activity,
+    affirmed: args.affirmed,
+    turnId,
+    instanceId: instance.instanceId,
+    now,
+  });
   const decisionKind = String((decision as { kind?: unknown }).kind ?? "UNKNOWN");
+
+  // LE2-023 — AN ESCALATE MUST REACH A HUMAN, or the customer is promised a
+  // review that no staff surface will ever show. See `escalationHandoff`.
+  if (decisionKind === "ESCALATE") {
+    await surfaceEscalation({
+      deps,
+      envelope,
+      decision,
+      activityId: activity.id,
+      turnId,
+      instanceId: instance.instanceId,
+    });
+  }
+
   let ran = false;
   if (decisionKind === "EXECUTE") {
     try {
@@ -432,6 +870,8 @@ interface SequenceOutcome {
   readonly compensationsExecuted: number;
   /** How many forward activities the resolved plan held. */
   readonly planned: number;
+  /** LE2-023 — some step was sent to a HUMAN. See the `escalated` outcome. */
+  readonly escalated?: boolean;
 }
 
 /** One forward activity the resolved route plan will submit. */
@@ -496,16 +936,31 @@ function resolveRoutePlan(
     plan.push({ activity });
   };
 
+  const policyOpen = new Set(instance.definition.policyOpen ?? []);
+
   workflowRoute(instance.definition).forEach((step, stepIndex: number) => {
     if ("activity" in step) {
       push(step.activity);
       return;
     }
-    const held = evaluateWorkflowPredicate(step.when, facts);
+    // LE2-023 — A POLICY SWITCH IS NOT A FACT, so it is not evaluated against
+    // the projection. It is read off the instance's PINNED DEFINITION, which
+    // means a switch opened (or closed) while a run sat parked does not change
+    // what that run does — the same pin that governs which activities a resumed
+    // run executes governs which of them the business was offering when the
+    // customer said yes. `held` is recorded exactly as a predicate's is, so the
+    // operator view can tell a route that took the closed path from one whose
+    // customer did not qualify.
+    const isPolicyStep = "whenPolicyOpen" in step;
+    const held = isPolicyStep
+      ? policyOpen.has(step.whenPolicyOpen)
+      : evaluateWorkflowPredicate(step.when, facts);
     const arm = held ? step.then : step.otherwise;
     branches.push({
       stepIndex,
-      predicate: describeWorkflowPredicate(step.when),
+      predicate: isPolicyStep
+        ? `policy ${step.whenPolicyOpen} ${held ? "open" : "closed"}`
+        : describeWorkflowPredicate(step.when),
       held,
       taken: held ? "then" : "otherwise",
       activityIds: [...arm],
@@ -545,15 +1000,22 @@ async function compensate(args: {
   readonly ctx: unknown;
   readonly turnId: string;
   readonly now: () => number;
+  /** LE2-023 — forwarded so a COMPENSATOR may declare coverage too. A rollback
+   *  is a governed mutation like any other and can meet its own confirm band. */
+  readonly affirmed: boolean;
 }): Promise<{
   readonly steps: readonly WorkflowStepRecord[];
   readonly executed: number;
   readonly stranded: boolean;
+  /** LE2-023 — a compensator that ESCALATED. Surfaced to staff, and the run is
+   *  stranded either way: the rollback did not happen. */
+  readonly escalated: boolean;
 }> {
   const { deps, instance, executedForward, actor, ctx, turnId, now } = args;
   const steps: WorkflowStepRecord[] = [];
   let executed = 0;
   let stranded = false;
+  let escalated = false;
   let stepIndex = args.firstStepIndex;
 
   for (const activity of [...executedForward].reverse()) {
@@ -591,14 +1053,18 @@ async function compensate(args: {
       now,
       role: "compensation",
       compensates: activity.id,
+      affirmed: args.affirmed,
     });
     steps.push(step);
     stepIndex += 1;
     if (step.executed) executed += 1;
-    else stranded = true;
+    else {
+      stranded = true;
+      if (step.decision === "ESCALATE") escalated = true;
+    }
   }
 
-  return { steps, executed, stranded };
+  return { steps, executed, stranded, escalated };
 }
 
 /**
@@ -624,7 +1090,19 @@ function failureOutcome(args: {
   readonly executedForward: readonly WorkflowActivity[];
   readonly compensationsExecuted: number;
   readonly stranded: boolean;
+  /** LE2-023 — some step was sent to a HUMAN. */
+  readonly escalated: boolean;
 }): WorkflowRunOutcome {
+  // LE2-023 — ESCALATED OUTRANKS EVERY OTHER READING, including `stranded`.
+  //
+  // The others describe a finished run; this one describes a run whose result is
+  // still being decided by a person, and that is the more important thing to say
+  // first. It outranks `stranded` specifically because the two can co-occur — an
+  // escalated COMPENSATOR leaves a mutation un-undone AND puts the rollback on a
+  // staff queue — and of those two facts, "a human is now handling it" is the one
+  // that tells the customer what happens next. The stranding is still recorded on
+  // the steps and in `compensationsExecuted`, so no operator detail is lost.
+  if (args.escalated) return "escalated";
   if (args.executedForward.length === 0) return "failed";
   if (args.stranded) return "stranded";
   return args.compensationsExecuted > 0 ? "compensated" : "failed";
@@ -652,11 +1130,13 @@ async function runRoute(args: {
   readonly ctx: unknown;
   readonly turnId: string;
   readonly now: () => number;
+  readonly affirmed: boolean;
 }): Promise<SequenceOutcome> {
   const { deps, instance, plan, branches, actor, ctx, turnId, now } = args;
   const steps: WorkflowStepRecord[] = [];
   const executedForward: WorkflowActivity[] = [];
   let failedActivityId: string | undefined;
+  let forwardEscalated = false;
 
   for (const [stepIndex, planned] of plan.entries()) {
     const payload = buildActivityPayload(planned.activity.payload, instance.params);
@@ -675,10 +1155,12 @@ async function runRoute(args: {
       turnId,
       now,
       role: "activity",
+      affirmed: args.affirmed,
     });
     steps.push(step);
     if (!step.executed) {
       failedActivityId = planned.activity.id;
+      forwardEscalated = step.decision === "ESCALATE";
       break;
     }
     executedForward.push(planned.activity);
@@ -704,6 +1186,7 @@ async function runRoute(args: {
     ctx,
     turnId,
     now,
+    affirmed: args.affirmed,
   });
 
   return {
@@ -713,11 +1196,13 @@ async function runRoute(args: {
       executedForward,
       compensationsExecuted: rollback.executed,
       stranded: rollback.stranded,
+      escalated: forwardEscalated || rollback.escalated,
     }),
     failedActivityId,
     executed: executedForward.length,
     compensationsExecuted: rollback.executed,
     planned: plan.length,
+    escalated: forwardEscalated || rollback.escalated,
   };
 }
 
@@ -738,6 +1223,7 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
   const projectFacts = async (args: {
     readonly turnId: string;
     readonly actor: IntentActor;
+    readonly slots: WorkflowSlots;
   }): Promise<WorkflowFacts> =>
     deps.projectFacts === undefined ? new Map() : deps.projectFacts(args);
 
@@ -815,6 +1301,12 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
         definition,
         params: resolution.params,
         unresolved: resolution.unresolved,
+        // LE2-023 — the SANITIZED slots, as the parse seam left them. Pinned on
+        // the instance like everything else about its shape, so the confirming
+        // turn projects its facts from the code the customer actually typed on
+        // the SELECTING turn rather than from whatever the resume path happens
+        // to carry.
+        slots,
         startedAt: new Date(now()).toISOString(),
       };
       evictOldest(instances);
@@ -854,7 +1346,7 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
       // about the same customer at the same instant, so asking twice could give
       // two answers and refuse for a reason that was already stale when it was
       // rendered.
-      const facts = await projectFacts({ turnId, actor });
+      const facts = await projectFacts({ turnId, actor, slots: instance.slots });
 
       for (const precheck of prechecks) {
         if (evaluateWorkflowPredicate(precheck.predicate, facts)) continue;
@@ -920,7 +1412,20 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
     renderNotice: (turnId: string) => notices.get(turnId),
 
     recordSelectionDecision(turnId: string, decision: Decision): void {
-      if (!instanceByTurn.has(turnId)) return;
+      // LE2-023 — RECORDED FOR EVERY TURN, not only the SELECTING one.
+      //
+      // It used to return early unless this turn had an instance, which was
+      // right while the only consumer was `renderConfirm` (a selecting-turn
+      // read). Coverage needs the opposite turn: the customer's "sim" arrives on
+      // the CONFIRMING turn, whose id differs, and the kernel's
+      // `confirmation:received` basis on THAT turn's resumed anchor decision is
+      // the only witnessed evidence the customer affirmed anything. Under the old
+      // guard that decision was dropped, so no coverage could ever have been
+      // resolved honestly.
+      //
+      // Recording more turns is harmless: `renderConfirm` still looks its
+      // instance up first and ignores anything without one, and the map is the
+      // same bounded LRU it always was.
       evictOldest(anchorDecisions);
       anchorDecisions.set(turnId, decision);
     },
@@ -1014,17 +1519,35 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
       // this run does. What is NOT pinned is policy: every activity below still
       // meets current-code adjudication, so a guard added since the confirm bites
       // immediately and the run fails closed with an honest render.
-      const facts = await projectFacts({ turnId, actor });
+      const facts = await projectFacts({ turnId, actor, slots: instance.slots });
       const { plan, branches } = resolveRoutePlan(instance, facts, turnId);
 
       // A param that did not resolve fails the run BEFORE anything is
       // submitted. There is no admissible way to fill it (see
       // workflow-params.ts), so submitting a partial payload would be a real
       // mutation against a value nobody authored.
+      // LE2-023 — THE WITNESSED AFFIRMATION. Read off the kernel's own
+      // `confirmation:received` basis on THIS turn's anchor decision, never
+      // inferred from the fact that we are running: "we got here, so they must
+      // have agreed" is an argument about control flow, and control flow is what
+      // a later edit changes without noticing. False makes every declared
+      // coverage inert, which is LE2-022's behaviour exactly.
+      const affirmed = carriesConfirmationReceipt(anchorDecisions.get(turnId));
+
       const sequence: SequenceOutcome =
         instance.unresolved.length > 0
           ? unresolvedParamsOutcome(instance, plan, turnId)
-          : await runRoute({ deps, instance, plan, branches, actor, ctx, turnId, now });
+          : await runRoute({
+              deps,
+              instance,
+              plan,
+              branches,
+              actor,
+              ctx,
+              turnId,
+              now,
+              affirmed,
+            });
 
       const trace: WorkflowTrace = {
         run: {

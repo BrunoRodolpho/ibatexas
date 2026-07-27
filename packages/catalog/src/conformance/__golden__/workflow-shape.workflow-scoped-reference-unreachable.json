@@ -17,7 +17,7 @@
     },
     {
       "pass": "slot-dataflow",
-      "checked": 43,
+      "checked": 45,
       "diagnostics": 0
     },
     {
@@ -52,7 +52,7 @@
     },
     {
       "pass": "workflow-runtime-shape",
-      "checked": 4,
+      "checked": 6,
       "diagnostics": 0
     }
   ],

@@ -1,0 +1,72 @@
+{
+  "fixture": "workflow-runtime-shape.confirm-coverage-fact-unknown",
+  "targets": "workflow-runtime-shape/confirm-coverage-fact-unknown",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/confirm-coverage-fact-unknown"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 44,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 14,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "confirm-coverage-fact-unknown",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "confirm.statesFacts",
+      "message": "names \"theCustomerWasToldEverything\", which is not a member of WORKFLOW_CONFIRM_FACTS. A confirm may only declare facts the vocabulary knows, or a coverage over it could be neither true nor false."
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/confirm-coverage-fact-unknown: workflow:conformance.workflow.runtime · confirm.statesFacts — names \"theCustomerWasToldEverything\", which is not a member of WORKFLOW_CONFIRM_FACTS. A confirm may only declare facts the vocabulary knows, or a coverage over it could be neither true nor false."
+  ]
+}

@@ -426,7 +426,10 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // describes what the CUSTOMER does next — so it belongs in the frame, not in the
   // ledger-bound value. Second, Decision 14: the sentence describes the customer
   // entering a code at checkout; it never says the SYSTEM will apply anything,
-  // because no apply / price-adjustment capability exists to promise.
+  // because there is no apply / price-adjustment path this sentence could
+  // promise. (LE2-023 amends the wording, not the rule: `order.coupon.adjust` is
+  // now DECLARED, but it is workflow-scoped and refused by policy, so it remains
+  // nothing a customer-facing sentence may offer.)
   [COUPON_VALID]: {
     claimType: COUPON_VALID,
     posture: "validated",

@@ -480,6 +480,12 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     // deliberately different text from `description` above (separate
     // audience: admin-inbox operator vs. chat prompt hint).
     adminLabel: "Cancelar pedido",
+    // LE2-023 — TWO escalate bands: `gatePaidCancel`'s high band (a settled
+    // payment whose refund-equivalent is at or above the escalate threshold)
+    // and `escalateLargeCancel` (the UNPAID large-cancel). See the field's
+    // maintenance contract: a pack change that adds or drops a band moves this
+    // in the same commit.
+    escalatable: true,
     // FE-T24: a member of BKL-096's FORBIDDEN_OPS_DESTRUCTIVE_KINDS — this
     // customer/LLM-chat-drivable kind must ALSO never be ops-plane
     // advertised (the ops persona's own kitchen-advance projection,
@@ -728,6 +734,38 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // repository's first registered-but-unadvertised capability since FE-D28.
   // `toolRosterDrift` is WARN-only in that direction by design.
   { kind: "order.reorder.request", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // LE2-023 — the swap-for-coupon workflow's GOVERNANCE ANCHOR, on exactly the
+  // terms the reorder anchor above sets out: IDENTITY tier because the parser
+  // never picks it by name (it calls `start_workflow`, and the WORKFLOW carries
+  // the language surface), and NOT `workflowScoped` because the selection
+  // envelope is minted from a parse and a scoped anchor is a build error
+  // (`workflow-scoped-reference-unreachable`).
+  //
+  // It carries the whole-workflow confirm (`confirmSwapForCoupon`) and nothing
+  // else; the route's three activities — `order.cancel`, `order.reorder`,
+  // `order.coupon.apply` — each do one governed piece of the work and each meet
+  // their own guards. Registered-but-unadvertised, so its tool is the second
+  // member of `register-workflow-anchor-tools.ts`.
+  { kind: "order.coupon.swap.request", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // LE2-023 — DECLARED SO A CLOSED BRANCH CAN NAME IT, AND UNEXECUTABLE BY TWO
+  // INDEPENDENT LOCKS. It is the target of the swap-for-coupon workflow's
+  // `coupon_on_placed_order` policy branch, which ships CLOSED.
+  //
+  //   LOCK 1 (this table)   — `workflowScoped: true`, so no parse can ever
+  //                           propose it and no planner advertises it.
+  //   LOCK 2 (pack-orders)  — no guard in `ordersPolicyBundle` produces EXECUTE
+  //                           for this kind, so the kernel's default REFUSE is
+  //                           the only verdict it can receive. Forcing the route
+  //                           open in a fixture proves it: the branch runs and
+  //                           the step is still refused.
+  //
+  // Neither lock alone is sufficient, deliberately: the catalog is data anyone
+  // who can edit data may change, and a feature shipping behind data alone is
+  // one careless line from being live. Making this kind actually RUN needs a
+  // catalog edit AND a pack policy change, in two different packages, reviewed
+  // separately. See `WORKFLOW_POLICY_SWITCHES` and the compiler's
+  // `policy-gated-activity-not-scoped` rule.
+  { kind: "order.coupon.adjust", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", workflowScoped: true },
   { kind: "order.projection.create", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // Ops-foreign-advertised ONLY (BKL-090): absent from orders' OWN planner
   // literal — verified — advertised solely via pack-ops' staff allowlist.
@@ -757,6 +795,9 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     legacyNames: ["create_reservation"],
     description: "Criar uma reserva de mesa.",
     successClaimLinks: ["reservation-confirmed"],
+    // LE2-023 — `escalateHighNoShowRate`: a customer whose no-show rate is above
+    // the threshold is routed to a human before the booking is honoured.
+    escalatable: true,
     conversationTriggers: [
       /* S */ "quero uma mesa pra 4 pessoas dia 20/03 às 20h",
       /* P */ "Quero reservar uma mesa para 4 pessoas amanhã às 19h",
@@ -993,6 +1034,10 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     // (ibatexas-responder.ts) alongside payment.refund.confirm below —
     // grounded from that real export, not invented.
     successClaimLinks: ["refund-done"],
+    // LE2-023 — the >=R$1.000 band (`refund_above_escalate_threshold`). The
+    // AUT-017 overlay can convert it DOWN to a confirm on an owner approval,
+    // but the band itself is live, so the kind is escalatable.
+    escalatable: true,
     // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
     adminLabel: "Emitir reembolso",
   },
@@ -1006,7 +1051,9 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
     // FE-T23: verbatim from apps/admin's committed INTENT_KIND_LABELS.
     adminLabel: "Confirmar reembolso",
   },
-  { kind: "payment.dispute.open", pack: "ibatexas/pack-payments", mutating: true, tier: "identity" },
+  // LE2-023 — `escalateAlwaysOnDispute` returns ESCALATE unconditionally: a
+  // chargeback is never auto-processed.
+  { kind: "payment.dispute.open", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", escalatable: true },
   { kind: "payment.cash.confirm", pack: "ibatexas/pack-payments", mutating: true, tier: "identity", successClaimLinks: ["payment-settled"] },
   // FE-T24: both members of BKL-096's FORBIDDEN_OPS_DESTRUCTIVE_KINDS —
   // OWNER-gated irreversible writes (debt write-off / status-lifecycle

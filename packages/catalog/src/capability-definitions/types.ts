@@ -318,6 +318,53 @@ interface CapabilityDefinitionCommon {
    * true of the same one edit.
    */
   readonly workflowScoped?: true
+  /**
+   * LE2-023 — `true` for a capability whose pack policy can return ESCALATE.
+   *
+   * It exists for exactly one consumer: the `workflow-runtime-shape` pass's
+   * `escalated-outcome-template-missing` rule, which requires a workflow to
+   * author the `escalated` outcome's sentence when — and only when — its route
+   * can reach a step the kernel might hand to a human. Without a declaration
+   * the compiler cannot know that, because whether a guard escalates is a fact
+   * about a function body in another package, and requiring the template
+   * unconditionally would make every workflow author a sentence most of them
+   * can never show (which reviewers rubber-stamp, and a rubber-stamped sentence
+   * about a pending money decision is worse than none).
+   *
+   * ── THE MAINTENANCE CONTRACT (binding) ──────────────────────────────────
+   *
+   * Any pack change that ADDS or REMOVES an ESCALATE band on a kind MUST move
+   * this slot IN THE SAME COMMIT. The slot is a claim about a policy bundle, so
+   * it is only true for as long as someone keeps it true — and the failure mode
+   * of a stale `true` is mild (a workflow authors a sentence it never shows)
+   * while the failure mode of a stale ABSENCE is not: a route escalates, the
+   * compiler never demanded the template, and the customer reads the runtime's
+   * generic fallback about a decision now sitting with a human.
+   *
+   * At the time of writing, the four members are `order.cancel` (two bands:
+   * `gatePaidCancel`'s high band and `escalateLargeCancel`),
+   * `payment.refund.issue`, `payment.dispute.open` (which always escalates) and
+   * `reservation.create` (high no-show rate).
+   *
+   * ── AND ITS LIMIT, STATED RATHER THAN PAPERED OVER ──────────────────────
+   *
+   * This slot is REVIEW-ENFORCED, NOT GATE-ENFORCED. The catalog cannot see
+   * guard verdicts: a pack's policy is a composition of opaque functions, and
+   * nothing static can decide whether one of them returns ESCALATE for some
+   * input. A synthetic-probe gate could be written and would be worse than
+   * nothing — it would adjudicate invented envelopes against empty state, pass
+   * green while the real bands stayed unreachable, and read as enforcement
+   * (exactly the structural blind spot BKL-251 found in the conformance
+   * sampling). So the honest design is a declared statement with its contract
+   * written next to it, in the same spirit as the alias gazetteer's
+   * safety-boundary note: a claim a reviewer checks, not a claim a machine
+   * pretends to.
+   *
+   * `undefined`/absent (correct for 55 of 59 kinds) means "no escalate band".
+   * Optional on both tiers — escalation is a property of a kind's guards, not
+   * of how richly its chat metadata is authored.
+   */
+  readonly escalatable?: true
 }
 
 /**

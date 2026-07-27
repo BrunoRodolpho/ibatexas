@@ -204,8 +204,346 @@ export const REORDER_LAST_WORKFLOW: WorkflowDefinition = {
   outcomes: { completed: "completed", declined: "declined", failed: "failed" },
 }
 
+/** The swap-for-coupon workflow's id — exported so nothing re-spells the string. */
+export const SWAP_FOR_COUPON_WORKFLOW_ID = "workflow.orders.swap-for-coupon"
+
+/**
+ * SWAP-FOR-COUPON — LE2-023, and the scenario this whole workstream was
+ * stress-testing.
+ *
+ * *"se não der pra usar o cupom, cancela minha order, faz outra igual, e aplica
+ * o cupom X1234"* — one sentence that asks for a destructive multi-step act on a
+ * real, possibly-paid order. The customer is shown ONE question stating the order
+ * amount, the refund consequence and the new total, and only on their "sim" does
+ * the governed saga run: cancel, rebuild, apply.
+ *
+ * ── WHY THE PRE-CHECKS ARE THE MOST IMPORTANT PART ───────────────────────────
+ *
+ * Four of them, evaluated at SELECTION, before any envelope exists. Each is a way
+ * the confirm sentence could otherwise be a lie, and the ORDER is the author's
+ * statement of which reason a customer can act on first (the first failure wins
+ * and the rest are not evaluated):
+ *
+ *   1. no previous order      — there is nothing to swap.
+ *   2. past the PONR          — the cancel this route opens with will be REFUSED
+ *                               by `requireCancellable`, so confirming would ask
+ *                               approval for a route already impossible.
+ *   3. coupon not usable      — the entire REASON for cancelling does not hold.
+ *   4. no computable total    — the sentence's third grounded number does not
+ *                               exist, and "cancel this and rebuild it" with no
+ *                               price is not a decision, it is a leap.
+ *
+ * `confirmSwapForCoupon` REFUSEs on the same four facts at ADJUDICATION. That is
+ * not redundancy: these speak before the customer is asked anything, the guard is
+ * the only line of defence on the RESUME path, and a coupon that expired between
+ * the confirm and the "sim" is caught there — before the cancel.
+ *
+ * ── THE ONE CONFIRM, AND WHAT IT COVERS ──────────────────────────────────────
+ *
+ * `confirm.statesFacts` declares that the sentence states all three grounded
+ * facts. The `cancel` activity then declares that the whole-workflow confirm
+ * ALREADY ASKED `gatePaidCancel`'s `paid_cancel_requires_confirmation` — naming
+ * that ONE basis reason, never the guard (the same guard also produces
+ * `paid_cancel_escalation_approved`, and covering "the guard" would silently
+ * cover both). The compiler checks the coverage's facts against
+ * `confirm.statesFacts` (`confirm-coverage-unstated`); a test in
+ * `packages/pack-orders` checks that the guard's REAL sentence carries them.
+ *
+ * The upper band is untouched BY CONSTRUCTION, not by care: coverage acts on
+ * REQUEST_CONFIRMATION alone, so a paid cancel at or above the escalate
+ * threshold still ESCALATEs and still goes to a human.
+ *
+ * ── WHY `cancel` IS TERMINAL, AND WHAT THAT COSTS ────────────────────────────
+ *
+ * `terminal: "irreversible"`, because it is true: the catalog declares no
+ * capability that un-cancels an order, and inventing a compensator that "reorders
+ * the cancelled order" would restore a DIFFERENT order at a DIFFERENT price and
+ * call it a rollback.
+ *
+ * The consequence is stated rather than hidden: if the rebuild fails after the
+ * cancel succeeded, the run reaches `stranded`, NOT `compensated`, and the
+ * customer is told their order was cancelled and the new one could not be built.
+ * That is the honest sentence for a genuinely bad outcome, and it is the outcome
+ * the ticket's fifth acceptance criterion is really about — the compensation
+ * MACHINERY runs (the reverse pass executes, the trace records it), and what it
+ * reports is that nothing could be undone.
+ */
+export const SWAP_FOR_COUPON_WORKFLOW: WorkflowDefinition = {
+  id: SWAP_FOR_COUPON_WORKFLOW_ID,
+  title: "Trocar o pedido por um novo com cupom",
+  description:
+    "Cancelar o pedido atual do cliente e montar um pedido novo igual com um cupom de desconto aplicado, depois de confirmar com ele o valor, o reembolso e o novo total.",
+  // PROVENANCE (LE2-033). EVERY phrasing here is `authored` and the body is
+  // FLAGGED FOR OWNER REVIEW — unlike reorder-last, which carried one genuine
+  // production utterance, this workflow has NONE, and the reason is recorded
+  // rather than worked around: the `intent_audit` store was unreachable when
+  // this was authored, so no phrasing could be grounded in a real customer
+  // sentence. A `production-utterance` tag nobody could verify would be a
+  // fabricated provenance claim, which is worse than an honest `authored` one.
+  // Re-mine and upgrade when the store is reachable.
+  //
+  // No phrasing is drawn from `packages/journeys/extraction-corpus` or the
+  // extraction-eval fixtures — that corpus is LE2-008's gate and authoring
+  // against it would test-fit the measurement. None carries PII, and none is an
+  // allergen or dietary disclosure.
+  //
+  // Authored strongest-first: the surface truncates from the end.
+  triggerPhrasings: [
+    {
+      phrasing: "cancela meu pedido e faz outro igual com o cupom",
+      provenance: "authored",
+      why: "the ticket's own headline shape — names the cancel, the rebuild and the coupon in the order they happen",
+    },
+    {
+      phrasing: "se não der pra usar o cupom, cancela e faz de novo",
+      provenance: "authored",
+      why: "the spec's verbatim stress-test sentence, conditional register — the hardest form and the one the whole workstream is measured on",
+    },
+    {
+      phrasing: "quero usar meu cupom no pedido que já fiz",
+      provenance: "authored",
+      why: "desiderative, and names NEITHER the cancel nor the rebuild — the customer states the goal and leaves the mechanism to us, which is the most common way this will really be asked",
+    },
+    {
+      phrasing: "dá pra aplicar esse cupom no meu pedido?",
+      provenance: "authored",
+      why: "interrogative — a different neighbourhood of the embedding space from the imperatives, and the phrasing most likely to collide with the coupon-validity READ, so it is here deliberately to be measured",
+    },
+    {
+      phrasing: "refaz meu pedido com desconto",
+      provenance: "authored",
+      why: "'desconto' rather than 'cupom' — the noun a customer may reach for when they do not have a code in hand",
+    },
+    {
+      phrasing: "esqueci de colocar o cupom, dá pra trocar?",
+      provenance: "authored",
+      why: "names the REASON (a forgotten code) instead of the act; the apologetic framing is common and shares almost no tokens with the description",
+    },
+    {
+      phrasing: "troca meu pedido por um com o cupom",
+      provenance: "authored",
+      why: "the 'troca' verb the title uses, which no other phrasing here carries",
+    },
+  ],
+  // CONJUNCTIVE, and every conjunct NARROWS. `order.cart.ensure` is the
+  // always-proposable cart floor; `order.checkout.create` is the AUTHENTICATION
+  // conjunct (the orders planner's `if (isAuthenticated)` branch) — offering a
+  // destructive order swap to a guest would advertise a route whose anchor must
+  // REFUSE at `requireAuthenticated`. `order.coupon.apply` is the conjunct that
+  // says the coupon half of this route is available at all: the last activity
+  // invokes exactly that capability, so gating on it keeps the workflow from
+  // being offered where its own final step could not run.
+  matchers: [
+    { capability: "order.cart.ensure" },
+    { capability: "order.checkout.create" },
+    { capability: "order.coupon.apply" },
+  ],
+  selection: { capability: "order.coupon.swap.request" },
+  // THE ONE PARAM, and it is a SLOT rather than a claim because the coupon code
+  // is a value the CUSTOMER AUTHORED in the selecting utterance. No registry
+  // claim carries a coupon code (`COUPON_VALID`'s validated value is a composed
+  // pt-BR string), and the code is not an identifier the model could confabulate
+  // into somebody else's money — it is checked against the store before any of
+  // this is offered, and the guard quotes the STORE's spelling back, never this.
+  params: [{ name: "code", source: { from: "slot", slot: "code" } }],
+  prechecks: [
+    {
+      id: "has-previous-order",
+      predicate: { fact: "customerHasPreviousOrder", op: "isTrue" },
+      template: "no-previous-order",
+    },
+    {
+      id: "order-is-cancelable",
+      predicate: { fact: "previousOrderIsCancelable", op: "isTrue" },
+      template: "past-ponr",
+    },
+    {
+      id: "coupon-is-valid",
+      predicate: { fact: "couponIsValid", op: "isTrue" },
+      template: "coupon-not-usable",
+    },
+    {
+      id: "new-total-is-computable",
+      predicate: { fact: "couponNewTotalInCentavos", op: "present" },
+      template: "total-unknown",
+    },
+  ],
+  activities: [
+    {
+      id: "cancel",
+      capability: "order.cancel",
+      // EMPTY, deliberately. `orderId` is an identifier and `actorId` is the
+      // BKL-103 proposer stamp; neither has an admissible `WorkflowParamSource`,
+      // and both are resolved host-side from the OWNER-SCOPED previous-order
+      // projection before the envelope is minted (see
+      // `WorkflowRuntimeDeps.resolveActivityPayload`). An order id a model named
+      // is an order id a model could have invented.
+      payload: {},
+      compensation: {
+        terminal: "irreversible",
+        why: "an order cannot be un-cancelled; the catalog declares no capability that reinstates one, and reordering it would restore a different order at a different price while calling itself a rollback",
+      },
+      // THE DECLARED COVERAGE — LE2-023's whole point, and the narrowest form it
+      // can take. ONE basis reason, and only the two facts that guard's own
+      // sentence states (it names the amount and the refund; it says nothing
+      // about the new total, so claiming `newTotal` here would be claiming
+      // coverage of a question that was never asked).
+      confirmCoveredBy: {
+        basisReason: "paid_cancel_requires_confirmation",
+        statesFacts: ["orderAmount", "refundConsequence"],
+        why: "the whole-workflow confirm states this order's amount and that cancelling refunds it — the same two facts gatePaidCancel's own sentence states — and the customer answered THAT question with a witnessed affirmation",
+      },
+    },
+    {
+      id: "rebuild",
+      capability: "order.reorder",
+      payload: {},
+      compensation: {
+        terminal: "irreversible",
+        why: "rebuilds the session cart from the cancelled order; the catalog declares no capability that restores the previous cart",
+      },
+    },
+    {
+      // LE2-023 — THE CLOSED BRANCH'S TARGET. Reachable only through the
+      // `coupon_on_placed_order` policy switch, which this workflow does not
+      // declare open, and refused by the kernel even if it were: the capability
+      // is `workflowScoped` (no parse can propose it) and `ordersPolicyBundle`
+      // produces no EXECUTE for it. Two locks in two packages; the fixture that
+      // forces the route open proves the second one is real.
+      id: "price-adjust",
+      capability: "order.coupon.adjust",
+      payload: { code: { param: "code" } },
+      compensation: {
+        terminal: "harmless",
+        why: "unreachable — the branch ships closed and the kernel refuses the kind; were it ever to run and be undone, a price adjustment on a placed order would need its own reversal capability, which is part of what opening this switch must build",
+      },
+    },
+    {
+      id: "apply-coupon",
+      capability: "order.coupon.apply",
+      // The ONE authored binding in the route: the customer's own code, carried
+      // from the slot the selection surface declared.
+      payload: { code: { param: "code" } },
+      compensation: {
+        // HARMLESS, and the marker is doing real work rather than being the soft
+        // default. Nothing runs after this step, and a coupon sitting on a cart
+        // the customer has not checked out is invisible to them and costs them
+        // nothing. Marking it "irreversible" would make the failure render
+        // "something could not be undone" about a discount — a sentence that
+        // frightens a customer about nothing and teaches them to ignore the one
+        // that matters.
+        terminal: "harmless",
+        why: "a promotion code on a not-yet-checked-out cart changes nothing the customer holds; re-applying or dropping it is a no-op from their side",
+      },
+    },
+  ],
+  // THE ROUTE, and its single branch is a POLICY switch rather than a predicate
+  // over a fact — because "does this business offer price adjustment" is not a
+  // fact about this customer. It is authored catalog data, identical for
+  // everyone, changed only by a reviewed commit. Spelling it as a fact would put
+  // what the business offers and what is true of a customer into one vocabulary,
+  // and the projection layer would then need a branch that reads the catalog,
+  // which is exactly the runtime authority the catalog must never hold.
+  //
+  // `policyOpen` is OMITTED below, so the switch is CLOSED and `otherwise` — the
+  // cancel-and-rebuild saga — is the shipped path. The trace records the branch
+  // as `policy coupon_on_placed_order closed`, which tells an operator the
+  // BUSINESS is not offering this, not that the customer failed to qualify.
+  route: [
+    {
+      whenPolicyOpen: "coupon_on_placed_order",
+      then: ["price-adjust"],
+      otherwise: ["cancel", "rebuild", "apply-coupon"],
+    },
+  ],
+  // ABSENT ⟹ every switch closed. Opening this one is exactly one line added
+  // here plus a CATALOG_VERSION bump — a catalog change, not engine work, which
+  // is the ticket's own requirement and is checkable: the diff that opens it
+  // touches this package and nothing else. It still would not make the branch
+  // RUN; that needs the second lock opened in `pack-orders` too.
+  confirm: {
+    template: "confirm",
+    // WHAT THE SENTENCE STATES. Declared here, checked against the coverage by
+    // the compiler and against the guard's real words by a test in
+    // `packages/pack-orders`. See `WorkflowConfirmPoint.statesFacts`.
+    statesFacts: ["orderAmount", "refundConsequence", "newTotal"],
+  },
+  templates: [
+    // `{confirmation}` ALONE — the kernel's own sentence, authored by
+    // `confirmSwapForCoupon` from projected state. Quoted verbatim and
+    // unadorned: framing added around a grounded sentence is a second voice in
+    // the same breath, and the customer has no way to tell which half was
+    // checked. It is also what keeps the BKL-212 soft-affirmative restatement a
+    // SUBSET of what they read rather than a different question.
+    { id: "confirm", text: "{confirmation}" },
+    {
+      id: "no-previous-order",
+      text: "Ainda não encontrei nenhum pedido seu pra trocar. Quer montar um novo?",
+    },
+    {
+      id: "past-ponr",
+      text: "Esse pedido já passou do ponto de cancelamento, então não dá pra trocar por outro. Fala com a gente que a equipe te ajuda.",
+    },
+    {
+      id: "coupon-not-usable",
+      // Says what we could establish about OURSELVES, never that the store
+      // rejected the code — the projection reports "could not check" and "not
+      // usable" as different facts, and only one of them is a claim about the
+      // coupon. See `refuseCouponNotUsable`.
+      text: "Não consegui confirmar esse cupom agora, então não mexi no seu pedido. Quer tentar outro código?",
+    },
+    {
+      id: "total-unknown",
+      text: "Esse cupom é válido, mas não consigo calcular quanto ficaria o pedido novo com ele — então não mexi no seu pedido. Dá pra aplicar ele na hora de fechar um pedido novo.",
+    },
+    {
+      id: "completed",
+      text: "Pronto! Cancelei o pedido anterior e montei um carrinho novo com os mesmos itens e o cupom aplicado. Quer finalizar?",
+    },
+    {
+      id: "declined",
+      text: "Tudo bem, não cancelei nada e seu pedido continua como estava.",
+    },
+    {
+      id: "failed",
+      text: "Não consegui fazer essa troca e não mexi no seu pedido. Já chamei alguém da equipe para te ajudar.",
+    },
+    {
+      id: "compensated",
+      text: "Não consegui concluir a troca, então desfiz o que já tinha feito. Seu pedido continua como estava.",
+    },
+    {
+      id: "stranded",
+      // THE SENTENCE THIS OUTCOME EXISTS FOR. It must not say "nothing
+      // happened", because the order really is cancelled. It names what was
+      // done, what was not, and who is handling it.
+      text: "Cancelei seu pedido anterior, mas não consegui montar o novo com o cupom. Já chamei alguém da equipe para resolver isso com você.",
+    },
+    {
+      id: "escalated",
+      // THE WHOLE TRUTH, both halves, because the machinery on the other side is
+      // narrower than a customer would assume: an approval resumes THE ESCALATED
+      // ACTIVITY ALONE — there is no saga-resume anywhere in this system — so
+      // the rest of the route does NOT run. A template saying only "someone will
+      // review this" would leave them believing their whole request is pending.
+      text: "Esse cancelamento precisa da aprovação de um responsável, então mandei pra equipe revisar e ainda não mexi no seu pedido. Assim que aprovarem, o cancelamento acontece — e aí é só me chamar que eu monto o pedido novo com o cupom.",
+    },
+  ],
+  outcomes: {
+    completed: "completed",
+    declined: "declined",
+    failed: "failed",
+    compensated: "compensated",
+    stranded: "stranded",
+    escalated: "escalated",
+  },
+}
+
 /**
  * Every workflow the production catalog declares. See the module doc for what
  * an entry costs structurally.
  */
-export const WORKFLOW_DEFINITIONS: readonly WorkflowDefinition[] = [REORDER_LAST_WORKFLOW]
+export const WORKFLOW_DEFINITIONS: readonly WorkflowDefinition[] = [
+  REORDER_LAST_WORKFLOW,
+  SWAP_FOR_COUPON_WORKFLOW,
+]

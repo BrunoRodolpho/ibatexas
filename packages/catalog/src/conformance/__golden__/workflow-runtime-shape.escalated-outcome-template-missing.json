@@ -1,0 +1,72 @@
+{
+  "fixture": "workflow-runtime-shape.escalated-outcome-template-missing",
+  "targets": "workflow-runtime-shape/escalated-outcome-template-missing",
+  "ok": false,
+  "capabilities": 2,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 1,
+  "rulesEmitted": [
+    "workflow-runtime-shape/escalated-outcome-template-missing"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 4,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 45,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 5,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 14,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "workflow-runtime-shape",
+      "rule": "escalated-outcome-template-missing",
+      "severity": "error",
+      "object": "workflow:conformance.workflow.runtime",
+      "field": "outcomes.escalated",
+      "message": "routes a capability declared `escalatable: true` and has no \"escalated\" template (names \"undefined\"). A run can end with a step handed to a human, and the two things the customer must be told are that the act awaits review AND that the rest of the route did not run — an approval resumes the escalated activity alone. `failed` would say nothing happened, which closes a matter that is still open."
+    }
+  ],
+  "formatted": [
+    "workflow-runtime-shape/escalated-outcome-template-missing: workflow:conformance.workflow.runtime · outcomes.escalated — routes a capability declared `escalatable: true` and has no \"escalated\" template (names \"undefined\"). A run can end with a step handed to a human, and the two things the customer must be told are that the act awaits review AND that the rest of the route did not run — an approval resumes the escalated activity alone. `failed` would say nothing happened, which closes a matter that is still open."
+  ]
+}

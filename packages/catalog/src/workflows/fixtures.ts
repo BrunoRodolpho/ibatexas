@@ -369,9 +369,11 @@ export const FIXTURE_CONDITIONAL_WORKFLOW: WorkflowDefinition = {
       // a money act. It is also the step that proves the runtime grants a
       // workflow NO authority — this is the anchor's own capability, and it
       // still meets `confirmLargeTicket` on its own terms when it runs as an
-      // activity. The whole-workflow confirm does not pre-authorize a step's own
-      // confirm, so above the money band this step does not EXECUTE and the run
-      // compensates.
+      // activity. It declares NO `confirmCoveredBy`, so under LE2-023's refined
+      // rule it is an UNCOVERED confirm and behaves exactly as it always has:
+      // above the money band this step does not EXECUTE and the run compensates.
+      // That is deliberate and load-bearing — this fixture is the pin that
+      // coverage did not become the default.
       compensation: {
         terminal: "irreversible",
         why: "a created checkout is a money act; no capability in the catalog withdraws one",

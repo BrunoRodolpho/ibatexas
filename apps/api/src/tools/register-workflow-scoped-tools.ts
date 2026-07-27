@@ -24,10 +24,11 @@
 // other half of that decision: the handler is not dead, it is
 // workflow-invocable.
 
-import { reorder } from "@ibatexas/tools";
+import { getRedisClient, reorder, rk } from "@ibatexas/tools";
 import type { ToolDefinition, ToolRegistry } from "@claustrum/core";
 import type { CapabilityId, IntentKind } from "@claustrum/core";
 import type { Capsule } from "@claustrum/core";
+import { logger } from "../lib/logger.js";
 import { loadPreviousOrder } from "../claustrum/previous-order.js";
 import { agentCtxFromCapsule } from "./register-ibatexas-tool-packs.js";
 
@@ -75,7 +76,78 @@ async function executeReorder(input: unknown, capsule: Capsule): Promise<unknown
   }
   // The authored payload is `{}` and stays that way; the id is added here, at
   // the last possible moment, from first-party state.
-  return reorder({ ...(input as object), orderId: previous.orderId } as never, ctx);
+  const result = await reorder(
+    { ...(input as object), orderId: previous.orderId } as never,
+    ctx,
+  );
+  await claimSessionCart(ctx, result);
+  return result;
+}
+
+/**
+ * Point the session's ACTIVE CART at the cart the reorder just built.
+ *
+ * ── WHY THIS IS A BUG FIX, NOT A NEW BEHAVIOUR ───────────────────────────────
+ *
+ * `reorder` POSTs a brand-new `/store/carts` and returns its id. Nothing wrote
+ * that id anywhere the rest of the system reads, and the ONE place that decides
+ * "which cart is this conversation working on" is `rk("cart:active:session:
+ * <sessionId>")`. So before this, an accepted reorder-last told the customer
+ * *"Montei um carrinho novo com os itens do seu último pedido. Quer finalizar?"*
+ * while their session still pointed at the cart they had BEFORE — and
+ * `threadResolvedIdsIntoPayload` threads that key onto a checkout payload, so
+ * the follow-up "quero finalizar" would have created a checkout for the OLD
+ * basket. The rebuilt cart was orphaned the moment it was built.
+ *
+ * Measured at the turn seam before the fix: after an accepted reorder the key,
+ * the resolved checkout payload and the checkout ctx all still read the old
+ * cart id. See the pinning test in `reorder-last-workflow.e2e.test.ts`.
+ *
+ * It is also the contract the swap-for-coupon route needs, and the reason that
+ * route can bind a `cartId` at all: its `apply-coupon` activity must discount
+ * THE CART THE CUSTOMER WILL CHECK OUT — the one the confirm quoted a new total
+ * for — and after this the session cart IS that cart. Resolving the coupon's
+ * target from the session would otherwise have discounted a basket the customer
+ * is not buying, which is worse than failing.
+ *
+ * ── SCOPE, AND WHAT IT COSTS ─────────────────────────────────────────────────
+ *
+ * The key is session-scoped and written with the shared `rk()` idiom (Hard Rule
+ * #7), keyed on the SAME `ctx.sessionId` `getOrCreateCart` uses — this is now
+ * the second writer of that key, and `cartRedisKey`'s doc in
+ * `packages/tools/src/cart/get-or-create-cart.ts` records that.
+ *
+ * The previous cart is ABANDONED rather than deleted. That is what the cart
+ * machinery already does for every superseded session cart — Medusa keeps it,
+ * nothing points at it, and it ages out — and deleting it here would be a
+ * destructive act the customer never approved.
+ *
+ * BEST-EFFORT and LOUD: a Redis failure must not fail a reorder that already
+ * succeeded (the cart exists either way), but it leaves the customer pointed at
+ * the old basket, so it logs at error rather than passing silently.
+ */
+async function claimSessionCart(
+  ctx: { sessionId?: string },
+  result: unknown,
+): Promise<void> {
+  const cartId = (result as { cartId?: unknown } | null)?.cartId;
+  const sessionId = ctx.sessionId;
+  if (typeof cartId !== "string" || cartId === "" || sessionId === undefined) return;
+  try {
+    const redis = await getRedisClient();
+    await redis.set(rk(`cart:active:session:${sessionId}`), cartId);
+  } catch (error) {
+    logger.error(
+      {
+        component: "workflow",
+        event: "workflow.reorder.session_cart_unclaimed",
+        sessionId,
+        cartId,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "workflow: order.reorder rebuilt a cart but could NOT point the session at it — the customer's next checkout would target their previous basket",
+    );
+  }
 }
 
 /**
@@ -102,6 +174,49 @@ const WORKFLOW_SCOPED_TOOLS: ReadonlyMap<string, ToolDefinition<unknown, unknown
         riskLevel: "medium",
         execute: (input: unknown, ctx: unknown) =>
           executeReorder(input, ctx as Capsule),
+      } satisfies ToolDefinition<unknown, unknown>,
+    ],
+    [
+      // LE2-023 — THE HANDLER THAT THROWS, and it is the honest implementation
+      // of "no execution path exists" rather than a placeholder.
+      //
+      // `order.coupon.adjust` is the target of the swap-for-coupon workflow's
+      // CLOSED `coupon_on_placed_order` branch. `registerWorkflowScopedTools`
+      // throws at composition time for a scoped kind with no handler, so the
+      // kind needs one to exist at all — and the question is what it should do.
+      //
+      // A no-op returning `{success: true}` would be the dangerous answer: the
+      // step would record as EXECUTED in the trace, the run would reach
+      // `completed`, and a customer would be told their placed order was
+      // repriced when nothing happened. A THROW records the step as not
+      // executed, stops the run and fires the compensators — the same shape any
+      // other failed activity takes.
+      //
+      // It is also UNREACHABLE, twice over, which is the point: the route
+      // branch is closed by the absent policy switch, and even forced open the
+      // kernel REFUSEs this kind (no EXECUTE guard), so dispatch is never
+      // reached. This throw is the third line of defence, and if it ever fires
+      // it means both locks failed and the message says so.
+      "order.coupon.adjust",
+      {
+        id: "ibatexas.order.couponAdjust.v1",
+        capability: "order.coupon.adjust" as CapabilityId,
+        intentKind: "order.coupon.adjust" as IntentKind,
+        description:
+          "Aplicar um cupom a um pedido já feito ajustando o preço (não implementado).",
+        inputSchema: {},
+        outputSchema: {},
+        riskLevel: "high",
+        execute: () => {
+          throw new Error(
+            "[workflow] order.coupon.adjust has no execution path. This kind is " +
+              "declared so the swap-for-coupon workflow's coupon_on_placed_order " +
+              "branch can name it while shipping CLOSED; it is workflow-scoped and " +
+              "no guard in ordersPolicyBundle produces EXECUTE for it, so reaching " +
+              "dispatch means BOTH locks failed. Implement the price-adjust path " +
+              "and its policy before opening the switch.",
+          );
+        },
       } satisfies ToolDefinition<unknown, unknown>,
     ],
   ]);

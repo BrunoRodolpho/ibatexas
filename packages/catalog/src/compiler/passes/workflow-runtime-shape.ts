@@ -47,6 +47,7 @@ import { isWorkflowFactName } from "../../workflows/facts.js"
 import type { WorkflowDefinition } from "../../workflows/types.js"
 import {
   WORKFLOW_COMPENSATION_OUTCOMES,
+  WORKFLOW_CONFIRM_FACTS,
   WORKFLOW_PREDICATE_OPERATORS,
   WORKFLOW_PREDICATE_OPERATORS_WITH_VALUE,
   WORKFLOW_TERMINAL_MARKERS,
@@ -557,6 +558,249 @@ function checkCompensationOutcomes(ctx: WorkflowContext): readonly CatalogDiagno
   return out
 }
 
+/** The closed confirm-fact vocabulary, as a set. */
+const CONFIRM_FACTS: ReadonlySet<string> = new Set(WORKFLOW_CONFIRM_FACTS)
+
+/**
+ * DECLARED CONFIRM COVERAGE MUST BE COVERED BY THE CONFIRM — LE2-023.
+ *
+ * Two rules over one declaration, and together they are the compile half of the
+ * gate that makes coverage honest:
+ *
+ *   `confirm-coverage-fact-unknown` — a coverage (or a confirm) naming a fact
+ *     outside {@link WORKFLOW_CONFIRM_FACTS}. The same closed-vocabulary
+ *     discipline `predicate-fact-unknown` applies to predicates: a name nobody
+ *     declared cannot be checked against anything, so it would be a coverage
+ *     claim that is neither true nor false.
+ *   `confirm-coverage-unstated` — a coverage claiming a fact the workflow's own
+ *     confirm does NOT declare it states. THE load-bearing one. Coverage means
+ *     "the customer was already asked this exact question", and a question they
+ *     were asked must have named the things it was about. Without this rule an
+ *     author could declare that a bare "confirma?" covered a guard whose whole
+ *     content was an amount and a refund — and the run would then execute a
+ *     paid cancellation on a customer who had approved a sentence that never
+ *     mentioned their money.
+ *
+ * This half checks a CLAIM against a CLAIM. The other half — a runtime test
+ * driving the real anchor and asserting its real sentence carries each declared
+ * fact — checks the claim against reality. Neither is sufficient: the first
+ * cannot see the guard's words, the second only covers the cases a test drives.
+ * Together a stale declaration is a build failure or a test failure rather than
+ * a customer reading a confirmation for something else.
+ */
+function checkConfirmCoverage(ctx: WorkflowContext): readonly CatalogDiagnostic[] {
+  const out: CatalogDiagnostic[] = []
+  const confirm = readRecord(ctx.record["confirm"])
+  const confirmFacts = readArray(confirm["statesFacts"]).filter(isNonBlank)
+
+  for (const fact of confirmFacts) {
+    if (CONFIRM_FACTS.has(fact)) continue
+    out.push(
+      diag(
+        ctx,
+        "confirm-coverage-fact-unknown",
+        "confirm.statesFacts",
+        `names "${fact}", which is not a member of WORKFLOW_CONFIRM_FACTS. A ` +
+          "confirm may only declare facts the vocabulary knows, or a coverage " +
+          "over it could be neither true nor false.",
+      ),
+    )
+  }
+
+  const stated = new Set(confirmFacts.filter((fact) => CONFIRM_FACTS.has(fact)))
+
+  readArray(ctx.record["activities"]).forEach((activity, index) => {
+    const record = readRecord(activity)
+    const coverage = record["confirmCoveredBy"]
+    if (coverage === undefined || coverage === null) return
+    const declared = readRecord(coverage)
+    const activityId = isNonBlank(record["id"]) ? record["id"] : `#${String(index)}`
+
+    if (!isNonBlank(declared["basisReason"])) {
+      out.push(
+        diag(
+          ctx,
+          "confirm-coverage-unstated",
+          `activities.${activityId}.confirmCoveredBy.basisReason`,
+          "declares a coverage with no basis reason. Coverage names ONE guard " +
+            "verdict by the reason it states; a coverage without one would " +
+            "match every question that guard can ask, including ones the " +
+            "confirm never addressed.",
+        ),
+      )
+    }
+
+    for (const fact of readArray(declared["statesFacts"]).filter(isNonBlank)) {
+      if (!CONFIRM_FACTS.has(fact)) {
+        out.push(
+          diag(
+            ctx,
+            "confirm-coverage-fact-unknown",
+            `activities.${activityId}.confirmCoveredBy.statesFacts`,
+            `names "${fact}", which is not a member of WORKFLOW_CONFIRM_FACTS.`,
+          ),
+        )
+        continue
+      }
+      if (stated.has(fact)) continue
+      out.push(
+        diag(
+          ctx,
+          "confirm-coverage-unstated",
+          `activities.${activityId}.confirmCoveredBy.statesFacts`,
+          `claims the whole-workflow confirm covers a guard stating "${fact}", ` +
+            "but `confirm.statesFacts` does not declare it. A confirm can only " +
+            "cover a question it actually asked — otherwise the customer " +
+            "approves one sentence and a governed mutation runs on the strength " +
+            "of a different one.",
+        ),
+      )
+    }
+  })
+
+  return out
+}
+
+/**
+ * A ROUTE THAT CAN ESCALATE MUST SAY WHAT IT WILL TELL THE CUSTOMER — LE2-023.
+ *
+ * Required exactly when the route can reach an activity whose capability the
+ * catalog declares `escalatable: true`, because that is precisely when a run can
+ * end with a decision sitting on a staff queue.
+ *
+ * The reachability predicate is DECLARED, not inferred, and the honesty of this
+ * rule is bounded by that: whether a guard escalates is a fact about a function
+ * body in another package, and nothing static can decide it (see the
+ * `escalatable` field's own doc for why a synthetic-probe gate would be vacuous
+ * enforcement rather than enforcement). So this rule fires reliably for every
+ * kind somebody declared, and cannot fire for one nobody did — which is why the
+ * field carries a maintenance contract rather than a promise.
+ *
+ * Falling back to `failed` is the failure this prevents, and it is a sharp one:
+ * `failed` means NOTHING RAN, which for a first-step escalation is literally
+ * true and still leaves the customer believing the matter is closed while an
+ * owner is about to decide it.
+ */
+function checkEscalatedOutcome(
+  ctx: WorkflowContext,
+  escalatableKinds: ReadonlySet<string>,
+): readonly CatalogDiagnostic[] {
+  const byId = new Map<string, Readonly<Record<string, unknown>>>()
+  for (const activity of readArray(ctx.record["activities"])) {
+    const record = readRecord(activity)
+    if (isNonBlank(record["id"])) byId.set(record["id"], record)
+  }
+  // Reachable on SOME path — both arms of every branch, and the compensators,
+  // which are reached by failure and can escalate exactly as a forward step can.
+  const reachable = new Set<string>(
+    routeTargets(ctx)
+      .map((target) => target.id)
+      .filter(isNonBlank),
+  )
+  for (const activity of byId.values()) {
+    const compensation = readRecord(activity["compensation"])
+    if (isNonBlank(compensation["by"])) reachable.add(compensation["by"])
+  }
+
+  const canEscalate = [...reachable].some((id) => {
+    const capability = byId.get(id)?.["capability"]
+    return isNonBlank(capability) && escalatableKinds.has(capability)
+  })
+  if (!canEscalate) return []
+
+  const templateIds = new Set(
+    readArray(ctx.record["templates"])
+      .map((template) => readRecord(template)["id"])
+      .filter(isNonBlank),
+  )
+  const templateId = readRecord(ctx.record["outcomes"])["escalated"]
+  if (isNonBlank(templateId) && templateIds.has(templateId)) return []
+
+  return [
+    diag(
+      ctx,
+      "escalated-outcome-template-missing",
+      "outcomes.escalated",
+      'routes a capability declared `escalatable: true` and has no "escalated" ' +
+        `template (names "${String(templateId)}"). A run can end with a step ` +
+        "handed to a human, and the two things the customer must be told are " +
+        "that the act awaits review AND that the rest of the route did not run " +
+        "— an approval resumes the escalated activity alone. `failed` would say " +
+        "nothing happened, which closes a matter that is still open.",
+    ),
+  ]
+}
+
+/**
+ * A POLICY-GATED ACTIVITY MUST ALSO BE UNREACHABLE FROM A PARSE — LE2-023.
+ *
+ * The rule `workflows/types.ts` has promised since ac290eb3 and which, until
+ * now, did not exist. A doc comment citing a nonexistent gate is worse than no
+ * comment: a reviewer reads "the compiler checks this" and stops checking.
+ *
+ * ── THE TWO LOCKS, AND WHY THIS IS THE ONE WORTH COMPILING ──────────────────
+ *
+ * A policy switch closes a ROUTE. It does not close an EXECUTION. A capability
+ * sitting behind `whenPolicyOpen` is therefore protected by exactly two things:
+ * the switch being absent, and the kernel refusing the kind anyway. The first is
+ * catalog DATA — one line, editable by anyone who can edit data, and a feature
+ * shipping behind data alone is one careless line from being live.
+ *
+ * So this rule enforces the half that data cannot undo: a policy-gated activity's
+ * capability must be `workflowScoped`, which means no parse can ever propose it
+ * no matter what any route says. Opening the switch then still cannot make the
+ * kind reachable from a customer sentence — it can only make a workflow ROUTE to
+ * it, where the kernel meets it with the pack's own verdict.
+ *
+ * The second lock — that the pack produces no EXECUTE — is deliberately NOT
+ * checked here, and the reason is the one the `escalatable` slot's doc gives:
+ * whether a guard executes is a fact about a function body in another package,
+ * and a synthetic probe over invented envelopes would pass green while the real
+ * behaviour drifted. That half is proved by a FIXTURE that forces the route open
+ * and asserts the kernel still refuses — behaviour, not a static claim.
+ */
+function checkPolicyGatedActivities(
+  ctx: WorkflowContext,
+  scopedKinds: ReadonlySet<string>,
+): readonly CatalogDiagnostic[] {
+  const byId = new Map<string, Readonly<Record<string, unknown>>>()
+  for (const activity of readArray(ctx.record["activities"])) {
+    const record = readRecord(activity)
+    if (isNonBlank(record["id"])) byId.set(record["id"], record)
+  }
+
+  const out: CatalogDiagnostic[] = []
+  readArray(ctx.record["route"]).forEach((step, index) => {
+    const record = readRecord(step)
+    if (!("whenPolicyOpen" in record)) return
+    // Only the OPEN arm is policy-gated. The `otherwise` arm is the SHIPPED
+    // path — it runs today, it is not behind the switch, and requiring it to be
+    // workflow-scoped would forbid a policy branch from falling back to any
+    // ordinary capability, which is exactly what the shipped arm must do.
+    readArray(record["then"]).forEach((id, armIndex) => {
+      if (!isNonBlank(id)) return
+      const capability = byId.get(id)?.["capability"]
+      if (!isNonBlank(capability) || scopedKinds.has(capability)) return
+      out.push(
+        diag(
+          ctx,
+          "policy-gated-activity-not-scoped",
+          `route[${index}].then[${armIndex}]`,
+          `is gated on the policy switch "${String(record["whenPolicyOpen"])}" and ` +
+            `routes to "${id}", whose capability "${capability}" is NOT declared ` +
+            "`workflowScoped: true`. A policy switch closes a route, not an " +
+            "execution: it is catalog DATA, so it is one edited line from being " +
+            "open, and behind it must sit a kind no parse can propose in the " +
+            "first place. Declare the capability workflow-scoped, or do not gate " +
+            "it on a policy switch.",
+          capability,
+        ),
+      )
+    })
+  })
+  return out
+}
+
 /**
  * Run the workflow-runtime-shape pass.
  *
@@ -579,6 +823,24 @@ export function runWorkflowRuntimeShapePass(
   const mutatingKinds = new Set(
     definitions
       .filter((definition) => asRecord(definition)["mutating"] === true)
+      .map((definition) => asRecord(definition)["kind"])
+      .filter(isNonBlank),
+  )
+
+  // LE2-023 — the DECLARED escalate-band set. Review-enforced, not
+  // gate-enforced; see the `escalatable` field's doc.
+  const escalatableKinds = new Set(
+    definitions
+      .filter((definition) => asRecord(definition)["escalatable"] === true)
+      .map((definition) => asRecord(definition)["kind"])
+      .filter(isNonBlank),
+  )
+
+  // LE2-023 — the access class, read off the capability table, for
+  // `policy-gated-activity-not-scoped`.
+  const scopedKinds = new Set(
+    definitions
+      .filter((definition) => asRecord(definition)["workflowScoped"] === true)
       .map((definition) => asRecord(definition)["kind"])
       .filter(isNonBlank),
   )
@@ -608,6 +870,18 @@ export function runWorkflowRuntimeShapePass(
 
     checked += WORKFLOW_COMPENSATION_OUTCOMES.length
     diagnostics.push(...checkCompensationOutcomes(ctx))
+
+    // LE2-023 — one inspection per activity for the coverage rules (each may
+    // declare one), plus the single `escalated` outcome.
+    checked += readArray(record["activities"]).length + 1
+    diagnostics.push(...checkConfirmCoverage(ctx))
+    diagnostics.push(...checkEscalatedOutcome(ctx, escalatableKinds))
+
+    // One inspection per POLICY-GATED route step.
+    checked += readArray(record["route"]).filter(
+      (step) => "whenPolicyOpen" in readRecord(step),
+    ).length
+    diagnostics.push(...checkPolicyGatedActivities(ctx, scopedKinds))
   })
 
   return { pass: PASS, checked, diagnostics }

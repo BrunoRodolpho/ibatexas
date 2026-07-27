@@ -1838,3 +1838,284 @@ describe("ordersPolicyBundle — confirmReorderLast (LE2-021)", () => {
     ).not.toBe("order.reorder.no_history")
   })
 })
+
+// ── Business: the swap-for-coupon whole-workflow confirm (LE2-023) ───────
+//
+// Driven through `adjudicate` against the REAL bundle for the same reason the
+// reorder block above is: this guard's contract is its POSITION in `business[]`
+// — above `executeW5Kinds`, which matches `order.coupon.swap.request` too — and
+// a direct call would prove the body works while saying nothing about whether it
+// is reachable.
+//
+// THE SENTENCE TEST IS THE POINT OF THIS BLOCK. The workflow declares
+// `confirm.statesFacts: ["orderAmount", "refundConsequence", "newTotal"]`, and
+// the cancel activity declares a coverage claiming the first two. The compiler
+// checks that claim against the workflow's own claim (`confirm-coverage-unstated`);
+// nothing static can check either against the guard's actual WORDS, because the
+// words live in this package. So these tests are the other half of that gate:
+// they drive the real guard and assert the real sentence carries each declared
+// fact. A copy edit here that dropped the amount would turn the coverage into a
+// lie, and this is the only thing that would notice.
+
+describe("ordersPolicyBundle — confirmSwapForCoupon (LE2-023)", () => {
+  /** A feasible, PAID swap: every ctx field the guard needs, all present. */
+  const FEASIBLE_PAID = {
+    previousOrderId: "order_prev_9",
+    previousOrderDisplayId: 2087,
+    previousOrderTotalInCentavos: 12_000,
+    previousOrderIsCancelable: true,
+    previousOrderPaymentIsSettled: true,
+    couponIsValid: true,
+    couponNewTotalInCentavos: 10_800,
+    couponCode: "BEMVINDO10",
+  }
+
+  function swapState(overrides: Partial<OrderState["ctx"]> = {}): OrderState {
+    return state({
+      cartId: null,
+      orderId: null,
+      items: undefined,
+      totalInCentavos: undefined,
+      paymentStatus: null,
+      ...overrides,
+    })
+  }
+
+  // The code rides the payload (a customer-authored slot) but the guard must
+  // never quote it — see the `couponCode` ctx field's doc. The payload here
+  // deliberately carries a DIFFERENT spelling from the ctx so the assertion
+  // below can tell the two apart.
+  const swapEnv = () => env("order.coupon.swap.request", { code: "bemvindo10" })
+
+  it("GATE 2 — the confirm sentence STATES all three declared facts", () => {
+    const decision = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), ordersPolicyBundle)
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    const prompt = (decision as { prompt?: string }).prompt ?? ""
+
+    // `orderAmount` — the projected order total, as money.
+    expect(prompt).toContain("R$ 120,00")
+    // `refundConsequence` — that the money comes back.
+    expect(prompt).toContain("reembolso")
+    // `newTotal` — what the customer pays after the route completes.
+    expect(prompt).toContain("R$ 108,00")
+  })
+
+  it("quotes the STORE's spelling of the coupon, never the payload's", () => {
+    const decision = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), ordersPolicyBundle)
+    const prompt = (decision as { prompt?: string }).prompt ?? ""
+    // ctx says BEMVINDO10, the payload said bemvindo10. The sentence a customer
+    // approves a cancellation against must not be assembled from untrusted text.
+    expect(prompt).toContain("BEMVINDO10")
+    expect(prompt).not.toContain("bemvindo10")
+  })
+
+  it("names the order by its DISPLAY id, the number a customer recognises", () => {
+    const decision = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), ordersPolicyBundle)
+    expect((decision as { prompt?: string }).prompt ?? "").toContain("#2087")
+  })
+
+  // ── The directional negative for the refund clause. ──────────────────────
+  //
+  // The clause is CONDITIONAL on `previousOrderPaymentIsSettled`, which is
+  // exactly the condition under which `gatePaidCancel` asks the question the
+  // workflow's coverage covers. So on the unpaid shape the clause must be
+  // ABSENT — we do not promise a refund that is not coming — and there is also
+  // no coverable confirm to resolve, because `gatePaidCancel` returns null.
+  // Without this test the conditional could collapse to unconditional and the
+  // GATE 2 test above would still pass.
+  it("OMITS the refund clause when the order was never PAID", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, previousOrderPaymentIsSettled: false }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    const prompt = (decision as { prompt?: string }).prompt ?? ""
+    expect(prompt).not.toContain("reembolso")
+    // …and still states the two facts that ARE true of an unpaid swap.
+    expect(prompt).toContain("R$ 120,00")
+    expect(prompt).toContain("R$ 108,00")
+  })
+
+  it("REFUSEs `order.reorder.no_history` when there is no previous order", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, previousOrderId: undefined }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.reorder.no_history",
+    )
+  })
+
+  it("REFUSEs `order.past_ponr` for an order past the point of no return", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, previousOrderIsCancelable: false }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.past_ponr",
+    )
+  })
+
+  it("REFUSEs `order.coupon.not_usable` for a coupon the store rejected", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, couponIsValid: false }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.coupon.not_usable",
+    )
+  })
+
+  // ABSENT is not the same fact as `false` (Inv 7 — "could not check" is not
+  // "not valid"), and the projection keeps them apart on purpose. They converge
+  // on ONE refusal here because the only honest sentence is about what we could
+  // establish about ourselves; see `refuseCouponNotUsable`'s doc. Asserted so
+  // the convergence is a tested decision rather than an accident of `!== true`.
+  it("REFUSEs the same way when the coupon lookup could not be MADE at all", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, couponIsValid: undefined }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.coupon.not_usable",
+    )
+  })
+
+  it("REFUSEs `order.coupon.swap.total_unknown` for a VALID but unpriceable coupon", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, couponNewTotalInCentavos: undefined }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    // Its OWN code, not `order.coupon.not_usable`: nothing is wrong with the
+    // customer's coupon, so the useful answer points them at checkout rather
+    // than at a different code.
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.coupon.swap.total_unknown",
+    )
+  })
+
+  // ── NON-VACUITY. The confirm is the only thing between the customer and an
+  // unasked CANCELLATION of a real, paid order.
+  it("NON-VACUITY: removing confirmSwapForCoupon flips the swap to EXECUTE", () => {
+    const withGuard = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), ordersPolicyBundle)
+    expect(withGuard.kind).toBe("REQUEST_CONFIRMATION")
+
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "confirmSwapForCoupon",
+    )
+    expect(businessWithoutGuard.length).toBe(ordersPolicyBundle.business.length - 1)
+
+    const withoutGuard = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), {
+      ...ordersPolicyBundle,
+      business: businessWithoutGuard,
+    })
+    // `executeW5Kinds` matches this kind and sits BELOW the confirm, so removing
+    // the confirm does not fail the kind closed — it silently executes it. That
+    // is precisely why the ordering in `business[]` is load-bearing, and why the
+    // guard's own doc says so.
+    expect(withoutGuard.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSEs an UNAUTHENTICATED swap before the confirm is ever considered", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, customerId: null as unknown as string }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).not.toBe(
+      "order.coupon.not_usable",
+    )
+  })
+})
+
+// ── LE2-023 · THE SECOND LOCK, proven behaviourally ──────────────────────────
+//
+// `order.coupon.adjust` is declared so the swap-for-coupon workflow's
+// `coupon_on_placed_order` branch can NAME a real capability while shipping
+// closed. Two independent locks keep it unexecutable, in two packages:
+//
+//   LOCK 1 (catalog)     — `workflowScoped: true`, so no parse can propose it.
+//                          Pinned in the catalog's own projection tests and in
+//                          apps/api's WORKFLOW_SCOPED_KINDS pin.
+//   LOCK 2 (this bundle)  — no guard produces EXECUTE for the kind, so the
+//                          kernel's DEFAULT REFUSE is the only verdict it can
+//                          ever receive.
+//
+// This block is lock 2, and it is a BEHAVIOURAL assertion rather than a
+// structural one on purpose. The catalog cannot see guard verdicts (the same
+// reason `escalatable` is review-enforced), so "the pack refuses it" can only be
+// established by adjudicating it. It is the force-the-route-open experiment: the
+// route branch is bypassed entirely here — the envelope is submitted directly, as
+// though the switch were open — and the kind is still refused.
+
+describe("ordersPolicyBundle — order.coupon.adjust is DECLARED AND UNEXECUTABLE (LE2-023)", () => {
+  it("REFUSEs even on the shape most likely to succeed", () => {
+    // Authenticated, owning a live cart, a valid-looking code — everything a
+    // coupon apply would need. `order.coupon.apply` EXECUTEs on this state; this
+    // kind must not.
+    const decision = adjudicate(
+      env("order.coupon.adjust", { cartId: "cart-1", orderId: "order-1", code: "BEMVINDO10" }),
+      state({ orderId: "order-1", fulfillmentStatus: "pending", paymentStatus: "paid" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("is refused by the DEFAULT DENY, not by an incidental guard", () => {
+    // The distinction matters for the lock's durability. A refusal from some
+    // state guard would evaporate the moment a caller supplied whatever that
+    // guard wanted; a DEFAULT-DENY refusal cannot be satisfied by any payload or
+    // state at all, because no guard in the bundle claims the kind. So this
+    // asserts the SHAPE of the protection, not merely its current effect.
+    const decision = adjudicate(
+      env("order.coupon.adjust", { cartId: "cart-1", orderId: "order-1", code: "BEMVINDO10" }),
+      state({ orderId: "order-1", fulfillmentStatus: "pending", paymentStatus: "paid" }),
+      ordersPolicyBundle,
+    )
+    // `default_deny` is the KERNEL's own code, not this pack's declared
+    // `order.default.deny` — which is the stronger reading: the refusal is not
+    // authored anywhere in this bundle at all. No guard here has an opinion
+    // about the kind, so the kernel falls all the way through to its
+    // default-REFUSE floor. That floor cannot be satisfied by any payload or
+    // state, which is precisely the property the lock needs.
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe("default_deny")
+  })
+
+  it("CONTROL: the same state EXECUTEs the real cart coupon apply", () => {
+    // Without this the two cases above could pass because the state was wrong
+    // rather than because the kind is unexecutable — the vacuity that makes a
+    // negative test worthless. `order.coupon.apply` is the nearest neighbour and
+    // the capability this route actually uses.
+    const decision = adjudicate(
+      env("order.coupon.apply", { cartId: "cart-1", code: "BEMVINDO10" }),
+      state({ orderId: null, fulfillmentStatus: undefined, paymentStatus: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("appears in NO execute-producing kind set", () => {
+    // The structural complement of the behavioural cases: a future edit that
+    // adds the kind to an EXECUTE producer would flip the two REFUSE assertions
+    // above, but this one says WHY in one line at the point of the mistake.
+    const decision = adjudicate(
+      env("order.coupon.adjust", {}),
+      state({}),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).not.toBe("EXECUTE")
+    expect(decision.kind).not.toBe("REQUEST_CONFIRMATION")
+  })
+})

@@ -60,14 +60,37 @@ beforeEach(() => {
 });
 
 describe("loadPreviousOrder — the happy path", () => {
-  it("projects the newest owned order down to id, displayId, total and lines", async () => {
-    rowsFake.rows = [row()];
+  it("projects the newest owned order down to id, displayId, total, lines and statuses", async () => {
+    rowsFake.rows = [
+      row({ paymentStatus: "paid", fulfillmentStatus: "confirmed" }),
+    ];
+    // `toEqual` on the WHOLE object rather than field-by-field, deliberately: it
+    // is what makes a silently-widened projection a test failure. LE2-023 grew
+    // this shape by two fields and this assertion is where that had to be said
+    // out loud.
     await expect(loadPreviousOrder(CUSTOMER)).resolves.toEqual({
       orderId: "order_prev_1",
       displayId: 1042,
       totalInCentavos: 12_500,
       items: [{ title: "Costela", quantity: 2 }],
+      // LE2-023 — copied VERBATIM, never interpreted. What "paid" means for a
+      // cancel is `gatePaidCancel`'s judgement, and this module deliberately
+      // holds no opinion about it.
+      paymentStatus: "paid",
+      fulfillmentStatus: "confirmed",
     });
+  });
+
+  it("reads an UNREADABLE status onto the safe side rather than trusting the column", async () => {
+    // The projection columns are typed, but a row written by an older projector
+    // can carry anything. Both fallbacks land where nothing is promised: `null`
+    // payment status is not in any refund-implying set, and the empty
+    // fulfillment status is in no PONR set — so a downstream derivation reads
+    // "no refund owed" and "not cancelable", never the reverse.
+    rowsFake.rows = [row({ paymentStatus: 42, fulfillmentStatus: undefined })];
+    const previous = await loadPreviousOrder(CUSTOMER);
+    expect(previous?.paymentStatus).toBeNull();
+    expect(previous?.fulfillmentStatus).toBe("");
   });
 
   it("asks for exactly ONE row — 'the last order' is a limit, not a client-side sort", async () => {
