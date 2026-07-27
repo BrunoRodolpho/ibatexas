@@ -354,3 +354,94 @@ describe("BKL-189 — disambiguation-candidate producer (per-turn ledger-keyed s
     expect("disambiguationCandidates" in out).toBe(false);
   });
 });
+
+// ── BKL-270 — the dietary-posture gate ABORTS BOOT ──────────────────────────
+//
+// The gap this closes, stated plainly: before this test, NOTHING proved a registry
+// gate actually stops the pipeline from booting. The existing coverage proves only
+// that the assert FUNCTION throws when handed a bad table — a different claim, and
+// the weaker one. A gate wired in the wrong place, or wrapped in a try/catch, passes
+// every such test while serving traffic.
+//
+// So this drives the REAL composition root (`buildClaimsSeams` — the same call
+// `claustrum-bootstrap.ts` makes) with a registry that violates the gate, and pins
+// that the seams are never returned. The PLANE scope is the injection point: it is
+// the one registry a caller supplies, so it can be made bad without mutating a
+// module constant that every other test in the process shares.
+
+describe("BKL-270 — the dietary-posture boot gate is FAIL-CLOSED at the composition root", () => {
+  const readSpec = (key: string, posture?: string): unknown => ({
+    kind: "read_claim",
+    ...(posture === undefined ? {} : { dietaryPosture: posture }),
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key,
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+  });
+
+  const planeWith = (specs: Record<string, unknown>): never =>
+    ({
+      claimScope: { types: Object.keys(specs), specs },
+      templates: {},
+      gatherReads: () => [],
+    }) as never;
+
+  it("REFUSES TO BOOT when a plane read spec declares no dietaryPosture", () => {
+    expect(() =>
+      buildClaimsSeams({
+        planner: stubPlanner,
+        env: ON_ENV,
+        plane: planeWith({ OPS_UNDECLARED: readSpec("ops:undeclared") }),
+      }),
+    ).toThrow(/OPS_UNDECLARED/);
+  });
+
+  it("the refusal names the field and the ticket, so the fix is obvious from the log", () => {
+    expect(() =>
+      buildClaimsSeams({
+        planner: stubPlanner,
+        env: ON_ENV,
+        plane: planeWith({ OPS_UNDECLARED: readSpec("ops:undeclared") }),
+      }),
+    ).toThrow(/dietaryPosture[\s\S]*BKL-270/);
+  });
+
+  it("NON-VACUITY: declaring the posture gets the SAME plane PAST this gate", () => {
+    // Without this control the tests above would pass if `buildClaimsSeams` threw for
+    // any unrelated reason — a malformed plane shape, say.
+    //
+    // The synthetic type still fails a LATER gate (LE2-012 render drift: it has no
+    // template), and that is precisely what makes the control sharp — it proves the
+    // posture gate specifically STOPPED being the thing that rejects this plane, and
+    // it incidentally pins the gate ORDER: posture is checked before render drift.
+    let message = "";
+    try {
+      buildClaimsSeams({
+        planner: stubPlanner,
+        env: ON_ENV,
+        plane: planeWith({ OPS_DECLARED: readSpec("ops:declared", "answer-anyway") }),
+      });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toMatch(/dietaryPosture/);
+    expect(message).toMatch(/render drift/);
+  });
+
+  it("does NOT run when the pipeline is disabled — no seams exist, so there is nothing to protect", () => {
+    expect(() =>
+      buildClaimsSeams({
+        planner: stubPlanner,
+        env: OFF_ENV,
+        plane: planeWith({ OPS_UNDECLARED: readSpec("ops:undeclared") }),
+      }),
+    ).not.toThrow();
+  });
+});

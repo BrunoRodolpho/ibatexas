@@ -18,6 +18,22 @@
 //   vegano/vegetariano-only renders REMAIN out too (scope-creep firewall).
 //   Dietary questions keep self-report + handoff."
 //
+//   ┌─ SUPERSEDED IN PART, 2026-07-27 (owner ruling, BKL-270 Phase 1) ────────┐
+//   │ BKL-171's vegano/vegetariano clause is REVERSED by **BKL-214** (PR      │
+//   │ #358), which shipped exactly those renders one day after BKL-171 was    │
+//   │ ratified. Until now that divergence was undocumented — the runtime      │
+//   │ rendered vegano/vegetariano lists while the ratified row said they      │
+//   │ "REMAIN out", and the note below merely observed the two disagreeing.   │
+//   │ The owner has now recorded BKL-214 as the WRITTEN REVERSAL that         │
+//   │ BKL-143's "reopening requires an explicit owner reversal in writing"    │
+//   │ demands. Shipped behaviour STANDS and nothing changes here.             │
+//   │                                                                         │
+//   │ STILL IN FORCE, and NOT reversed: the `sem_gluten` / `sem_lactose`      │
+//   │ half. A "sem glúten" list is a "não contém glúten" assurance by another │
+//   │ name, and that remains forbidden. The reversal is narrow — pure         │
+//   │ PREFERENCE tags only, never a restriction.                              │
+//   └─────────────────────────────────────────────────────────────────────────┘
+//
 // Those three rows are the ENTIRE policy content of this pass. It adds no
 // rule of its own, and it deliberately does not restate the rulings' runtime
 // half (which claim renders exist, when a turn abstains, when it pages staff)
@@ -62,10 +78,16 @@
 //
 // A dietary edge could in principle be a pure PREFERENCE tag rather than a
 // restriction, and the runtime does draw that line (vegetariano/vegano render;
-// sem_gluten/sem_lactose abstain). The catalog does not: BKL-171 ratified
-// "vegano/vegetariano-only renders REMAIN out too (scope-creep firewall)", so
-// the allowlist this pass would consult is EMPTY BY RATIFICATION and is not
-// built. Encoding an empty allowlist as an allowlist would invite the next
+// sem_gluten/sem_lactose abstain). The catalog still does not — but note the
+// REASON changed on 2026-07-27 and this paragraph would otherwise mislead.
+//
+// It used to be "BKL-171 ratified that vegano/vegetariano renders REMAIN out",
+// which is no longer true: BKL-214 is now the recorded written reversal of that
+// clause (see the box above). The allowlist stays EMPTY AND UNBUILT anyway, for
+// a reason that survives the reversal intact: a capability CLAIM EDGE is not a
+// render. BKL-214 licensed the RUNTIME to render a preference-tag list off a
+// first-party facet; it licensed nothing about letting a capability's success
+// IMPLY a dietary attribute, which is the only thing this pass rules on. Encoding an empty allowlist as an allowlist would invite the next
 // author to append to it without an owner ruling, which is the exact
 // scope-creep the firewall names. Adding a permitted dietary edge is a code
 // change to this file, reviewed against a written owner reversal.

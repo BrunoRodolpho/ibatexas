@@ -340,18 +340,14 @@ export function canonicalizeScopedClaimType(
 }
 
 /**
- * The per-registry-type evidence + claim SCHEMA the planner parameterizes into a
- * `CandidateClaim.soundness` (`MinimalClaim`). Transcribed from the SDD §E
- * worked types (the §5 conjuncts each field feeds): ownership, freshness,
- * source-integrity floor, provenance, and (for actions) the `action_claim`
- * kind. The planner only SELECTS the type + binds runtime params (subject,
- * resources, value); the evidence SHAPE is fixed here — the model never authors
- * it (SDD §O#3 "no model-authored …"; the soundness predicate quantifies over
- * THIS typed structure, never prose — §R topology condition 2).
+ * The evidence fields EVERY claim spec carries, read or action (SDD §E worked
+ * types): ownership, freshness, source-integrity floor, provenance. Not exported
+ * — callers use {@link RegistryClaimSpec}, and the two variants below add the
+ * discriminant plus whatever is specific to their kind (BKL-270 split this out of
+ * the former single `RegistryClaimSpec` interface so `dietaryPosture` could be
+ * REQUIRED on reads without becoming a meaningless optional on actions).
  */
-export interface RegistryClaimSpec {
-  /** The §5 claim kind — drives C4 (`action_claim` ⟹ outcome-confirmed). */
-  readonly kind: "read_claim" | "action_claim";
+interface ClaimSpecBase {
   /** The C2 source-integrity FLOOR this type's evidence must meet-or-exceed. */
   readonly minSourceIntegrity: EvidenceRequirement["sourceIntegrity"];
   /** The `∀ e ∈ requiredEvidence` set (C0 demands it be non-empty). */
@@ -420,6 +416,107 @@ export interface RegistryClaimSpec {
 }
 
 /**
+ * BKL-270 — the RATIFIED per-family answer to a DIET-QUALIFIED read ask ("o que
+ * combina com brisket QUE SEJA SEM GLÚTEN?", "SOU DIABÉTICO, quanto custa o
+ * brownie?"). Owner-signed 2026-07-27 off the Phase-1 posture table; the values
+ * are a REVIEWED decision per family, not a heuristic.
+ *
+ * WHY THIS EXISTS: LE2-029 measured that the BKL-143 forbidden implication can
+ * arrive with NO dietary sentence uttered — the customer asks a qualified
+ * question, the system answers the UNQUALIFIED part with a grounded fact, and
+ * the answer (read as a response to the question actually asked) carries the
+ * qualifier's satisfaction. Nothing lied; the customer still reasonably hears an
+ * assurance. Before this field the protection was `ALLERGEN_FAMILY_RE` gates
+ * HAND-APPLIED per read family, so every NEW family was one omission from a gap.
+ *
+ *   - `abstain`              — the render NAMES, SELECTS or DESCRIBES food, so a
+ *                              restrictive qualifier turns the answer into a
+ *                              composition/suitability assertion. The READ is
+ *                              suppressed ⇒ UNKNOWN ⇒ the ratified BKL-184
+ *                              self-report + staff handoff.
+ *   - `answer-anyway`        — the render is a clock window, an address, a
+ *                              delivery zone, a money state, a status enum or a
+ *                              count. Under even the most restrictive reading it
+ *                              asserts nothing about food, and abstaining would
+ *                              cost real helpfulness for no safety gain.
+ *   - `answer-with-abstention` — the render is the customer's OWN prior act, so
+ *                              the FACT is theirs to have, but the dietary FILTER
+ *                              is not ours to answer. The read runs and renders,
+ *                              AND the abstain + handoff sentence is appended.
+ *                              `CART_CONTENTS` only (owner ruling 2026-07-27).
+ *
+ * THE ANSWER-ANYWAY SET IS SAFE ONLY AS A SET (the containment argument): every
+ * family that could convert a logistics answer into a FOOD decision is in the
+ * abstain set, so a customer cannot get from "we deliver to your CEP" to eating
+ * something unsafe without asking a MENU_* or CART_CONTENTS question — all of
+ * which abstain. Flipping any `abstain` row to `answer-anyway` OPENS that ring and
+ * answer-anyway rows must be re-argued; they are not independent.
+ *
+ * NOT PER-QUALIFIER, DELIBERATELY: the abstain trigger is the system's inability
+ * to ATTEST a composition fact, and that inability is identical across allergy /
+ * diabetes / celiac — the catalog stores an owner-attested allergens array (which
+ * BKL-143 ruled INSUFFICIENT to license a render) and stores nothing at all about
+ * sugar. A per-qualifier axis would produce 22 rows with identical columns. It
+ * becomes necessary the day an owner-attested nutrition field lands for ONE class
+ * and not another; until that data exists the split has no referent.
+ */
+export type DietaryPosture = "abstain" | "answer-anyway" | "answer-with-abstention";
+
+/**
+ * A READ claim spec. `dietaryPosture` is REQUIRED and non-optional, so a new read
+ * family that forgets to declare one is a COMPILE ERROR — there is no state in
+ * which an undeclared read family can boot, and therefore no migration window
+ * (the BKL-270 omission class, closed structurally rather than by review).
+ */
+export interface ReadClaimSpec extends ClaimSpecBase {
+  /** The §5 claim kind — drives C4 (`action_claim` ⟹ outcome-confirmed). */
+  readonly kind: "read_claim";
+  /** BKL-270 — the ratified answer to a diet-qualified ask. See {@link DietaryPosture}. */
+  readonly dietaryPosture: DietaryPosture;
+}
+
+/**
+ * An ACTION claim spec. Carries NO `dietaryPosture`: the field answers "what do we
+ * do when someone asks this READ with a dietary qualifier", and an action claim is
+ * not a read — there is no grounded fact to withhold. Declaring one here would be
+ * a field nobody consumes, i.e. exactly the kind of decorative declaration that
+ * rots. The union makes that unrepresentable rather than merely discouraged.
+ */
+export interface ActionClaimSpec extends ClaimSpecBase {
+  /** The §5 claim kind — drives C4 (`action_claim` ⟹ outcome-confirmed). */
+  readonly kind: "action_claim";
+}
+
+/**
+ * The per-registry-type evidence + claim SCHEMA the planner parameterizes into a
+ * `CandidateClaim.soundness` (`MinimalClaim`). Transcribed from the SDD §E worked
+ * types (the §5 conjuncts each field feeds): ownership, freshness,
+ * source-integrity floor, provenance, and (for actions) the `action_claim`
+ * kind. The planner only SELECTS the type + binds runtime params (subject,
+ * resources, value); the evidence SHAPE is fixed here — the model never authors
+ * it (SDD §O#3 "no model-authored …"; the soundness predicate quantifies over
+ * THIS typed structure, never prose — §R topology condition 2).
+ */
+export type RegistryClaimSpec = ReadClaimSpec | ActionClaimSpec;
+
+/**
+ * BKL-270 — a read spec MINUS its posture: exactly what the claimdef compiler can
+ * honestly produce.
+ *
+ * `compileClaimDefinition` lives in the published `@adjudicate/core` and projects a
+ * `.claim.ts` source into a registry-spec row. It has no concept of
+ * `dietaryPosture`, so a generated row CANNOT carry one, and making the generated
+ * file assert the full {@link ReadClaimSpec} would be a lie the compiler cannot
+ * honour. The generated module therefore satisfies THIS type, and the posture — a
+ * ratified OWNER decision, not a mechanical projection — is spliced in at the
+ * `REGISTRY_SPECS` site where a human reviews it beside its siblings.
+ *
+ * The split is the honest one: the compiler owns the evidence shape, the owner owns
+ * the posture, and neither can silently supply the other's half.
+ */
+export type GeneratedReadClaimSpec = Omit<ReadClaimSpec, "dietaryPosture">;
+
+/**
  * The representative per-type registry schema (SDD §E worked types). Keyed by
  * the closed {@link RegistryClaimType}, so adding a type without its schema is a
  * compile error (`satisfies Record<RegistryClaimType, …>`) — the registry and
@@ -428,6 +525,13 @@ export interface RegistryClaimSpec {
 export const REGISTRY_SPECS = {
   MENU_ITEM_ALLERGENS: {
     kind: "read_claim",
+    // BKL-270 — DOCUMENTATION, zero behaviour change: this type has NO
+    // VALIDATED_TEMPLATES entry (slot-grammar.ts), so a validated claim already
+    // falls to the template-undefined branch and abstains unconditionally. The
+    // declaration makes BKL-123's ratification LEGIBLE here, so a future author
+    // who adds a template trips a contradiction instead of silently un-ratifying
+    // a closed owner decision.
+    dietaryPosture: "abstain",
     // SDD §E: free-text "sem alérgenos" must fail → the floor is `structured`.
     minSourceIntegrity: "structured",
     requiredEvidence: [
@@ -449,6 +553,11 @@ export const REGISTRY_SPECS = {
   // owner-scoped (no perResourceKey; keys are never `:{subject}`-parameterized).
   STORE_HOURS: {
     kind: "read_claim",
+    // BKL-270 — renders a CLOCK WINDOW (hoursText, "11h-15h / 18h-23h"). The
+    // canonical arguably-safe case: a restrictive reading ("o horario pra quem
+    // come sem lactose") is strained past plausibility, and refusing to tell a
+    // diabetic when the restaurant opens is a pure loss with no safety gain.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "trusted_service",
     requiredEvidence: [
       {
@@ -515,6 +624,10 @@ export const REGISTRY_SPECS = {
   // an independent type keeps the two degrade paths decoupled.
   STORE_HOURS_FOR_DATE: {
     kind: "read_claim",
+    // BKL-270 — the date-keyed twin of STORE_HOURS: same schedule source, same
+    // clock-window content, same argument. (Never driven by the audit; reasoned
+    // from the render fact.)
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "trusted_service",
     requiredEvidence: [
       {
@@ -561,9 +674,25 @@ export const REGISTRY_SPECS = {
   // come from `./claimdefs/store-open-now.generated.ts`, compiled from the single
   // `store-open-now.claim.ts` source. This one line REPLACES the ~30-line handwritten
   // stanza (and can never drift from the template / closure, which are generated too).
-  STORE_OPEN_NOW: STORE_OPEN_NOW_REGISTRY_SPEC,
+  // BKL-270 — the posture is SPLICED here rather than declared in the .claim.ts
+  // source, and that is deliberate: this spec is @generated under a
+  // source-checksum drift guard, and `compileClaimDefinition` lives in the
+  // published @adjudicate/core with no concept of `dietaryPosture`, so it cannot
+  // emit the field. Splicing keeps the generated file byte-pure and its checksum
+  // intact while still satisfying the required-field union. `answer-anyway`: the
+  // render is a CLOSED 3-MEMBER enum (almoco|jantar|fechado) — three time-of-day
+  // words cannot carry a dietary proposition under any reading.
+  STORE_OPEN_NOW: {
+    ...STORE_OPEN_NOW_REGISTRY_SPEC,
+    dietaryPosture: "answer-anyway",
+  },
   ORDER_FULFILLMENT_STAGE: {
     kind: "read_claim",
+    // BKL-270 — renders a CLOSED 7-MEMBER ENUM (pendente..entregue|cancelado):
+    // the logistics state of the customer's own order. Withholding it from
+    // someone who disclosed an allergy is actively harmful — that is exactly the
+    // customer who needs to know whether the food has already left.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -615,6 +744,9 @@ export const REGISTRY_SPECS = {
   },
   PAYMENT_STATUS: {
     kind: "read_claim",
+    // BKL-270 — renders a CLOSED 12-MEMBER ENUM. Money state: no food, no product
+    // names, nothing a dietary qualifier can attach to.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "first_party_verified",
     requiredEvidence: [
       {
@@ -660,6 +792,13 @@ export const REGISTRY_SPECS = {
   // pre-date this row and needed no change to pick it up.
   RESERVATION_STATUS: {
     kind: "read_claim",
+    // BKL-270 — renders a status enum plus date/time/party integers. No food.
+    // CAVEAT (borderline B5): a diet-qualified reservation ask is often TWO spans
+    // ("a minha reserva esta confirmada? preciso de menu sem lactose"). This
+    // posture answers the RESERVATION span only; the dietary span still needs its
+    // own disposition under SO15 completeness — answer-anyway must never mean
+    // "silently drop the diet span".
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -715,6 +854,15 @@ export const REGISTRY_SPECS = {
   // (FE-D04 / BKL-149).
   CART_CONTENTS: {
     kind: "read_claim",
+    // BKL-270 — THE ONLY answer-with-abstention row (owner ruling 2026-07-27).
+    // itemsSummaryText NAMES PRODUCTS, so under "o que tem no meu carrinho QUE
+    // SEJA SEM GLUTEN?" returning the summary would assert those specific items
+    // are safe — food the customer is about to eat, the highest-stakes assertion
+    // in the registry. But the cart is the customer's OWN prior act, and refusing
+    // to show it is a severe degradation for the very customer who needs to check.
+    // So: render the cart (the fact is theirs to have) AND append the ratified
+    // BKL-184 abstain + handoff (the dietary FILTER is not ours to answer).
+    dietaryPosture: "answer-with-abstention",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -764,6 +912,12 @@ export const REGISTRY_SPECS = {
   // the literal "vazio") — never model-authored.
   CART_EMPTY: {
     kind: "read_claim",
+    // BKL-270 — the bound scalar is the hardcoded literal "vazio". The safest
+    // render in the registry: true under every reading of every qualifier, and it
+    // names no food. NOTE its complement CART_CONTENTS takes a DIFFERENT posture —
+    // the pair is splittable only because the two use DISTINCT evidence keys
+    // (cart_empty vs cart_contents), which the boot gate's shared-key check pins.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -813,6 +967,11 @@ export const REGISTRY_SPECS = {
   // tautological AND inert (an always-absent key never fires; demote-only safety holds).
   ORDER_HISTORY: {
     kind: "read_claim",
+    // BKL-270 — looks food-shaped and is NOT: composeOrderHistorySummary renders
+    // order display numbers, status enums and money, with NO item names. Nothing
+    // about food reaches the customer, so a restrictive qualifier has nothing to
+    // attach to.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -851,6 +1010,9 @@ export const REGISTRY_SPECS = {
   // here would be tautological). Declared-unread, mirroring cart_cleared.
   PAYMENT_HISTORY: {
     kind: "read_claim",
+    // BKL-270 — money, method, status enum, bounded to the most recent N. Same
+    // argument as ORDER_HISTORY with even less surface.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -885,6 +1047,13 @@ export const REGISTRY_SPECS = {
   // honest UNKNOWN, never an arbitrary product.
   MENU_ITEM_PRICE: {
     kind: "read_claim",
+    // BKL-270 — price is not food content, but the failure here is WORSE than
+    // implication: it is SUBJECT MISRESOLUTION. Asked "quanto custa o brownie sem
+    // lactose?" the resolver resolves the ORDINARY brownie and prices that, so the
+    // answer both asserts a sem-lactose variant exists and attaches a real price to
+    // a product that is not the one asked about. Highest helpfulness cost of any
+    // abstain (price is the most-asked read) — accepted by the owner as drafted.
+    dietaryPosture: "abstain",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -927,6 +1096,12 @@ export const REGISTRY_SPECS = {
   // `menu:item_unpublished` falsifier disposition as MENU_ITEM_PRICE.
   MENU_ITEM_CONTENTS: {
     kind: "read_claim",
+    // BKL-270 — contentsText is the owner-authored free-text product blurb, the
+    // ONLY scalar in the registry that can name ingredients verbatim. Under a
+    // dietary qualifier it reads as an ingredient assurance — and a blurb is WEAKER
+    // evidence than the attested allergens array BKL-143 already ruled insufficient.
+    // Gate shipped by BKL-273/#441; this declaration makes it registry-driven.
+    dietaryPosture: "abstain",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -959,6 +1134,15 @@ export const REGISTRY_SPECS = {
   // ABSENT evidence → honest UNKNOWN (never a fabricated "we have vegetarian options").
   MENU_DIETARY: {
     kind: "read_claim",
+    // BKL-270 — the sentence is ALREADY a composition statement about food ("estas
+    // opcoes veganas"), so a second dietary qualifier compounds two attribute
+    // claims the catalog can attest to only one of. Gate shipped by BKL-273/#441.
+    // POLICY NOTE (BKL-270 borderline B6, owner-ruled 2026-07-27): BKL-171 ratified
+    // that vegano/vegetariano-only renders stay OUT; BKL-214 (PR #358) then shipped
+    // exactly those renders. The owner has recorded BKL-214 as the WRITTEN REVERSAL
+    // of BKL-171 — the shipped behaviour stands, and the reversal is now documented
+    // rather than an undocumented divergence. This posture is correct either way.
+    dietaryPosture: "abstain",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -992,6 +1176,11 @@ export const REGISTRY_SPECS = {
   // menu claims.
   MENU_OVERVIEW: {
     kind: "read_claim",
+    // BKL-270 — renders titles and prices with no descriptions, so no INDIVIDUAL
+    // item is described; the implication lives in the LIST'S RESPONSIVENESS. Under
+    // "o que tem no cardapio sem lactose?" the returned list IS the claimed
+    // sem-lactose menu. Gate shipped by BKL-273/#441.
+    dietaryPosture: "abstain",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -1038,6 +1227,11 @@ export const REGISTRY_SPECS = {
   // change event could wire the read.
   STORE_INFO: {
     kind: "read_claim",
+    // BKL-270 — infoText is address + parking BY CONTRACT (store.metadata.address /
+    // .parking), so no product-content path exists. CONDITIONAL (borderline B4): if
+    // store metadata ever carries dietary marketing copy this row must be revisited,
+    // because the render would then pass owner prose through to a diet-qualified ask.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -1082,6 +1276,12 @@ export const REGISTRY_SPECS = {
   // INDEPENDENT signal (a zone-events stream / the Redis invalidation pub-sub).
   DELIVERY_COVERAGE: {
     kind: "read_claim",
+    // BKL-270 — renders a zone name, integer centavos and integer minutes. A
+    // delivery zone is store policy about GEOGRAPHY, not food. Borderline B3 ("voces
+    // entregam comida sem gluten no CEP X?" is a product-existence question in
+    // delivery clothing) resolved by the containment ring: the follow-up necessarily
+    // hits an abstaining MENU_* family.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -1117,6 +1317,9 @@ export const REGISTRY_SPECS = {
   // check" is never "we don't deliver").
   DELIVERY_NO_COVERAGE: {
     kind: "read_claim",
+    // BKL-270 — a NEGATIVE about geography. Carries the least dietary implication of
+    // any row: it declines to serve, which cannot endorse anything.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -1157,6 +1360,9 @@ export const REGISTRY_SPECS = {
   // stays for a future INDEPENDENT signal (a promotion-events stream).
   COUPON_VALID: {
     kind: "read_claim",
+    // BKL-270 — a promotion record's own code and discount terms. Money/policy, no
+    // food.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -1193,6 +1399,9 @@ export const REGISTRY_SPECS = {
   // (Inv 7: "could not check" is never "your coupon is invalid").
   COUPON_INVALID: {
     kind: "read_claim",
+    // BKL-270 — a negative about a code, and it states NO reason by design. Nothing
+    // to endorse.
+    dietaryPosture: "answer-anyway",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -1232,6 +1441,12 @@ export const REGISTRY_SPECS = {
   // catching zero staleness.
   MENU_PAIRINGS: {
     kind: "read_claim",
+    // BKL-270 — THE RATIFIED ANCHOR. Renders the hand-authored 10-edge TASTE graph;
+    // under a dietary qualifier the house's suggestion reads as a house
+    // recommendation FOR THAT DIET, with no staff in the loop. LE2-029 measured the
+    // full list rendering for "sem gluten" and closed it; this declaration makes the
+    // existing read-guard registry-driven instead of hand-applied.
+    dietaryPosture: "abstain",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -1267,6 +1482,9 @@ export const REGISTRY_SPECS = {
   // NEITHER key → honest UNKNOWN.
   MENU_SUBSTITUTIONS: {
     kind: "read_claim",
+    // BKL-270 — same authored graph as MENU_PAIRINGS, and the frame is if anything
+    // stronger: "a casa indica" is explicitly an endorsement verb.
+    dietaryPosture: "abstain",
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {

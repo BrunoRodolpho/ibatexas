@@ -64,7 +64,14 @@ import {
   COUPON_VALID_KEY,
   resolveCouponValidity,
 } from "./coupon-validity-resolver.js";
-import { classifyRequestSpans } from "./required-claim-decomposer.js";
+import {
+  classifyRequestSpans,
+  isDietQualifiedAsk,
+} from "./required-claim-decomposer.js";
+import {
+  buildDietarySuppressionIndex,
+  isDietarySuppressedKey,
+} from "./dietary-posture.js";
 
 /**
  * Map the read-layer 2-value {@link LedgerTaint} onto the 3-value
@@ -1150,11 +1157,51 @@ export function createIbatexasInvestigator(
 ): InvestigatorPort {
   const gatherReads = deps.gatherReads ?? createFirstPartyTurnReads();
   const now = deps.now ?? (() => Date.now());
+  // BKL-270 — derived from the registry ONCE per investigator, not per turn: the
+  // registry is a module constant, so the set cannot change between turns, and a
+  // per-turn rebuild would put a loop over every spec on the hot path of every read.
+  // Scoped to the CUSTOMER registry deliberately: the three ops reads all declare
+  // `answer-anyway`, so they contribute no suppressed keys, and scoping to the wider
+  // plane here would be a no-op that implied otherwise.
+  const dietarySuppressedKeys = buildDietarySuppressionIndex();
 
   return {
     async investigate(input: InvestigateInput): Promise<void> {
       const { ledger } = input;
-      const reads = await gatherReads(input);
+      const gathered = await gatherReads(input);
+
+      // ── BKL-270: the registry-declared DIETARY-POSTURE guard, on the READ ────
+      //
+      // When the turn NAMES a dietary restriction, drop every read whose evidence
+      // key is required only by claim types declaring `dietaryPosture: "abstain"`.
+      // Nothing is recorded ⇒ the kernel resolves the key ABSENT ⇒ the claim yields
+      // UNKNOWN ⇒ the renderer emits the ratified BKL-184 self-report + staff
+      // handoff. Exactly the LE2-029 / BKL-273 shape, but driven by the registry
+      // instead of hand-applied per family — which is the whole point of the ticket:
+      // before this, every NEW read family was one omission away from a leak.
+      //
+      // THREE placement decisions, each deliberate:
+      //
+      //   · HERE and not in `createFirstPartyTurnReads` — the ops plane's gatherer
+      //     UNIONS its own reads onto the customer gatherer's output
+      //     (`ops-claim-reads.ts`), so a guard inside the customer gatherer would
+      //     silently miss every `ops:*` read. This is the one seam both planes pass
+      //     through.
+      //   · BEFORE the settle below, not in the write loop — a suppressed read must
+      //     never EXECUTE. Running it and discarding the value would still hit the
+      //     catalog egress and still populate the per-turn memos, which is precisely
+      //     what BKL-273 was careful to avoid.
+      //   · On the READ, never on the SPAN — the span still fires, so the question
+      //     stays inside §O#15 completeness. LE2-029 measured the alternative: guard
+      //     the span and the turn falls off the deterministic path, whereupon the
+      //     responder authors the dietary prose itself. That negative result is
+      //     carried, not rediscovered.
+      //
+      // `answer-with-abstention` keys are NOT here (see `buildDietarySuppressionIndex`):
+      // CART_CONTENTS renders, and appends its abstention at the copy layer.
+      const reads = isDietQualifiedAsk(input.cognition.perception.text)
+        ? gathered.filter((r) => !isDietarySuppressedKey(r.key, dietarySuppressedKeys))
+        : gathered;
 
       // The reads are INDEPENDENT — each hits its own owner-scoped resource and
       // none reads the ledger or another read's result (the shared order/schedule

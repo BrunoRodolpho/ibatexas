@@ -6,7 +6,7 @@
 // projection of it computed by @adjudicate/core compileClaimDefinition. A boot/CI
 // drift guard (./__tests__/generated-drift.test.ts) fail-closes if this file diverges.
 
-import type { RegistryClaimSpec, RegistryClaimType } from "../claim-registry.js";
+import type { GeneratedReadClaimSpec, RegistryClaimType } from "../claim-registry.js";
 import type { Template } from "../slot-grammar.js";
 import type { ClaimDefinition } from "@adjudicate/core";
 
@@ -40,7 +40,7 @@ export const STORE_OPEN_NOW_REGISTRY_SPEC = {
       "mealPeriod"
     ]
   }
-} satisfies RegistryClaimSpec;
+} satisfies GeneratedReadClaimSpec;
 
 /** (3) GENERATED render template (proposition slots bound 1:1 to self + field). */
 export const STORE_OPEN_NOW_TEMPLATE = {

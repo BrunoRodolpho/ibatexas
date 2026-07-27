@@ -164,8 +164,15 @@ export const REQUIRED_CLAIM_CLOSURE = {
   MENU_OVERVIEW_Q: ["MENU_OVERVIEW"],
   // BKL-214 — a dietary-PREFERENCE question ("tem opção vegetariana?") requires the
   // MENU_DIETARY claim. Its own span, no unrelated span force-requires it, so it
-  // auto-enrols into RELEVANCE_GOVERNED_TYPES like the other menu claims. Allergen-
-  // adjacent diets (glúten/lactose) never reach this span (ALLERGEN_FAMILY_RE gate).
+  // auto-enrols into RELEVANCE_GOVERNED_TYPES like the other menu claims.
+  //
+  // BKL-273 CORRECTION (this comment used to read "allergen-adjacent diets never
+  // reach this span (ALLERGEN_FAMILY_RE gate)" — that has been FALSE since PR #441):
+  // the span condition was REMOVED and the guard moved to the READ, so a diet-
+  // qualified ask now DOES reach this span, on purpose. Keeping the span mapped is
+  // what holds the question inside §O#15 completeness; the read then abstains
+  // (BKL-270 `dietaryPosture`), which is the LE2-029 negative result honoured rather
+  // than the span being suppressed.
   MENU_DIETARY_Q: ["MENU_DIETARY"],
   // BKL-136 — a store-location/parking question requires ONLY its own PUBLIC claim
   // (like the menu spans). Absent/blank store metadata → ABSENT evidence → honest
@@ -271,6 +278,124 @@ const ALLERGEN_FAMILY_RE =
 /** BKL-184 — does this request text carry allergen-family phrasing? Pure. */
 export function isAllergenFamilyAsk(text: string): boolean {
   return ALLERGEN_FAMILY_RE.test(text.toLowerCase());
+}
+
+/**
+ * BKL-270 — the NON-ALLERGEN dietary-condition vocabulary: the stems a customer
+ * uses to name a condition that makes a grounded FOOD answer unsafe, which the
+ * allergen net above does not carry.
+ *
+ * ── WHY A SECOND CONSTANT AND NOT A WIDER `ALLERGEN_FAMILY_RE` ──────────────
+ *
+ * This is the load-bearing decision of the ticket, so it is written down here
+ * rather than in a PR nobody will find.
+ *
+ * `ALLERGEN_FAMILY_RE` has THREE consumers doing THREE different jobs, and only
+ * two of them should widen:
+ *
+ *   1. `classify-only-reads.ts` — a ROUTE guard. Any match makes the WHOLE turn
+ *      decline classify-only and fall to the model `propose_claim` call.
+ *   2. the per-family READ guards (menu-item-resolver / pairing-resolver).
+ *   3. `claims-renderer-adapter.ts` — the COPY selector for the BKL-184 abstain.
+ *
+ * Widening the shared constant would drag consumer 1 along, and consumer 1 is
+ * the one that costs something: every diet-qualified variant of the 18
+ * classify-only-eligible families would leave the deterministic dispatch for a
+ * model call — including families whose ratified posture is `answer-anyway`
+ * ("sou diabético, o meu pagamento foi aprovado?" is a PAYMENT_STATUS turn that
+ * is simply supposed to answer). That is an extra model call and a fresh chance
+ * of authored prose, for no safety gain, in the exact direction LE2-029 and
+ * BKL-273 spent two tickets moving away from.
+ *
+ * So the nets stay separate: `ALLERGEN_FAMILY_RE` keeps the route guard
+ * BYTE-IDENTICAL (zero utterance classes move — pinned by test), and
+ * {@link isDietQualifiedAsk} — the UNION — feeds the posture enforcement and the
+ * copy selector. `isAllergenFamilyAsk` ⊆ `isDietQualifiedAsk` holds BY
+ * CONSTRUCTION below (the union literally tests the allergen net first), and is
+ * asserted directly by test so a future edit cannot silently invert it.
+ *
+ * ── THE VOCABULARY, AND WHAT WAS REJECTED ──────────────────────────────────
+ *
+ * Swept (BKL-271's root-by-root method) against BOTH the LIVE Medusa catalog
+ * (201 vocabulary rows — titles, handles, descriptions, variants, tags,
+ * categories, option values; the static seed is NOT the catalog of record) and
+ * the 751-row in-repo corpus. Every stem below: ZERO false positives. The sweep
+ * is non-vacuous — the EXISTING net returns 4 real hits on the same live
+ * vocabulary ("Pudim de Leite Condensado" and its handle, the Limonada Suíça and
+ * Feijão Tropeiro descriptions), so the method finds hits when hits exist.
+ *
+ *   · `diab[ée]t`  — diabetes / diabético / diabética / diabetico. No pt-BR word
+ *                    outside the diabetes family contains the substring.
+ *                    THE `[ée]` CLASS IS LOAD-BEARING, and this is the BKL-271
+ *                    lesson repeating itself: a bare `diabet` matches "diabetes"
+ *                    but NOT "diabético" — the accented é sits exactly where the
+ *                    plain e would be — so the stem's true-positive set on the
+ *                    phrasing customers actually use ("sou diabético") was very
+ *                    nearly EMPTY. A false-positive sweep cannot catch that; only a
+ *                    true-positive test can, which is why the vocabulary test in
+ *                    `dietary-posture.test.ts` asserts each spelling explicitly.
+ *   · `a[çc][úu]car` — açúcar / acucar / açúcares / açucarado (the corpus mixes
+ *                    accented and unaccented spellings, so both are matched).
+ *   · `glic[êe]m`  — glicemia / glicêmico / hipoglicemia / hiperglicemia (one stem
+ *                    covers the hypo- and hyper- forms; same accent trap as
+ *                    `diab[ée]t` — "glicêmico" carries ê).
+ *   · `insulin`    — insulina.
+ *   · `cel[íi]a[cq]` — celíaco / celíaca / celiaquia. A gap the BKL-270 audit did
+ *                    NOT name, found by comparing two tables that should agree
+ *                    and do not: the catalog's own `DIETARY_RESTRICTION_MARKERS`
+ *                    (packages/catalog safety-markers.ts) already carries
+ *                    `celiac`, and this runtime net did not — so "sou celíaco"
+ *                    bypassed every gate while "sem glúten" did not, for the
+ *                    SAME medical condition. The `[cq]` class is load-bearing:
+ *                    `cel[íi]ac` alone misses "celiaquia".
+ *   · `intoler[âa]nci|intolerante` — WORD-FORMS, deliberately not the `intoler`
+ *                    STEM. "sou intolerante a frutose" carries no other stem here,
+ *                    but the stem would also match "intolerável" — a plausible
+ *                    complaint word ("esse atraso é intolerável"). That is the
+ *                    BKL-271 embedded-match class (`p[õo]r` inside "pork"), and
+ *                    the cost of getting it wrong is abstaining on a complaint.
+ *
+ * REJECTED, with the measured reason, so nobody re-proposes them:
+ *
+ *   · a bare `sem\s` — MEASURED 8 corpus hits, 7 FALSE POSITIVES, all order notes
+ *     or formatting ("sem cebola" ×3, "sem picles" ×2, "sem maionese", "cpf …,
+ *     sem pontuação mesmo"). Its ONE true positive ("…que seja sem glúten?") is
+ *     already caught by the `gl[úu]ten` stem above. Net: zero new true positives,
+ *     seven false abstains on ordinary order notes.
+ *   · `keto` — matches inside "ketchup". Same class as `p[õo]r` in "pork".
+ *   · `zero` / `light` / `diet` — zero hits TODAY, but the live store already
+ *     sells `Refrigerante :: Coca-Cola`; "Coca-Cola Zero" is one catalog edit
+ *     away, and then `\bzero\b` would abstain every read for "quero uma coca
+ *     zero". Rejected on trajectory. `diet`/`dieta` is additionally out of SCOPE:
+ *     a weight-loss diet is a PREFERENCE, like vegetariano, and BKL-214 already
+ *     drew the preference/restriction line.
+ *   · `s[óo]dio` / `hipertens` / `colesterol` / pregnancy terms — real dietary
+ *     vocabularies, but with no MEASURED leak. The bar for a later tranche is a
+ *     measured leak at the turn seam (the BKL-270 audit's own method), not a
+ *     brainstormed list.
+ *   · `vegano` / `vegetariano` — MUST STAY OUT. They are the positive-preference
+ *     tags MENU_DIETARY exists to render (BKL-214); including them would make the
+ *     family abstain on its own subject and delete it.
+ *
+ * DISJOINT FROM THE EMERGENCY ROUTER, STILL: this is a DIET-NAMING net;
+ * {@link detectMedicalEmergencyMarkers} keys on ACTIVE DISTRESS. Naming a
+ * condition is not an emergency, and the BKL-143/123/184 ratification of honest
+ * self-report over a handoff-for-every-question depends on those staying apart.
+ */
+const DIET_CONDITION_RE =
+  /diab[ée]t|a[çc][úu]car|glic[êe]m|insulin|cel[íi]a[cq]|intoler[âa]nci|intolerante/;
+
+/**
+ * BKL-270 — does this request text name a dietary restriction of ANY kind
+ * (allergen family OR non-allergen condition)? This is the net the registry-declared
+ * `dietaryPosture` enforcement and the abstain COPY selector consume; the route
+ * guard in `classify-only-reads.ts` deliberately does NOT (see above).
+ *
+ * A strict SUPERSET of {@link isAllergenFamilyAsk} by construction. Pure.
+ */
+export function isDietQualifiedAsk(text: string): boolean {
+  const lower = text.toLowerCase();
+  return ALLERGEN_FAMILY_RE.test(lower) || DIET_CONDITION_RE.test(lower);
 }
 
 /**
