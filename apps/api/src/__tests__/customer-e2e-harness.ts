@@ -492,16 +492,29 @@ export interface StatefulCustomerSession extends SessionPort {
   parksFor(customerId: string): ParkedEnvelope[];
 }
 
-export function makeStatefulCustomerSession(): StatefulCustomerSession {
+export function makeStatefulCustomerSession(
+  /**
+   * LE2-024 — the plane this session belongs to. Defaults to `"web"`, so every
+   * pre-existing caller is byte-identical.
+   *
+   * `SessionPort.load` receives only a customer id, so the double cannot derive
+   * the channel per call — it is a property of the composition. Taking it at
+   * construction is what lets a WhatsApp turn's session report `channel:
+   * "whatsapp"` (and key its parks under `whatsapp:<customerId>`) instead of
+   * silently describing every plane as web, which was the last of the six
+   * hard-wired `"web"` sites in this harness.
+   */
+  channel: CustomerChannel = "web",
+): StatefulCustomerSession {
   const parks = new Map<string, ParkedEnvelope[]>();
-  const sid = (customerId: string) => `web:${customerId}`;
+  const sid = (customerId: string) => `${channel}:${customerId}`;
   return {
     load: async (customerId: string) => {
       const id = sid(customerId);
       return {
         id,
         customerId,
-        channel: "web",
+        channel,
         startedAt: HARNESS_NOW,
         lastActivityAt: HARNESS_NOW,
         pendingConfirmations: parks.get(id) ?? [],
