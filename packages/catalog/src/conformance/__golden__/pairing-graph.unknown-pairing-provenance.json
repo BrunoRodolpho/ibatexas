@@ -1,0 +1,79 @@
+{
+  "fixture": "pairing-graph.unknown-pairing-provenance",
+  "targets": "pairing-graph/unknown-pairing-provenance",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/unknown-pairing-provenance"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 5,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "unknown-pairing-provenance",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "provenance",
+      "message": "\"grounded\" is not a pairing provenance (expected one of menu-composition, authored). This is not bookkeeping: the owner-review rules below branch on provenance, so an unrecognized tag would let an invented pairing skip the review flag it exists to carry — a fail-OPEN, which is why a typo here is an error rather than a default.",
+      "reference": "grounded"
+    }
+  ],
+  "formatted": [
+    "pairing-graph/unknown-pairing-provenance: pairing:conformance-item-sujeito · provenance — \"grounded\" is not a pairing provenance (expected one of menu-composition, authored). This is not bookkeeping: the owner-review rules below branch on provenance, so an unrecognized tag would let an invented pairing skip the review flag it exists to carry — a fail-OPEN, which is why a typo here is an error rather than a default."
+  ]
+}

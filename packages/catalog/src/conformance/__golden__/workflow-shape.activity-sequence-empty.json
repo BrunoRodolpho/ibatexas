@@ -6,6 +6,7 @@
   "externalReferences": 0,
   "aliases": 0,
   "workflows": 1,
+  "pairings": 0,
   "rulesEmitted": [
     "workflow-shape/activity-sequence-empty"
   ],
@@ -53,6 +54,11 @@
     {
       "pass": "workflow-runtime-shape",
       "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 0,
       "diagnostics": 0
     }
   ],

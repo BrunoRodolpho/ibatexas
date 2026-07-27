@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest"
 import { CAPABILITY_DEFINITIONS } from "../../capability-definitions/definitions.js"
 import type { AliasEdge } from "../../alias-gazetteer.js"
 import type { CapabilityDefinition } from "../../capability-definitions/types.js"
+import type { PairingEdge } from "../../pairing-graph.js"
 import type { WorkflowDefinition } from "../../workflows/types.js"
 import {
   assertClaimReferencesResolve,
@@ -106,15 +107,38 @@ const BROKEN_WORKFLOWS = [
   },
 ] as unknown as readonly WorkflowDefinition[]
 
+/**
+ * The `pairing-graph` half of {@link EVERY_PASS_BROKEN} (LE2-029) — an edge
+ * whose SUGGESTED end names a dietary class. A separate table for the same
+ * reason the aliases and workflows are: the pass reads its OWN table, whose
+ * real contents are clean and must stay clean, so a fault has to be supplied
+ * explicitly rather than defaulted into.
+ *
+ * The object end is chosen deliberately over the subject end: it is the one
+ * the read SPEAKS, so if this fixture ever stops tripping the pass, the thing
+ * that stopped being checked is the graph's ability to recommend a dietary
+ * restriction to a customer.
+ */
+const BROKEN_PAIRINGS = [
+  {
+    subject: "conformance-item-fantasma",
+    relation: "pairs-with",
+    object: "conformance-sem-lactose",
+    provenance: "menu-composition",
+    why: "fixture.",
+  },
+] as unknown as readonly PairingEdge[]
+
 /** Every half of the broken catalog, compiled together. */
 function compileEverythingBroken(
   definitions: readonly CapabilityDefinition[] = EVERY_PASS_BROKEN,
   aliases: readonly AliasEdge[] = BROKEN_ALIASES,
   workflows: readonly WorkflowDefinition[] = BROKEN_WORKFLOWS,
+  pairings: readonly PairingEdge[] = BROKEN_PAIRINGS,
 ): CatalogCompileResult {
   // `undefined` keeps the REAL external-reference table, which is what trips
   // that pass — see EVERY_PASS_BROKEN's doc.
-  return compileCatalog(definitions, undefined, aliases, workflows)
+  return compileCatalog(definitions, undefined, aliases, workflows, pairings)
 }
 
 describe("compileCatalog — registration and reporting", () => {

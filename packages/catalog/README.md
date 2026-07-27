@@ -31,11 +31,12 @@ constrains claim generation, the installed Packs own their guards, and
 | `src/external-references.ts` | The names the catalog **depends on but does not own** — a promotion in Medusa, a zone row in the domain DB (LE2-018) |
 | `src/alias-gazetteer.ts` | The **colloquial names** customers use for what the catalog sells — surface form -> canonical entity (LE2-025) |
 | `src/workflows/` | The **workflow definitions** — hand-authored multi-step routes over capabilities the catalog already declares (LE2-020/021), their v1 shape (pre-checks, conditional routes, compensation — LE2-022), the closed **fact vocabulary** a workflow condition may read (`facts.ts`), and the pure projections both halves consume |
-| `src/compiler/` | The **catalog compiler** — nine fail-closed static passes, wired into `build`, CI, and `ibx catalog check` |
+| `src/pairing-graph.ts` | What the house says **goes with what**, and what **stands in for what** — subject/relation/object edges with a provenance tag and an owner-review flag on every ungrounded row (LE2-029) |
+| `src/compiler/` | The **catalog compiler** — ten fail-closed static passes, wired into `build`, CI, and `ibx catalog check` |
 | `src/conformance/` | The compiler's **conformance suite** — a fixture catalog per rejection class, golden-pinned ([README](src/conformance/README.md)) |
 | `src/build-gates/check-claim-references.ts` | Cross-reference check v0 — now a thin adapter over the compiler's referential edge table (same API) |
 
-## The catalog compiler (LE2-016/018/033/025)
+## The catalog compiler (LE2-016/018/033/025/020/022/029)
 
 LE2 Implementation Decision 16: *"The catalog compiler is fully fail-closed.
 Static passes … are compile/CI errors."* **An inconsistent catalog does not
@@ -52,6 +53,7 @@ build.**
 | `alias-gazetteer` | Every colloquial surface form resolves to exactly one entity, and no alias edge touches a safety attribute | `"costela"` naming two products with no declared disambiguation; an alias resolving to `sem-gluten`; a canonical name that is not a handle |
 | `workflow-shape` | Every workflow's references resolve, its params bind, its outcomes render, and the workflow-scoped access class is coherent | an activity routed at a kind no capability declares; a claim param naming a success CLASS instead of a registry TYPE; a capability both workflow-scoped and planner-advertised |
 | `workflow-runtime-shape` | Every mutating activity is compensated or declared terminal, every route edge resolves, and every predicate reads a grounded fact | a mutating step with no compensation statement at all; a branch arm naming an activity that does not exist; a predicate over a fact outside the closed vocabulary |
+| `pairing-graph` | Every pairing/substitution edge is well-formed and internally coherent, and none of its three authored ends touches an allergen or dietary attribute | an edge SUGGESTING `sem-lactose` (the end the read speaks); a `why` reading *"combina porque é sem glúten"*; one pair related both `pairs-with` and `substitutes-for`; an `authored` edge with no `ownerReview` flag |
 
 Every diagnostic names **the object, the offending slot/edge, and the violated
 rule**, and the whole list is stable-sorted so a CI log diff is meaningful.
@@ -64,7 +66,7 @@ rule**, and the whole list is stable-sorted so a CI log diff is meaningful.
 Run it:
 
 ```bash
-ibx catalog check            # all nine passes, human-readable
+ibx catalog check            # all ten passes, human-readable
 ibx catalog check --json     # the full CatalogCompileResult
 ibx catalog check --live     # …plus reconciliation against the live stores (LE2-018)
 pnpm --filter @ibatexas/catalog run check   # the same passes, no CLI build needed
@@ -173,8 +175,8 @@ need a reviewer:
 
 ### The conformance suite is the compiler's compatibility contract (LE2-017)
 
-`src/conformance/` holds one committed fixture catalog per **rule id** — 61
-today across the nine passes, plus seven clean controls — each with its
+`src/conformance/` holds one committed fixture catalog per **rule id** — 77
+today across the ten passes, plus eight clean controls — each with its
 compiler output pinned byte-for-byte in `src/conformance/__golden__/`. The
 passes' unit tests assert pass *logic*; the conformance corpus pins the
 *diagnostic contract*: the exact diagnostics, in the exact order, with the
@@ -279,7 +281,7 @@ catalog depend on its own dependent and produce a circular turbo build graph.)
 
 ## Version-bump discipline
 
-`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `8`.
+`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `15`.
 
 It is deliberately *not* derived (no content hash, no git sha, no build
 timestamp): a derived version changes on every unrelated edit and cannot be
@@ -298,6 +300,12 @@ Bump by **exactly +1**, in the **same commit** as the change, for any change to:
 - `src/alias-gazetteer.ts` — adding, removing or editing an alias edge. The
   set of colloquials the system will canonicalize is part of the business
   definition a historical turn must be replayable against
+- `src/pairing-graph.ts` — adding, removing or editing a pairing edge. Sharper
+  than the gazetteer's case and worth the distinction: an alias edge changes how
+  an utterance is *understood*, a pairing edge changes what the customer is
+  *told*. A turn compiled before an edge existed answered "o que combina com
+  brisket?" with the honest unknown; one compiled after answers it with a
+  suggestion (LE2-029)
 - Any `src/capability-definitions/generate-*.ts` whose output would change for
   unchanged input (a projection semantics change)
 - `src/workflows/types.ts` — the workflow definition contract. A workflow

@@ -1,0 +1,79 @@
+{
+  "fixture": "pairing-graph.safety-restricted-pairing-object",
+  "targets": "pairing-graph/safety-restricted-pairing-object",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/safety-restricted-pairing-object"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 5,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "safety-restricted-pairing-object",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "object",
+      "message": "this pairing edge's `object` carries the dietary-restriction marker \"lactose\". the SUGGESTED end of a pairing edge may not name an allergen or dietary class: the object is what the read SPEAKS, so this edge would have the system recommend a restriction to a customer with no staff member in the loop. Forbidden by the ratified BKL-143 / BKL-123 / BKL-171 rulings, whose standing policy is honest self-report plus a real staff handoff; reopening requires an explicit owner reversal in writing. If this is an ordinary product whose NAME merely contains an ingredient word, that is the deliberate false positive documented in `src/pairing-graph.ts` — the product stays orderable and answerable by every other read, it just cannot be the subject of an automated suggestion.",
+      "reference": "conformance-sem-lactose"
+    }
+  ],
+  "formatted": [
+    "pairing-graph/safety-restricted-pairing-object: pairing:conformance-item-sujeito · object — this pairing edge's `object` carries the dietary-restriction marker \"lactose\". the SUGGESTED end of a pairing edge may not name an allergen or dietary class: the object is what the read SPEAKS, so this edge would have the system recommend a restriction to a customer with no staff member in the loop. Forbidden by the ratified BKL-143 / BKL-123 / BKL-171 rulings, whose standing policy is honest self-report plus a real staff handoff; reopening requires an explicit owner reversal in writing. If this is an ordinary product whose NAME merely contains an ingredient word, that is the deliberate false positive documented in `src/pairing-graph.ts` — the product stays orderable and answerable by every other read, it just cannot be the subject of an automated suggestion."
+  ]
+}

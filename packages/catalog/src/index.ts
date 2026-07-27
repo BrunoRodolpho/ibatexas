@@ -10,11 +10,11 @@
  * Read that last sentence as a constraint on this file. What is here is what
  * MOVED, plus the version and the reference vocabulary the move needs to be
  * checkable, plus what later tickets have since ADDED under their own numbers
- * (the conversation projection, LE2-033; the alias gazetteer, LE2-025).
- * Journeys and the pairings graph are still later tickets and are deliberately
- * absent. There is no CMS, no admin editor, and no runtime mutation path — the
- * catalog is hand-authored, code-reviewed data (that is a ratified
- * Out-of-Scope item, not an oversight).
+ * (the conversation projection, LE2-033; the alias gazetteer, LE2-025; the
+ * workflow corpus, LE2-020/022/023/024; the pairing graph, LE2-029). There is
+ * no CMS, no admin editor, and no runtime mutation path — the catalog is
+ * hand-authored, code-reviewed data (that is a ratified Out-of-Scope item, not
+ * an oversight).
  *
  * # The one rule this package lives by
  *
@@ -50,11 +50,20 @@
  *     canonicalization at parse entry, the L1/L2 effects and the CLARIFY
  *     routing are the ticket's runtime half. Canonical names are DECLARED,
  *     never verified: see that module on the deferred reconciliation decision.
- *   - `compiler/` — the catalog compiler (LE2-016/018/033/025): seven
- *     fail-closed STATIC passes (referential integrity, slot dataflow,
- *     conversation projection, alias gazetteer, safety-implication edges,
- *     terminal coverage, external references) over the authored data, wired
- *     into `pnpm --filter @ibatexas/catalog build`, into CI, and into
+ *   - `pairing-graph.ts` — what the house says goes with what, and what stands
+ *     in for what (LE2-029): subject handle, relation, object handle, with a
+ *     provenance tag and an owner-review flag on every ungrounded row. Data
+ *     only — the read, the claim types and the templates are `apps/api`'s.
+ *     Handles are DECLARED, never verified, on the gazetteer's posture; no edge
+ *     may touch an allergen or dietary attribute on ANY of its three authored
+ *     ends, and the compiler is what makes that provable.
+ *   - `compiler/` — the catalog compiler (LE2-016/018/033/025/020/022/029):
+ *     ten fail-closed STATIC passes, in registration order — referential
+ *     integrity, slot dataflow, conversation projection, alias gazetteer,
+ *     safety-implication edges, terminal coverage, external references,
+ *     workflow shape, workflow runtime shape, pairing graph — over the
+ *     authored data, wired into
+ *     `pnpm --filter @ibatexas/catalog build`, into CI, and into
  *     `ibx catalog check`. Pure build tooling — a compiler, never a runtime
  *     authority.
  *   - `build-gates/check-claim-references.ts` — cross-reference check v0, now
@@ -120,6 +129,16 @@ export {
   type AliasEdge,
   type AliasProvenance,
 } from "./alias-gazetteer.js"
+
+export {
+  PAIRING_GRAPH,
+  PAIRING_PROVENANCES,
+  PAIRING_RELATIONS,
+  sameHandle,
+  type PairingEdge,
+  type PairingProvenance,
+  type PairingRelation,
+} from "./pairing-graph.js"
 
 export {
   FIXTURE_BRANCH_THRESHOLD_CENTAVOS,
@@ -242,8 +261,10 @@ export {
   externalReferenceObjectName,
   formatCatalogReport,
   formatDiagnostic,
+  pairingObjectName,
   runAliasGazetteerPass,
   runExternalReferencesPass,
+  runPairingGraphPass,
   runReferentialIntegrityPass,
   runSafetyImplicationEdgesPass,
   runSlotDataflowPass,
