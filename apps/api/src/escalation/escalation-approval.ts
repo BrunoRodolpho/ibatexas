@@ -300,6 +300,15 @@ export function createEscalationApprovalEngine(
           principal: parked.actorPrincipal,
           sessionId: parked.actorSessionId,
           ...(parked.actorRole !== undefined ? { role: parked.actorRole } : {}),
+          // LE2-024 — hash-bearing, like `resourceRefs` below. A WORKFLOW
+          // activity's envelope carries the Capsule's `customerId`; without
+          // restoring it the rebuild hashes differently and the integrity check
+          // below refuses every workflow-created approval. Absent for every
+          // planner-minted envelope, so the ops and direct-cancel rebuilds stay
+          // byte-identical.
+          ...(parked.actorCustomerId !== undefined
+            ? { customerId: parked.actorCustomerId }
+            : {}),
         },
         taint: parked.taint,
         nonce: parked.nonce,

@@ -252,6 +252,20 @@ const { executeOrderCancel } = await import("../routes/order-actions.js");
 const { renderCustomerActionAnswer } = await import("../claustrum/customer-action-render.js");
 const { PAID_CANCEL_WORKFLOW_ID, WORKFLOW_DEFINITIONS } = await import("@ibatexas/catalog");
 const { paidCancelConfirmText } = await import("@ibatexas/pack-orders");
+const {
+  buildEscalationParkInput,
+  ESCALATION_RESUMABLE_KINDS,
+  summarizeEscalation,
+} = await import("../escalation/escalation-park-store.js");
+type EscalationParkStore = import("../escalation/escalation-park-store.js").EscalationParkStore;
+type ParkedEscalationIntent =
+  import("../escalation/escalation-park-store.js").ParkedEscalationIntent;
+const { createEscalationApprovalEngine } = await import("../escalation/escalation-approval.js");
+const { createApprovedOrderCancelExecutor } = await import(
+  "../escalation/approved-cancel-executor.js"
+);
+const { settleApprovedInnerRefund } = await import("../escalation/approved-inner-refund.js");
+const { buildOpsRefundResumeState } = await import("../ops/ops-resolver.js");
 const { adjudicateAndAudit } = await import("@adjudicate/core/kernel");
 const { buildLanguageEngineAuditMetadata } = await import(
   "../claustrum/language-engine/audit-metadata.js"
@@ -279,6 +293,16 @@ const JUST_UNDER = BAND - 1;
 const EXACTLY_AT = BAND;
 /** R$120 — comfortably sub-band, the ordinary paid-cancel shape. */
 const SUB_BAND = 12_000;
+/**
+ * R$1.500 — comfortably ABOVE the band, and the SAME constant
+ * `chat-cancel-escalate-approve.e2e.test.ts` and the swap-for-coupon suite both
+ * use. Aligned deliberately: the approve/resume cases below are the direct
+ * ladder's own scenario re-driven through the workflow, and a different amount
+ * would make the two files' escalations incomparable for no reason.
+ *
+ * {@link EXACTLY_AT} stays the boundary case neither of those files pins.
+ */
+const BIG_TOTAL = 150_000;
 
 const ORDER_LINES = [
   {
@@ -381,35 +405,201 @@ function withCancelRoutes(
   };
 }
 
+/** In-memory single-use park store — the production one is Redis-backed. */
+function makeFakeParkStore(): EscalationParkStore & {
+  size(): number;
+  lastToken(): string | undefined;
+  all(): ParkedEscalationIntent[];
+} {
+  const m = new Map<string, ParkedEscalationIntent>();
+  let last: string | undefined;
+  return {
+    async park(input) {
+      const token = input.token ?? `park-${m.size + 1}`;
+      m.set(token, { ...input, token });
+      last = token;
+      return { token, ttlSeconds: 86_400 };
+    },
+    async consume(token) {
+      const r = m.get(token) ?? null;
+      if (r) m.delete(token);
+      return r;
+    },
+    async get(token) {
+      return m.get(token) ?? null;
+    },
+    size: () => m.size,
+    lastToken: () => last,
+    all: () => [...m.values()],
+  };
+}
+
 /**
- * The AUT-017-shaped handoff double: PARKS the full envelope, then PUBLISHES,
- * exactly as `natsHandoff(publish, parkDeps)` does — and, like the real one,
- * never throws.
+ * THE REAL PARKING HANDOFF — `natsHandoff(publish, parkDeps)`'s exact shape, and
+ * the reason this suite can make a BKL-103 claim at all.
  *
- * ONE double is wired into BOTH the conductor's `handoff` (the direct plane's
- * escalation seam) and the runtime's `escalationHandoff` (the workflow plane's),
- * so "what reached staff" is a single comparable list whichever path produced it.
+ * ── WHY AN ARRAY DOUBLE WOULD NOT DO ────────────────────────────────────────
+ *
+ * The swap-for-coupon suite pushes escalated envelopes onto an array, which was
+ * right for ITS ticket: the claim there was "an escalated activity reaches a
+ * staff surface at all", and an array proves the port was called. Parity needs
+ * more. Ticket 24's criterion is that the BKL-103 contract is INTACT, and that
+ * contract is not "something was queued" — it is that an OWNER can APPROVE the
+ * thing and exactly one cancel happens. An array cannot be approved.
+ *
+ * So both planes get the real `buildEscalationParkInput` over a real park store,
+ * and the same store is handed to the real `createEscalationApprovalEngine`
+ * below. The gate is `ESCALATION_RESUMABLE_KINDS` exactly as in production —
+ * which is also what makes "the workflow parks the ACTIVITY, not the anchor" a
+ * load-bearing property rather than a cosmetic one: an `order.cancel.request`
+ * would not pass this gate and nothing would park at all.
  */
-function makeParkingHandoff(): {
-  parked: { kind: string; actorId: unknown; reason: string }[];
+function makeParkingHandoff(parkStore: EscalationParkStore): {
   queue: (
     envelope: { readonly kind: unknown; readonly payload?: unknown },
     reason: string,
   ) => Promise<void>;
+  reasons: string[];
 } {
-  const parked: { kind: string; actorId: unknown; reason: string }[] = [];
+  const reasons: string[] = [];
   return {
-    parked,
-    // Typed STRUCTURALLY rather than as `never`: this double is handed to the
-    // conductor's real `handoff` port, whose parameter is a genuine
-    // `IntentEnvelope`, so a `never` parameter does not satisfy it. Reading only
-    // the two fields the assertions need keeps it a double rather than a second
-    // implementation of the port.
+    reasons,
     queue: async (envelope, reason) => {
-      const payload = (envelope.payload ?? {}) as { actorId?: unknown };
-      parked.push({ kind: String(envelope.kind), actorId: payload.actorId, reason });
+      reasons.push(reason);
+      if (ESCALATION_RESUMABLE_KINDS.has(String(envelope.kind))) {
+        await parkStore.park(buildEscalationParkInput(envelope as never));
+      }
     },
   };
+}
+
+/**
+ * The FRESH customer-plane resume projection, built by the SAME production pair
+ * the customer branch of `enrichResumeState` composes. Driving the real
+ * projector rather than a ctx literal is what makes the state-changed-under-park
+ * case mean anything.
+ */
+async function projectCancelResumeState(envelope: {
+  readonly kind: unknown;
+  readonly payload?: unknown;
+}): Promise<unknown> {
+  const payload = (envelope.payload ?? {}) as Record<string, unknown>;
+  const customerId = typeof payload["actorId"] === "string" ? payload["actorId"] : "";
+  if (customerId === "") return { ctx: { exists: false } };
+  const { ctx } = await resolveAndAssemble({
+    kind: String(envelope.kind),
+    payload,
+    customerId,
+    channel: "web",
+  } as never);
+  return { ctx };
+}
+
+/**
+ * THE REAL APPROVAL ENGINE, wired exactly as
+ * `chat-cancel-escalate-approve.e2e.test.ts` wires it — same executor, same
+ * adjudicated inner refund, same router, same sink.
+ *
+ * Built as a shared factory rather than duplicated per path, because a parity
+ * claim about approve/resume is only worth anything if BOTH sides are driven
+ * through the SAME engine. Two separately-configured engines could agree by
+ * construction while the parks they consume differ.
+ */
+function buildApprovalEngine(args: {
+  readonly parkStore: EscalationParkStore;
+  readonly sink: ReturnType<typeof makeCapturingAuditSink>;
+  readonly onCancel: (a: { orderId: string; customerId: string }) => void;
+}) {
+  const { parkStore, sink, onCancel } = args;
+  const markSpy = vi.fn(async () => null);
+  const engine = createEscalationApprovalEngine({
+    get: (t: string) => parkStore.get(t),
+    consume: (t: string) => parkStore.consume(t),
+    rebuildState: projectCancelResumeState as never,
+    policyFor: () => CUSTOMER_ROUTER as never,
+    sink,
+    executors: {
+      "order.cancel": createApprovedOrderCancelExecutor({
+        getOrder: async (orderId: string, customerId: string) => {
+          const row = orderRowsFake.rows.find((r) => r["id"] === orderId);
+          if (row === undefined || row["customerId"] !== customerId) return null;
+          return {
+            fulfillmentStatus: String(row["fulfillmentStatus"]),
+            displayId: Number(row["displayId"]),
+          };
+        },
+        findActivePayment: async (orderId: string) =>
+          ([...paymentRowsFake.rows.values()].find(
+            (p) => p["orderId"] === orderId && p["status"] === "paid",
+          ) as never) ?? null,
+        getPayment: async (paymentId: string) =>
+          (paymentRowsFake.rows.get(paymentId) as never) ?? null,
+        isPaidStatus: (status: string) => status === "paid",
+        settleInnerRefund: (a: Parameters<typeof settleApprovedInnerRefund>[1]) =>
+          settleApprovedInnerRefund(
+            {
+              projectPaymentState: async (paymentId: string) => {
+                const p = paymentRowsFake.rows.get(paymentId);
+                return buildOpsRefundResumeState(
+                  p === undefined
+                    ? null
+                    : ({
+                        status: String(p["status"]),
+                        amountInCentavos: Number(p["amountInCentavos"]),
+                        refundedAmountCentavos: Number(p["refundedAmountCentavos"] ?? 0),
+                        method: String(p["method"]),
+                        version: Number(p["version"] ?? 1),
+                        orderId: String(p["orderId"]),
+                      } as never),
+                  "ibatexas",
+                );
+              },
+              policyForRefund: () => CUSTOMER_ROUTER,
+              adjudicate: async ({
+                envelope,
+                state,
+                policy,
+                receipt,
+              }: {
+                envelope: unknown;
+                state: unknown;
+                policy: unknown;
+                receipt: unknown;
+              }) =>
+                (
+                  await adjudicateAndAudit(envelope as never, state as never, policy as never, {
+                    sink,
+                    confirmationReceipt: receipt,
+                  } as never)
+                ).decision,
+              writeRefund: async (
+                payload: { paymentId: string; refundAmountCentavos?: number },
+                approverStaffId: string,
+              ) => {
+                const p = paymentRowsFake.rows.get(payload.paymentId)!;
+                paymentRowsFake.rows.set(payload.paymentId, {
+                  ...p,
+                  status: "refunded",
+                  refundedAmountCentavos: payload.refundAmountCentavos ?? 0,
+                  refundApprover: approverStaffId,
+                  version: Number(p["version"] ?? 1) + 1,
+                });
+              },
+              now: () => "2026-07-27T13:00:00.000Z",
+            } as never,
+            a,
+          ),
+        runCancel: async (a: { orderId: string; customerId: string }) => {
+          onCancel(a);
+          const row = orderRowsFake.rows.find((r) => r["id"] === a.orderId);
+          if (row !== undefined) row["fulfillmentStatus"] = "canceled";
+        },
+      }) as never,
+    },
+    markIntentResolved: markSpy as never,
+    now: () => "2026-07-27T13:00:00.000Z",
+  });
+  return { engine, markSpy };
 }
 
 // ── The two harnesses, over ONE fixture set ───────────────────────────────────
@@ -497,10 +687,23 @@ function buildHarness(opts: HarnessOpts) {
   vi.stubGlobal("fetch", medusa.fetch);
   redisFake.strings.set(rk(`cart:active:session:${CONVERSATION}`), CART_ID);
 
-  const sink = makeCapturingAuditSink();
-  const session = makeStatefulCustomerSession();
-  const handoff = makeParkingHandoff();
   const channel = opts.channel ?? "web";
+  const sink = makeCapturingAuditSink();
+  const session = makeStatefulCustomerSession(channel);
+  // ONE park store, handed to BOTH the conductor's handoff (the direct plane's
+  // escalate seam) and — for the workflow path — the runtime's
+  // `escalationHandoff`. Production passes the SAME `natsHandoff(publish,
+  // escalationHandoffParkDeps)` to both, so sharing it here is fidelity rather
+  // than convenience: it is what makes "the two planes park into the same place,
+  // in the same shape" a thing this suite can assert instead of assume.
+  const parkStore = makeFakeParkStore();
+  const handoff = makeParkingHandoff(parkStore);
+  const cancels: { orderId: string; customerId: string }[] = [];
+  const approval = buildApprovalEngine({
+    parkStore,
+    sink,
+    onCancel: (a) => cancels.push(a),
+  });
 
   const model = scriptedModel([
     opts.path === "direct" ? directCall(opts.directOrderId) : WORKFLOW_CALL,
@@ -530,7 +733,7 @@ function buildHarness(opts: HarnessOpts) {
         renderAction: (acted: unknown) => renderCustomerActionAnswer(acted),
       },
     });
-    return { harness, sink, session, handoff, medusa, model, runtime: undefined };
+    return { harness, sink, session, handoff, medusa, model, parkStore, approval, cancels, runtime: undefined };
   }
 
   // ── The production workflow composition, rebuilt from its EXTRACTED decisions ──
@@ -679,7 +882,7 @@ function buildHarness(opts: HarnessOpts) {
     },
   });
   harnessRef.current = harness;
-  return { harness, sink, session, handoff, medusa, model, runtime };
+  return { harness, sink, session, handoff, medusa, model, parkStore, approval, cancels, runtime };
 }
 
 // ── THE OBSERVATION — what "same behaviour" is allowed to mean ────────────────
@@ -724,6 +927,10 @@ interface Observation {
   readonly parkedKinds: readonly string[];
   /** The BKL-103 proposer stamp on each parked envelope. */
   readonly parkedActorIds: readonly unknown[];
+  /** The sessionId the Escalações panel and the approve route both match on. */
+  readonly parkedSessionIds: readonly string[];
+  /** The pt-BR staff summary `summarizeEscalation` authored. */
+  readonly parkedSummaries: readonly string[];
   /** Terminal store state — the money question, asked of the store itself. */
   readonly orderStatus: string;
   readonly paymentStatus: string;
@@ -764,9 +971,10 @@ function promptOf(decision: unknown): string {
 
 function observe(
   sink: ReturnType<typeof makeCapturingAuditSink>,
-  handoff: ReturnType<typeof makeParkingHandoff>,
+  parkStore: ReturnType<typeof makeFakeParkStore>,
   renders: readonly string[],
 ): Observation {
+  const parked = parkStore.all();
   const cancelRows = sink.byKind("order.cancel");
   const order = orderRowsFake.rows.find((r) => r["id"] === ORDER_ID);
   const payment = paymentRowsFake.rows.get(PAYMENT_ID);
@@ -778,8 +986,10 @@ function observe(
       .filter((r) => !promptOf(r.decision).startsWith(AUTO_RESOLVE_PROMPT))
       .map((r) => `${String(r.decision.kind)}/${reasonOf(r.decision)}`),
     cancelPrompts: cancelRows.map((r) => promptOf(r.decision)),
-    parkedKinds: handoff.parked.map((p) => p.kind),
-    parkedActorIds: handoff.parked.map((p) => p.actorId),
+    parkedKinds: parked.map((p) => String(p.intentKind)),
+    parkedActorIds: parked.map((p) => p.proposerId),
+    parkedSessionIds: parked.map((p) => String(p.sessionId)),
+    parkedSummaries: parked.map((p) => String(p.summaryPtBr)),
     orderStatus: String(order?.["fulfillmentStatus"] ?? "absent"),
     paymentStatus: String(payment?.["status"] ?? "absent"),
     refundedCentavos: Number(payment?.["refundedAmountCentavos"] ?? 0),
@@ -797,7 +1007,7 @@ function observe(
 async function drive(
   opts: HarnessOpts & { readonly answer?: string },
 ): Promise<Observation & { readonly turnIds: readonly string[] }> {
-  const { harness, sink, handoff, runtime } = buildHarness(opts);
+  const { harness, sink, parkStore, runtime } = buildHarness(opts);
   const channel = opts.channel ?? "web";
   const renders: string[] = [];
   const turnIds: string[] = [];
@@ -845,7 +1055,7 @@ async function drive(
     turnIds.push(turn.turnId);
   }
   void runtime;
-  return { ...observe(sink, handoff, renders), turnIds };
+  return { ...observe(sink, parkStore, renders), turnIds };
 }
 
 beforeEach(() => {
@@ -877,6 +1087,86 @@ beforeEach(() => {
 function terminalVerdict(o: Observation): string {
   return o.paidLadder[o.paidLadder.length - 1] ?? "NONE";
 }
+
+// ── 0a. THE DIRECT PLANE'S RENDERS — the BASELINE, pinned before comparing ────
+
+/**
+ * THE BASELINE COMMIT: what today's flow actually SAYS.
+ *
+ * Nothing in the repository pinned the direct-plane cancel reply text before
+ * this block — `chat-cancel-escalate-approve.e2e.test.ts` never sets
+ * `realResponder`, so its `turn.response` is the harness stub's
+ * `"decision=… acted=…"` and every pt-BR string it asserts is an INPUT
+ * (utterances, a payload reason) or a staff summary. The customer-facing words
+ * of the ladder this ticket re-platforms were unpinned everywhere.
+ *
+ * That has to be fixed BEFORE any comparison, and as its own deliverable: a
+ * parity suite whose baseline is unpinned is comparing the new path against
+ * whatever the old one happens to do today, which is not a baseline, it is a
+ * moving target. These three cases pin it. Everything after them compares
+ * against something now nailed down.
+ *
+ * TWO OF THE THREE PINS RECORD SOMETHING WRONG, and they are written to say so
+ * rather than to normalize it — see each case.
+ */
+describe("LE2-024 baseline — what the DIRECT paid-cancel ladder says today", () => {
+  it("SUB-BAND turn 1 asks about the ORDER, never about the MONEY", async () => {
+    const direct = await drive({ path: "direct" });
+
+    // PINNED VERBATIM. This is the whole of what a customer cancelling a PAID
+    // order is asked on the conversational plane today.
+    expect(direct.renders[0]).toBe(
+      "Identifiquei o seu pedido mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
+    );
+
+    // WRONG, AND RECORDED AS WRONG (not normalized): the order is paid, the
+    // cancel refunds it, and neither fact is stated anywhere in the question the
+    // customer is answering. The reason is structural — see the case in §0.
+    expect(direct.renders[0]).not.toContain("pago");
+    expect(direct.renders[0]).not.toContain("reembolso");
+  });
+
+  it("SUB-BAND turn 2 (the success reply) is MODEL PROSE, not a first-party render", async () => {
+    const direct = await drive({ path: "direct", answer: "sim" });
+
+    // `customer-action-render.ts` declares no `order.cancel` branch — its own
+    // header notes `reservation.cancel` "keeps its model-prose success" — so the
+    // deterministic render yields nothing and the responder MODEL authors the
+    // reply. Here that surfaces as the scripted stand-in for prose.
+    expect(direct.renders[direct.turns - 1]).toBe("Ok.");
+
+    // WRONG, AND RECORDED AS WRONG: an irreversible money act confirms itself in
+    // a sentence no first-party template governs. Pinned rather than fixed —
+    // changing the direct plane's success copy is not this ticket's licence.
+    expect(direct.renders[direct.turns - 1]).not.toContain("cancel");
+  });
+
+  it("the ESCALATE reply is the generic handoff sentence — no order, no amount", async () => {
+    const direct = await drive({ path: "direct", total: BIG_TOTAL, answer: "sim" });
+
+    // `RESPONDER_ESCALATE_PTBR`, pinned verbatim.
+    expect(direct.renders[direct.turns - 1]).toBe(
+      "Vou transferir você para um de nossos atendentes. Só um momento, por favor.",
+    );
+
+    // Honest as far as it goes — nothing was executed and a human really is
+    // being brought in — but it names neither the order nor the amount, so a
+    // customer cannot tell WHICH request is pending. Recorded, not normalized.
+    expect(direct.renders[direct.turns - 1]).not.toContain("1500");
+    expect(direct.paidLadder).toEqual([
+      "ESCALATE/paid_cancel_refund_above_escalate_threshold",
+    ]);
+  });
+
+  it("a DECLINE is acknowledged, and nothing is executed", async () => {
+    const direct = await drive({ path: "direct", answer: "não" });
+
+    // The decline ack is model prose too (same missing action-render branch).
+    expect(direct.renders[direct.turns - 1]).toBe("Ok.");
+    expect(direct.cancelDecisions).not.toContain("EXECUTE");
+    expect(direct.paymentStatus).toBe("paid");
+  });
+});
 
 // ── 0. THE CONFIRM SENTENCE — the byte-exact half, and who can render it ──────
 
@@ -1266,5 +1556,194 @@ describe("LE2-024 — the anchor is never on the capability wire", () => {
     expect(description).toContain(PAID_CANCEL_WORKFLOW_ID);
     expect(description).toContain("cancela o último pedido");
   });
+});
+
+
+// ── 8. THE BKL-103 CONTRACT — a workflow-created park must be APPROVABLE ──────
+
+/**
+ * Drive a path to its ESCALATE and hand back everything the approve half needs.
+ *
+ * The park is produced by the REAL `buildEscalationParkInput` over the REAL
+ * store on both paths, so what the engine consumes below is the same artifact
+ * production's Escalações panel would show.
+ */
+async function escalateAndPark(path: Path) {
+  const built = buildHarness({ path, total: BIG_TOTAL });
+  await runCustomerTurn(built.harness, {
+    customerId: CUSTOMER,
+    conversationId: CONVERSATION,
+    text: "quero cancelar meu pedido por favor",
+  });
+  await runCustomerTurn(built.harness, {
+    customerId: CUSTOMER,
+    conversationId: CONVERSATION,
+    text: "sim",
+  });
+  const parked = built.parkStore.all();
+  return { ...built, parked, token: built.parkStore.lastToken() };
+}
+
+describe("LE2-024 parity — a WORKFLOW-created escalation park is approvable, identically", () => {
+  it.each(["direct", "workflow"] as const)(
+    "%s: the park carries the three fields the approve route matches on",
+    async (path) => {
+      // Same sessionId (the Escalações row's key AND the FIX-6 resolve binding),
+      // same proposer stamp (`ESCALATION_PROPOSER_STAMPS` reads `payload.actorId`),
+      // same pt-BR summary. A park missing any of these is staff-visible and
+      // unapprovable — the exact shape of the hole BKL-103 closed.
+      const { parked } = await escalateAndPark(path);
+
+      expect(parked).toHaveLength(1);
+      expect(String(parked[0]!.intentKind)).toBe("order.cancel");
+      expect(parked[0]!.sessionId).toBe(CONVERSATION);
+      expect(parked[0]!.proposerId).toBe(CUSTOMER);
+      expect(parked[0]!.summaryPtBr).toBe(`cancelamento do pedido ${ORDER_ID}`);
+      // The summary is the KIND-AWARE one, not the bare kind string that leaked
+      // to staff before BKL-103's fix. Re-derived from the park's own stored
+      // envelope fields so this compares the writer against the reader.
+      expect(
+        summarizeEscalation({
+          kind: parked[0]!.envelopeKind,
+          payload: parked[0]!.payload,
+        } as never),
+      ).toBe(parked[0]!.summaryPtBr);
+      expect(parked[0]!.summaryPtBr).not.toBe("order.cancel");
+    },
+  );
+
+  it.each(["direct", "workflow"] as const)(
+    "%s: a DIFFERENT owner's approval runs EXACTLY ONE cancel and settles the refund",
+    async (path) => {
+      // THE CLAIM THE TICKET'S "BKL-103 CONTRACT INTACT" ACTUALLY MAKES. Driven
+      // through the REAL `createEscalationApprovalEngine` and the REAL
+      // `createApprovedOrderCancelExecutor`, over the park each path produced.
+      const { approval, parkStore, cancels, token } = await escalateAndPark(path);
+
+      const result = await approval.engine.resolve({
+        token: token!,
+        accept: true,
+        approver: { id: "owner_approver", role: "OWNER" },
+        expectedSessionId: CONVERSATION,
+      } as never);
+
+      expect(result.status).toBe("approved");
+      expect(result.decision?.kind).toBe("EXECUTE");
+
+      // EXACTLY ONE cancel — not zero (the approval did nothing) and not two
+      // (the same-kind double-execute class).
+      expect(cancels).toHaveLength(1);
+      expect(cancels[0]?.orderId).toBe(ORDER_ID);
+      expect(cancels[0]?.customerId).toBe(CUSTOMER);
+
+      // The approver-authored inner refund settled, and for the whole amount.
+      expect(paymentRowsFake.rows.get(PAYMENT_ID)?.["status"]).toBe("refunded");
+      expect(
+        paymentRowsFake.rows.get(PAYMENT_ID)?.["refundedAmountCentavos"],
+      ).toBe(BIG_TOTAL);
+
+      // The order really is cancelled, and the token is burnt.
+      expect(
+        orderRowsFake.rows.find((r) => r["id"] === ORDER_ID)?.["fulfillmentStatus"],
+      ).toBe("canceled");
+      expect(parkStore.size()).toBe(0);
+
+      // Separation of duty is a REAL inequality: the customer proposed, the
+      // owner approved, and the refund is stamped to the APPROVER.
+      expect(paymentRowsFake.rows.get(PAYMENT_ID)?.["refundApprover"]).toBe(
+        "owner_approver",
+      );
+    },
+  );
+
+  it.each(["direct", "workflow"] as const)(
+    "%s: SELF-APPROVE is refused WITHOUT burning the token",
+    async (path) => {
+      const { approval, parkStore, cancels, token } = await escalateAndPark(path);
+
+      const selfApprove = await approval.engine.resolve({
+        token: token!,
+        accept: true,
+        // The proposer IS the customer, so approving as them is self-approval.
+        approver: { id: CUSTOMER, role: "OWNER" },
+        expectedSessionId: CONVERSATION,
+      } as never);
+
+      expect(selfApprove.status).toBe("self_approve");
+      expect(cancels).toHaveLength(0);
+      // NOT consumed — a refused self-approval must leave the escalation open
+      // for somebody who may actually decide it.
+      expect(parkStore.size()).toBe(1);
+      expect(paymentRowsFake.rows.get(PAYMENT_ID)?.["status"]).toBe("paid");
+    },
+  );
+
+  it.each(["direct", "workflow"] as const)(
+    "%s: a DENIED approval runs nothing and CONSUMES the park",
+    async (path) => {
+      const { approval, parkStore, cancels, token } = await escalateAndPark(path);
+
+      const denied = await approval.engine.resolve({
+        token: token!,
+        accept: false,
+        approver: { id: "owner_approver", role: "OWNER" },
+        expectedSessionId: CONVERSATION,
+      } as never);
+
+      expect(denied.status).toBe("rejected");
+      expect(cancels).toHaveLength(0);
+      expect(parkStore.size()).toBe(0);
+      expect(
+        orderRowsFake.rows.find((r) => r["id"] === ORDER_ID)?.["fulfillmentStatus"],
+      ).toBe("confirmed");
+      expect(paymentRowsFake.rows.get(PAYMENT_ID)?.["status"]).toBe("paid");
+    },
+  );
+
+  it.each(["direct", "workflow"] as const)(
+    "%s: a REPLAYED approval is `missing` and cancels nothing a second time",
+    async (path) => {
+      const { approval, cancels, token } = await escalateAndPark(path);
+
+      const first = await approval.engine.resolve({
+        token: token!,
+        accept: true,
+        approver: { id: "owner_approver", role: "OWNER" },
+        expectedSessionId: CONVERSATION,
+      } as never);
+      expect(first.status).toBe("approved");
+
+      const replay = await approval.engine.resolve({
+        token: token!,
+        accept: true,
+        approver: { id: "owner_approver", role: "OWNER" },
+        expectedSessionId: CONVERSATION,
+      } as never);
+
+      // Single-use by construction — the store consumed it on the first pass.
+      expect(replay.status).toBe("missing");
+      expect(cancels).toHaveLength(1);
+    },
+  );
+
+  it.each(["direct", "workflow"] as const)(
+    "%s: a WRONG sessionId is `missing` and does NOT burn the token (FIX-6)",
+    async (path) => {
+      const { approval, parkStore, cancels, token } = await escalateAndPark(path);
+
+      const wrongSession = await approval.engine.resolve({
+        token: token!,
+        accept: true,
+        approver: { id: "owner_approver", role: "OWNER" },
+        expectedSessionId: "conv_someone_else",
+      } as never);
+
+      expect(wrongSession.status).toBe("missing");
+      expect(cancels).toHaveLength(0);
+      // The token survives — a mis-addressed approval must not destroy a real
+      // customer's pending escalation.
+      expect(parkStore.size()).toBe(1);
+    },
+  );
 });
 
