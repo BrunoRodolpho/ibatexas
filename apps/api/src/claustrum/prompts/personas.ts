@@ -53,6 +53,47 @@ export const PLANNER_PERSONA = [
   "andamento (ex.: \"quero uma coca\", \"adiciona ao carrinho\"), use",
   "order.item.add / order.item.update / order.item.remove.",
   "",
+  // ── BKL-275 (truncation leg) — TEACH THE WORKFLOW SURFACE ────────────────────
+  //
+  // LE2-020 put `start_workflow` on the planner wire but nobody taught this
+  // persona it exists. On a cancel turn the 4B read "sua única função é
+  // express_intent" while looking at a tool list containing `start_workflow`,
+  // and spent the whole `max_tokens` budget trying to reconcile the two — the
+  // live reasoning trace loops on "Chame express_intent? Não, express_intent é a
+  // capability… as ferramentas são start_…" until the budget dies. That is the
+  // real mechanism behind the "empty completion" cancels: `finish_reason:
+  // "length"` with empty content — TRUNCATION, not a refusal and not engine
+  // nondeterminism (BKL-278 refuted both).
+  //
+  // The same class is already documented one screen down: CLAIM_PLANNER_PERSONA
+  // exists precisely because this persona SUPPRESSES a non-express_intent tool
+  // call and yields zero tool calls. This is that fix, for the workflow surface.
+  //
+  // THE ACTION LIST ABOVE DELIBERATELY STILL SAYS "cancelar". An earlier arm
+  // removed it, and removing it MEASURABLY LOOSENED the whole list: two
+  // reservation utterances that parse correctly today began emitting an invented
+  // `reservation.ensure`, and an escalate-band cancel invented a
+  // `workflow.orders.paid-confirm`. The list's authority is load-bearing — this
+  // rule is an EXCEPTION to it, not an edit of it. There is a test on that.
+  //
+  // MEASURED over the 38-case extraction corpus (nemotron-3-nano:4b, epoch
+  // 54cf4353d5a32564, PRODUCTION max_tokens 1024, serial, n=3 on every row that
+  // moved): `order.cancel` correct paid-cancel selection 4/20 -> 18/20, and
+  // truncations across the corpus 14 -> 1. Rejected alternatives, all measured:
+  // raising max_tokens (2048/3072) fixes nothing and turns one silence into a
+  // WRONG `order.amend.remove_item`; `reasoning_effort:"none"` ends truncation
+  // but regresses 3 correct selections; adding an anti-invention guard block
+  // fixes the invented ids but its LENGTH truncates a reservation; and an
+  // explicit "never use start_workflow for reservations" reaches 20/20 cancel
+  // while degrading a reservation-create into an EXECUTING `reservation.cancel`
+  // — strictly more dangerous, deliberately not taken.
+  "EXCEÇÃO — CANCELAR UM PEDIDO INTEIRO que o cliente já fez (ex.: \"cancela meu",
+  "pedido\", \"quero cancelar o pedido 4242\"): NÃO use \"express_intent\"; chame a",
+  "ferramenta \"start_workflow\" com workflow \"workflow.orders.paid-cancel\" e slots {}",
+  "(um objeto vazio). Isso vale SOMENTE para cancelar um pedido inteiro — todas as",
+  "outras ações, inclusive reservas e finalização de pedido, continuam em",
+  "\"express_intent\" exatamente como descrito acima.",
+  "",
   "Use as ferramentas de leitura apenas para consultar informações. Não invente",
   `capabilities fora da lista. Só NÃO chame "${EXPRESS_INTENT_TOOL}" quando o cliente`,
   "claramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
