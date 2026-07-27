@@ -381,8 +381,11 @@ const COUPON_MODAL_QUESTION_RE =
 /**
  * SUBSTITUTION phrasing — "no lugar", "em vez de", "substitui", "troco por",
  * "acabou o X, e agora". Tested FIRST: "o que vai bem no lugar da costela"
- * carries both vocabularies, and the customer's operative word is the one that
- * says they cannot have the thing they asked for. Pure.
+ * carries both vocabularies but asks ONE question, and the customer's operative
+ * word is the one saying they cannot have the thing they asked for. Pure.
+ *
+ * A genuine TWO-question utterance is a different case and is NOT resolved by
+ * this precedence — see {@link isBothPairingAsk}.
  */
 const SUBSTITUTION_PHRASE_RE =
   /(?<![a-z])(?:no\s+lugar|em\s+vez|ao\s+inv[ée]s|substitui(?:r|ção|cao)?|substitut[oa]s?|troc(?:o|ar|a)\s+por|parecid[oa]\s+com|similar\s+a|acabou|esgotad[oa]|sem\s+estoque|n[ãa]o\s+tem\s+mais)/;
@@ -395,11 +398,44 @@ const PAIRING_PHRASE_RE =
   /(?<![a-z])(?:combina(?:m|ç[ãa]o|coes|ções)?|vai\s+bem|v[ãa]o\s+bem|acompanha(?:m|mento)?s?|harmoniza(?:m)?|junto\s+com|pedir\s+junto|pra\s+acompanhar|para\s+acompanhar|sugest[ãa]o|sugere|recomenda)/;
 
 /**
+ * Does this utterance ask BOTH questions at once — "o que combina com a costela
+ * e o que posso pôr no lugar?" Pure.
+ *
+ * WHY THIS IS ITS OWN PREDICATE, and not something the precedence above
+ * resolves. The two questions are two different acts, and the pair backing them
+ * is a PRESENCE COMPLEMENT: at most one key may ever be recorded in a turn, so
+ * answering both is structurally forbidden. That leaves two candidate
+ * behaviours for a both-ask, and only one of them is honest:
+ *
+ *   · Let the precedence pick. For a subject carrying edges of only ONE relation
+ *     that happens to be harmless (the other half finds nothing and the turn
+ *     degrades). For a subject carrying edges of BOTH — `costela-bovina-defumada`
+ *     is exactly that, with a frozen substitute AND two pairings — it answers the
+ *     substitution half CONFIDENTLY and drops the pairing half without a word.
+ *     Nothing said is false, but the reply reads as a complete answer to a
+ *     question that was only half heard. That is the P4 silent-drop direction.
+ *   · Degrade. The read records NEITHER key, both claims resolve UNKNOWN, and
+ *     the turn says so out loud.
+ *
+ * The second is what this predicate is for. It costs a turn that could have
+ * half-answered, and buys never passing off half an answer as a whole one.
+ * The span still FIRES (see {@link isPairingAsk}), so the question stays
+ * accounted for by §O#15 rather than falling through to a prose path.
+ */
+export function isBothPairingAsk(text: string): boolean {
+  const t = text.toLowerCase();
+  return SUBSTITUTION_PHRASE_RE.test(t) && PAIRING_PHRASE_RE.test(t);
+}
+
+/**
  * Which relation is this utterance asking about, or `undefined` when neither
  * vocabulary fires? Pure.
  *
  * Exported so the span classifier and the render seam select the same branch
- * without a second, drifting regex (the BKL-184 / LE2-002 idiom).
+ * without a second, drifting regex (the BKL-184 / LE2-002 idiom). A both-ask is
+ * NOT disambiguated here — the caller asks {@link isBothPairingAsk} first and
+ * degrades; this function's precedence exists for the single question that
+ * merely borrows the other's vocabulary ("o que vai bem no lugar da costela").
  */
 export function classifyPairingAsk(text: string): PairingRelation | undefined {
   const t = text.toLowerCase();

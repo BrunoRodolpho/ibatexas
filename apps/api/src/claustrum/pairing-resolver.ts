@@ -103,7 +103,7 @@ import { canonicalizeAliases } from "./alias-canonicalization.js";
 // layer import — never gains a catalog client just to classify a span. The same
 // split `isCouponValidityAsk` takes, and the reason the span and this read can
 // never disagree about which relation was asked for.
-import { classifyPairingAsk } from "./required-claim-decomposer.js";
+import { classifyPairingAsk, isBothPairingAsk } from "./required-claim-decomposer.js";
 import {
   resolveMenuItem,
   type MenuItemResolveContext,
@@ -248,6 +248,13 @@ async function resolvePairingsUncached(
   text: string,
   ctx: MenuItemResolveContext,
 ): Promise<PairingResolution> {
+  // A TWO-question utterance degrades rather than half-answering. The pair is a
+  // presence complement, so answering both is structurally forbidden; answering
+  // the one the precedence happens to pick would pass half an answer off as a
+  // whole one for any subject carrying edges of both relations (the seed's
+  // `costela-bovina-defumada` is exactly that). See `isBothPairingAsk`.
+  if (isBothPairingAsk(text)) return { kind: "unknown" };
+
   const relation = classifyPairingAsk(text);
   if (relation === undefined) return { kind: "unknown" };
 

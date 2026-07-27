@@ -242,11 +242,34 @@ export const CLAIM_REGISTRY = [
   // leaving a template frame that can say nothing true in both branches. The same
   // argument the delivery and coupon pairs made.
   //
-  // NO NEGATIVE TWIN, and that is the deliberate DIVERGENCE from COUPON_*: a
-  // promotion lookup is COMPLETE, so "no such code" is a fact worth a validated
-  // negative. The pairing graph is an avowedly PARTIAL authored seed, so "no edge
-  // recorded" is "not written down yet", NOT "nothing goes with this" — Inv 7,
-  // and the ticket's own "empty pairing data → honest unknown".
+  // ── THERE IS NO MENU_NO_PAIRINGS, AND THERE MUST NOT BE ────────────────────
+  //
+  // If you came here looking for the negative twin — the CART_EMPTY to this
+  // CART_CONTENTS, the COUPON_INVALID to this COUPON_VALID — it is deliberately
+  // absent, and the reason is a property of the DATA rather than a style
+  // preference. Adding one would be a regression, so the argument is recorded
+  // here rather than in a pull request nobody will find.
+  //
+  // A validated negative is only sound when the store behind it is COMPLETE.
+  // CART_EMPTY is honest because the cart is complete: the system knows every
+  // line in it, so "it is empty" is a fact. COUPON_INVALID is honest because a
+  // promotion lookup is complete: Medusa holds every promotion that exists, so
+  // "no such code" is a fact.
+  //
+  // `PAIRING_GRAPH` is not complete and never claims to be. It is a hand-authored
+  // seed of ten edges (its own header says so), grown one owner review at a time,
+  // covering a fraction of the menu. So the absence of an edge carries NO
+  // information about the world — it means "nobody has written this down yet",
+  // and a MENU_NO_PAIRINGS claim would render as "nothing goes with this", which
+  // is an assertion the data cannot support and is usually false. That is Inv 7
+  // exactly ("could not check" is a distinct state from "the answer is no"), and
+  // ticket 29 states the required behaviour in its own words: "unknown item or
+  // empty pairing data → honest unknown".
+  //
+  // The day this graph becomes complete — a reconciled, exhaustive pairing set
+  // the owner attests to — the negative twin becomes sound and this comment is
+  // the thing to revisit. Until then the empty case degrades, and the honest
+  // UNKNOWN is the whole answer.
   "MENU_PAIRINGS",
   "MENU_SUBSTITUTIONS",
   "PURCHASE_COMPLETED",
