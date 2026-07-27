@@ -97,7 +97,6 @@ import {
   type PairingEdge,
   type PairingRelation,
 } from "@ibatexas/catalog";
-
 import { canonicalizeAliases } from "./alias-canonicalization.js";
 // The ASK classifier lives in the PURE `required-claim-decomposer.ts` (no IO)
 // precisely so that module — which the render adapter and most of the claims
