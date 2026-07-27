@@ -30,6 +30,10 @@
 
 import { searchProducts } from "@ibatexas/tools";
 import { Channel, type ProductDTO } from "@ibatexas/types";
+// BKL-273 — the SHARED BKL-184 allergen-family net. Imported here (not re-spelled)
+// for the same reason pairing-resolver.ts imports it: a second, drifting regex is
+// how one of these guards silently stops matching what the others match.
+import { isAllergenFamilyAsk } from "./required-claim-decomposer.js";
 
 /** The resolved catalog product a menu claim binds its evidence to. First-party
  *  fields only; the caller composes the rendered scalar (priceText / contentsText). */
@@ -122,8 +126,28 @@ export function composeMenuPriceText(item: ResolvedMenuItem): string {
 
 /** MENU_ITEM_CONTENTS scalar: the product's first-party description, prefixed with
  *  its title. When the catalog has no description, the composer returns `undefined`
- *  → the caller records NO evidence → honest UNKNOWN (never a fabricated blurb). */
-export function composeMenuContentsText(item: ResolvedMenuItem): string | undefined {
+ *  → the caller records NO evidence → honest UNKNOWN (never a fabricated blurb).
+ *
+ *  BKL-273 — `requestText` is REQUIRED, and an allergen- or diet-marked ask composes
+ *  `undefined` no matter what the catalog holds. A product description is written to
+ *  sell a dish, not to enumerate what it does NOT contain, so answering "o que vem no
+ *  brisket sem glúten?" with the blurb reads as an assurance the data cannot support
+ *  — the BKL-143/123 forbidden implication. The DEGRADE is the point: no evidence →
+ *  UNKNOWN → the BKL-184 abstain + staff handoff, on the deterministic path.
+ *
+ *  The parameter is required rather than optional BY DESIGN: an optional one would
+ *  let a future call site omit the guard and get a confident render, which is the
+ *  omission class BKL-270 measured. Omitting it is now a compile error.
+ *
+ *  WHY HERE AND NOT ON `resolveMenuItem`: that resolver is SHARED with
+ *  MENU_ITEM_PRICE, which is outside this ticket (it is one of the 14 families
+ *  pending the BKL-270 A/B/C ruling). Gating the shared resolver would silently
+ *  change price behaviour too. */
+export function composeMenuContentsText(
+  item: ResolvedMenuItem,
+  requestText: string,
+): string | undefined {
+  if (isAllergenFamilyAsk(requestText)) return undefined;
   const desc = item.description?.trim();
   if (desc === undefined || desc.length === 0) return undefined;
   return `${item.title}: ${desc}`;
@@ -340,8 +364,18 @@ async function resolveOverviewUncached(ctx: MenuItemResolveContext): Promise<str
  */
 export function resolveMenuOverviewText(
   turnId: string,
+  requestText: string,
   ctx: MenuItemResolveContext,
 ): Promise<string | undefined> {
+  // BKL-273 — an allergen- or diet-marked ask never gets a menu listing. The overview
+  // is first-party titles + prices and carries NO ingredient knowledge at all, so a
+  // list handed back to "o que tem no cardápio sem lactose?" reads as "these are the
+  // lactose-free ones" — an assurance nothing in the catalog could support.
+  //
+  // Checked BEFORE the memo on purpose: the memo is keyed by turnId alone, so a
+  // post-memo check would still be correct (one text per turn) but would cache a
+  // listing this turn must never hold. DEMOTE-ONLY — it can only remove an answer.
+  if (isAllergenFamilyAsk(requestText)) return Promise.resolve(undefined);
   const cached = overviewMemo.get(turnId);
   if (cached !== undefined) return cached;
   const pending = resolveOverviewUncached(ctx);
@@ -459,8 +493,16 @@ async function resolveDietaryUncached(
 export function resolveDietaryOptionsText(
   turnId: string,
   tag: DietaryPreferenceTag,
+  requestText: string,
   ctx: MenuItemResolveContext,
 ): Promise<string | undefined> {
+  // BKL-273 — a COMPOUND ask ("tem opção vegetariana sem glúten?") never gets the
+  // list. The tag vocabulary is already restricted to the pure-preference tags, but
+  // that only constrains WHICH tag is detected — it does nothing about the allergen
+  // half of a compound question, and answering the vegetarian half alone passes a
+  // partial answer off as a whole one on exactly the turn where the unanswered half
+  // is the medical one. DEMOTE-ONLY; checked before the memo, as in the overview read.
+  if (isAllergenFamilyAsk(requestText)) return Promise.resolve(undefined);
   const key = `${turnId}::${tag}`;
   const cached = dietaryMemo.get(key);
   if (cached !== undefined) return cached;

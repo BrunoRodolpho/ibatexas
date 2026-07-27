@@ -8,7 +8,11 @@
 import { describe, it, expect } from "vitest";
 import { CLAIM_REGISTRY, REGISTRY_SPECS, isRegistryClaimType } from "../claim-registry.js";
 import { VALIDATED_TEMPLATES } from "../slot-grammar.js";
-import { classifyRequestSpans, REQUIRED_CLAIM_CLOSURE } from "../required-claim-decomposer.js";
+import {
+  classifyRequestSpans,
+  isAllergenFamilyAsk,
+  REQUIRED_CLAIM_CLOSURE,
+} from "../required-claim-decomposer.js";
 import {
   formatCentavosBRL,
   composeMenuPriceText,
@@ -95,12 +99,12 @@ describe("BKL-142 composers — deterministic first-party scalars (Hard Rule #2)
   });
 
   it("contentsText prefixes the title to the first-party description", () => {
-    expect(composeMenuContentsText(item())).toBe("Costela Defumada: Costela bovina defumada 12h.");
+    expect(composeMenuContentsText(item(), "o que vem na costela?")).toBe("Costela Defumada: Costela bovina defumada 12h.");
   });
 
   it("contentsText is undefined when the catalog has no description → honest UNKNOWN, never fabricated", () => {
-    expect(composeMenuContentsText(item({ description: null }))).toBeUndefined();
-    expect(composeMenuContentsText(item({ description: "   " }))).toBeUndefined();
+    expect(composeMenuContentsText(item({ description: null }), "o que vem na costela?")).toBeUndefined();
+    expect(composeMenuContentsText(item({ description: "   " }), "o que vem na costela?")).toBeUndefined();
   });
 });
 
@@ -261,9 +265,20 @@ describe("BKL-142 MENU_OVERVIEW decomposer — whole-menu span, disjoint from pe
     expect(classifyRequestSpans("o que vem no combo?")).not.toContain("MENU_OVERVIEW_Q");
   });
 
-  it("does NOT sweep in cart/order/allergen questions", () => {
+  it("does NOT sweep in cart/order questions", () => {
     expect(classifyRequestSpans("o que tem no meu carrinho?")).not.toContain("MENU_OVERVIEW_Q");
-    expect(classifyRequestSpans("o cardápio tem algo com glúten?")).not.toContain("MENU_OVERVIEW_Q");
+  });
+
+  it("★ BKL-273 — an allergen-marked overview ask KEEPS its span (the guard is on the READ)", () => {
+    // INVERTED from the pre-BKL-273 assertion, deliberately. Suppressing this span
+    // did not route the question to the conservative abstain: it left the turn with
+    // NO read span, so §O#15 had nothing to complete and the REAL responder authored
+    // the dietary answer itself (measured at the customer seam, BKL-270). The span
+    // must fire so the question stays accounted for; the refusal happens in
+    // `resolveMenuOverviewText`, which returns undefined for exactly this predicate.
+    const text = "o cardápio tem algo com glúten?";
+    expect(classifyRequestSpans(text)).toContain("MENU_OVERVIEW_Q");
+    expect(isAllergenFamilyAsk(text)).toBe(true);
   });
 
   it("the overview span requires ONLY MENU_OVERVIEW", () => {
@@ -312,12 +327,23 @@ describe("BKL-214 MENU_DIETARY — dietary-PREFERENCE claim (vegetariano/vegano 
       expect(classifyRequestSpans("vocês têm prato vegano?")).toContain("MENU_DIETARY_Q");
     });
 
-    it("★ the allergen boundary — an allergen-adjacent diet NEVER fires MENU_DIETARY_Q (routes to the conservative abstain path)", () => {
-      // "sem glúten"/"sem lactose" trip ALLERGEN_FAMILY_RE (glúten|lactose) → excluded.
+    it("★ the allergen boundary — a PURE allergen ask never fires MENU_DIETARY_Q", () => {
+      // These carry no vegetarian/vegano stem at all, so the span simply does not
+      // match. That is a VOCABULARY fact and is untouched by BKL-273.
       expect(classifyRequestSpans("tem opção sem glúten?")).not.toContain("MENU_DIETARY_Q");
       expect(classifyRequestSpans("tem prato sem lactose?")).not.toContain("MENU_DIETARY_Q");
-      // A mixed ask (vegetarian + allergen) also declines wholesale — safety wins.
-      expect(classifyRequestSpans("tem opção vegetariana sem glúten?")).not.toContain("MENU_DIETARY_Q");
+    });
+
+    it("★ BKL-273 — a MIXED vegetarian+allergen ask KEEPS its span (the guard is on the READ)", () => {
+      // INVERTED from the pre-BKL-273 assertion. The old code declined the span
+      // wholesale, which dropped the turn off the deterministic path and let the
+      // model answer the "sem glúten" half in prose — worse than the render it was
+      // trying to prevent. The span now fires so §O#15 still owns the question, and
+      // `resolveDietaryOptionsText` returns undefined for this predicate, degrading
+      // to the BKL-184 abstain + staff handoff.
+      const text = "tem opção vegetariana sem glúten?";
+      expect(classifyRequestSpans(text)).toContain("MENU_DIETARY_Q");
+      expect(isAllergenFamilyAsk(text)).toBe(true);
     });
 
     it("an imperative cart mutation near a dietary word routes to the mutation path, not the read", () => {

@@ -2344,7 +2344,9 @@ export function createIbatexasPlanner(
           menuItemPrice[resolvedItem.id] = {
             priceText: composeMenuPriceText(resolvedItem),
           };
-          const contentsText = composeMenuContentsText(resolvedItem);
+          // BKL-273 — the SAME request text the investigator passes, so the guard
+          // decides identically on both sides and the C6 values stay byte-equal.
+          const contentsText = composeMenuContentsText(resolvedItem, state.perception.text);
           if (contentsText !== undefined) {
             menuItemContents[resolvedItem.id] = { contentsText };
           }
@@ -2356,11 +2358,15 @@ export function createIbatexasPlanner(
       // (C6 passes by construction). Empty/unreadable catalog → undefined → C6 ABSTAIN.
       let menuOverview: { overviewText: string } | undefined;
       if (menuCandidateTypes.has("MENU_OVERVIEW")) {
-        const overviewText = await resolveMenuOverviewText(state.turnId, {
-          channel: state.perception.channel,
-          sessionId: state.conversationId,
-          customerId: authPrincipal,
-        });
+        const overviewText = await resolveMenuOverviewText(
+          state.turnId,
+          state.perception.text,
+          {
+            channel: state.perception.channel,
+            sessionId: state.conversationId,
+            customerId: authPrincipal,
+          },
+        );
         if (overviewText !== undefined) menuOverview = { overviewText };
       }
       // BKL-214 — MENU_DIETARY derivation read (per-TAG): the SAME per-tag `dietaryText`
@@ -2370,11 +2376,16 @@ export function createIbatexasPlanner(
       const menuDietary: Record<string, { dietaryText: string }> = {};
       if (menuCandidateTypes.has("MENU_DIETARY")) {
         for (const tag of detectDietaryPreferenceTags(state.perception.text)) {
-          const dietaryText = await resolveDietaryOptionsText(state.turnId, tag, {
-            channel: state.perception.channel,
-            sessionId: state.conversationId,
-            customerId: authPrincipal,
-          });
+          const dietaryText = await resolveDietaryOptionsText(
+            state.turnId,
+            tag,
+            state.perception.text,
+            {
+              channel: state.perception.channel,
+              sessionId: state.conversationId,
+              customerId: authPrincipal,
+            },
+          );
           if (dietaryText !== undefined) menuDietary[tag] = { dietaryText };
         }
       }
