@@ -428,7 +428,7 @@ function groupDiagnostics(edges: readonly Registered[]): readonly CatalogDiagnos
 
   for (const entry of edges) {
     // Rule 9 — the same subject, relation and object declared twice.
-    const edgeKey = `${entry.subject} ${entry.relation} ${entry.target}`
+    const edgeKey = `${entry.subject}\u0000${entry.relation}\u0000${entry.target}`
     const duplicated = edgeFirstAt.get(edgeKey)
     if (duplicated === undefined) {
       edgeFirstAt.set(edgeKey, entry)
@@ -453,7 +453,7 @@ function groupDiagnostics(edges: readonly Registered[]): readonly CatalogDiagnos
     // Rule 10 — one pair of things related two contradictory ways. Keyed on the
     // UNORDERED pair: "have the coleslaw WITH the pulled pork" and "have it
     // INSTEAD OF the pulled pork" are incoherent in either direction.
-    const pairKey = [entry.subject, entry.target].sort().join(" ")
+    const pairKey = [entry.subject, entry.target].sort().join("\u0000")
     const related = pairFirstAt.get(pairKey)
     if (related === undefined) {
       pairFirstAt.set(pairKey, entry)
