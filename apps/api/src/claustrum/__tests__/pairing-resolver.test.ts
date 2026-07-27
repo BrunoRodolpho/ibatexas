@@ -429,6 +429,43 @@ describe("LE2-029 (c) — a BOTH-ask DEGRADES rather than half-answering", () =>
   });
 });
 
+describe("LE2-029 (c) — an ALLERGEN/DIET-marked ask never gets a suggestion", () => {
+  const DIET_MARKED = "o que combina com brisket que seja sem glúten?";
+
+  it("degrades to unknown and never touches the catalog", async () => {
+    // The subject IS resolvable and the relation IS asked, so this degrade is a
+    // decision about the SAFETY MARKER — not a lookup failure. Measured at the
+    // turn seam (`pairings.e2e.test.ts`) before the guard existed: this exact
+    // utterance rendered the full grounded suggestion list.
+    expect(findPairingSubject(DIET_MARKED)).toBe("brisket-americano");
+    expect(classifyPairingAsk(DIET_MARKED)).toBe("pairs-with");
+
+    expect(await resolvePairings("turn-diet", DIET_MARKED, CTX)).toEqual({
+      kind: "unknown",
+    });
+    expect(vi.mocked(resolveMenuItem)).not.toHaveBeenCalled();
+  });
+
+  it("THE CONTROL: the same question WITHOUT the marker answers", async () => {
+    expect(
+      (await resolvePairings("turn-diet-ctl", "o que combina com brisket?", CTX))
+        .kind,
+    ).toBe("pairings");
+  });
+
+  it("covers the whole allergen family, not just glúten", async () => {
+    for (const [i, text] of [
+      "o que combina com brisket sem lactose?",
+      "o que combina com brisket que não contém amendoim?",
+      "sou alérgico, o que combina com brisket?",
+    ].entries()) {
+      expect(await resolvePairings(`turn-fam-${i}`, text, CTX)).toEqual({
+        kind: "unknown",
+      });
+    }
+  });
+});
+
 // ── (d) the per-turn memo ────────────────────────────────────────────────────
 
 describe("LE2-029 (d) — the per-turn memo: ONE catalog read per turn", () => {

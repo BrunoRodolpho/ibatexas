@@ -83,11 +83,15 @@
 // offer to act would put a mutation on a read span (the BKL-201/206 discipline).
 //
 // It is also NOT allergen-aware and must never be read as though it were. The
-// graph asserts TASTE, never ingredients; §O#9's closed-taxonomy safety routing
+// graph asserts TASTE, never ingredients, and the compiler forbids it from
+// encoding allergen or dietary semantics at all (see
+// `packages/catalog/src/compiler/passes/pairing-graph.ts`).
+//
+// This header previously asserted that §O#9's closed-taxonomy safety routing
 // escalates a marker-carrying utterance ("o que combina com brisket que seja sem
-// glúten?") before this read is consulted, and the compiler forbids the graph from
-// encoding allergen or dietary semantics at all. See
-// `packages/catalog/src/compiler/passes/pairing-graph.ts`.
+// glúten?") before this read is consulted. MEASURED, IT DOES NOT — the read now
+// carries its own `isAllergenFamilyAsk` guard, and the whole argument is written
+// out at that guard in `resolvePairingsUncached` below.
 //
 // PURE-ish: the only IO is `resolveMenuItem`'s catalog read. The memo is
 // process-scoped, bounded, and keyed by turnId so entries never leak across turns.
@@ -103,7 +107,11 @@ import { canonicalizeAliases } from "./alias-canonicalization.js";
 // layer import — never gains a catalog client just to classify a span. The same
 // split `isCouponValidityAsk` takes, and the reason the span and this read can
 // never disagree about which relation was asked for.
-import { classifyPairingAsk, isBothPairingAsk } from "./required-claim-decomposer.js";
+import {
+  classifyPairingAsk,
+  isAllergenFamilyAsk,
+  isBothPairingAsk,
+} from "./required-claim-decomposer.js";
 import {
   resolveMenuItem,
   type MenuItemResolveContext,
@@ -254,6 +262,37 @@ async function resolvePairingsUncached(
   // whole one for any subject carrying edges of both relations (the seed's
   // `costela-bovina-defumada` is exactly that). See `isBothPairingAsk`.
   if (isBothPairingAsk(text)) return { kind: "unknown" };
+
+  // An ALLERGEN- or DIET-marked ask never gets a suggestion. MEASURED, not
+  // assumed, and this module's header used to say the opposite.
+  //
+  // The header (and ticket 29, and `pairing-graph.ts`) claimed §O#9's
+  // closed-taxonomy safety routing escalates "o que combina com brisket que seja
+  // sem glúten?" before this read is consulted. It does not. §O#9's
+  // DETERMINISTIC contribution is `detectMedicalEmergencyMarkers`, which keys on
+  // ACTIVE DISTRESS and is deliberately DISJOINT from merely naming a diet (its
+  // own header says so, and that disjointness is correct — the ratified
+  // BKL-143/123/184 policy for an allergen INFO question is honest self-report,
+  // not a human handoff). The remaining §O#8 channel is the 4B's `safetyMarkers`
+  // array, i.e. model luck. So that utterance flagged NO marker, `routeSafety`
+  // returned `undefined`, and a real turn through the customer seam rendered the
+  // full grounded suggestion list — measured at `pairings.e2e.test.ts`.
+  //
+  // Which is the BKL-143 forbidden implication reached by a different road: the
+  // customer asked which of these is gluten-free and received a list, reading as
+  // an assurance sourced from a hand-authored TASTE table, rendered as the
+  // house's own advice, with no staff member in the loop. The graph asserts taste
+  // and the catalog holds no ingredient knowledge at all, so no reading of this
+  // data could support the answer.
+  //
+  // The guard sits HERE rather than on the PAIRING_Q span for the same reason the
+  // both-ask degrade does: suppressing the span would drop the turn out of the
+  // deterministic path entirely and let the responder author prose about gluten,
+  // which is worse. Keeping the span means the question stays accounted for by
+  // §O#15, both claims resolve ABSENT → UNKNOWN, and the customer gets the
+  // deterministic honest abstain. DEMOTE-ONLY by construction: this can only ever
+  // remove a confident answer, never add one.
+  if (isAllergenFamilyAsk(text)) return { kind: "unknown" };
 
   const relation = classifyPairingAsk(text);
   if (relation === undefined) return { kind: "unknown" };
