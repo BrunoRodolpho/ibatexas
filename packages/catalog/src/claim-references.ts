@@ -95,7 +95,7 @@ export function isClaimClassReference(value: unknown): value is ClaimClassRefere
  * The runtime `CLAIM_REGISTRY` type names (`apps/api/src/claustrum/
  * claim-registry.ts`) — the closed enum the claim-aware planner
  * SELECTS-and-PARAMETERIZES from (SDD §H/§P3; it never free-generates a type).
- * 17 types.
+ * 23 types.
  *
  * This is the claim-TYPE name space, distinct from
  * {@link CLAIM_CLASS_REFERENCES}'s lowercase guard ids — SDD §K's "map, do not
@@ -137,6 +137,9 @@ export const REGISTRY_CLAIM_TYPE_REFERENCES = [
   "DELIVERY_NO_COVERAGE",
   "COUPON_VALID",
   "COUPON_INVALID",
+  // LE2-029 — the pairing pair, added in the same commit as the runtime types.
+  "MENU_PAIRINGS",
+  "MENU_SUBSTITUTIONS",
 ] as const
 
 /** A registry claim TYPE name (the planner's closed selection enum). */

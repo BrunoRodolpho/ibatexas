@@ -182,6 +182,8 @@ export const DELIVERY_COVERAGE = "DELIVERY_COVERAGE";
 export const DELIVERY_NO_COVERAGE = "DELIVERY_NO_COVERAGE";
 /** LE2-019 — the PUBLIC coupon-validity pair (promotion-record-grounded scalars). */
 export const COUPON_VALID = "COUPON_VALID";
+export const MENU_PAIRINGS = "MENU_PAIRINGS";
+export const MENU_SUBSTITUTIONS = "MENU_SUBSTITUTIONS";
 export const COUPON_INVALID = "COUPON_INVALID";
 
 /**
@@ -451,6 +453,37 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     slots: [
       prop(COUPON_INVALID, "invalidityText"),
       lit(" — se você tiver outro código, me manda que eu confiro."),
+    ],
+  },
+  // LE2-029 — the PAIRING template. ONE ledger-bound proposition carrying the
+  // whole factual payload: the sentence pairing-resolver.ts composed IN CODE from
+  // the authored graph's edges and the LIVE product titles those edges resolved
+  // to. Never model-authored, and never a handle — the customer sees the store's
+  // own pt-BR product names (Hard Rule 4).
+  //
+  // The static frame is an OFFER and asserts nothing about the world: "quer que eu
+  // adicione?" describes what the CUSTOMER may ask for next. It is deliberately
+  // not "posso adicionar pra você" — this is a READ span, and a sentence that
+  // promised the system would act would put a mutation on it (Decision 14's
+  // negative space, the BKL-201/206 discipline).
+  [MENU_PAIRINGS]: {
+    claimType: MENU_PAIRINGS,
+    posture: "validated",
+    slots: [
+      prop(MENU_PAIRINGS, "suggestionsText"),
+      lit(". Quer que eu adicione algum ao pedido?"),
+    ],
+  },
+  // LE2-029 — the SUBSTITUTION template. Its own static frame, because answering
+  // an absence is a different act from suggesting an addition: the customer here
+  // has already been told they cannot have what they wanted, so the frame
+  // acknowledges the swap rather than inviting an extra.
+  [MENU_SUBSTITUTIONS]: {
+    claimType: MENU_SUBSTITUTIONS,
+    posture: "validated",
+    slots: [
+      prop(MENU_SUBSTITUTIONS, "substitutionsText"),
+      lit(". Quer que eu troque?"),
     ],
   },
   // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It

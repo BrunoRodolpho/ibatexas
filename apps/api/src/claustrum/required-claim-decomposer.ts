@@ -28,6 +28,7 @@
 // import beyond the `RegistryClaimType` it quantifies over.
 
 import type { ClaimVerdict } from "@adjudicate/core";
+import type { PairingRelation } from "@ibatexas/catalog";
 import {
   isRegistryClaimType,
   type RegistryClaimType,
@@ -91,6 +92,12 @@ export type SpanClass =
   // BKL-201/206 discipline, and Decision 14's negative space: no apply path
   // exists for a read to be mistaken for).
   | "COUPON_VALIDITY_Q"
+  // LE2-029 — a PAIRING / SUBSTITUTION question ("o que combina com brisket?",
+  // "não tem costela, o que peço no lugar?"). A READ over the house's OWN
+  // authored pairing graph — deliberately DISJOINT from any add/swap IMPERATIVE
+  // ("põe uma farofa junto"), which is a mutation and must never ride a read span
+  // (the BKL-201/206 discipline).
+  | "PAIRING_Q"
   | "ORDER_STATUS_Q"
   | "PAYMENT_STATUS_Q"
   | "RESERVATION_STATUS_Q"
@@ -190,6 +197,16 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // (`not_applicable`) → never Triad-scoped, and no unrelated span force-requires
   // either type.
   COUPON_VALIDITY_Q: ["COUPON_VALID", "COUPON_INVALID"],
+  // LE2-029 — a pairing/substitution question requires the complementary PAIR, on
+  // the COUPON_VALIDITY_Q shape. The resolver classifies the utterance as ONE ask
+  // or the other and records at most one key, so exactly one can validate and the
+  // other resolves honest UNKNOWN and is dropped by the kernel's §D filter — never
+  // a rendered contradiction. Requiring both here is also what auto-enrols the
+  // pair into the classify-only candidate set and into RELEVANCE_GOVERNED_TYPES.
+  // The pair is ALSO registered in PRESENCE_COMPLEMENT_PAIRS below — without that
+  // registration this row would make §O#15 completeness STRUCTURALLY unsatisfiable
+  // (the LE2-002 defect). PUBLIC (`not_applicable`) → never Triad-scoped.
+  PAIRING_Q: ["MENU_PAIRINGS", "MENU_SUBSTITUTIONS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
@@ -356,6 +373,45 @@ const COUPON_APPLY_IMPERATIVE_RE =
 /** A MODAL/interrogative frame that makes an apply-shaped verb a QUESTION. */
 const COUPON_MODAL_QUESTION_RE =
   /(?<![a-z])(?:posso|consigo|d[áa]\s+(?:pra|para)|ser[áa]\s+que|quero\s+saber|gostaria\s+de\s+saber|como\s+(?:fa[çc]o|uso|usar))/;
+
+// ── LE2-029: the PAIRING / SUBSTITUTION ask ──────────────────────────────────
+// Pure regexes, defined HERE beside the other span nets and imported by
+// `pairing-resolver.ts`, so the SPAN and the READ are the same judgement.
+
+/**
+ * SUBSTITUTION phrasing — "no lugar", "em vez de", "substitui", "troco por",
+ * "acabou o X, e agora". Tested FIRST: "o que vai bem no lugar da costela"
+ * carries both vocabularies, and the customer's operative word is the one that
+ * says they cannot have the thing they asked for. Pure.
+ */
+const SUBSTITUTION_PHRASE_RE =
+  /(?<![a-z])(?:no\s+lugar|em\s+vez|ao\s+inv[ée]s|substitui(?:r|ção|cao)?|substitut[oa]s?|troc(?:o|ar|a)\s+por|parecid[oa]\s+com|similar\s+a|acabou|esgotad[oa]|sem\s+estoque|n[ãa]o\s+tem\s+mais)/;
+
+/**
+ * PAIRING phrasing — "combina", "vai bem", "acompanha", "harmoniza", "pedir
+ * junto", "o que peço com". Pure.
+ */
+const PAIRING_PHRASE_RE =
+  /(?<![a-z])(?:combina(?:m|ç[ãa]o|coes|ções)?|vai\s+bem|v[ãa]o\s+bem|acompanha(?:m|mento)?s?|harmoniza(?:m)?|junto\s+com|pedir\s+junto|pra\s+acompanhar|para\s+acompanhar|sugest[ãa]o|sugere|recomenda)/;
+
+/**
+ * Which relation is this utterance asking about, or `undefined` when neither
+ * vocabulary fires? Pure.
+ *
+ * Exported so the span classifier and the render seam select the same branch
+ * without a second, drifting regex (the BKL-184 / LE2-002 idiom).
+ */
+export function classifyPairingAsk(text: string): PairingRelation | undefined {
+  const t = text.toLowerCase();
+  if (SUBSTITUTION_PHRASE_RE.test(t)) return "substitutes-for";
+  if (PAIRING_PHRASE_RE.test(t)) return "pairs-with";
+  return undefined;
+}
+
+/** Does this text ask a pairing/substitution question at all? Pure. */
+export function isPairingAsk(text: string): boolean {
+  return classifyPairingAsk(text) !== undefined;
+}
 
 /**
  * LE2-019 — does this request text ask whether a COUPON is valid? Pure. Exported
@@ -579,6 +635,18 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // CLARIFY-for-code ask, never a guessed validity answer.
   if (!mutationImperative && isCouponValidityAsk(t)) {
     classes.push("COUPON_VALIDITY_Q");
+  }
+
+  // LE2-029 — a PAIRING / SUBSTITUTION question. Gated on `!mutationImperative`
+  // like every other classify-only-eligible READ span: "põe uma farofa junto do
+  // brisket" is an add, not a question about what goes with what. The resolver
+  // applies the SAME `classifyPairingAsk` net to pick which relation was asked
+  // about, so the span and the read can never disagree about the question (the
+  // BKL-184 / LE2-002 one-net idiom). Over-inclusion is DEMOTE-ONLY safe: an
+  // utterance naming no item the graph knows resolves to the honest UNKNOWN,
+  // never a guessed suggestion.
+  if (!mutationImperative && isPairingAsk(t)) {
+    classes.push("PAIRING_Q");
   }
 
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —
@@ -981,6 +1049,14 @@ const PRESENCE_COMPLEMENT_PAIRS: ReadonlyArray<
   // would degrade RENDER→UNKNOWN through the §O#15 gate one layer up in
   // `claims-renderer-adapter.ts` — invisible to any renderer-level test.
   ["COUPON_VALID", "COUPON_INVALID"],
+  // LE2-029 — the PAIRING pair, registered HERE IN THE SAME COMMIT that
+  // introduces it (the standing lesson above, applied rather than relearned).
+  // `menu:pairings` is recorded only when the utterance asked about `pairs-with`
+  // AND the graph had edges whose objects exist live; `menu:substitutions` only
+  // for the `substitutes-for` ask — complementary by construction, so exactly one
+  // can ever VALIDATE and the PAIRING_Q closure row (which requires BOTH) is
+  // satisfiable only because of this line.
+  ["MENU_PAIRINGS", "MENU_SUBSTITUTIONS"],
 ];
 
 /** Partner lookup for {@link PRESENCE_COMPLEMENT_PAIRS} (symmetric). */

@@ -122,6 +122,7 @@ import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
 import { resolveDeliveryCoverage } from "./delivery-coverage-resolver.js";
 import { resolveCouponValidity } from "./coupon-validity-resolver.js";
+import { resolvePairings } from "./pairing-resolver.js";
 import {
   resolveMenuItem,
   resolveMenuOverviewText,
@@ -2429,6 +2430,31 @@ export function createIbatexasPlanner(
           couponInvalid = { invalidityText: coupon.invalidityText };
         }
       }
+      // LE2-029 — MENU_PAIRINGS / MENU_SUBSTITUTIONS derivation reads (FIXED
+      // subject): the SAME scalars the investigator records under `menu:pairings` /
+      // `menu:substitutions`, memoized on turnId+text so this REUSES the
+      // investigator's ONE graph walk and its catalog title reads → byte-equal
+      // value (C6 passes by construction). The resolver returns at most one of the
+      // two, so at most one is bound here; the other keeps `value: undefined` → C6
+      // ABSTAINs → honest UNKNOWN, and the §D filter drops it. An unknown item or
+      // an empty graph binds NEITHER — never an invented suggestion.
+      let menuPairings: { suggestionsText: string } | undefined;
+      let menuSubstitutions: { substitutionsText: string } | undefined;
+      if (
+        menuCandidateTypes.has("MENU_PAIRINGS") ||
+        menuCandidateTypes.has("MENU_SUBSTITUTIONS")
+      ) {
+        const pairing = await resolvePairings(state.turnId, state.perception.text, {
+          channel: state.perception.channel,
+          sessionId: state.conversationId,
+          customerId: authPrincipal,
+        });
+        if (pairing.kind === "pairings") {
+          menuPairings = { suggestionsText: pairing.suggestionsText };
+        } else if (pairing.kind === "substitutions") {
+          menuSubstitutions = { substitutionsText: pairing.substitutionsText };
+        }
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         menuItemPrice,
         menuItemContents,
@@ -2439,6 +2465,8 @@ export function createIbatexasPlanner(
         ...(deliveryNoCoverage !== undefined ? { deliveryNoCoverage } : {}),
         ...(couponValid !== undefined ? { couponValid } : {}),
         ...(couponInvalid !== undefined ? { couponInvalid } : {}),
+        ...(menuPairings !== undefined ? { menuPairings } : {}),
+        ...(menuSubstitutions !== undefined ? { menuSubstitutions } : {}),
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an

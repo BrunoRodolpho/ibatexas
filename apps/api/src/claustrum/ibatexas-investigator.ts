@@ -54,6 +54,11 @@ import {
   resolveDeliveryCoverage,
 } from "./delivery-coverage-resolver.js";
 import {
+  MENU_PAIRINGS_KEY,
+  MENU_SUBSTITUTIONS_KEY,
+  resolvePairings,
+} from "./pairing-resolver.js";
+import {
   COUPON_INVALID_KEY,
   COUPON_NEEDS_CODE_MARKER_KEY,
   COUPON_VALID_KEY,
@@ -692,6 +697,69 @@ export function createFirstPartyTurnReads(
         });
       }
       // `unknown` — deliberately records NOTHING (see the block header).
+    }
+
+    // LE2-029 MENU_PAIRINGS / MENU_SUBSTITUTIONS — the pairing read ("o que
+    // combina com brisket?"), GATED on a PAIRING_Q span. FIXED subject (single
+    // keys, like COUPON_VALID), PUBLIC store knowledge -> placed BEFORE the
+    // authenticated-customer gate: what the house serves together is the same
+    // answer regardless of who is asking, and a first-time visitor deciding what
+    // to order has no account yet.
+    //
+    // The shared per-turn-memoized resolver reads the AUTHORED catalog graph and
+    // resolves every handle it is about to speak through the EXISTING
+    // `resolveMenuItem` catalog read -- so the suggestion names live product
+    // titles, never handles, and an edge pointing at something the store no longer
+    // sells is dropped rather than voiced. Three states, and this block is the
+    // honesty wiring for all three:
+    //
+    //   - pairings      -> `menu:pairings` PRESENT with the composed scalar.
+    //   - substitutions -> `menu:substitutions` PRESENT.
+    //   - unknown       -> NOTHING recorded -> both claims resolve ABSENT ->
+    //                     honest UNKNOWN. This covers the ticket's "unknown item
+    //                     OR empty pairing data", and deliberately has NO
+    //                     validated-negative twin: the graph is a PARTIAL authored
+    //                     seed, so "no edge" is "not written down yet", never
+    //                     "nothing goes with this".
+    //
+    // Exactly one of the two claim keys can ever be PRESENT, so the pair can never
+    // render a contradiction. The `menu:pairings_changed` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) -- never pushed here.
+    //
+    // A READ only: nothing here adds an item, touches a cart, or builds an intent
+    // envelope.
+    if (menuSpans.includes("PAIRING_Q")) {
+      const pairing = await resolvePairings(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+        {
+          channel: input.cognition.perception.channel,
+          sessionId: input.cognition.conversationId,
+          customerId,
+        },
+      );
+      if (pairing.kind === "pairings") {
+        const suggestionsText = pairing.suggestionsText;
+        reads.push({
+          key: MENU_PAIRINGS_KEY,
+          source: "catalog.pairings",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ suggestionsText }),
+        });
+      } else if (pairing.kind === "substitutions") {
+        const substitutionsText = pairing.substitutionsText;
+        reads.push({
+          key: MENU_SUBSTITUTIONS_KEY,
+          source: "catalog.pairings",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ substitutionsText }),
+        });
+      }
+      // `unknown` -- deliberately records NOTHING (see the block header).
     }
 
     if (!isAuthenticatedCustomer(customerId)) return reads;
