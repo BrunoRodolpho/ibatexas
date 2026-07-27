@@ -33,6 +33,7 @@ import { PAIRING_GRAPH } from "@ibatexas/catalog";
 import type { MenuItemResolveContext } from "../menu-item-resolver.js";
 import {
   classifyPairingAsk,
+  isBothPairingAsk,
   isPairingAsk,
 } from "../required-claim-decomposer.js";
 
@@ -148,6 +149,45 @@ describe("LE2-029 (a) — classifyPairingAsk picks the relation the customer ask
     // Positive control: the same item, asked ABOUT rather than ordered.
     expect(isPairingAsk("o que combina com brisket?")).toBe(true);
   });
+});
+
+// ── (a2) isBothPairingAsk — the TWO-question utterance ───────────────────────
+
+describe("LE2-029 (a2) — isBothPairingAsk tells two questions from one", () => {
+  const BOTH_ASK = "o que combina com a costela bovina e o que posso pôr no lugar?";
+  const BORROWED_VOCABULARY = "o que vai bem no lugar da costela";
+
+  it("fires on a genuine TWO-question utterance", () => {
+    expect(isBothPairingAsk(BOTH_ASK)).toBe(true);
+  });
+
+  it("REGRESSION GUARD: does NOT fire on the single question that borrows both vocabularies", () => {
+    // THE BUG THIS CASE EXISTS FOR. Both nets fire on this string — "vai bem" is
+    // pairing vocabulary, "no lugar" is substitution vocabulary — so the first cut
+    // of the predicate (both-vocabularies alone) degraded the ticket's own primary
+    // use case to a shrug. What separates them is TWO INTERROGATIVE CLAUSE HEADS;
+    // this sentence has exactly one.
+    expect(isBothPairingAsk(BORROWED_VOCABULARY)).toBe(false);
+    // …and the precedence still owns it, unchanged.
+    expect(classifyPairingAsk(BORROWED_VOCABULARY)).toBe("substitutes-for");
+  });
+
+  it("fires on the `qual …` interrogative head too, not just `o que`", () => {
+    expect(
+      isBothPairingAsk("qual acompanhamento combina com brisket e qual posso pôr no lugar?"),
+    ).toBe(true);
+  });
+
+  it("does NOT fire on either single question on its own", () => {
+    expect(isBothPairingAsk("o que combina com brisket?")).toBe(false);
+    expect(isBothPairingAsk("não tem brisket, o que peço no lugar?")).toBe(false);
+  });
+
+  // ACCEPTED LIMIT, recorded rather than pinned: an UNHEADED two-question form
+  // ("o que combina com a costela e um substituto") carries one interrogative
+  // head, is NOT detected, and half-answers. That is the deliberate direction —
+  // a false positive breaks the primary use case, a false negative says nothing
+  // untrue — so there is no test asserting the unheaded form is detected.
 });
 
 // ── (b) findPairingSubject — canonicalized, declining, whole-token ────────────
@@ -325,6 +365,67 @@ describe("LE2-029 (c) — every degrade is the HONEST UNKNOWN, never a guess", (
     ).toEqual({ kind: "unknown" });
     // The read WAS attempted — this is a thrown read, not a skipped one.
     expect(vi.mocked(resolveMenuItem)).toHaveBeenCalled();
+  });
+});
+
+describe("LE2-029 (c) — a BOTH-ask DEGRADES rather than half-answering", () => {
+  // `costela-bovina-defumada` is the seed's one subject carrying edges of BOTH
+  // relations (a frozen substitute AND two pairings), so it is the ONLY subject
+  // on which the old precedence could answer one half confidently and drop the
+  // other in silence. That makes it the case, not an illustration of it.
+  const BOTH_ASK = "o que combina com a costela bovina e o que posso pôr no lugar?";
+
+  it("records NOTHING and reads NOTHING — neither claim key can be produced", async () => {
+    // The subject IS resolvable, so this degrade is a decision about the
+    // QUESTION and not a failure to find the item.
+    expect(findPairingSubject(BOTH_ASK)).toBe("costela-bovina-defumada");
+
+    const out = await resolvePairings("turn-both", BOTH_ASK, CTX);
+    expect(out).toEqual({ kind: "unknown" });
+    // `unknown` is the ONLY branch on which the investigator pushes no read, so
+    // neither `menu:pairings` nor `menu:substitutions` can be recorded. The
+    // short-circuit also means the catalog is never touched.
+    expect(vi.mocked(resolveMenuItem)).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL A: the borrowed-vocabulary SINGLE ask still resolves to a substitution", async () => {
+    // The regression guard at the RESOLVER level, not just the predicate's. Note
+    // the subject is spelled canonically here: the bare "costela" the predicate
+    // case uses is the AMBIGUOUS surface (two products), so it would degrade for
+    // a reason this case is not about — see the ambiguity test above.
+    const out = await resolvePairings(
+      "turn-borrowed",
+      "o que vai bem no lugar da costela-bovina-defumada",
+      CTX,
+    );
+    expect(out.kind).toBe("substitutions");
+  });
+
+  it("CONTROL B: the SAME subject asked as a SINGLE question still answers", async () => {
+    // Without these the degrade above would pass for a resolver that simply never
+    // answered about the costela at all.
+    const pairing = await resolvePairings(
+      "turn-both-ctl-1",
+      "o que combina com costela-bovina-defumada?",
+      CTX,
+    );
+    expect(pairing.kind).toBe("pairings");
+    if (pairing.kind !== "pairings") throw new Error("unreachable");
+    expect(pairing.suggestionsText).toBe(
+      "Com Costela Bovina Defumada, aqui na casa a gente costuma servir " +
+        "Farofa de Bacon Defumado e Molho Barbecue Artesanal",
+    );
+
+    const substitution = await resolvePairings(
+      "turn-both-ctl-2",
+      "o que posso pedir no lugar da costela-bovina-defumada?",
+      CTX,
+    );
+    expect(substitution.kind).toBe("substitutions");
+    if (substitution.kind !== "substitutions") throw new Error("unreachable");
+    expect(substitution.substitutionsText).toBe(
+      "No lugar de Costela Bovina Defumada, a casa indica Costela Defumada Congelada",
+    );
   });
 });
 
