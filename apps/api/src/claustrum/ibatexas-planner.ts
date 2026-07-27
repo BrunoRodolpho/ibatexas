@@ -152,6 +152,7 @@ import {
 import { feasibilityActor } from "./workflow/workflow-composition.js";
 import {
   isStartWorkflowInput,
+  resolveWorkflowName,
   sanitizeWorkflowSlots,
   START_WORKFLOW_TOOL,
   startWorkflowToolDefinition,
@@ -1343,13 +1344,44 @@ export function createIbatexasPlanner(
       // treatment `stripUnauthoredPayloadFields` gives a capability payload,
       // one level up.
       const selectWorkflow = (
-        workflowId: string,
+        namedWorkflow: string,
         rawSlots: unknown,
       ): { readonly kind: string; readonly payload: unknown } | undefined => {
         const runtime = deps.workflowRuntime;
         if (runtime === undefined) return undefined;
+        // BKL-275 — THE NAME ADMISSION SEAM. `start_workflow.workflow` is
+        // advertised with a closed `enum`, but this engine does not bind enums at
+        // decode (LE2-004), so what arrives is whatever the model wrote. Measured
+        // on epoch 54cf4353d5a32564: of 12 `start_workflow` calls, 8 carried the
+        // full declared id and 2 carried the BARE SUFFIX `orders.paid-cancel` —
+        // which this lookup refused, so a paid-cancel ask reached no route at all.
+        //
+        // Resolution is against THIS TURN'S OFFERED surface, which is the
+        // catalogue the model was actually shown, so it can only ever resolve to
+        // something already advertised — it cannot widen the surface by one
+        // workflow. `resolveWorkflowName` requires an EXACT match or an
+        // UNAMBIGUOUS dot-bounded suffix, and returns the name unchanged
+        // otherwise, which lands it in the `undefined` refusal below exactly as
+        // before. The runtime's own `select` re-resolves against the DECLARED
+        // corpus as defense in depth; that call is a no-op on an exact id.
+        const { id: workflowId, normalizedFrom } = resolveWorkflowName(
+          namedWorkflow,
+          offeredWorkflows.map((w) => w.id),
+        );
         const offered = offeredWorkflows.find((w) => w.id === workflowId);
         if (offered === undefined) return undefined;
+        if (normalizedFrom !== undefined) {
+          logger.info(
+            {
+              component: "planner",
+              event: "start_workflow.name_normalized",
+              turnId: state.turnId,
+              named: normalizedFrom,
+              workflowId,
+            },
+            "planner: a workflow selection named an unambiguous suffix — resolved to the declared id",
+          );
+        }
         const { slots, dropped: droppedSlots } = sanitizeWorkflowSlots(
           rawSlots,
           new Set(offered.slots),

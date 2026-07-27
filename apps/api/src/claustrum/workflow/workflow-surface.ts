@@ -123,6 +123,60 @@ function describeWorkflowForSurface(workflow: AdvertisedWorkflow): string {
  * {@link sanitizeWorkflowSlots}. Advertising a constraint this engine discards
  * would be dead wire pretending to be a guarantee.
  */
+/**
+ * BKL-275 — resolve the NAME a parse wrote for a workflow to a DECLARED id.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ *
+ * `start_workflow`'s `workflow` property is advertised with a closed `enum`, but
+ * this engine does not enforce enums at decode (LE2-004: `json_schema` binds as a
+ * grammar only in the OpenAI nesting, and unsupported constraints never error) —
+ * so the enum is a HINT on the wire and the bound is enforced here. Measured on
+ * epoch 54cf4353d5a32564: of 12 `start_workflow` calls the model wrote the full
+ * declared id 8 times, the bare suffix `orders.paid-cancel` twice, and omitted
+ * the property twice. The bare-suffix form was refused, and a customer asking to
+ * cancel a paid order reached no route at all.
+ *
+ * ── WHY A SUFFIX RULE, AND WHY IT CANNOT WIDEN ANYTHING ─────────────────────
+ *
+ * The workflow name is a PAYLOAD PARAMETER, not an intent kind: it names a route
+ * the runtime then instantiates, and every capability that route touches is
+ * adjudicated one activity at a time regardless. So this is not one of the five
+ * kind-admission sites and it grants nothing on its own.
+ *
+ * Three properties make it safe to be lenient HERE and nowhere else:
+ *
+ *   EXACT WINS      — a declared id resolves to itself before any suffix is
+ *                     considered, so this can never re-point a correct name.
+ *   UNIQUE OR NOTHING — a suffix resolves only when EXACTLY ONE declared id
+ *                     carries it. Two candidates is an ambiguity, and an
+ *                     ambiguous cancel is precisely the coin flip LE2-024
+ *                     retired the direct route to remove, so it refuses.
+ *   DOT-BOUNDED     — the match is on `.<name>`, so `cancel` cannot match
+ *                     `workflow.orders.paid-cancel` (the preceding character is
+ *                     `-`, not `.`). A partial word can never select a route.
+ *
+ * And the caller's closed-surface check is UNCHANGED and still authoritative: a
+ * resolved id that this turn did not advertise is still rejected. Uniqueness is
+ * computed over the DECLARED corpus rather than the turn's advertised subset on
+ * purpose — it makes this a pure, turn-independent function, so a name cannot
+ * mean different routes on two turns.
+ *
+ * An unknown or ambiguous name is returned UNCHANGED, which lands it in the
+ * existing rejection path. This function can only ever turn a REFUSAL into a
+ * declared id; it can never turn one declared id into another.
+ */
+export function resolveWorkflowName(
+  named: unknown,
+  declaredIds: readonly string[],
+): { readonly id: string; readonly normalizedFrom?: string } {
+  if (typeof named !== "string" || named === "") return { id: "" };
+  if (declaredIds.includes(named)) return { id: named };
+  const suffixMatches = declaredIds.filter((id) => id.endsWith(`.${named}`));
+  if (suffixMatches.length !== 1) return { id: named };
+  return { id: suffixMatches[0] as string, normalizedFrom: named };
+}
+
 export function startWorkflowToolDefinition(
   workflows: readonly AdvertisedWorkflow[],
 ): NonNullable<CompletionRequest["tools"]>[number] | undefined {

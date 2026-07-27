@@ -263,6 +263,7 @@ const { executeOrderCancel } = await import("../routes/order-actions.js");
 const { renderCustomerActionAnswer } = await import("../claustrum/customer-action-render.js");
 const { PAID_CANCEL_WORKFLOW_ID, WORKFLOW_DEFINITIONS } = await import("@ibatexas/catalog");
 const { paidCancelConfirmText } = await import("@ibatexas/pack-orders");
+const { resolveWorkflowName } = await import("../claustrum/workflow/workflow-surface.js");
 const {
   buildEscalationParkInput,
   ESCALATION_RESUMABLE_KINDS,
@@ -621,6 +622,12 @@ type Path = "direct" | "workflow";
 
 interface HarnessOpts {
   readonly path: Path;
+  /**
+   * BKL-275 — the exact string the parse wrote into `start_workflow.workflow`.
+   * Defaults to the declared id. Overridden by the BKL-275 block to drive the
+   * BARE-SUFFIX form the live engine was measured emitting.
+   */
+  readonly workflowName?: string;
   readonly total?: number;
   readonly orders?: readonly Record<string, unknown>[];
   readonly payments?: readonly Record<string, unknown>[];
@@ -663,11 +670,13 @@ function directCall(orderId?: string): ScriptedToolCall {
  * which is the strongest form of the anti-confabulation property and the reason
  * the input carries an empty `slots`.
  */
-const WORKFLOW_CALL: ScriptedToolCall = {
-  id: "tc-workflow-cancel",
-  name: "start_workflow",
-  input: { workflow: PAID_CANCEL_WORKFLOW_ID, slots: {} },
-};
+function workflowCall(name: string): ScriptedToolCall {
+  return {
+    id: "tc-workflow-cancel",
+    name: "start_workflow",
+    input: { workflow: name, slots: {} },
+  };
+}
 
 async function projectAnchorState(
   kind: string,
@@ -725,7 +734,9 @@ function buildHarness(opts: HarnessOpts) {
   });
 
   const model = scriptedModel([
-    opts.path === "direct" ? directCall(opts.directOrderId) : WORKFLOW_CALL,
+    opts.path === "direct"
+      ? directCall(opts.directOrderId)
+      : workflowCall(opts.workflowName ?? PAID_CANCEL_WORKFLOW_ID),
   ]);
   const adjudicator = makeAuditedAdjudicator({
     sink,
@@ -1248,6 +1259,98 @@ describe("LE2-024 retirement — a cancel utterance can no longer reach `order.c
     const direct = await drive({ path: "direct", answer: "sim" });
     expect(terminalVerdict(direct)).toBe("EXECUTE/paid_cancel_requires_confirmation");
     expect(direct.paymentStatus).toBe("refunded");
+  });
+});
+
+/**
+ * BKL-275 — THE NAME THE PARSE ACTUALLY WRITES.
+ *
+ * `start_workflow.workflow` is advertised with a closed `enum`, but this engine
+ * does not bind enums at decode (LE2-004), so what arrives is whatever the model
+ * wrote. Measured on epoch 54cf4353d5a32564 across 50 drives: of the 12
+ * `start_workflow` calls, 8 carried the full declared id, 2 carried the BARE
+ * SUFFIX `orders.paid-cancel`, and 2 omitted the property entirely. The
+ * bare-suffix form was rejected by the closed-surface check, so a customer
+ * asking to cancel a paid order reached NO route — the money-adjacent hole this
+ * row was re-pointed at.
+ *
+ * These cases drive the REAL turn seam and assert the CONFIRM SENTENCE, not an
+ * envelope: a selection that mints an anchor but never reaches the customer's
+ * money question would satisfy an envelope assertion and still be the defect.
+ */
+describe("BKL-275 — a workflow named by its unambiguous suffix still reaches the confirm", () => {
+  it("the BARE SUFFIX reaches the SAME confirm sentence as the declared id", async () => {
+    const declared = await drive({ path: "workflow" });
+    const suffix = await drive({ path: "workflow", workflowName: "orders.paid-cancel" });
+
+    // The money question the customer actually reads — byte-identical.
+    expect(declared.renders[0]).toBe(paidCancelConfirmText(SUB_BAND));
+    expect(suffix.renders[0]).toBe(paidCancelConfirmText(SUB_BAND));
+  });
+
+  it("and the money still moves on the customer's `sim`", async () => {
+    // Reaching the question is not the claim; reaching the REFUND is.
+    const suffix = await drive({
+      path: "workflow",
+      workflowName: "orders.paid-cancel",
+      answer: "sim",
+    });
+    expect(terminalVerdict(suffix)).toBe("EXECUTE/paid_cancel_requires_confirmation");
+    expect(suffix.orderStatus).toBe("canceled");
+    expect(suffix.paymentStatus).toBe("refunded");
+  });
+
+  it("an UNKNOWN workflow name is still REFUSED — the closed surface is not weakened", async () => {
+    // The direction that matters: leniency about SPELLING must not become
+    // leniency about WHAT MAY RUN. This name resolves to nothing, so it must
+    // reach no confirm and touch no money.
+    const unknown = await drive({ path: "workflow", workflowName: "workflow.orders.free-money" });
+    expect(unknown.renders[0]).not.toBe(paidCancelConfirmText(SUB_BAND));
+    expect(unknown.orderStatus).not.toBe("canceled");
+    expect(unknown.paymentStatus).not.toBe("refunded");
+  });
+
+  it("a name that is only a PARTIAL WORD of a declared id is refused", async () => {
+    // `cancel` is a substring of `workflow.orders.paid-cancel` but not a
+    // dot-bounded suffix of it. If the rule ever loosens to a bare `endsWith`,
+    // this reddens.
+    const partial = await drive({ path: "workflow", workflowName: "cancel" });
+    expect(partial.renders[0]).not.toBe(paidCancelConfirmText(SUB_BAND));
+    expect(partial.orderStatus).not.toBe("canceled");
+  });
+});
+
+describe("BKL-275 — resolveWorkflowName, the pure rule", () => {
+  const DECLARED = WORKFLOW_DEFINITIONS.map((w) => w.id);
+
+  it("resolves the measured bare-suffix emission to the declared id", () => {
+    expect(resolveWorkflowName("orders.paid-cancel", DECLARED)).toEqual({
+      id: PAID_CANCEL_WORKFLOW_ID,
+      normalizedFrom: "orders.paid-cancel",
+    });
+  });
+
+  it("EXACT wins — a declared id resolves to itself and is not marked normalized", () => {
+    expect(resolveWorkflowName(PAID_CANCEL_WORKFLOW_ID, DECLARED)).toEqual({
+      id: PAID_CANCEL_WORKFLOW_ID,
+    });
+  });
+
+  it("AMBIGUITY refuses — two declared ids sharing a suffix resolve to neither", () => {
+    // An ambiguous cancel is the coin flip LE2-024 retired the direct route to
+    // remove; it must never be resolved by picking one.
+    const ambiguous = ["workflow.orders.paid-cancel", "workflow.reservations.paid-cancel"];
+    expect(resolveWorkflowName("paid-cancel", ambiguous)).toEqual({ id: "paid-cancel" });
+  });
+
+  it("the match is DOT-BOUNDED, so a partial word never selects a route", () => {
+    expect(resolveWorkflowName("cancel", DECLARED)).toEqual({ id: "cancel" });
+  });
+
+  it("a non-string or empty name resolves to nothing", () => {
+    // The other measured malformed shape: the model omitted `workflow` entirely.
+    expect(resolveWorkflowName(undefined, DECLARED)).toEqual({ id: "" });
+    expect(resolveWorkflowName("", DECLARED)).toEqual({ id: "" });
   });
 });
 

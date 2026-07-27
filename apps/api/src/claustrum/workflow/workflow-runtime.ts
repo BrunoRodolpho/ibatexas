@@ -89,6 +89,9 @@ import {
 } from "@ibatexas/catalog";
 import { logger } from "../../lib/logger.js";
 import { sortedByCodeUnits } from "./workflow-ordering.js";
+// BKL-275 — the shared NAME rule. `workflow-surface.ts` imports only TYPES from
+// this module, so this value import closes no cycle.
+import { resolveWorkflowName } from "./workflow-surface.js";
 import {
   buildActivityPayload,
   renderWorkflowTemplate,
@@ -1265,7 +1268,27 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
         }));
     },
 
-    select({ turnId, workflowId, slots, allowedIntents }) {
+    select({ turnId, workflowId: namedWorkflow, slots, allowedIntents }) {
+      // BKL-275 — the model sometimes writes the workflow's id without its
+      // `workflow.` prefix (measured: `orders.paid-cancel` for a declared
+      // `workflow.orders.paid-cancel`). Resolve the NAME first; the closed-
+      // surface check below is unchanged and still decides.
+      const { id: workflowId, normalizedFrom } = resolveWorkflowName(
+        namedWorkflow,
+        deps.workflows.map((w) => w.id),
+      );
+      if (normalizedFrom !== undefined) {
+        logger.info(
+          {
+            component: "workflow",
+            event: "workflow.select.name_normalized",
+            turnId,
+            named: normalizedFrom,
+            workflowId,
+          },
+          "workflow: a selection named a workflow by an unambiguous suffix — resolved to the declared id",
+        );
+      }
       // Defense in depth, exactly like the planner's `allowed.has(capability)`:
       // never instantiate a workflow this turn was not offered, even if the
       // model (or a compromised prompt) names one.
