@@ -25,6 +25,7 @@ const {
   createParseCacheTelemetry,
   createRedisParseCacheStore,
   isCacheableParse,
+  isSilentParse,
   FULL_ROSTER_SURFACE_VERSION,
   KEY_SCHEMA_VERSION,
   PARSE_CACHE_TTL_SECONDS,
@@ -133,17 +134,57 @@ describe("buildParseCacheKey", () => {
   });
 });
 
-describe("isCacheableParse — the two deliberate refusals", () => {
+describe("isCacheableParse — the three deliberate refusals", () => {
   it("caches an ordinary single-pass parse", () => {
-    expect(isCacheableParse({ readEnriched: false, extractionFailed: false })).toBe(true);
+    expect(
+      isCacheableParse({ readEnriched: false, extractionFailed: false, silent: false }),
+    ).toBe(true);
   });
 
   it("REFUSES a read-enriched parse (live store state is baked into it)", () => {
-    expect(isCacheableParse({ readEnriched: true, extractionFailed: false })).toBe(false);
+    expect(
+      isCacheableParse({ readEnriched: true, extractionFailed: false, silent: false }),
+    ).toBe(false);
   });
 
   it("REFUSES an extraction failure (a transient wire fault must not be pinned)", () => {
-    expect(isCacheableParse({ readEnriched: false, extractionFailed: true })).toBe(false);
+    expect(
+      isCacheableParse({ readEnriched: false, extractionFailed: true, silent: false }),
+    ).toBe(false);
+  });
+
+  it("BKL-274 — REFUSES a silent parse (a 200 that selected nothing must not be pinned)", () => {
+    expect(
+      isCacheableParse({ readEnriched: false, extractionFailed: false, silent: true }),
+    ).toBe(false);
+  });
+});
+
+describe("isSilentParse — zero ARTIFACT, deliberately not zero PROPOSALS (BKL-274)", () => {
+  const EMPTY = { proposals: [], readToolCalls: [], dropped: [] };
+
+  it("is SILENT when the parse emitted nothing at all", () => {
+    expect(isSilentParse(EMPTY)).toBe(true);
+  });
+
+  it("is NOT silent when the model proposed a capability", () => {
+    expect(
+      isSilentParse({ ...EMPTY, proposals: [{ kind: "order.item.add", payload: {} }] }),
+    ).toBe(false);
+  });
+
+  // The three narrowing terms. Each of these has ZERO proposals and each must
+  // stay cacheable — which is the whole reason the predicate is not
+  // `proposals.length === 0`. Drop any clause below and the fix starts refusing
+  // legitimate entries.
+  it("is NOT silent when the model selected a READ tool (zero proposals, real determination)", () => {
+    expect(
+      isSilentParse({ ...EMPTY, readToolCalls: [{ name: "get_menu", input: {} }] }),
+    ).toBe(false);
+  });
+
+  it("is NOT silent when the constrained-generation wall DROPPED the selection", () => {
+    expect(isSilentParse({ ...EMPTY, dropped: ["staff.only.kind"] })).toBe(false);
   });
 });
 
@@ -221,6 +262,25 @@ describe("parse-cache telemetry — the residual repeat-miss rate", () => {
       repeatMisses: 0,
       stores: 1,
       bypasses: 1,
+      silentEntriesIgnored: 0,
+    });
+  });
+
+  // BKL-274 — the residue-drain counter. It is deliberately NOT folded into
+  // `misses`: a silent-entry refusal is a miss to the planner (so it re-parses)
+  // but an entirely different operational fact, and it is the only signal that
+  // shows pre-fix entries aging out. Both must move.
+  it("counts a refused silent ENTRY separately from an ordinary miss", () => {
+    const t = createParseCacheTelemetry();
+    t.recordSilentEntryIgnored();
+    t.recordMiss("me vê um brisket e uma batata");
+    expect(t.snapshot()).toEqual({
+      hits: 0,
+      misses: 1,
+      repeatMisses: 0,
+      stores: 0,
+      bypasses: 0,
+      silentEntriesIgnored: 1,
     });
   });
 });

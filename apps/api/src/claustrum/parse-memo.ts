@@ -35,14 +35,64 @@
 // a test.
 //
 // ── WHAT IS DELIBERATELY NOT CACHEABLE ─────────────────────────────────────────
-// Two parse shapes are refused by {@link isCacheableParse}, both for the same
-// doctrinal reason — their result is not a function of the prompt alone:
+// Three parse shapes are refused by {@link isCacheableParse}, all for the same
+// doctrinal reason — what would be stored is not a parse the doctrine above can
+// defend:
 //   - a READ-ENRICHED parse (the BKL-027 one-hop loop): its second pass is
 //     conditioned on live read RESULTS, so store state is baked into the parse.
 //     Caching it would cache an answer wearing a parse's clothes.
 //   - an EXTRACTION-FAILURE refuse (empty completion / completion error): a
 //     transient wire fault. Caching it would pin a temporary outage into every
 //     future repeat of that utterance until the key version moved.
+//   - a SILENT parse (BKL-274 — see {@link isSilentParse}): the model returned
+//     prose and selected NOTHING. Not zero-proposal — zero ARTIFACT: no
+//     proposal, no read-tool call, not even an out-of-plan drop.
+//
+// ── WHY SILENCE IS THE THIRD REFUSAL, AND WHY IT IS NOT "ZERO PROPOSALS" ───────
+// Zero proposals is NOT the defect and must stay cacheable. A parse that
+// selected only READ tools, or one whose selection the constrained-generation
+// wall DROPPED as out-of-plan, mints no envelope either — but both are genuine
+// determinations, deterministic functions of the prompt, and replaying them
+// reproduces exactly what the live path would have done. The defect is the parse
+// that determined nothing at all.
+//
+// Two things make silence uniquely unsafe to store, and only the second is
+// obvious:
+//
+//  1. IT IS INDISTINGUISHABLE FROM A FAULT. The extraction-failure refuse above
+//     catches the failures that announce themselves (an empty completion, a
+//     thrown completion, malformed tool-call JSON). Model silence announces
+//     nothing: the completion is well-formed, carries text, and returns 200. At
+//     this seam there is no evidence separating "correctly had nothing to
+//     propose" from "failed to parse an order". Storing it commits to the
+//     charitable reading for the full TTL.
+//
+//  2. IT IS THE ONE ENTRY SHAPE THAT CACHES THE ANSWER. This is the doctrinal
+//     line, not a cost argument. A replayed NON-silent parse leaves the whole
+//     pipeline something to do — RESOLVE re-hydrates, the kernel re-adjudicates,
+//     executors re-read, the renderer re-renders — which is exactly why two
+//     identical asks either side of a store change give different answers. A
+//     replayed SILENT parse leaves nothing to vary: no envelope to hydrate,
+//     nothing to adjudicate, nothing to execute. Worse, an L1 hit STAMPS the
+//     turn's funnel stage, and the planner's claim seam short-circuits on a
+//     stamped stage — so replaying silence also suppresses the claims plane that
+//     would otherwise have answered the turn. The output becomes a pure function
+//     of the cache entry. That is the definition of caching the answer, and the
+//     doctrine above calls it non-negotiable.
+//
+// The measured consequence (BKL-274, 2026-07-27, the pinned engine epoch): a
+// customer whose action-shaped ask goes silent gets silence again on the repeat
+// — with no model call at all — for the full TTL. Repeating yourself is the only
+// self-service remedy a customer has, and caching silence is precisely the thing
+// that defeats it.
+//
+// The refusal is enforced on BOTH sides of the store, deliberately. WRITE side:
+// the planner never stores a silent parse. READ side: {@link isSilentParse} is
+// re-checked on lookup (funnel-tier.ts's `lookupParse`), so an entry written by
+// an older deploy and still inside its 7-day TTL is treated as a MISS the moment
+// this code ships — no key-component bump, no eviction pass, and no good entry
+// thrown away. See that call site for why the read guard is the residue's whole
+// answer.
 //
 // ── THE KEY, AND THE ADDITIVE SLOT L2 WILL USE ─────────────────────────────────
 // The key is a digest over EVERY input the parse is a function of (see
@@ -192,15 +242,58 @@ export interface MemoizedParse {
 }
 
 /**
+ * BKL-274 — did this parse produce ANY artifact at all?
+ *
+ * SILENT means zero of everything the parse can emit: no proposal, no read-tool
+ * call, no out-of-plan drop. Each term is load-bearing and each one is a
+ * NARROWING — dropping any of them would refuse a legitimate entry:
+ *
+ *  - `proposals`     — the obvious one, but on its own it is the WRONG
+ *                      predicate: read-only and dropped-only parses have zero
+ *                      proposals and are perfectly cacheable.
+ *  - `readToolCalls` — the model selected READ tools. That is a determination
+ *                      about the utterance, and (when the reads were not
+ *                      executed — an executed read makes the parse
+ *                      read-enriched and refused by the clause above) it is
+ *                      still a pure function of the prompt.
+ *  - `dropped`       — the model DID select a capability and the deterministic
+ *                      constrained-generation wall rejected it. The wall is
+ *                      deterministic, so a replay reproduces the live verdict
+ *                      exactly; the drop is already visible in the trace as
+ *                      `droppedOutOfPlan`. Nothing here is a failure to parse.
+ *
+ * Deliberately takes the STORED shape rather than three loose booleans, so the
+ * predicate is computed from the very object about to be written and the two can
+ * never drift apart.
+ */
+export function isSilentParse(parse: {
+  readonly proposals: ReadonlyArray<unknown>;
+  readonly readToolCalls: ReadonlyArray<unknown>;
+  readonly dropped: ReadonlyArray<unknown>;
+}): boolean {
+  return (
+    parse.proposals.length === 0 &&
+    parse.readToolCalls.length === 0 &&
+    parse.dropped.length === 0
+  );
+}
+
+/**
  * Is this parse safe to memoize? See the module header's "deliberately not
- * cacheable" section — both refusals exist because the parse would otherwise
- * carry store state or a transient fault into every future repeat.
+ * cacheable" section — all three refusals exist because what would be stored is
+ * store state, a transient fault, or (BKL-274) no parse at all.
+ *
+ * Every field is REQUIRED, `silent` included. It would have been less churn to
+ * default it to `false`, and that is exactly the shape this ticket exists to
+ * repair: the defect was a call site passing an unconsidered `extractionFailed:
+ * false`. A required field makes every future caller answer the question.
  */
 export function isCacheableParse(input: {
   readonly readEnriched: boolean;
   readonly extractionFailed: boolean;
+  readonly silent: boolean;
 }): boolean {
-  return !input.readEnriched && !input.extractionFailed;
+  return !input.readEnriched && !input.extractionFailed && !input.silent;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -310,8 +403,19 @@ export interface ParseCacheCounters {
   readonly misses: number;
   readonly repeatMisses: number;
   readonly stores: number;
-  /** Parses refused by {@link isCacheableParse} (read-enriched / failed). */
+  /**
+   * Parses refused by {@link isCacheableParse} on the WRITE side — read-enriched,
+   * extraction-failed, or (BKL-274) silent.
+   */
   readonly bypasses: number;
+  /**
+   * BKL-274, READ side: lookups that FOUND a stored entry and refused to serve it
+   * because {@link isSilentParse} held. Counted separately from `misses` on
+   * purpose — this is the only number that shows the pre-fix residue draining. It
+   * decays to zero within one TTL of the fix shipping and must then STAY zero;
+   * a non-zero value afterwards means something is writing silence again.
+   */
+  readonly silentEntriesIgnored: number;
 }
 
 /** Bound on the distinct canonical utterances tracked for the repeat signal. */
@@ -323,6 +427,8 @@ export interface ParseCacheTelemetry {
   recordMiss(canonical: string): void;
   recordStore(): void;
   recordBypass(): void;
+  /** BKL-274 — a stored entry was found, judged silent, and NOT served. */
+  recordSilentEntryIgnored(): void;
   snapshot(): ParseCacheCounters;
 }
 
@@ -332,6 +438,7 @@ export function createParseCacheTelemetry(): ParseCacheTelemetry {
   let repeatMisses = 0;
   let stores = 0;
   let bypasses = 0;
+  let silentEntriesIgnored = 0;
   // Insertion-ordered Map used as an LRU-ish bound, the same idiom funnel-tier.ts
   // uses for its per-turn maps.
   const seen = new Set<string>();
@@ -357,6 +464,16 @@ export function createParseCacheTelemetry(): ParseCacheTelemetry {
     recordBypass: () => {
       bypasses += 1;
     },
-    snapshot: () => ({ hits, misses, repeatMisses, stores, bypasses }),
+    recordSilentEntryIgnored: () => {
+      silentEntriesIgnored += 1;
+    },
+    snapshot: () => ({
+      hits,
+      misses,
+      repeatMisses,
+      stores,
+      bypasses,
+      silentEntriesIgnored,
+    }),
   };
 }
