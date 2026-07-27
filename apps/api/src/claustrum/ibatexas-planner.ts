@@ -107,6 +107,8 @@ import type {
   FunnelPlannerSeam,
   FunnelScopeSeam,
 } from "./funnel-tier.js";
+// BKL-276 — the one "does this tier answer the turn itself?" predicate.
+import { tierAuthorsOwnReply } from "./funnel-tier.js";
 import { canonicalizeAliases } from "./alias-canonicalization.js";
 import {
   L2_SURFACE_VERSION,
@@ -2133,8 +2135,17 @@ export function createIbatexasPlanner(
       // marker ("passando mal", "alergia") or any other content span is a residual
       // token that makes `classifySocialOnly` return null and L0 never fire. There
       // is no span here for a wall to be denied.
-      const l0ClaimStage = deps.funnel?.stageFor(state.turnId);
-      if (l0ClaimStage !== undefined) {
+      // BKL-276 — the discriminator is the TIER, not the mere presence of a stamp.
+      // `stageFor` returns the stage record ANY tier stamped, and L2 stamps EVERY
+      // turn it scopes (`stampScope`, called on every non-L1 turn once a retriever
+      // is wired). A bare `!== undefined` therefore skipped the claim plane on the
+      // funnel's PRIMARY path the moment OLLAMA_EMBED_URL was configured: a
+      // grounded "qual o horário de funcionamento?" silently degraded to a REFUSE,
+      // with the `propose_claim` tool never reaching the wire at all. Only the tiers
+      // that ANSWER the turn themselves may skip claims — L1/L2 still parse, and
+      // their reply is produced downstream exactly as on a miss, where claims run.
+      const funnelStageForTurn = deps.funnel?.stageFor(state.turnId);
+      if (funnelStageForTurn !== undefined && tierAuthorsOwnReply(funnelStageForTurn.tier)) {
         return { candidates: [], completeness: [], droppedClaimTypes: [] };
       }
       // LE2-012 — THIS plane's claim-type scope. The enum below, the
