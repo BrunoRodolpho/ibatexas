@@ -54,6 +54,27 @@ export interface ParkedEscalationIntent {
   readonly nonce: string;
   readonly actorSessionId: string;
   readonly actorPrincipal: IntentEnvelope["actor"]["principal"];
+  /**
+   * LE2-024 — HASH-BEARING, and the second field of this record to earn that
+   * note after `resourceRefs`.
+   *
+   * `actor.customerId` is part of the `intentHash` pre-image. The CONVERSATIONAL
+   * plane's envelopes are minted by the planner, whose actor carries none, so
+   * every park this store had ever seen hashed identically without it and its
+   * absence was invisible.
+   *
+   * A WORKFLOW ACTIVITY's envelope is different: `submitActivity` mints it with
+   * the Capsule's own actor, which DOES carry `customerId`. Without this field
+   * the rebuilt envelope hashes differently, the engine's FIX-3 integrity check
+   * refuses, and the approval comes back `denied_by_kernel` — i.e. a
+   * workflow-created escalation is staff-visible and permanently unapprovable,
+   * which is exactly the hole BKL-103 exists to keep shut, reached through a
+   * door that did not exist when it was written.
+   *
+   * Optional and spread at both ends, so an ops refund and a directly-parsed
+   * customer cancel park and rebuild byte-identically to before.
+   */
+  readonly actorCustomerId?: string;
   /** The parked `actor.role` — MUST round-trip so `staffRoleGuard` re-runs on resume. */
   readonly actorRole?: string;
   readonly taint: IntentEnvelope["taint"];
@@ -428,6 +449,7 @@ export function buildEscalationParkInput(
   const proposerId =
     stampedProposerId ?? (stripStaffPrefix(envelope.actor.sessionId) || null);
   const role = (envelope.actor as { role?: string }).role;
+  const customerId = (envelope.actor as { customerId?: string }).customerId;
   // BKL-115 — the park-time instant. It is BOTH the projection `requestedAt` and
   // the best-available ESCALATE-time predecessor (`escalatedAt`) threaded onto the
   // resume receipt's `originalAt` (the true ESCALATE audit `at` is not reachable at
@@ -445,6 +467,8 @@ export function buildEscalationParkInput(
     actorSessionId: envelope.actor.sessionId,
     actorPrincipal: envelope.actor.principal,
     ...(role !== undefined ? { actorRole: role } : {}),
+    // LE2-024 — hash-bearing; see ParkedEscalationIntent.actorCustomerId.
+    ...(customerId !== undefined ? { actorCustomerId: customerId } : {}),
     taint: envelope.taint,
     // BKL-103 — hash-bearing; see ParkedEscalationIntent.resourceRefs. Spread so an
     // envelope WITHOUT refs (every ops refund) parks byte-identically to before.
