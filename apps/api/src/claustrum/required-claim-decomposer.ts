@@ -398,6 +398,13 @@ const PAIRING_PHRASE_RE =
   /(?<![a-z])(?:combina(?:m|ç[ãa]o|coes|ções)?|vai\s+bem|v[ãa]o\s+bem|acompanha(?:m|mento)?s?|harmoniza(?:m)?|junto\s+com|pedir\s+junto|pra\s+acompanhar|para\s+acompanhar|sugest[ãa]o|sugere|recomenda)/;
 
 /**
+ * The interrogative clause heads this family is asked with. Counted, not
+ * merely detected: the COUNT is what tells a two-question utterance from a
+ * one-question one (see {@link isBothPairingAsk}).
+ */
+const INTERROGATIVE_HEAD_RE = /(?<![a-z])(?:o\s+que|qual|quais)/g;
+
+/**
  * Does this utterance ask BOTH questions at once — "o que combina com a costela
  * e o que posso pôr no lugar?" Pure.
  *
@@ -424,7 +431,26 @@ const PAIRING_PHRASE_RE =
  */
 export function isBothPairingAsk(text: string): boolean {
   const t = text.toLowerCase();
-  return SUBSTITUTION_PHRASE_RE.test(t) && PAIRING_PHRASE_RE.test(t);
+  if (!SUBSTITUTION_PHRASE_RE.test(t) || !PAIRING_PHRASE_RE.test(t)) return false;
+  // Both vocabularies firing is NECESSARY and NOT SUFFICIENT. "o que vai bem no
+  // lugar da costela" carries both and is ONE question — the single ask that
+  // borrows the other's words, which the precedence in `classifyPairingAsk`
+  // exists to resolve. Measured, not assumed: the first cut of this predicate
+  // tested only the two vocabularies and degraded that utterance to UNKNOWN,
+  // which is the ticket's own primary use case answered with a shrug.
+  //
+  // What actually separates the two is TWO INTERROGATIVE CLAUSES. A genuine
+  // both-ask states each question with its own head ("o que combina com a
+  // costela e O QUE posso pôr no lugar?"); the borrowed-vocabulary single ask
+  // has exactly one.
+  //
+  // The threshold is deliberately conservative in the ANSWERING direction. A
+  // false positive here degrades a question the system could have answered — the
+  // worse failure, and the one that breaks the ticket. A false negative
+  // half-answers a rare unheaded two-question form ("o que combina com a costela
+  // e um substituto"), which is the behaviour that already shipped everywhere
+  // else and says nothing untrue. Given the choice, this errs toward answering.
+  return (t.match(INTERROGATIVE_HEAD_RE) ?? []).length >= 2;
 }
 
 /**
