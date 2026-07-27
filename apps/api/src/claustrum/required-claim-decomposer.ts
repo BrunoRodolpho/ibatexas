@@ -576,15 +576,56 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // horas vocês fecham?"), and `finalizad*` ("meu pedido foi finalizado?" — a
   // GENUINE order-status ask). What survives is the verb proper: fecha/fecho/fechar/
   // feche/fechei/fechem/fechando, finaliza/finalizo/finalizar/finalize/finalizei.
+  // BKL-271 — the `p[õo]r` branch is DELETED (not guarded). It had an EMPTY true-
+  // positive set and matched read vocabulary only. Three measured facts, in the order
+  // that forces the conclusion:
+  //   1. The character class was `[õo]` — NOT `ô` (U+00F4) — so the branch never
+  //      matched the infinitive `pôr` it was written for. Its intended true positive
+  //      was already unreachable.
+  //   2. It DID match the prefix "por" inside `pork` (the `(?<![a-z])` left guard is
+  //      satisfied by the space/hyphen in "pulled pork" / `pulled-pork`, a SEEDED
+  //      product), and likewise `porção` (the variant title of six seeded products),
+  //      `porco`, `portão`, `porta`, `porque`, `português`, `porém`. Note a trailing
+  //      ASCII guard alone does NOT close these — `ç` and the accented vowels sit
+  //      outside [a-z], so `porção` survives `(?![a-z])`; any such guard has to be
+  //      spelled against the REAL pt-BR alphabet (`[a-zà-ÿ]`, which covers ç U+00E7).
+  //   3. It also matched the BARE preposition, which no trailing guard can reach. Of
+  //      144 word-initial "por " bigrams across every pt-BR corpus in this repo, 111
+  //      (77%) are the politeness markers "por favor" / "por gentileza" and ZERO are
+  //      the verb. A politeness marker attaches to reads and writes alike, so the
+  //      branch suppressed EVERY read span on a polite utterance ("me mostra o
+  //      cardápio, por favor" classified to []).
+  // Restoring the branch as `p[õô]r` (i.e. actually matching `pôr`) was tried and is
+  // WRONG: `pôr` is not reliably a mutation verb. LE2-029's committed pairing e2e
+  // pins "o que combina com a costela bovina e o que posso pôr no lugar?" as a READ —
+  // a SUBSTITUTION question — and the modal frame "posso/pode pôr" is exactly how the
+  // infinitive shows up in this domain. Adding `ô` turned that read into a mutation
+  // and broke the e2e. The imperative forms carry the mutation, so `p[õo]e`
+  // (põe/poe) stays and `ponh` (ponha/ponho — never covered before, and grammatically
+  // incapable of the "posso X" read frame) joins it.
+  // `colo[cq]` / `tro[cq]` close the pt-BR c→q orthographic alternation: `colocar` →
+  // "coloque" and `trocar` → "troque" were NOT matched, so "coloque uma coca no
+  // carrinho" fired CART_CONTENTS_Q and the add was SILENTLY DROPPED (a live BKL-201
+  // hole, measured). `troq` is load-bearing for THIS change specifically: "troque a
+  // costela POR brisket" only suppressed before via the "por" defect, so deleting the
+  // branch without it would have regressed that mutation onto the read path.
+  // BKL-271 — `cancel` gains the SAME `(?!ad)` lookahead `finaliz` already carries,
+  // for the same reason and with the same evidence shape: `cancelad*` is a STATUS
+  // participle, not an imperative ("meu pedido foi cancelado?" / "minha reserva está
+  // cancelada?" both classified to [], losing ORDER_STATUS_Q / RESERVATION_STATUS_Q).
+  // 66 attested `cancelad[oa]s?` occurrences in-repo are status text; not one is a
+  // customer mutation request. The imperative family is untouched: cancela / cancelar
+  // / cancele / cancelei / cancelamento ("quero o cancelamento do pedido") all still
+  // match, exactly as fecha/finaliza do past their own lookaheads.
   // The net is spelled as TWO literals — the CART-EDIT roots and the ORDER-LIFECYCLE
   // roots — OR'd into the same `mutationImperative` boolean every span below gates
   // on, because the fused literal scored 28 on Sonar's regex-complexity budget of 20
   // (S5843). BOTH carry the same `(?<![a-z])` left guard, so the union of matched
   // strings is exactly what the single literal matched.
   const MUTATION_EDIT_ROOTS =
-    /(?<![a-z])(adicion|acrescent|remov|tir|coloc|p[õo]e|p[õo]r|mud|troc|limp|esvazi|aument|diminu)/;
+    /(?<![a-z])(adicion|acrescent|remov|tir|colo[cq]|p[õo]e|ponh|mud|tro[cq]|limp|esvazi|aument|diminu)/;
   const MUTATION_LIFECYCLE_ROOTS =
-    /(?<![a-z])(cancel|fech(?!ad|ament|ou|am)|finaliz(?!ad))/;
+    /(?<![a-z])(cancel(?!ad)|fech(?!ad|ament|ou|am)|finaliz(?!ad))/;
   const mutationImperative =
     MUTATION_EDIT_ROOTS.test(t) || MUTATION_LIFECYCLE_ROOTS.test(t);
 
