@@ -55,7 +55,11 @@ const EXPECTED_CAPABILITIES = [
   "order.item.remove",
   "order.coupon.apply",
   "order.checkout.create",
-  "order.cancel",
+  // LE2-024 — `order.cancel` REMOVED from the expected roster: its registration
+  // went with the ad-hoc paid-cancel retirement, paired with the kind leaving the
+  // chat tier (the drift mirror forces the two together). The kind is still a
+  // live pack intent — the workflow activity, the HTTP routes and the escalation
+  // resume all adjudicate it — it simply has no LLM-callable tool any more.
   "order.amend.add_item",
   "order.amend.update_qty",
   "order.amend.remove_item",
@@ -118,7 +122,9 @@ describe("RC-A1 Phase A — tool roster integrity", () => {
       (t) => t.capability as unknown as string,
     );
     expect(caps).toHaveLength(EXPECTED_CAPABILITIES.length);
-    expect(caps).toHaveLength(20);
+    // LE2-024 — 20→19: `ibatexas.order.cancel.v1` was removed with the ad-hoc
+    // paid-cancel retirement, paired with `order.cancel` leaving the chat tier.
+    expect(caps).toHaveLength(19);
     expect(new Set(caps)).toEqual(new Set(EXPECTED_CAPABILITIES));
   });
 
@@ -365,8 +371,8 @@ const PRE_DELETION_WHITELIST_PAIRS: ReadonlyArray<{
 ];
 
 describe("FE-T22 — chatSurfacedKinds replaces ADVERTISED_NOT_REGISTERED_WHITELIST (pinned equivalence)", () => {
-  it("the surface-derived set is exactly the 20 chat-tier kinds (T19's CHAT_DRIVABLE_TOOL_KINDS exemplar, post-FE-T09 D-a: 18→20)", () => {
-    expect(CHAT_SURFACED_KINDS.size).toBe(20);
+  it("the surface-derived set is exactly the 19 chat-tier kinds (T19's CHAT_DRIVABLE_TOOL_KINDS exemplar, post-FE-T09 D-a: 18→20; LE2-024: 20→19)", () => {
+    expect(CHAT_SURFACED_KINDS.size).toBe(19);
   });
 
   it("none of the 10 pre-deletion whitelist kinds is chat-surfaced (every one is exempt by construction)", () => {

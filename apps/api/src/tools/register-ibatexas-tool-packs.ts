@@ -55,7 +55,9 @@ import {
   addToCart,
   amendOrder,
   applyCoupon,
-  cancelOrder,
+  // LE2-024 — cancelOrder is no longer imported: its registration was retired
+  // with the ad-hoc paid-cancel path. The module stays exported and unit-tested;
+  // deleting it is a separate decision from this route change.
   cancelReservationPreAdjudicated,
   createCheckout,
   createReservationPreAdjudicated,
@@ -415,15 +417,30 @@ const IBATEXAS_TOOLS: ReadonlyArray<TD<unknown, unknown>> = [
       return createCheckout(input as never, ctx, extra);
     },
   }),
-  makeTool({
-    id: "ibatexas.order.cancel.v1",
-    capability: "order.cancel",
-    intentKind: "order.cancel",
-    description: "Cancelar um pedido do cliente (irreversível).",
-    riskLevel: "irreversible",
-    requiresConfirmation: true,
-    execute: (input, ctx) => cancelOrder(input as never, ctx),
-  }),
+  // LE2-024 RETIREMENT — `ibatexas.order.cancel.v1` is REMOVED here, the paired
+  // half of moving `order.cancel` to the identity tier in the catalog.
+  //
+  // This roster is the LLM-CALLABLE surface, and `CHAT_DRIVABLE_TOOL_KINDS`
+  // mirrors it set-equal in both directions (`chat-drivable-roster-drift.test.ts`).
+  // The catalog edit alone would break that mirror; so would this one alone. They
+  // are one change in two files, and the drift gate is what enforces it.
+  //
+  // NOTHING LOSES ITS EXECUTOR. The paid-cancel workflow's activity dispatches
+  // `executeOrderCancel` through `buildWorkflowRuntime`'s own
+  // `dispatchOrderCancel` — deliberately never this registry, because the
+  // registry is last-write-wins per capability and a workflow concern must not
+  // redefine what a directly-parsed cancel does. The HTTP routes call
+  // `executeOrderCancel` directly. An approved escalation runs
+  // `createApprovedOrderCancelExecutor`. All three are untouched.
+  //
+  // `cancelOrder` (packages/tools/src/cart/cancel-order.ts) now has no caller in
+  // this composition, which is the point: it is the Medusa-tooled path with NO
+  // PAID BRANCH — `cancelActivePaymentForOrder` returns early for a settled
+  // payment, so a paid cancel routed through it cancelled the order and left the
+  // money. That is divergence 2 of the parity suite, and retiring its only
+  // reachable caller is how this ticket closes it. The module is left in place
+  // rather than deleted: it is still exported and still unit-tested, and its
+  // deletion is a separate decision from this route change.
   // FE-T09 (D-a, the amend inversion) — the three granular kinds became the
   // model targets; `order.amend.request`'s tool entry is REMOVED here (it is
   // no longer model-proposable per capabilities.ts). It stays a valid,

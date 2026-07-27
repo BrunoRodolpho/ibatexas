@@ -1,4 +1,9 @@
 // Tests for gates/coverage.ts — the coverage gate behind `ibx journey coverage`.
+// LE2-024 — these cases used `order.cancel` as a representative CHAT-tier kind.
+// It left the chat tier with the ad-hoc paid-cancel retirement, so the coverage
+// domain (chat x decisions, derived from CHAT_DRIVABLE_TOOL_KINDS) no longer has
+// cells for it and every assertion below read `undefined`. Re-pointed at
+// `order.item.remove`; nothing here is about cancel semantics.
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -100,7 +105,7 @@ async function writeRegistry(dir: string): Promise<void> {
       id: "JOURNEY-953",
       status: "blocked",
       blockedBy: "[ws4]",
-      expects: ["  - intentKind: order.cancel", "    decision: REFUSE"].join("\n"),
+      expects: ["  - intentKind: order.item.remove", "    decision: REFUSE"].join("\n"),
     }),
   )
   // Verify-only journey — read-only acts produce no envelopes.
@@ -203,14 +208,14 @@ describe("coverage marking", () => {
   it("blocked journeys claim cells but never cover them", async () => {
     const report = await compute()
     const cell = report.cells.find(
-      (c) => c.key === coverageCellKey("chat", "order.cancel", "REFUSE"),
+      (c) => c.key === coverageCellKey("chat", "order.item.remove", "REFUSE"),
     )
     expect(cell?.state).toBe("uncovered")
     expect(cell?.coveredBy).toEqual([])
     const entry = report.journeys.find((j) => j.id === "JOURNEY-953")
     expect(entry?.counted).toBe(false)
     expect(entry?.claimedCells).toContain(
-      coverageCellKey("chat", "order.cancel", "REFUSE"),
+      coverageCellKey("chat", "order.item.remove", "REFUSE"),
     )
   })
 
@@ -373,11 +378,11 @@ describe("baseline verification (covered→uncovered fails)", () => {
   it("fails when a baseline-claimed cell is no longer covered", async () => {
     const report = await compute()
     const baseline = coverageBaseline(report)
-    baseline.covered.push(coverageCellKey("chat", "order.cancel", "EXECUTE"))
+    baseline.covered.push(coverageCellKey("chat", "order.item.remove", "EXECUTE"))
     const result = verifyCoverageBaseline(report, baseline)
     expect(result.ok).toBe(false)
     expect(result.regressions).toEqual([
-      { cell: coverageCellKey("chat", "order.cancel", "EXECUTE"), state: "uncovered" },
+      { cell: coverageCellKey("chat", "order.item.remove", "EXECUTE"), state: "uncovered" },
     ])
   })
 

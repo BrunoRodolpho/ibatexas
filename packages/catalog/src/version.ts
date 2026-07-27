@@ -163,4 +163,22 @@
 // evidence, and until it lands, a turn adjudicated under v12 and one under v13
 // were offered materially different choices for the same sentence. Preserving
 // exactly that distinction is what this serial is for.
-export const CATALOG_VERSION: number = 13
+// v14 (LE2-024 RETIREMENT) — the ad-hoc paid-cancel path is RETIRED.
+// `order.cancel` moves to the identity tier and loses its
+// `conversationTriggers` / `plannerAdvertisedBy`, and `ibatexas.order.cancel.v1`
+// leaves the LLM-callable roster in the same commit (the chat-drivable drift
+// mirror forces the two together).
+//
+// This is the first bump that NARROWS the parser's surface rather than widening
+// it: `express_intent`'s enum loses a member, so a turn adjudicated under v13
+// could propose a cancel directly and a turn under v14 cannot — it reaches
+// `workflow.orders.paid-cancel` or nothing. Every L1 parse cached under v13 is
+// unreachable by construction, which is the desired effect rather than a cost:
+// a cached v13 parse is exactly a cancel proposal this version exists to stop
+// honouring.
+//
+// The capability itself is untouched and fully adjudicable — the workflow's own
+// activity, the HTTP cancel routes' kind, the escalation-resume kind. What the
+// serial records is the loss of ONE ROUTE to it, and the reason: on that route a
+// paid cancel never stated the refund consequence and never issued the refund.
+export const CATALOG_VERSION: number = 14

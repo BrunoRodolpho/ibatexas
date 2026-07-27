@@ -2,7 +2,7 @@
  * T1a-2 — chat-drivable roster drift gate.
  *
  * `@ibatexas/packs-composed` exports `CHAT_DRIVABLE_TOOL_KINDS`: the data
- * mirror of the 20 LLM-callable mutating tool capability ids registered by
+ * mirror of the 19 LLM-callable mutating tool capability ids registered by
  * `listIbatexasToolPacks()` here in apps/api (post-FE-T09 D-a: 18→20). The
  * journey gates (`ibx journey lint` / `coverage`, DR-5) consume the mirror
  * because an apps/api export is unreachable from packages/* by design.
@@ -38,8 +38,12 @@ describe("T1a-2 — chat-drivable roster drift", () => {
     expect(new Set(CHAT_DRIVABLE_TOOL_KINDS)).toEqual(new Set(live));
   });
 
-  it("pins the verified WS3 roster size (20, post-FE-T09 D-a)", () => {
-    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(20);
+  it("pins the verified WS3 roster size (19, post-FE-T09 D-a: 18→20; LE2-024: 20→19)", () => {
+    // LE2-024 — `order.cancel` left the chat tier when the ad-hoc paid-cancel
+    // path was retired, and `ibatexas.order.cancel.v1` left this roster in the
+    // same commit. THIS GATE is what forced the two to move together: it pins
+    // the mirror set-equal in both directions, so either edit alone reddens it.
+    expect(CHAT_DRIVABLE_TOOL_KINDS).toHaveLength(19);
   });
 
   it("every mirrored kind keys capability === intentKind on the live tool", () => {

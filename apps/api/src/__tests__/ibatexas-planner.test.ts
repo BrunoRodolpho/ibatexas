@@ -968,7 +968,14 @@ describe("deriveIbatexasPlannerContext — real actor threading", () => {
     const authedIntents = plan(deriveIbatexasPlannerContext(mkStateWithCustomer("cus_99")));
     const guestIntents = plan(deriveIbatexasPlannerContext(mkStateWithCustomer(undefined)));
     expect(authedIntents).toContain("order.checkout.create");
-    expect(authedIntents).toContain("order.cancel");
+    // LE2-024 — `order.cancel` is NO LONGER proposable by the model on either
+    // side. The ad-hoc paid-cancel path was retired: a cancel utterance reaches
+    // `workflow.orders.paid-cancel` and nothing else. The kind stays fully
+    // adjudicable (the workflow's activity, the HTTP routes, the escalation
+    // resume) — what left is the PARSE. Asserted in the negative here so this
+    // test would catch it silently coming back.
+    expect(authedIntents).not.toContain("order.cancel");
+    expect(guestIntents).not.toContain("order.cancel");
     expect(guestIntents).not.toContain("order.checkout.create");
     expect(guestIntents).toContain("order.item.add"); // always proposable
   });

@@ -79,8 +79,8 @@ describe("generateChatDrivableToolKinds — filter behavior (FE-4.3)", () => {
     expect(generateChatDrivableToolKinds(withExtraNonChatDef)).toEqual(baseline)
   })
 
-  it("pins the real projection's cardinality (20, post-FE-T09 D-a: 18→20) — a silent drop or duplicate in CAPABILITY_DEFINITIONS would change this", () => {
-    expect(generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)).toHaveLength(20)
+  it("pins the real projection's cardinality (19, post-FE-T09 D-a: 18→20; LE2-024: 20→19) — a silent drop or duplicate in CAPABILITY_DEFINITIONS would change this", () => {
+    expect(generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)).toHaveLength(19)
   })
 })
 

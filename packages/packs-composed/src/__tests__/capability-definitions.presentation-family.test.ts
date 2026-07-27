@@ -114,19 +114,26 @@ describe("generateAdminLabels — pure projection + external pix input (FE-T23 t
 // ── Target 2: docs Auth rows ──────────────────────────────────────────────
 
 describe("generateChatCapabilityAuthLevels — pure projection (FE-T23 target 2)", () => {
-  it("projects exactly 20 auth levels, one per chat-tier capability (post-FE-T09 D-a: 18→20)", () => {
+  it("projects exactly 19 auth levels, one per chat-tier capability (post-FE-T09 D-a: 18→20; LE2-024: 20→19)", () => {
     expect(Object.keys(generateChatCapabilityAuthLevels(CAPABILITY_DEFINITIONS))).toHaveLength(
-      20,
+      19,
     )
   })
 
   it("hand-corrupt one definition's auth → diverges from the real value (required negative direction)", () => {
+    // LE2-024 — RE-POINTED off `order.cancel`, which left the chat tier when the
+    // ad-hoc cancel path was retired. The projection reads chat-tier rows only,
+    // so corrupting an identity-tier one changes nothing and this negative would
+    // have passed VACUOUSLY. `order.checkout.create` is the nearest kind that is
+    // still chat-tier and still `auth: "customer"`.
     const corrupted: readonly CapabilityDefinition[] = CAPABILITY_DEFINITIONS.map((def) =>
-      def.kind === "order.cancel" && def.tier === "chat"
+      def.kind === "order.checkout.create" && def.tier === "chat"
         ? { ...def, auth: "guest" as const }
         : def,
     )
-    expect(generateChatCapabilityAuthLevels(corrupted)["order.cancel"]).not.toBe("customer")
+    expect(generateChatCapabilityAuthLevels(corrupted)["order.checkout.create"]).not.toBe(
+      "customer",
+    )
   })
 })
 
@@ -158,7 +165,6 @@ describe("docs/architecture/design/agent-tools.md Auth-row freshness (FE-T23 tar
     { kind: "order.item.remove", toolName: "remove_from_cart" },
     { kind: "order.coupon.apply", toolName: "apply_coupon" },
     { kind: "order.checkout.create", toolName: "create_checkout" },
-    { kind: "order.cancel", toolName: "cancel_order" },
     { kind: "order.note.add", toolName: "add_order_note" },
     { kind: "order.review.submit", toolName: "submit_review" },
     { kind: "reservation.create", toolName: "create_reservation" },
@@ -177,8 +183,11 @@ describe("docs/architecture/design/agent-tools.md Auth-row freshness (FE-T23 tar
     { kind: "whatsapp.handoff.request", toolName: "request_human_handoff" },
   ]
 
-  it("covers exactly 17 of the 20 chat-tier kinds (the remaining 3 are the granular order.amend.* kinds — no legacy name to key a heading by; asserted present below)", () => {
-    expect(MATCHED).toHaveLength(17)
+  it("covers exactly 16 of the 19 chat-tier kinds (the remaining 3 are the granular order.amend.* kinds — no legacy name to key a heading by; asserted present below)", () => {
+    // LE2-024 — 17→16 of 20→19: `cancel_order` left this table with
+    // `order.cancel`'s chat tier. The doc section it keyed is now the retirement
+    // note, which carries no Auth row by design.
+    expect(MATCHED).toHaveLength(16)
   })
 
   for (const { kind, toolName } of MATCHED) {

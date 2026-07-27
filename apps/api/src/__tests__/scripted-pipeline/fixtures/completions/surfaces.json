@@ -17,7 +17,6 @@
                 "order.item.remove",
                 "order.coupon.apply",
                 "order.checkout.create",
-                "order.cancel",
                 "order.amend.add_item",
                 "order.amend.update_qty",
                 "order.amend.remove_item",

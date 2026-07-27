@@ -98,10 +98,46 @@ describe("generateOpsForbiddenDestructiveKinds — pure projection (FE-T24 targe
     expect(corruptedGenerated.size).toBe(2)
   })
 
-  it("spans both tiers — order.cancel is tier:\"chat\", payment.waive/payment.status.force are tier:\"identity\" (the forbid is orthogonal to chat-drivability)", () => {
-    const orderCancel = CAPABILITY_DEFINITIONS.find((d) => d.kind === "order.cancel")
-    const paymentWaive = CAPABILITY_DEFINITIONS.find((d) => d.kind === "payment.waive")
-    expect(orderCancel?.tier).toBe("chat")
-    expect(paymentWaive?.tier).toBe("identity")
+  it("is ORTHOGONAL to chat-drivability — proved structurally, since the corpus no longer witnesses it", () => {
+    // THIS CASE CHANGED SHAPE IN LE2-024, and the reason is worth stating.
+    //
+    // It used to read "spans both tiers", pointing at `order.cancel` (chat) and
+    // `payment.waive` (identity) as the two witnesses. When the ad-hoc cancel
+    // path was retired `order.cancel` moved to the identity tier, and with it
+    // went the LAST chat-tier ops-forbidden kind — all three are identity now.
+    //
+    // Flipping the assertion to `toBe("identity")` and keeping the old name
+    // would have been the easy edit and a false one: the property under test is
+    // that the forbid does not care about the tier, and a corpus where every
+    // member shares one tier cannot witness that either way. So the property is
+    // now proved where it actually lives — in the generator, which never reads
+    // `tier` — using a SYNTHETIC chat-tier row. That is stronger than the
+    // example it replaces, because it stays true no matter how the corpus moves.
+    const forbidden = CAPABILITY_DEFINITIONS.filter(
+      (d) => d.opsForbiddenDestructive === true,
+    )
+    expect(forbidden.length).toBeGreaterThan(0)
+    // The corpus fact, recorded rather than asserted as the property.
+    expect(forbidden.every((d) => d.tier === "identity")).toBe(true)
+
+    // THE PROPERTY: a CHAT-tier row carrying the flag is projected just the same.
+    const synthetic = [
+      ...CAPABILITY_DEFINITIONS,
+      {
+        kind: "synthetic.chat.destructive",
+        pack: "ibatexas/pack-orders",
+        mutating: true,
+        tier: "chat",
+        plannerAdvertisedBy: ["ibatexas/pack-orders"],
+        surfaces: ["chat"],
+        auth: "customer",
+        description: "Sintético — só para provar que o forbid ignora o tier.",
+        conversationTriggers: [],
+        opsForbiddenDestructive: true,
+      },
+    ] as unknown as readonly CapabilityDefinition[]
+    expect(generateOpsForbiddenDestructiveKinds(synthetic)).toContain(
+      "synthetic.chat.destructive",
+    )
   })
 })

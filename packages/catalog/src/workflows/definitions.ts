@@ -664,16 +664,31 @@ export const PAID_CANCEL_WORKFLOW: WorkflowDefinition = {
   // always-proposable cart floor; `order.checkout.create` is the AUTHENTICATION
   // conjunct (the orders planner's `if (isAuthenticated)` branch) — offering a
   // cancel to a guest would advertise a route whose anchor must REFUSE at
-  // `requireAuthenticated`. `order.cancel` is the conjunct that says the ACT this
-  // route exists to perform is available at all: it is the orders planner's
-  // authenticated branch too, so it never narrows further than the line above in
-  // practice — and it is here so that the day `order.cancel` stops being offered
-  // (the retirement question, or an ops kill), this workflow stops being offered
-  // WITH it rather than outliving the capability it fronts.
+  // `requireAuthenticated`.
+  //
+  // ── THE `order.cancel` CONJUNCT WAS REMOVED BY THE RETIREMENT, AND THE
+  //    REASONING THAT PUT IT THERE INVERTED ─────────────────────────────────
+  //
+  // It was authored so that "the day `order.cancel` stops being offered, this
+  // workflow stops being offered WITH it rather than outliving the capability it
+  // fronts". That day came, and the premise turned out to be backwards: the
+  // capability stopped being ADVERTISED precisely BECAUSE this workflow now owns
+  // the ask. Keeping the conjunct made retirement self-defeating — the planner
+  // drops `order.cancel` from `allowedIntents`, the matcher stops holding, the
+  // workflow is not advertised, and a cancel utterance reaches NOTHING.
+  //
+  // The parity suite caught it immediately (every workflow case rendered the
+  // model's fallback instead of the confirm), which is the argument for a matcher
+  // being a DECLARED precondition a test can drive rather than a comment.
+  //
+  // What the conjunct was really reaching for — "do not offer this route where its
+  // act cannot run" — is already covered and better: `confirmPaidCancel` REFUSEs
+  // on no-order and past-PONR, the pre-checks speak before any confirm, and the
+  // activity meets the real `gatePaidCancel`. Advertisement is not the layer that
+  // check belongs in.
   matchers: [
     { capability: "order.cart.ensure" },
     { capability: "order.checkout.create" },
-    { capability: "order.cancel" },
   ],
   selection: { capability: "order.cancel.request" },
   // NONE, and for the reason reorder-last has none: the one value this route

@@ -176,3 +176,54 @@ describe("registerWorkflowScopedTools — the reorder activity", () => {
     );
   });
 });
+
+describe("registerWorkflowScopedTools — the LE2-024 order.cancel GUARD", () => {
+  it("registers a handler for `order.cancel`, so the api can still boot", () => {
+    // The retirement removed `ibatexas.order.cancel.v1` from the LLM-callable
+    // roster, and `order.cancel` is a paid-cancel workflow ACTIVITY — so without
+    // an entry here `registerWorkflowScopedTools` throws at composition time and
+    // the api does not start. This is the regression that would reintroduce that.
+    const tools = createToolRegistry();
+    expect(() => registerWorkflowScopedTools(tools, ["order.cancel"])).not.toThrow();
+    expect(tools.hasCapability("order.cancel")).toBe(true);
+  });
+
+  it("that handler THROWS — the 'never through the registry' contract is EXECUTABLE", async () => {
+    // THE POINT OF THE ENTRY. The workflow runtime dispatches this kind through
+    // `buildWorkflowRuntime`'s `dispatchOrderCancel` -> `executeOrderCancel`,
+    // which settles the implied refund BEFORE the order transition. Reaching the
+    // registry means that special-case was removed — and the obvious fallback
+    // (`cancelOrder`) has NO PAID PATH, so it would cancel the order and leave
+    // the customer's money.
+    //
+    // Without this case the contract would be a comment. With it, a future edit
+    // that quietly rewires dispatch fails loudly instead of not refunding.
+    const tools = createToolRegistry();
+    registerWorkflowScopedTools(tools, ["order.cancel"]);
+    const tool = tools.list().find((t) => String(t.capability) === "order.cancel");
+    expect(tool).toBeDefined();
+
+    await expect(
+      Promise.resolve().then(() =>
+        (tool as { execute: (i: unknown, c: unknown) => unknown }).execute({}, {}),
+      ),
+    ).rejects.toThrow(/reached the TOOL REGISTRY/);
+  });
+
+  it("the throw names the REMEDY and the money consequence, not just the fault", async () => {
+    const tools = createToolRegistry();
+    registerWorkflowScopedTools(tools, ["order.cancel"]);
+    const tool = tools.list().find((t) => String(t.capability) === "order.cancel");
+    let message = "";
+    try {
+      await Promise.resolve().then(() =>
+        (tool as { execute: (i: unknown, c: unknown) => unknown }).execute({}, {}),
+      );
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("dispatchOrderCancel");
+    expect(message).toContain("no paid path");
+    expect(message).toContain("Restore the special-case");
+  });
+});

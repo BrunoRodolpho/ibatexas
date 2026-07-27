@@ -219,6 +219,61 @@ const WORKFLOW_SCOPED_TOOLS: ReadonlyMap<string, ToolDefinition<unknown, unknown
         },
       } satisfies ToolDefinition<unknown, unknown>,
     ],
+    [
+      // LE2-024 — `order.cancel`'s REGISTRY ENTRY, and it exists to THROW.
+      //
+      // ── WHY THIS KIND NEEDS AN ENTRY AT ALL NOW ───────────────────────────
+      //
+      // Until the retirement, `order.cancel` had a registered LLM-callable tool
+      // (`ibatexas.order.cancel.v1` → `cancelOrder`), so this composition-time
+      // assert found one and moved on. Retiring the ad-hoc path removed that
+      // registration, and `order.cancel` is still a paid-cancel workflow
+      // ACTIVITY — so without an entry here the api no longer BOOTS.
+      //
+      // ── WHY IT THROWS INSTEAD OF CANCELLING ───────────────────────────────
+      //
+      // Because reaching it would be a bug, and a specific one. The workflow
+      // runtime dispatches this kind through `buildWorkflowRuntime`'s own
+      // `dispatchOrderCancel` → `executeOrderCancel`, which is refund-first:
+      // it adjudicates a `payment.refund.issue` BEFORE any order transition and
+      // throws if that does not settle. The registry is deliberately NOT that
+      // path.
+      //
+      // The tempting entry — wire `cancelOrder` here so the kind "has a tool" —
+      // is the one thing that must not happen. `cancelOrder` has NO PAID BRANCH:
+      // `cancelActivePaymentForOrder` returns early for a settled payment, so it
+      // cancels the order and silently leaves the money. That is parity
+      // divergence 2, the defect this whole retirement exists to close, and
+      // wiring it here would reintroduce it through the back door — reachable
+      // only if someone later drops the `dispatchActivity` special-case, i.e.
+      // exactly when nobody is looking.
+      //
+      // So this handler makes the "never through the registry" contract
+      // EXECUTABLE: satisfy the boot assert, and if the special-case is ever
+      // removed, fail loudly at dispatch instead of quietly not refunding.
+      "order.cancel",
+      {
+        id: "ibatexas.order.cancel.workflowGuard.v1",
+        capability: "order.cancel" as CapabilityId,
+        intentKind: "order.cancel" as IntentKind,
+        description:
+          "Cancelar um pedido do cliente (roteado pelo runtime de workflow, não por este registro).",
+        inputSchema: {},
+        outputSchema: {},
+        riskLevel: "irreversible",
+        execute: () => {
+          throw new Error(
+            "[workflow] order.cancel reached the TOOL REGISTRY. It must not: the " +
+              "workflow runtime dispatches this kind through dispatchOrderCancel " +
+              "-> executeOrderCancel, which settles the implied refund BEFORE the " +
+              "order transition. Reaching here means buildWorkflowRuntime's " +
+              "dispatchActivity special-case was removed, and the fallback " +
+              "(`cancelOrder`) has no paid path — it would cancel the order and " +
+              "leave the customer's money. Restore the special-case.",
+          );
+        },
+      } satisfies ToolDefinition<unknown, unknown>,
+    ],
   ]);
 
 /**

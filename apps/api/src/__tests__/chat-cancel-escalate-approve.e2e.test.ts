@@ -182,6 +182,7 @@ vi.mock("@ibatexas/nats-client", async (importOriginal) => {
 
 // ── Imports (after the mocks) ─────────────────────────────────────────────────
 
+import { buildEnvelope } from "@adjudicate/core";
 import { resolveAndAssemble } from "../claustrum/resolve-and-assemble.js";
 import {
   composeCustomerConductor,
@@ -189,7 +190,6 @@ import {
   makeAuditedAdjudicator,
   makeCapturingAuditSink,
   makeStatefulCustomerSession,
-  runCustomerTurn,
   scriptedModel,
   type ScriptedToolCall,
 } from "./customer-e2e-harness.js";
@@ -394,7 +394,7 @@ function buildHarness() {
     now: () => "2026-07-25T13:00:00.000Z",
   });
 
-  return { harness, session, sink, parkStore, engine, markSpy };
+  return { harness, session, sink, parkStore, engine, markSpy, adjudicator, parkingHandoff };
 }
 
 /**
@@ -410,18 +410,56 @@ function buildHarness() {
  * reachable through the confirm-resume, so a single-turn test would assert against
  * a state production never reaches here.
  */
-async function escalateViaTurns(harness: ReturnType<typeof buildHarness>["harness"]) {
-  const proposal = await runCustomerTurn(harness, {
-    customerId: CUSTOMER,
-    conversationId: CONVERSATION,
-    text: "cancela meu pedido, por favor",
-  });
-  const confirm = await runCustomerTurn(harness, {
-    customerId: CUSTOMER,
-    conversationId: CONVERSATION,
-    text: "sim",
-  });
-  return { proposal, confirm };
+async function escalateViaTurns(harness: ReturnType<typeof buildHarness>) {
+  // ── LE2-024 — REPOINTED OFF THE CHAT PARSE, which no longer exists ──────────
+  //
+  // This driver used to send two chat turns ("cancela meu pedido" then "sim")
+  // and let the planner mint an `order.cancel` envelope. LE2-024 retired that
+  // route: `order.cancel` is identity-tier and off the `express_intent` enum, so
+  // the planner drops it and every assertion below would measure the retirement
+  // rather than the BKL-103 contract.
+  //
+  // The contract itself is untouched, and so is a live plane that exercises it:
+  // the HTTP cancel routes build this exact envelope — `{orderId, actorId,
+  // reason}` off the authenticated customer, no parse involved — and adjudicate
+  // it against `resolveAndAssemble` state. That is what this driver now does, so
+  // the file keeps testing escalate → park → approve → resume on a surface that
+  // really exists.
+  //
+  // The CUSTOMER-PLANE (workflow) half of the same contract is proved in
+  // `paid-cancel-parity.e2e.test.ts`, which drives the same real approval engine
+  // over a workflow-created park. Between the two files both live planes are
+  // covered, and neither duplicates the other's composition.
+  //
+  // The two "turns" are kept as two ADJUDICATIONS for the same reason the turns
+  // existed: the park seam is only reachable from the second one, so a
+  // single-shot test would assert against a state production never reaches.
+  // ONE adjudication, not two. The chat driver needed a second turn because the
+  // blind order resolution parked a "is this the right order?" confirm first;
+  // this plane names the order EXPLICITLY, so `autoResolvedMoneyRef` is never
+  // stamped, `confirmOnAutoResolvedRef` never fires, and `gatePaidCancel` speaks
+  // on the first pass — which is exactly what the HTTP route sees.
+  const payload = { orderId: ORDER_ID, actorId: CUSTOMER, reason: "mudei de ideia" };
+  const envelope = buildEnvelope({
+    kind: "order.cancel",
+    payload,
+    actor: { principal: "llm", role: "customer", sessionId: CONVERSATION },
+    taint: "UNTRUSTED",
+    nonce: `http-${CONVERSATION}`,
+  }) as IntentEnvelope;
+  const state = await projectCancelResumeState(envelope);
+  const decision = await harness.adjudicator.adjudicate(
+    envelope as never,
+    state as never,
+    CUSTOMER_ROUTER as never,
+  );
+  // The route's own ESCALATE branch: hand it to the parking handoff exactly as
+  // `publishPaidCancelEscalation` does.
+  if (String((decision as { kind?: unknown }).kind) === "ESCALATE") {
+    await harness.parkingHandoff.queue(envelope);
+  }
+  const outcome = { decision: decision as { kind: string } };
+  return { proposal: outcome, confirm: outcome };
 }
 
 describe("BKL-103 — >=R$1.000 paid cancel: ESCALATE → park → staff-visible → OWNER approve → resume", () => {
@@ -432,12 +470,13 @@ describe("BKL-103 — >=R$1.000 paid cancel: ESCALATE → park → staff-visible
   });
 
   it("ESCALATEs and PARKS with the proposer stamp; an OWNER approval resumes it to EXACTLY ONE cancel", async () => {
-    const { harness, sink, parkStore, engine, markSpy } = buildHarness();
+    const built = buildHarness();
+    const { sink, parkStore, engine, markSpy } = built;
 
     // ── 1) the customer turns: propose → confirm the auto-resolved order ────
-    const { proposal, confirm } = await escalateViaTurns(harness);
-    expect(proposal.decision.kind).toBe("REQUEST_CONFIRMATION");
-    expect(confirm.decision.kind).toBe("ESCALATE");
+    const { proposal } = await escalateViaTurns(built);
+    // ONE adjudication on this plane — see `escalateViaTurns`.
+    expect(proposal.decision.kind).toBe("ESCALATE");
 
     const escalateRec = sink.lastDecision("ESCALATE");
     expect(escalateRec).toBeDefined();
@@ -552,8 +591,9 @@ describe("BKL-103 — >=R$1.000 paid cancel: ESCALATE → park → staff-visible
   });
 
   it("STATE CHANGED UNDER THE PARK — the order was cancelled meanwhile → FRESH adjudication REFUSEs; nothing executes; park consumed", async () => {
-    const { harness, parkStore, engine } = buildHarness();
-    const { confirm } = await escalateViaTurns(harness);
+    const built = buildHarness();
+    const { parkStore, engine } = built;
+    const { confirm } = await escalateViaTurns(built);
     expect(confirm.decision.kind).toBe("ESCALATE");
     const token = parkStore.lastToken()!;
 
@@ -576,8 +616,9 @@ describe("BKL-103 — >=R$1.000 paid cancel: ESCALATE → park → staff-visible
   });
 
   it("a DENIED approval never runs the cancel and consumes the park", async () => {
-    const { harness, parkStore, engine } = buildHarness();
-    await escalateViaTurns(harness);
+    const built = buildHarness();
+    const { parkStore, engine } = built;
+    await escalateViaTurns(built);
     const token = parkStore.lastToken()!;
     const result = await engine.resolve({
       token,
@@ -591,8 +632,9 @@ describe("BKL-103 — >=R$1.000 paid cancel: ESCALATE → park → staff-visible
 
   it("BELOW-BAND (<R$1.000) paid cancel is UNCHANGED — REQUEST_CONFIRMATION and NOTHING parks", async () => {
     seedOrder(SMALL_TOTAL);
-    const { harness, parkStore } = buildHarness();
-    const { proposal, confirm } = await escalateViaTurns(harness);
+    const built = buildHarness();
+    const { parkStore } = built;
+    const { proposal, confirm } = await escalateViaTurns(built);
     // Turn 1 confirms (auto-resolve), and the "sim" resume EXECUTEs or confirms —
     // either way it never ESCALATEs, so nothing reaches the escalation park.
     expect(proposal.decision.kind).toBe("REQUEST_CONFIRMATION");

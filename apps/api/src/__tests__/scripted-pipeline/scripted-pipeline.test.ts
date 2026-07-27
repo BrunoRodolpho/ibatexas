@@ -134,6 +134,13 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
 
     // Seeded per run; bound to {{ORDER_ID}} at fixture load.
     const ORDER_ID = `t26b-order-${randomUUID()}`;
+    // LE2-024 — the `cancel-confirm-gate` GOLDEN was retired with the ad-hoc
+    // paid-cancel route (its coverage moved to
+    // `apps/api/src/__tests__/paid-cancel-parity.e2e.test.ts`). The seeded
+    // customer + order stay: they are the only entity state in this suite, the
+    // audit-namespace assertions read them, and an unrelated fixture keying off
+    // them would otherwise have no order to resolve. The id keeps its old label
+    // so the seeded rows remain traceable to the run that created them.
     const CANCEL_CUSTOMER_ID = cc006CustomerId("cancel-confirm-gate");
     const substitutions = { ORDER_ID } as const;
 
@@ -241,7 +248,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
         throw new Error(checkResult.details);
       }
       expect(checkResult.passed).toBe(true);
-      expect(checkResult.details).toMatch(/Verified 3 golden conversation/);
+      expect(checkResult.details).toMatch(/Verified 2 golden conversation/);
     });
 
     it("audit ledger: each adjudicated turn lands in intent_audit under its HASHED session namespace (D-012); the empty-plan turn audits nothing", async () => {
@@ -280,13 +287,16 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // ONLY for the empty-plan/small-talk turn. The decision-aware responder
       // (Phase A) is MODEL-FREE on a real REFUSE (renders the explainer) and on
       // REQUEST_CONFIRMATION (returns decision.prompt), so cart-intent-refused
-      // and cancel-confirm-gate make NO responder model call. Total: 3 + 1 = 4.
+      // makes NO responder model call.
+      //
+      // LE2-024 — 3 conversations → 2 (cancel-confirm-gate retired with the
+      // ad-hoc paid-cancel route), so 2 planner + 1 responder = 3.
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes).toHaveLength(4);
+      expect(completes).toHaveLength(3);
       // Content-keyed, never positional: every call resolved to a labeled
       // fixture (an unknown key would have thrown the turn).
       expect(completes.every((c) => c.label !== null)).toBe(true);
-      expect(new Set(completes.map((c) => c.label)).size).toBe(4);
+      expect(new Set(completes.map((c) => c.label)).size).toBe(3);
       // DEF-005: grounding is opt-in (CLAUSTRUM_GROUNDING_ENABLED) and runs as a
       // DESIGNED no-op by default, so the grounding port never calls embed in this
       // golden run — zero embed calls, not a swallowed throw. (With the flag on AND
@@ -342,7 +352,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // on both drives and still returns the same completion for the same content
       // key, and the re-driven reply text asserted above is identical.
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes).toHaveLength(5);
+      expect(completes).toHaveLength(4);
       // ONE planner call across both drives: the second was served from the cache.
       expect(
         completes.filter((c) => c.label === "planner:smalltalk-noop"),

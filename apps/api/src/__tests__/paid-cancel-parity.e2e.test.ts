@@ -52,7 +52,7 @@ import "./setup.js";
 
 // ── Client-boundary mocks (must be hoisted in the TEST file, not the harness) ──
 
-const { redisFake, orderRowsFake, paymentRowsFake, natsSpy } = vi.hoisted(() => {
+const { redisFake, orderRowsFake, paymentRowsFake, natsSpy, storeDown } = vi.hoisted(() => {
   const strings = new Map<string, string>();
   const hashes = new Map<string, Record<string, string>>();
   return {
@@ -60,6 +60,15 @@ const { redisFake, orderRowsFake, paymentRowsFake, natsSpy } = vi.hoisted(() => 
     orderRowsFake: { rows: [] as Record<string, unknown>[] },
     paymentRowsFake: { rows: new Map<string, Record<string, unknown>>() },
     natsSpy: { calls: [] as { event: string; payload: Record<string, unknown> }[] },
+    /**
+     * LE2-024 — make the projection READ THROW, not merely come back empty.
+     *
+     * A `vi.spyOn(createOrderQueryService(), …)` cannot express this: the factory
+     * returns a FRESH object per call, so the spy binds to an instance nothing
+     * downstream ever uses and the drive succeeds while the test believes the
+     * store is down. The switch has to live inside the double.
+     */
+    storeDown: { on: false },
   };
 });
 
@@ -146,6 +155,7 @@ vi.mock("@ibatexas/domain", async (importOriginal) => {
     ...actual,
     createOrderQueryService: () => ({
       getById: async (id: string, opts?: { customerId?: string }) => {
+        if (storeDown.on) throw new Error("projection store unreachable");
         const row = orderRowsFake.rows.find((r) => r["id"] === id) ?? null;
         if (row === null) return null;
         if (opts?.customerId !== undefined && row["customerId"] !== opts.customerId) {
@@ -154,6 +164,7 @@ vi.mock("@ibatexas/domain", async (importOriginal) => {
         return row;
       },
       listByCustomer: async (customerId: string, input?: { limit?: number }) => {
+        if (storeDown.on) throw new Error("projection store unreachable");
         const owned = sorted(customerId);
         return { orders: owned.slice(0, input?.limit ?? 20), count: owned.length };
       },
@@ -267,6 +278,7 @@ const { createApprovedOrderCancelExecutor } = await import(
 const { settleApprovedInnerRefund } = await import("../escalation/approved-inner-refund.js");
 const { buildOpsRefundResumeState } = await import("../ops/ops-resolver.js");
 const { adjudicateAndAudit } = await import("@adjudicate/core/kernel");
+const { buildEnvelope } = await import("@adjudicate/core");
 const { buildLanguageEngineAuditMetadata } = await import(
   "../claustrum/language-engine/audit-metadata.js"
 );
@@ -674,7 +686,14 @@ async function projectAnchorState(
 
 function buildHarness(opts: HarnessOpts) {
   const total = opts.total ?? SUB_BAND;
-  orderRowsFake.rows = [...(opts.orders ?? [orderRow({ totalInCentavos: total })])];
+  // DEEP-COPIED, not spread. A parity case builds ONE fixture array and drives it
+  // down BOTH paths, so sharing the row OBJECTS lets the first arm's cancel
+  // mutate the second arm's starting state — which showed up as the workflow
+  // arm meeting `already_cancelled` on a fixture the test had just declared
+  // pending. The array spread copies the list and not the rows.
+  orderRowsFake.rows = (opts.orders ?? [orderRow({ totalInCentavos: total })]).map((r) => ({
+    ...r,
+  }));
   paymentRowsFake.rows = new Map(
     (opts.payments ?? [paymentRow({ amountInCentavos: total })]).map((p) => [
       String(p["id"]),
@@ -1004,9 +1023,107 @@ function observe(
  * runs that never park, because a turn that had nothing to answer is itself an
  * observation — it lands in `renders` and shows up in the diff.
  */
+/**
+ * THE DIRECT LADDER, driven where it still LIVES — LE2-024's retirement half.
+ *
+ * Until the retirement this arm sent chat turns and let the planner mint an
+ * `order.cancel` envelope. That route is gone: the kind is identity-tier and off
+ * the `express_intent` enum, so the planner drops it and a turn-seam direct arm
+ * would measure the retirement instead of the ladder.
+ *
+ * The LADDER is untouched, and a live plane still exercises it — the HTTP cancel
+ * routes build exactly this envelope (`{orderId, actorId, reason}` off the
+ * authenticated customer, no parse) and adjudicate it against
+ * `resolveAndAssemble` state, re-adjudicating with a receipt on the confirm leg.
+ * So the parity comparison survives the retirement intact, which is the point:
+ * the claim was always about the MONEY LADDER, never about the parse.
+ *
+ * `renders` on this plane are the DECISION's own sentences — what the route hands
+ * back — because an HTTP caller gets no responder prose. That is also why the
+ * paid-cancel question is finally VISIBLE here: with an explicit order id nothing
+ * stamps `autoResolvedMoneyRef`, so `confirmOnAutoResolvedRef` never parks in
+ * front of `gatePaidCancel`.
+ */
+async function driveDirectKernel(
+  opts: HarnessOpts & { readonly answer?: string },
+): Promise<Observation & { readonly turnIds: readonly string[] }> {
+  const { sink, parkStore, handoff } = buildHarness({ ...opts, path: "direct" });
+  const payload = {
+    orderId: ORDER_ID,
+    actorId: CUSTOMER,
+    reason: "Cancelado a pedido do cliente",
+  };
+  const envelope = buildEnvelope({
+    kind: "order.cancel",
+    payload,
+    actor: { principal: "llm", role: "customer", sessionId: CONVERSATION },
+    taint: "UNTRUSTED",
+    nonce: `http-${CONVERSATION}`,
+  }) as never;
+
+  const project = async () =>
+    ({
+      ctx: (
+        await resolveAndAssemble({
+          kind: "order.cancel",
+          payload,
+          customerId: CUSTOMER,
+          channel: opts.channel ?? "web",
+        } as never)
+      ).ctx,
+    }) as never;
+
+  const renders: string[] = [];
+  let decision = await adjudicateAndAudit(envelope, await project(), CUSTOMER_ROUTER as never, {
+    sink,
+    metadataProvider: buildLanguageEngineAuditMetadata,
+  } as never).then((r) => r.decision);
+  renders.push(promptOf(decision));
+
+  // The CONFIRM leg — the route re-adjudicates the identical envelope with a
+  // receipt, which is what the customer's "sim" produces there.
+  if (
+    opts.answer !== undefined &&
+    opts.answer !== "não" &&
+    String((decision as { kind?: unknown }).kind) === "REQUEST_CONFIRMATION"
+  ) {
+    decision = await adjudicateAndAudit(envelope, await project(), CUSTOMER_ROUTER as never, {
+      sink,
+      metadataProvider: buildLanguageEngineAuditMetadata,
+      confirmationReceipt: {
+        intentHash: (envelope as { intentHash: string }).intentHash,
+        at: "2026-07-27T12:59:00.000Z",
+      },
+    } as never).then((r) => r.decision);
+    renders.push(promptOf(decision));
+  }
+
+  const kind = String((decision as { kind?: unknown }).kind);
+  if (kind === "ESCALATE") await handoff.queue(envelope as never, "paid cancel above band");
+  if (kind === "EXECUTE") {
+    const order = (await domain.createOrderQueryService().getById(ORDER_ID, {
+      customerId: CUSTOMER,
+    })) as unknown as { fulfillmentStatus: string; displayId: number } | null;
+    if (order !== null) {
+      await executeOrderCancel({
+        orderId: ORDER_ID,
+        customerId: CUSTOMER,
+        reason: payload.reason,
+        order,
+        orderCmdSvc: domain.createOrderCommandService(),
+        paymentCmdSvc: domain.createPaymentCommandService(),
+        paymentQuerySvc: domain.createPaymentQueryService(),
+        log: console as never,
+      });
+    }
+  }
+  return { ...observe(sink, parkStore, renders), turnIds: [] };
+}
+
 async function drive(
   opts: HarnessOpts & { readonly answer?: string },
 ): Promise<Observation & { readonly turnIds: readonly string[] }> {
+  if (opts.path === "direct") return driveDirectKernel(opts);
   const { harness, sink, parkStore, runtime } = buildHarness(opts);
   const channel = opts.channel ?? "web";
   const renders: string[] = [];
@@ -1021,19 +1138,6 @@ async function drive(
   renders.push(turn.response);
   turnIds.push(turn.turnId);
 
-  // KEEP ANSWERING WHILE THE PATH IS STILL ASKING, rather than sending a fixed
-  // number of turns. The two paths genuinely need different turn counts — a
-  // directly-parsed cancel asks the auto-resolve question the workflow never
-  // asks — and a fixed count would either cut the direct path off before it
-  // reached the money ladder (making every verdict comparison vacuous) or send
-  // the workflow a "sim" it has nothing to answer.
-  //
-  // Driving each path to ITS OWN terminal state is the only comparison that
-  // means anything, and it makes the turn count itself an observation.
-  //
-  // The cap is a guard against a genuine confirm loop, and it is a FAILURE
-  // rather than a silent stop: a path that never terminates is a defect, not a
-  // shape to record.
   const MAX_TURNS = 5;
   while (
     opts.answer !== undefined &&
@@ -1066,6 +1170,7 @@ beforeEach(() => {
   orderRowsFake.rows = [];
   paymentRowsFake.rows = new Map();
   natsSpy.calls = [];
+  storeDown.on = false;
   seedEnv();
 });
 
@@ -1088,132 +1193,61 @@ function terminalVerdict(o: Observation): string {
   return o.paidLadder[o.paidLadder.length - 1] ?? "NONE";
 }
 
-// ── 0a. THE DIRECT PLANE'S RENDERS — the BASELINE, pinned before comparing ────
+// ── 0a. THE RETIREMENT — the chat route to `order.cancel` is GONE ────────────
 
 /**
- * THE BASELINE COMMIT: what today's flow actually SAYS.
+ * WHAT THE RETIREMENT ACTUALLY CUT, asserted rather than described.
  *
- * Nothing in the repository pinned the direct-plane cancel reply text before
- * this block — `chat-cancel-escalate-approve.e2e.test.ts` never sets
- * `realResponder`, so its `turn.response` is the harness stub's
- * `"decision=… acted=…"` and every pt-BR string it asserts is an INPUT
- * (utterances, a payload reason) or a staff summary. The customer-facing words
- * of the ladder this ticket re-platforms were unpinned everywhere.
+ * Before it, a cancel utterance minted an `order.cancel` envelope from the parse
+ * and the customer met a ladder that never mentioned their money. The baseline
+ * block that used to sit here pinned exactly that, verbatim, including the two
+ * things it got WRONG — and those pins did their job: they are the evidence the
+ * retirement rests on, and they are recorded in the PR and the tracker.
  *
- * That has to be fixed BEFORE any comparison, and as its own deliverable: a
- * parity suite whose baseline is unpinned is comparing the new path against
- * whatever the old one happens to do today, which is not a baseline, it is a
- * moving target. These three cases pin it. Everything after them compares
- * against something now nailed down.
- *
- * TWO OF THE THREE PINS RECORD SOMETHING WRONG, and they are written to say so
- * rather than to normalize it — see each case.
+ * They cannot be pinned as LIVE behaviour any more, because the behaviour is
+ * gone. What replaces them is the assertion that it is gone, plus the pins on the
+ * route that replaced it (every block below).
  */
-describe("LE2-024 baseline — what the DIRECT paid-cancel ladder says today", () => {
-  it("SUB-BAND turn 1 asks about the ORDER, never about the MONEY", async () => {
-    const direct = await drive({ path: "direct" });
-
-    // PINNED VERBATIM. This is the whole of what a customer cancelling a PAID
-    // order is asked on the conversational plane today.
-    expect(direct.renders[0]).toBe(
-      "Identifiquei o seu pedido mais recente para esta ação. Confirma que é esse mesmo? Responda sim para continuar.",
-    );
-
-    // WRONG, AND RECORDED AS WRONG (not normalized): the order is paid, the
-    // cancel refunds it, and neither fact is stated anywhere in the question the
-    // customer is answering. The reason is structural — see the case in §0.
-    expect(direct.renders[0]).not.toContain("pago");
-    expect(direct.renders[0]).not.toContain("reembolso");
-  });
-
-  it("SUB-BAND turn 2 (the success reply) is MODEL PROSE, not a first-party render", async () => {
-    const direct = await drive({ path: "direct", answer: "sim" });
-
-    // `customer-action-render.ts` declares no `order.cancel` branch — its own
-    // header notes `reservation.cancel` "keeps its model-prose success" — so the
-    // deterministic render yields nothing and the responder MODEL authors the
-    // reply. Here that surfaces as the scripted stand-in for prose.
-    expect(direct.renders[direct.turns - 1]).toBe("Ok.");
-
-    // WRONG, AND RECORDED AS WRONG: an irreversible money act confirms itself in
-    // a sentence no first-party template governs. Pinned rather than fixed —
-    // changing the direct plane's success copy is not this ticket's licence.
-    expect(direct.renders[direct.turns - 1]).not.toContain("cancel");
-  });
-
-  it("the ESCALATE reply is the generic handoff sentence — no order, no amount", async () => {
-    const direct = await drive({ path: "direct", total: BIG_TOTAL, answer: "sim" });
-
-    // `RESPONDER_ESCALATE_PTBR`, pinned verbatim.
-    expect(direct.renders[direct.turns - 1]).toBe(
-      "Vou transferir você para um de nossos atendentes. Só um momento, por favor.",
-    );
-
-    // Honest as far as it goes — nothing was executed and a human really is
-    // being brought in — but it names neither the order nor the amount, so a
-    // customer cannot tell WHICH request is pending. Recorded, not normalized.
-    expect(direct.renders[direct.turns - 1]).not.toContain("1500");
-    expect(direct.paidLadder).toEqual([
-      "ESCALATE/paid_cancel_refund_above_escalate_threshold",
-    ]);
-  });
-
-  it("a DECLINE is acknowledged, and nothing is executed", async () => {
-    const direct = await drive({ path: "direct", answer: "não" });
-
-    // The decline ack is model prose too (same missing action-render branch).
-    expect(direct.renders[direct.turns - 1]).toBe("Ok.");
-    expect(direct.cancelDecisions).not.toContain("EXECUTE");
-    expect(direct.paymentStatus).toBe("paid");
-  });
-});
-
-// ── 0. THE CONFIRM SENTENCE — the byte-exact half, and who can render it ──────
-
-describe("LE2-024 parity — the paid-cancel question is the pack's OWN sentence", () => {
-  it("the workflow renders `paidCancelConfirmText` BYTE-FOR-BYTE", async () => {
-    // THE TICKET'S HEADLINE CRITERION. Asserted against the pack's exported
-    // function rather than a string literal, which is the whole point: a literal
-    // would keep passing while `gatePaidCancel` and this workflow drifted
-    // together, and "both paths agree on the wrong sentence" is exactly the
-    // failure a parity pin exists to catch.
-    const workflow = await drive({ path: "workflow" });
-    expect(workflow.renders[0]).toBe(paidCancelConfirmText(SUB_BAND));
-    expect(workflow.renders[0]).toContain("R$ 120,00");
-    expect(workflow.renders[0]).toContain("reembolso");
-
-    // `{confirmation}`-ALONE, proved at the render: any framing word the template
-    // added around the placeholder would break the equality above.
-    expect(workflow.renders[0]!.startsWith("Esse pedido já foi pago")).toBe(true);
-    expect(workflow.renders[0]!.endsWith("confirma o cancelamento?")).toBe(true);
-  });
-
-  it("the DIRECT conversational path CANNOT render it — structurally, not by luck", async () => {
-    // The finding that makes the divergence suite below more than a curiosity.
-    //
-    // `order.cancel` is not in `ORDER_NAMED_REFERENCE_KINDS`, so `applyAutoResolve`
-    // takes the BLIND `resolveOrderId` branch and stamps `autoResolvedMoneyRef`
-    // whenever it resolves — and `orderId` is an Identity-class field the parse
-    // seam strips from any model-supplied payload, so a customer NAMING their
-    // order cannot change that. The composed router's `confirmOnAutoResolvedRef`
-    // therefore always parks FIRST, and `gatePaidCancel`'s sentence is authored,
-    // audited and never shown.
-    //
-    // This case drives the strongest possible counter-attempt — an explicit
-    // `orderId` on the `express_intent` payload, which is more than the wire ever
-    // permits — and shows the auto-resolve question anyway. Without it, "the
-    // direct path never states the refund" reads as an accident of this fixture
-    // rather than a property of the plane.
-    const { harness } = buildHarness({ path: "direct", directOrderId: ORDER_ID });
-    const turn = await runCustomerTurn(harness, {
+describe("LE2-024 retirement — a cancel utterance can no longer reach `order.cancel`", () => {
+  it("the model is not offered the capability, and IS offered the workflow", async () => {
+    const { harness, model } = buildHarness({ path: "workflow" });
+    await runCustomerTurn(harness, {
       customerId: CUSTOMER,
       conversationId: CONVERSATION,
-      text: `cancela o pedido ${ORDER_ID}`,
+      text: "quero cancelar meu pedido por favor",
     });
 
-    expect(turn.response).toContain(AUTO_RESOLVE_PROMPT);
-    expect(turn.response).not.toBe(paidCancelConfirmText(SUB_BAND));
-    expect(turn.response.startsWith("Esse pedido já foi pago")).toBe(false);
+    // The WIRE, not the catalog's opinion of it.
+    const plannerCall = (
+      model.complete as unknown as { mock: { calls: [{ tools?: { name: string }[] }][] } }
+    ).mock.calls.find((c) => (c[0]?.tools?.length ?? 0) > 0)?.[0];
+    const expressIntent = JSON.stringify(
+      plannerCall?.tools?.find((t) => t.name === "express_intent") ?? {},
+    );
+
+    // RETIRED: neither the capability nor the workflow's anchor is nameable.
+    expect(expressIntent).not.toContain("order.cancel");
+    expect(expressIntent).not.toContain("order.cancel.request");
+    // CONTROL — ordinary kinds are still advertised, so the two assertions above
+    // are about these kinds and not about an empty roster.
+    expect(expressIntent).toContain("order.checkout.create");
+    expect(expressIntent).toContain("order.item.add");
+
+    // …and the WORKFLOW carries the language surface instead.
+    const startWorkflow = plannerCall?.tools?.find((t) => t.name === "start_workflow");
+    const description = String((startWorkflow as { description?: unknown })?.description);
+    expect(description).toContain(PAID_CANCEL_WORKFLOW_ID);
+    expect(description).toContain("cancela o último pedido");
+  });
+
+  it("the capability is still fully ADJUDICABLE — only the parse was retired", async () => {
+    // The distinction the whole cut rests on. `order.cancel` remains the
+    // workflow's own activity, the HTTP routes' kind and the escalation-resume
+    // kind; it is a live, governed intent that simply has no parse in front of it
+    // any more. If this ever fails, the retirement removed too much.
+    const direct = await drive({ path: "direct", answer: "sim" });
+    expect(terminalVerdict(direct)).toBe("EXECUTE/paid_cancel_requires_confirmation");
+    expect(direct.paymentStatus).toBe("refunded");
   });
 });
 
@@ -1413,148 +1447,77 @@ describe("LE2-024 parity — an UNPAID cancel asks no money question on either p
   });
 });
 
-// ── 6. THE MEASURED DIVERGENCES — asserted as facts, not tolerated as gaps ────
+// ── 6. THE DIVERGENCES THE RETIREMENT CLOSED ─────────────────────────────────
 
-describe("LE2-024 divergence — only the WORKFLOW ever SHOWS the paid-cancel question", () => {
-  it("the direct path never states the refund consequence it then acts on", async () => {
-    // THE MOST IMPORTANT MEASUREMENT IN THIS FILE.
-    //
-    // On the direct plane the composed router's `confirmOnAutoResolvedRef` parks
-    // FIRST — "is this your most recent order?" — and the customer's "sim" mints
-    // ONE confirmation receipt against that envelope's hash. On the resume,
-    // `gatePaidCancel` does fire and does return REQUEST_CONFIRMATION, and the
-    // kernel's receipt override converts it straight to EXECUTE. Its sentence is
-    // therefore authored, audited, and NEVER RENDERED: the row carries
-    // `paid_cancel_requires_confirmation` for a question nobody was asked.
-    //
-    // A receipt is scoped to an intent hash, not to a QUESTION, so one "sim"
-    // answers every confirm the same envelope can raise. That is a property of
-    // the direct path this ticket did not create and does not fix; it is
-    // measured here because it is the strongest evidence on the retirement
-    // question, and because a silent change to it must break this test.
+/**
+ * The first LE2-024 PR measured four divergences between the workflow and the
+ * ad-hoc chat ladder. THREE OF THEM WERE DEFECTS IN THAT LADDER, and this PR is
+ * what closes them — not by fixing that route, but by removing it.
+ *
+ * These cases assert the closure, and they are deliberately phrased as "every
+ * remaining route does X" rather than "the workflow does X": after a retirement
+ * the claim that matters is about the SET of routes that are left.
+ */
+describe("LE2-024 — every remaining cancel route states the money and returns it", () => {
+  it("BOTH live routes REFUND a settled paid cancel", async () => {
+    // Divergence 2, CLOSED. The chat ladder dispatched `cancelOrder`, whose
+    // `cancelActivePaymentForOrder` returns early for a settled payment — it
+    // cancelled the order and left the money. That route is gone, and the two
+    // that remain are both refund-first: the workflow through
+    // `dispatchOrderCancel`, the HTTP plane directly, each reaching
+    // `executeOrderCancel`, which adjudicates a `payment.refund.issue` BEFORE any
+    // order transition and throws if it does not settle.
     const direct = await drive({ path: "direct", answer: "sim" });
     const workflow = await drive({ path: "workflow", answer: "sim" });
 
-    // The direct customer is asked about the ORDER, never about the MONEY…
-    expect(direct.renders[0]).toContain(AUTO_RESOLVE_PROMPT);
-    expect(direct.renders.some((r) => r.startsWith("Esse pedido já foi pago"))).toBe(false);
-    // …and yet the executed row cites the paid-cancel confirm as its reason.
-    expect(terminalVerdict(direct)).toBe("EXECUTE/paid_cancel_requires_confirmation");
-
-    // The workflow states it, byte-for-byte as the pack authors it, BEFORE
-    // acting — and its coverage names that one reason explicitly.
-    expect(workflow.renders[0]).toBe(paidCancelConfirmText(SUB_BAND));
-    expect(workflow.renders[0]).toContain("R$ 120,00");
-    expect(workflow.renders[0]).toContain("reembolso");
-    expect(workflow.renders.some((r) => r.includes(AUTO_RESOLVE_PROMPT))).toBe(false);
-  });
-
-  it("the workflow's single question omits the order NUMBER the direct path verifies", async () => {
-    // The cost of byte-exact confirm parity, stated rather than buried. The
-    // direct path's first question establishes WHICH order; the workflow's
-    // quotes the amount but no identifier, because it reuses `gatePaidCancel`'s
-    // sentence verbatim and that sentence names no order.
-    //
-    // Adding one would break the byte-exact parity that is this ticket's own
-    // acceptance criterion, so it is an OWNER COPY QUESTION and not a fix a
-    // worker may take unilaterally.
-    const workflow = await drive({ path: "workflow", answer: "sim" });
-    expect(workflow.renders[0]).not.toContain("4120");
-  });
-});
-
-describe("LE2-024 divergence — the WORKFLOW refunds a paid cancel and the DIRECT path does not", () => {
-  it("is a DEFECT IN THE OLD PATH, measured here rather than reproduced", async () => {
-    // `order.cancel`'s registered tool is `cancelOrder`, whose
-    // `cancelActivePaymentForOrder` returns early for a settled payment — no
-    // refund, no error, nothing in any log. The workflow dispatches
-    // `executeOrderCancel`, which adjudicates a `payment.refund.issue` BEFORE
-    // any order transition and throws if it does not settle.
-    //
-    // Pinned in BOTH directions: if the direct path is ever fixed, this test
-    // goes red and somebody re-reads the retirement note.
-    const direct = await drive({ path: "direct", answer: "sim" });
-    const workflow = await drive({ path: "workflow", answer: "sim" });
-
-    // Both reached EXECUTE on the same order…
     expect(terminalVerdict(direct)).toBe(terminalVerdict(workflow));
-
-    // …and only ONE of them gave the customer their money back.
-    expect(workflow.paymentStatus).toBe("refunded");
-    expect(workflow.refundedCentavos).toBe(SUB_BAND);
-    expect(direct.paymentStatus).toBe("paid");
-    expect(direct.refundedCentavos).toBe(0);
+    for (const o of [direct, workflow]) {
+      expect(o.paymentStatus).toBe("refunded");
+      expect(o.refundedCentavos).toBe(SUB_BAND);
+    }
   });
 
-  it("and only the workflow's cancel reaches the DOMAIN order projection", async () => {
-    // The second half of the same write-path split. `cancelOrder` cancels in
-    // Medusa only; the domain `OrderProjection` row is updated by a subscriber
-    // that does not run here (and, in production, runs later). `executeOrderCancel`
-    // transitions the projection itself, through the kernel.
-    //
-    // Recorded because it is what makes `orderStatus` an unfair cross-path
-    // comparison, which is worth knowing before anyone writes another one.
+  it("BOTH live routes STATE the refund consequence before acting", async () => {
+    // Divergence 1, CLOSED. On the retired route the composed router's
+    // auto-resolve confirm parked first and one receipt then satisfied
+    // `gatePaidCancel` too, so its sentence was authored, audited and NEVER
+    // SHOWN. Neither remaining route has that shape: the workflow quotes the
+    // sentence through `{confirmation}`, and the HTTP plane names the order
+    // explicitly so nothing stamps `autoResolvedMoneyRef` in front of it.
     const direct = await drive({ path: "direct", answer: "sim" });
     const workflow = await drive({ path: "workflow", answer: "sim" });
 
+    for (const o of [direct, workflow]) {
+      expect(o.renders.some((r) => r.startsWith("Esse pedido já foi pago"))).toBe(true);
+      expect(o.renders.some((r) => r.includes("reembolso"))).toBe(true);
+      expect(o.renders.some((r) => r.includes(AUTO_RESOLVE_PROMPT))).toBe(false);
+    }
+    // BYTE-IDENTICAL between them, and equal to the pack's own function — the
+    // original parity claim, now stated over the routes that survive.
+    expect(direct.renders.find((r) => r.startsWith("Esse pedido já foi pago"))).toBe(
+      paidCancelConfirmText(SUB_BAND),
+    );
+    expect(workflow.renders[0]).toBe(paidCancelConfirmText(SUB_BAND));
+  });
+
+  it("BOTH live routes write the DOMAIN order projection", async () => {
+    // Divergence 3, closed for the same reason as divergence 2: the projection
+    // was only ever skipped by `cancelOrder`, which no longer has a caller.
+    const direct = await drive({ path: "direct", answer: "sim" });
+    const workflow = await drive({ path: "workflow", answer: "sim" });
+    expect(direct.orderStatus).toBe("canceled");
     expect(workflow.orderStatus).toBe("canceled");
-    expect(direct.orderStatus).toBe("confirmed");
   });
-});
 
-describe("LE2-024 divergence — the SUCCESS render is model prose on the direct path", () => {
-  it("the workflow's is an AUTHORED template; the direct path's is not first-party", async () => {
-    // `customer-action-render.ts` declares no branch for `order.cancel` (its own
-    // header notes `reservation.cancel` "keeps its model-prose success"), so the
-    // deterministic action render yields nothing and the responder MODEL authors
-    // the reply. Here that surfaces as the scripted model's `responderText`.
-    //
-    // The workflow renders its `completed` template verbatim through the LE2-021
-    // outcome seam, so no probabilistic model touches the sentence.
-    const direct = await drive({ path: "direct", answer: "sim" });
+  it("the workflow's success sentence is an AUTHORED template, not model prose", async () => {
+    // Divergence 4 is the one the retirement does NOT fix, and it is now moot on
+    // the customer plane: the route whose reply the model authored is gone, and
+    // the only customer-facing cancel reply left is this template. (The HTTP
+    // plane returns JSON — it has no prose to author.)
     const workflow = await drive({ path: "workflow", answer: "sim" });
-
-    // MODEL-AUTHORED on the direct path — the scripted stand-in for prose.
-    expect(direct.renders[direct.turns - 1]).toBe("Ok.");
-
-    // AUTHORED TEMPLATE on the workflow path, verbatim from the catalog.
     expect(workflow.renders[workflow.turns - 1]).toBe(
       "Pronto, cancelei seu pedido. O reembolso já foi solicitado e o valor volta pra você pelo mesmo meio de pagamento.",
     );
-  });
-});
-
-// ── 7. THE ANCHOR'S ACCESS CLASS — it must never reach the model ──────────────
-
-describe("LE2-024 — the anchor is never on the capability wire", () => {
-  it("`order.cancel.request` is never offered to the model, but the WORKFLOW is", async () => {
-    const { harness, model } = buildHarness({ path: "workflow" });
-    await runCustomerTurn(harness, {
-      customerId: CUSTOMER,
-      conversationId: CONVERSATION,
-      text: "quero cancelar meu pedido por favor",
-    });
-
-    // Read the ACTUAL planner request — the wire, not the catalog's opinion of
-    // it. A catalog-only assertion would pass while the anchor leaked onto the
-    // surface through some other seam.
-    const plannerCall = (
-      model.complete as unknown as { mock: { calls: [{ tools?: { name: string }[] }][] } }
-    ).mock.calls.find((c) => (c[0]?.tools?.length ?? 0) > 0)?.[0];
-    const expressIntent = plannerCall?.tools?.find((t) => t.name === "express_intent");
-    const advertised = JSON.stringify(expressIntent ?? {});
-
-    // The anchor is identity-tier: the parser never picks it by name.
-    expect(advertised).not.toContain("order.cancel.request");
-    // The CONTROL — `order.cancel` itself IS advertised, so the assertion above
-    // is about the access class and not about an empty roster.
-    expect(advertised).toContain("order.cancel");
-
-    // …and the WORKFLOW is on the wire, with its production-grounded phrasings.
-    const startWorkflow = plannerCall?.tools?.find((t) => t.name === "start_workflow");
-    const description = String((startWorkflow as { description?: unknown })?.description);
-    expect(description).toContain(PAID_CANCEL_WORKFLOW_ID);
-    expect(description).toContain("cancela o último pedido");
   });
 });
 
@@ -1570,16 +1533,53 @@ describe("LE2-024 — the anchor is never on the capability wire", () => {
  */
 async function escalateAndPark(path: Path) {
   const built = buildHarness({ path, total: BIG_TOTAL });
-  await runCustomerTurn(built.harness, {
-    customerId: CUSTOMER,
-    conversationId: CONVERSATION,
-    text: "quero cancelar meu pedido por favor",
-  });
-  await runCustomerTurn(built.harness, {
-    customerId: CUSTOMER,
-    conversationId: CONVERSATION,
-    text: "sim",
-  });
+  if (path === "direct") {
+    // The HTTP plane, where the direct ladder still lives — the same envelope
+    // that plane builds, adjudicated against fresh state, its ESCALATE handed to
+    // the parking handoff exactly as `publishPaidCancelEscalation` does.
+    const payload = {
+      orderId: ORDER_ID,
+      actorId: CUSTOMER,
+      reason: "Cancelado a pedido do cliente",
+    };
+    const envelope = buildEnvelope({
+      kind: "order.cancel",
+      payload,
+      actor: { principal: "llm", role: "customer", sessionId: CONVERSATION },
+      taint: "UNTRUSTED",
+      nonce: `http-${CONVERSATION}`,
+    }) as never;
+    const state = {
+      ctx: (
+        await resolveAndAssemble({
+          kind: "order.cancel",
+          payload,
+          customerId: CUSTOMER,
+          channel: "web",
+        } as never)
+      ).ctx,
+    } as never;
+    const decision = (
+      await adjudicateAndAudit(envelope, state, CUSTOMER_ROUTER as never, {
+        sink: built.sink,
+        metadataProvider: buildLanguageEngineAuditMetadata,
+      } as never)
+    ).decision;
+    if (String((decision as { kind?: unknown }).kind) === "ESCALATE") {
+      await built.handoff.queue(envelope as never, "paid cancel above band");
+    }
+  } else {
+    await runCustomerTurn(built.harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: "quero cancelar meu pedido por favor",
+    });
+    await runCustomerTurn(built.harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: "sim",
+    });
+  }
   const parked = built.parkStore.all();
   return { ...built, parked, token: built.parkStore.lastToken() };
 }
@@ -1747,3 +1747,85 @@ describe("LE2-024 parity — a WORKFLOW-created escalation park is approvable, i
   );
 });
 
+
+// ── 9. THE RETIREMENT'S "AGAINST" CASE, MITIGATED ────────────────────────────
+
+/**
+ * THE ARGUMENT AGAINST RETIRING, ANSWERED WITH TESTS.
+ *
+ * The case for waiting was: retirement removes the fallback for cancel
+ * utterances the workflow's pre-checks refuse. Before it, such a customer at
+ * least met the direct capability and got a kernel refusal; after it, if the
+ * workflow ever answers with silence or a dead end, they get nothing at all.
+ *
+ * Every pre-check refusal path is driven here and asserted to render its own
+ * AUTHORED pt-BR sentence — never an empty reply, never a generic "não permitida",
+ * never the model's fallback. The last case is the one the governor asked for
+ * specifically and the one that actually worried me: a FAILED PROJECTION READ,
+ * where the store is unreachable rather than merely empty.
+ */
+describe("LE2-024 retirement — no cancel ask reaches a dead end", () => {
+  const honest = (render: string | undefined): void => {
+    expect(render).toBeDefined();
+    expect(render!.trim().length).toBeGreaterThan(0);
+    // Not the scripted model's fallback, and not the kernel's generic deny —
+    // both of which would mean the authored sentence never reached the customer.
+    expect(render).not.toBe("Ok.");
+    expect(render).not.toContain("não permitida");
+    expect(render).not.toContain("decision=");
+  };
+
+  it("NO PREVIOUS ORDER — the authored no-order sentence, and nothing runs", async () => {
+    const o = await drive({ path: "workflow", orders: [], payments: [] });
+    honest(o.renders[0]);
+    expect(o.renders[0]).toContain("Ainda não encontrei nenhum pedido seu pra cancelar");
+    expect(o.cancelDecisions).toEqual([]);
+  });
+
+  it("PAST THE PONR — the authored past-ponr sentence, and nothing runs", async () => {
+    const o = await drive({
+      path: "workflow",
+      orders: [orderRow({ fulfillmentStatus: "delivered" })],
+    });
+    honest(o.renders[0]);
+    expect(o.renders[0]).toContain("ponto de cancelamento");
+    expect(o.cancelDecisions).not.toContain("EXECUTE");
+  });
+
+  it("AMOUNT UNKNOWN — the authored amount-unknown sentence, and nothing runs", async () => {
+    // The pre-check that keeps `confirm.statesFacts` honest: without a grounded
+    // total the confirm would ask about a refund it could not size.
+    const o = await drive({
+      path: "workflow",
+      orders: [orderRow({ totalInCentavos: null })],
+    });
+    honest(o.renders[0]);
+    expect(o.renders[0]).toContain("Não consegui confirmar o valor desse pedido");
+    expect(o.cancelDecisions).not.toContain("EXECUTE");
+  });
+
+  it("THE STORE IS DOWN — a FAILED projection read degrades to an honest reply", async () => {
+    // THE GOVERNOR'S CASE, and materially different from the three above: those
+    // are ABSENCES the projection reports successfully. This one is the read
+    // THROWING — the order service unreachable — which is the shape that could
+    // plausibly produce an unhandled rejection and a silent turn.
+    //
+    // The fact projection is fail-closed (an absent fact makes `isTrue` false),
+    // so a throwing read must surface as the FIRST pre-check's authored sentence
+    // rather than as a crash or an empty reply. That is what makes retirement
+    // safe for a customer whose store read fails: they are told something true
+    // and actionable, not left with nothing.
+    storeDown.on = true;
+    try {
+      const o = await drive({ path: "workflow" });
+      honest(o.renders[0]);
+      expect(o.renders[0]).toContain("Ainda não encontrei nenhum pedido seu pra cancelar");
+      // AND NOTHING RAN — a failed read must never reach the money path.
+      expect(o.cancelDecisions).toEqual([]);
+      expect(o.paymentStatus).toBe("paid");
+      expect(o.refundedCentavos).toBe(0);
+    } finally {
+      storeDown.on = false;
+    }
+  });
+});

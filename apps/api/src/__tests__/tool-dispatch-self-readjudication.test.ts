@@ -582,7 +582,13 @@ describe("BKL-242/243 — no dispatched tool re-adjudicates its own intent kind"
     expect(byKind.get("order.item.add")?.minted).toContain(
       "medusa.store.cart.line_item.add",
     );
-    expect(byKind.get("order.cancel")?.minted).toContain("medusa.admin.order.cancel");
+    // LE2-024 — `order.cancel` left this roster with the ad-hoc paid-cancel
+    // retirement, so `probeAll()` no longer yields a row for it. The downstream
+    // mints it used to witness are unchanged and now exercised through the
+    // workflow's own dispatch (`executeOrderCancel`), not the tool registry.
+    // The two cart pins above already prove the interception reaches inside the
+    // `@ibatexas/tools` dist, which is what this case is for.
+    expect(byKind.has("order.cancel")).toBe(false);
   });
 });
 
