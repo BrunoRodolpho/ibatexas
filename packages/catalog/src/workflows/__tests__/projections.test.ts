@@ -35,7 +35,14 @@ import {
 
 describe("workflowScopedKinds — the access class, projected from capabilities", () => {
   it("projects exactly the definitions flagged workflowScoped", () => {
-    expect([...workflowScopedKinds(CAPABILITY_DEFINITIONS)]).toEqual(["order.reorder"])
+    // LE2-023 — `order.coupon.adjust` joins the class DECLARED-BUT-UNEXECUTABLE:
+    // it exists so the swap-for-coupon workflow's closed `coupon_on_placed_order`
+    // branch can name a real capability, and being workflow-scoped is the first
+    // of its two locks (the second is that no guard produces EXECUTE for it).
+    expect([...workflowScopedKinds(CAPABILITY_DEFINITIONS)]).toEqual([
+      "order.reorder",
+      "order.coupon.adjust",
+    ])
   })
 
   it("does NOT include the reorder ANCHOR — the ask is parse-reachable", () => {
@@ -58,9 +65,24 @@ describe("workflowScopedKinds — the access class, projected from capabilities"
 
 describe("workflowActivityKinds / workflowSelectionKinds", () => {
   it("projects the real corpus's activity and anchor kinds", () => {
-    expect([...workflowActivityKinds(WORKFLOW_DEFINITIONS)]).toEqual(["order.reorder"])
+    // LE2-023 — a CONSCIOUS count pin over the production corpus, which is now
+    // two workflows. These two sets drive real composition-time behaviour:
+    // `registerWorkflowScopedTools` throws for an activity kind with no handler
+    // and `registerWorkflowAnchorTools` throws for an anchor with none, so a
+    // silent change here is a boot failure or, worse, a workflow that confirms
+    // with a customer and then cannot dispatch.
+    //
+    // `order.reorder` appears ONCE despite both workflows routing to it — the
+    // dedupe the next case pins directly.
+    expect([...workflowActivityKinds(WORKFLOW_DEFINITIONS)]).toEqual([
+      "order.reorder",
+      "order.cancel",
+      "order.coupon.adjust",
+      "order.coupon.apply",
+    ])
     expect([...workflowSelectionKinds(WORKFLOW_DEFINITIONS)]).toEqual([
       "order.reorder.request",
+      "order.coupon.swap.request",
     ])
   })
 

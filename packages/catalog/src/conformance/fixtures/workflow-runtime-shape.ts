@@ -439,6 +439,36 @@ export const LE2_023_WORKFLOW_RUNTIME_FIXTURES: readonly ConformanceFixture[] = 
     definitions: escalatableCapabilities(),
     workflows: fixtureWorkflows(runtimeBase()),
   },
+  {
+    name: "workflow-runtime-shape.policy-gated-activity-not-scoped",
+    targets: "workflow-runtime-shape/policy-gated-activity-not-scoped",
+    why:
+      "The route gates `second` behind a POLICY SWITCH, but `second`'s " +
+      "capability is not declared `workflowScoped: true`. A policy switch closes " +
+      "a ROUTE, and a route is catalog DATA — one edited line from being open. " +
+      "Behind it must sit a kind no parse can propose in the first place, or the " +
+      "whole protection is a single line in a file anyone who can edit data may " +
+      "change. This is the rule `workflows/types.ts` promised from ac290eb3 and " +
+      "which did not exist until LE2-023 built it; a doc citing a gate that is " +
+      "not there is worse than no doc, because a reviewer reads it and stops " +
+      "checking.",
+    definitions: workflowCapabilities(),
+    workflows: fixtureWorkflows({
+      ...runtimeBase(),
+      route: [
+        { activity: "step" },
+        // The OPEN arm is the gated one. `otherwise` is the shipped path and is
+        // deliberately NOT required to be scoped — requiring it would forbid a
+        // policy branch from ever falling back to an ordinary capability, which
+        // is exactly what a shipped arm must do.
+        {
+          whenPolicyOpen: "coupon_on_placed_order",
+          then: ["second"],
+          otherwise: [],
+        },
+      ],
+    }),
+  },
 ]
 
 /**

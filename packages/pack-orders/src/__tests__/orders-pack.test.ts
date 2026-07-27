@@ -2039,3 +2039,83 @@ describe("ordersPolicyBundle — confirmSwapForCoupon (LE2-023)", () => {
     )
   })
 })
+
+// ── LE2-023 · THE SECOND LOCK, proven behaviourally ──────────────────────────
+//
+// `order.coupon.adjust` is declared so the swap-for-coupon workflow's
+// `coupon_on_placed_order` branch can NAME a real capability while shipping
+// closed. Two independent locks keep it unexecutable, in two packages:
+//
+//   LOCK 1 (catalog)     — `workflowScoped: true`, so no parse can propose it.
+//                          Pinned in the catalog's own projection tests and in
+//                          apps/api's WORKFLOW_SCOPED_KINDS pin.
+//   LOCK 2 (this bundle)  — no guard produces EXECUTE for the kind, so the
+//                          kernel's DEFAULT REFUSE is the only verdict it can
+//                          ever receive.
+//
+// This block is lock 2, and it is a BEHAVIOURAL assertion rather than a
+// structural one on purpose. The catalog cannot see guard verdicts (the same
+// reason `escalatable` is review-enforced), so "the pack refuses it" can only be
+// established by adjudicating it. It is the force-the-route-open experiment: the
+// route branch is bypassed entirely here — the envelope is submitted directly, as
+// though the switch were open — and the kind is still refused.
+
+describe("ordersPolicyBundle — order.coupon.adjust is DECLARED AND UNEXECUTABLE (LE2-023)", () => {
+  it("REFUSEs even on the shape most likely to succeed", () => {
+    // Authenticated, owning a live cart, a valid-looking code — everything a
+    // coupon apply would need. `order.coupon.apply` EXECUTEs on this state; this
+    // kind must not.
+    const decision = adjudicate(
+      env("order.coupon.adjust", { cartId: "cart-1", orderId: "order-1", code: "BEMVINDO10" }),
+      state({ orderId: "order-1", fulfillmentStatus: "pending", paymentStatus: "paid" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("is refused by the DEFAULT DENY, not by an incidental guard", () => {
+    // The distinction matters for the lock's durability. A refusal from some
+    // state guard would evaporate the moment a caller supplied whatever that
+    // guard wanted; a DEFAULT-DENY refusal cannot be satisfied by any payload or
+    // state at all, because no guard in the bundle claims the kind. So this
+    // asserts the SHAPE of the protection, not merely its current effect.
+    const decision = adjudicate(
+      env("order.coupon.adjust", { cartId: "cart-1", orderId: "order-1", code: "BEMVINDO10" }),
+      state({ orderId: "order-1", fulfillmentStatus: "pending", paymentStatus: "paid" }),
+      ordersPolicyBundle,
+    )
+    // `default_deny` is the KERNEL's own code, not this pack's declared
+    // `order.default.deny` — which is the stronger reading: the refusal is not
+    // authored anywhere in this bundle at all. No guard here has an opinion
+    // about the kind, so the kernel falls all the way through to its
+    // default-REFUSE floor. That floor cannot be satisfied by any payload or
+    // state, which is precisely the property the lock needs.
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe("default_deny")
+  })
+
+  it("CONTROL: the same state EXECUTEs the real cart coupon apply", () => {
+    // Without this the two cases above could pass because the state was wrong
+    // rather than because the kind is unexecutable — the vacuity that makes a
+    // negative test worthless. `order.coupon.apply` is the nearest neighbour and
+    // the capability this route actually uses.
+    const decision = adjudicate(
+      env("order.coupon.apply", { cartId: "cart-1", code: "BEMVINDO10" }),
+      state({ orderId: null, fulfillmentStatus: undefined, paymentStatus: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("appears in NO execute-producing kind set", () => {
+    // The structural complement of the behavioural cases: a future edit that
+    // adds the kind to an EXECUTE producer would flip the two REFUSE assertions
+    // above, but this one says WHY in one line at the point of the mistake.
+    const decision = adjudicate(
+      env("order.coupon.adjust", {}),
+      state({}),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).not.toBe("EXECUTE")
+    expect(decision.kind).not.toBe("REQUEST_CONFIRMATION")
+  })
+})

@@ -82,6 +82,21 @@ import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
  *                                     `order.cancel` / `order.reorder` /
  *                                     `order.coupon.apply` activities each do
  *                                     one governed piece of the work.
+ *   - `order.coupon.adjust`        — DECLARED AND UNEXECUTABLE. LE2-023. Apply a
+ *                                     coupon to an ALREADY-PLACED order by
+ *                                     adjusting its price. It is workflow-scoped
+ *                                     (no parse can reach it) AND no guard in
+ *                                     this bundle produces EXECUTE for it, so
+ *                                     the kernel's default REFUSE is the only
+ *                                     verdict it can ever receive. It exists so
+ *                                     the swap-for-coupon workflow's
+ *                                     `coupon_on_placed_order` policy branch can
+ *                                     NAME a real capability while shipping
+ *                                     closed — see that workflow's route and
+ *                                     `WORKFLOW_POLICY_SWITCHES`. Opening the
+ *                                     branch is a catalog edit; making it RUN
+ *                                     additionally requires a pack policy change
+ *                                     here, which is the second of the two locks.
  *   - `order.projection.create`    — SYSTEM. Initial projection row for an
  *                                     order on cart-intelligence subscriber.
  *   - `order.status.transition`    — SYSTEM/TRUSTED. Direct status flip
@@ -113,6 +128,7 @@ export type OrderIntentKind =
   | "order.reorder"
   | "order.reorder.request"
   | "order.coupon.swap.request"
+  | "order.coupon.adjust"
   | "order.projection.create"
   | "order.status.transition"
   | "order.status.reconcile"

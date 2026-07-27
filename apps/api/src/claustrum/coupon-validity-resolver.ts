@@ -11,10 +11,19 @@
 // pre-checks (LE2-022/023) reuse — see {@link evaluateCouponFeasibility}.
 //
 // DECISION 14 NEGATIVE SPACE — HARD BOUNDARY: this is a PURE READ. There is no
-// apply path here, no cart mutation, no price-adjustment capability, and no
-// intent envelope. `coupon_on_placed_order` ships OFF and the swap-for-coupon
-// branch stays closed catalog data; nothing in this module opens it. The ONLY IO
-// is a single admin GET of the promotion by code.
+// apply path here, no cart mutation, and no intent envelope. The ONLY IO is a
+// single admin GET of the promotion by code.
+//
+// AMENDED BY LE2-023, precisely. This comment used to say "no price-adjustment
+// capability" full stop, and that became false the day the swap-for-coupon
+// workflow needed its closed branch to NAME one. The accurate statement is:
+// `order.coupon.adjust` IS DECLARED, and it is workflow-scoped and REFUSED BY
+// POLICY — no parse can propose it and no guard in `ordersPolicyBundle` produces
+// EXECUTE for it, so the kernel's default REFUSE is the only verdict it can
+// receive. Opening it needs a catalog switch AND a pack policy change, in two
+// packages, reviewed separately. `coupon_on_placed_order` still ships OFF and
+// nothing in this module opens it. The boundary is unchanged in force; only its
+// wording is now true.
 //
 // WHY a SHARED per-turn-memoized resolver (the delivery-coverage-resolver.ts /
 // store-info-resolver.ts discipline): the investigator's evidence read AND the

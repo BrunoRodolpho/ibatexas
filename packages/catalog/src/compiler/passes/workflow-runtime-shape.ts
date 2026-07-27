@@ -732,6 +732,76 @@ function checkEscalatedOutcome(
 }
 
 /**
+ * A POLICY-GATED ACTIVITY MUST ALSO BE UNREACHABLE FROM A PARSE — LE2-023.
+ *
+ * The rule `workflows/types.ts` has promised since ac290eb3 and which, until
+ * now, did not exist. A doc comment citing a nonexistent gate is worse than no
+ * comment: a reviewer reads "the compiler checks this" and stops checking.
+ *
+ * ── THE TWO LOCKS, AND WHY THIS IS THE ONE WORTH COMPILING ──────────────────
+ *
+ * A policy switch closes a ROUTE. It does not close an EXECUTION. A capability
+ * sitting behind `whenPolicyOpen` is therefore protected by exactly two things:
+ * the switch being absent, and the kernel refusing the kind anyway. The first is
+ * catalog DATA — one line, editable by anyone who can edit data, and a feature
+ * shipping behind data alone is one careless line from being live.
+ *
+ * So this rule enforces the half that data cannot undo: a policy-gated activity's
+ * capability must be `workflowScoped`, which means no parse can ever propose it
+ * no matter what any route says. Opening the switch then still cannot make the
+ * kind reachable from a customer sentence — it can only make a workflow ROUTE to
+ * it, where the kernel meets it with the pack's own verdict.
+ *
+ * The second lock — that the pack produces no EXECUTE — is deliberately NOT
+ * checked here, and the reason is the one the `escalatable` slot's doc gives:
+ * whether a guard executes is a fact about a function body in another package,
+ * and a synthetic probe over invented envelopes would pass green while the real
+ * behaviour drifted. That half is proved by a FIXTURE that forces the route open
+ * and asserts the kernel still refuses — behaviour, not a static claim.
+ */
+function checkPolicyGatedActivities(
+  ctx: WorkflowContext,
+  scopedKinds: ReadonlySet<string>,
+): readonly CatalogDiagnostic[] {
+  const byId = new Map<string, Readonly<Record<string, unknown>>>()
+  for (const activity of readArray(ctx.record["activities"])) {
+    const record = readRecord(activity)
+    if (isNonBlank(record["id"])) byId.set(record["id"], record)
+  }
+
+  const out: CatalogDiagnostic[] = []
+  readArray(ctx.record["route"]).forEach((step, index) => {
+    const record = readRecord(step)
+    if (!("whenPolicyOpen" in record)) return
+    // Only the OPEN arm is policy-gated. The `otherwise` arm is the SHIPPED
+    // path — it runs today, it is not behind the switch, and requiring it to be
+    // workflow-scoped would forbid a policy branch from falling back to any
+    // ordinary capability, which is exactly what the shipped arm must do.
+    readArray(record["then"]).forEach((id, armIndex) => {
+      if (!isNonBlank(id)) return
+      const capability = byId.get(id)?.["capability"]
+      if (!isNonBlank(capability) || scopedKinds.has(capability)) return
+      out.push(
+        diag(
+          ctx,
+          "policy-gated-activity-not-scoped",
+          `route[${index}].then[${armIndex}]`,
+          `is gated on the policy switch "${String(record["whenPolicyOpen"])}" and ` +
+            `routes to "${id}", whose capability "${capability}" is NOT declared ` +
+            "`workflowScoped: true`. A policy switch closes a route, not an " +
+            "execution: it is catalog DATA, so it is one edited line from being " +
+            "open, and behind it must sit a kind no parse can propose in the " +
+            "first place. Declare the capability workflow-scoped, or do not gate " +
+            "it on a policy switch.",
+          capability,
+        ),
+      )
+    })
+  })
+  return out
+}
+
+/**
  * Run the workflow-runtime-shape pass.
  *
  * `checked` counts INSPECTIONS: per workflow, every activity (compensation
@@ -762,6 +832,15 @@ export function runWorkflowRuntimeShapePass(
   const escalatableKinds = new Set(
     definitions
       .filter((definition) => asRecord(definition)["escalatable"] === true)
+      .map((definition) => asRecord(definition)["kind"])
+      .filter(isNonBlank),
+  )
+
+  // LE2-023 — the access class, read off the capability table, for
+  // `policy-gated-activity-not-scoped`.
+  const scopedKinds = new Set(
+    definitions
+      .filter((definition) => asRecord(definition)["workflowScoped"] === true)
       .map((definition) => asRecord(definition)["kind"])
       .filter(isNonBlank),
   )
@@ -797,6 +876,12 @@ export function runWorkflowRuntimeShapePass(
     checked += readArray(record["activities"]).length + 1
     diagnostics.push(...checkConfirmCoverage(ctx))
     diagnostics.push(...checkEscalatedOutcome(ctx, escalatableKinds))
+
+    // One inspection per POLICY-GATED route step.
+    checked += readArray(record["route"]).filter(
+      (step) => "whenPolicyOpen" in readRecord(step),
+    ).length
+    diagnostics.push(...checkPolicyGatedActivities(ctx, scopedKinds))
   })
 
   return { pass: PASS, checked, diagnostics }

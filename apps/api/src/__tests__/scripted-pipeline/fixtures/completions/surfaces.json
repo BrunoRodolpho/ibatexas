@@ -48,14 +48,15 @@
       },
       {
         "name": "start_workflow",
-        "description": "Iniciar um fluxo pré-autorizado de várias etapas. Use `workflow` (uma das opções do enum) e `slots` com os dados que o cliente informou. Fluxos: workflow.orders.reorder-last: Repetir o último pedido do cliente: monta um carrinho novo com os mesmos itens do pedido anterior, depois de confirmar com ele. (o cliente diz: \"repete meu último pedido\"; \"refaz meu último pedido\"; \"quero pedir a mesma coisa da última vez\"; \"faz o mesmo pedido de novo\"; \"quero repetir a última compra\"; \"bota tudo do meu último pedido no carrinho\"; \"manda o de sempre\") (dados: nenhum)",
+        "description": "Iniciar um fluxo pré-autorizado de várias etapas. Use `workflow` (uma das opções do enum) e `slots` com os dados que o cliente informou. Fluxos: workflow.orders.reorder-last: Repetir o último pedido do cliente: monta um carrinho novo com os mesmos itens do pedido anterior, depois de confirmar com ele. (o cliente diz: \"repete meu último pedido\"; \"refaz meu último pedido\"; \"quero pedir a mesma coisa da última vez\"; \"faz o mesmo pedido de novo\"; \"quero repetir a última compra\"; \"bota tudo do meu último pedido no carrinho\"; \"manda o de sempre\") (dados: nenhum) | workflow.orders.swap-for-coupon: Cancelar o pedido atual do cliente e montar um pedido novo igual com um cupom de desconto aplicado, depois de confirmar com ele o valor, o reembolso e o novo total. (o cliente diz: \"cancela meu pedido e faz outro igual com o cupom\"; \"se não der pra usar o cupom, cancela e faz de novo\"; \"quero usar meu cupom no pedido que já fiz\"; \"dá pra aplicar esse cupom no meu pedido?\"; \"refaz meu pedido com desconto\"; \"esqueci de colocar o cupom, dá pra trocar?\"; \"troca meu pedido por um com o cupom\") (dados: code)",
         "inputSchema": {
           "type": "object",
           "properties": {
             "workflow": {
               "type": "string",
               "enum": [
-                "workflow.orders.reorder-last"
+                "workflow.orders.reorder-last",
+                "workflow.orders.swap-for-coupon"
               ],
               "description": "O fluxo a ser iniciado."
             },

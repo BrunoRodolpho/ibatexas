@@ -747,6 +747,25 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // their own guards. Registered-but-unadvertised, so its tool is the second
   // member of `register-workflow-anchor-tools.ts`.
   { kind: "order.coupon.swap.request", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // LE2-023 — DECLARED SO A CLOSED BRANCH CAN NAME IT, AND UNEXECUTABLE BY TWO
+  // INDEPENDENT LOCKS. It is the target of the swap-for-coupon workflow's
+  // `coupon_on_placed_order` policy branch, which ships CLOSED.
+  //
+  //   LOCK 1 (this table)   — `workflowScoped: true`, so no parse can ever
+  //                           propose it and no planner advertises it.
+  //   LOCK 2 (pack-orders)  — no guard in `ordersPolicyBundle` produces EXECUTE
+  //                           for this kind, so the kernel's default REFUSE is
+  //                           the only verdict it can receive. Forcing the route
+  //                           open in a fixture proves it: the branch runs and
+  //                           the step is still refused.
+  //
+  // Neither lock alone is sufficient, deliberately: the catalog is data anyone
+  // who can edit data may change, and a feature shipping behind data alone is
+  // one careless line from being live. Making this kind actually RUN needs a
+  // catalog edit AND a pack policy change, in two different packages, reviewed
+  // separately. See `WORKFLOW_POLICY_SWITCHES` and the compiler's
+  // `policy-gated-activity-not-scoped` rule.
+  { kind: "order.coupon.adjust", pack: "ibatexas/pack-orders", mutating: true, tier: "identity", workflowScoped: true },
   { kind: "order.projection.create", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // Ops-foreign-advertised ONLY (BKL-090): absent from orders' OWN planner
   // literal — verified — advertised solely via pack-ops' staff allowlist.

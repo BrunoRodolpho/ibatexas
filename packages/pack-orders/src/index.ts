@@ -199,6 +199,7 @@ export const ordersPack = {
     "order.reorder",
     "order.reorder.request",
     "order.coupon.swap.request",
+    "order.coupon.adjust",
     "order.projection.create",
     "order.status.transition",
     "order.status.reconcile",

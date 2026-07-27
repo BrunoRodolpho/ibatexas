@@ -40,9 +40,20 @@ function runtimeOver(workflows: readonly WorkflowDefinition[] = [FIXTURE_LINEAR_
 }
 
 describe("the workflow-scoped access class", () => {
-  it("projects `order.reorder` out of the catalog", () => {
-    expect([...WORKFLOW_SCOPED_KINDS]).toEqual(["order.reorder"]);
+  it("projects the workflow-scoped kinds out of the catalog", () => {
+    // LE2-023 — a CONSCIOUS count pin. `order.coupon.adjust` joins the class as
+    // the DECLARED-BUT-UNEXECUTABLE target of the swap-for-coupon workflow's
+    // closed `coupon_on_placed_order` branch; being scoped is the first of its
+    // two locks (no parse can propose it), and the second is that no guard in
+    // `ordersPolicyBundle` produces EXECUTE for it.
+    //
+    // This set is subtracted from every turn's authorized roster, so a kind
+    // arriving here silently removes it from what the planner may offer. That is
+    // correct for both members and is exactly why the list is pinned rather than
+    // counted.
+    expect([...WORKFLOW_SCOPED_KINDS]).toEqual(["order.reorder", "order.coupon.adjust"]);
     expect(isWorkflowScopedKind("order.reorder")).toBe(true);
+    expect(isWorkflowScopedKind("order.coupon.adjust")).toBe(true);
     expect(isWorkflowScopedKind("order.checkout.create")).toBe(false);
   });
 

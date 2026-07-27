@@ -104,6 +104,49 @@ const WORKFLOW_SCOPED_TOOLS: ReadonlyMap<string, ToolDefinition<unknown, unknown
           executeReorder(input, ctx as Capsule),
       } satisfies ToolDefinition<unknown, unknown>,
     ],
+    [
+      // LE2-023 — THE HANDLER THAT THROWS, and it is the honest implementation
+      // of "no execution path exists" rather than a placeholder.
+      //
+      // `order.coupon.adjust` is the target of the swap-for-coupon workflow's
+      // CLOSED `coupon_on_placed_order` branch. `registerWorkflowScopedTools`
+      // throws at composition time for a scoped kind with no handler, so the
+      // kind needs one to exist at all — and the question is what it should do.
+      //
+      // A no-op returning `{success: true}` would be the dangerous answer: the
+      // step would record as EXECUTED in the trace, the run would reach
+      // `completed`, and a customer would be told their placed order was
+      // repriced when nothing happened. A THROW records the step as not
+      // executed, stops the run and fires the compensators — the same shape any
+      // other failed activity takes.
+      //
+      // It is also UNREACHABLE, twice over, which is the point: the route
+      // branch is closed by the absent policy switch, and even forced open the
+      // kernel REFUSEs this kind (no EXECUTE guard), so dispatch is never
+      // reached. This throw is the third line of defence, and if it ever fires
+      // it means both locks failed and the message says so.
+      "order.coupon.adjust",
+      {
+        id: "ibatexas.order.couponAdjust.v1",
+        capability: "order.coupon.adjust" as CapabilityId,
+        intentKind: "order.coupon.adjust" as IntentKind,
+        description:
+          "Aplicar um cupom a um pedido já feito ajustando o preço (não implementado).",
+        inputSchema: {},
+        outputSchema: {},
+        riskLevel: "high",
+        execute: () => {
+          throw new Error(
+            "[workflow] order.coupon.adjust has no execution path. This kind is " +
+              "declared so the swap-for-coupon workflow's coupon_on_placed_order " +
+              "branch can name it while shipping CLOSED; it is workflow-scoped and " +
+              "no guard in ordersPolicyBundle produces EXECUTE for it, so reaching " +
+              "dispatch means BOTH locks failed. Implement the price-adjust path " +
+              "and its policy before opening the switch.",
+          );
+        },
+      } satisfies ToolDefinition<unknown, unknown>,
+    ],
   ]);
 
 /**

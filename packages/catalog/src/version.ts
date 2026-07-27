@@ -132,4 +132,17 @@
 // workflow on its matchers, and a definition anchored on a kind the catalog does
 // not declare is `capability-reference-dangling`, a build error — so v10 and v11
 // genuinely describe two different surfaces rather than two spellings of one.
-export const CATALOG_VERSION: number = 11
+// v12 (LE2-023, final slice) — the WORKFLOW ITSELF. `WORKFLOW_DEFINITIONS` gains
+// `workflow.orders.swap-for-coupon`, and with it a new capability
+// (`order.coupon.adjust`, workflow-scoped and refused by policy) and a new
+// compiler rule (`policy-gated-activity-not-scoped`). The README's FIRST trigger
+// fires on the capability and its workflow-contract trigger on the corpus.
+//
+// The replay consequence is the sharpest of the four LE2-023 slices, because
+// this is the one that changes what a CUSTOMER IS OFFERED: `advertise` now
+// returns two workflows, so `start_workflow`'s enum and description differ, the
+// wire differs, and every L1 parse cached under v11's surface is unreachable by
+// construction (the cache key digests the tool array). A turn adjudicated under
+// v11 and one under v12 were shown different choices, which is exactly the
+// distinction the serial exists to preserve.
+export const CATALOG_VERSION: number = 12

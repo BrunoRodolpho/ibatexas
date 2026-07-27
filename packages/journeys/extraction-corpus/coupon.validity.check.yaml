@@ -30,10 +30,16 @@
 #              rejection classes the checkout's own gate mirrors; the extractor's
 #              job is to relay it verbatim, never to repair, complete or invent it.
 #
-# DECISION 14 IS PART OF THE PIN: this capability is a READ. There is no coupon
-# apply / price-adjustment path, so no case here may expect one — a request to
-# APPLY a coupon is a DIFFERENT capability (order.coupon.apply.yaml) and the
-# validity extraction must stay empty for it (see `refuse-apply-imperative`).
+# DECISION 14 IS PART OF THE PIN: this capability is a READ. No case here may
+# expect a coupon apply / price-adjustment — a request to APPLY a coupon is a
+# DIFFERENT capability (order.coupon.apply.yaml) and the validity extraction must
+# stay empty for it (see `refuse-apply-imperative`).
+#
+# LE2-023 amends the wording, not the pin: `order.coupon.adjust` is now DECLARED
+# so a closed workflow branch can name it, but it is workflow-scoped (no parse
+# can reach it) and refused by policy (no EXECUTE guard). It is therefore still
+# not a path any extraction case may expect, and being unreachable from a parse
+# it is not a path an extractor could reach even if one did.
 #
 # There is no `hydratedIntentIR` block anywhere in this file: a read never
 # hydrates an intent, and asserting an empty one would be a fiction.
