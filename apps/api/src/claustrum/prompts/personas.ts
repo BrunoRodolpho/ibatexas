@@ -23,12 +23,8 @@ export const PLANNER_PERSONA = [
   `Sua única função é traduzir o pedido do cliente em uma chamada de "${EXPRESS_INTENT_TOOL}".`,
   "Você NUNCA executa ações nem altera dados — apenas declara a intenção.",
   "",
-  // BKL-275 (truncation leg) — "cancelar" is deliberately ABSENT from this list.
-  // Cancelling an existing order is routed to the `start_workflow` surface by the
-  // dedicated rule below; leaving it here made the persona contradict the wire
-  // (see that rule's comment for the measurement).
   "REGRA PRINCIPAL: se o cliente pede QUALQUER ação (adicionar, remover, atualizar",
-  "quantidade, aplicar cupom, criar carrinho, finalizar/pagar, adicionar",
+  "quantidade, aplicar cupom, criar carrinho, finalizar/pagar, cancelar, adicionar",
   `observação, reservar, etc.), você DEVE chamar "${EXPRESS_INTENT_TOOL}" com a capability`,
   "correspondente (exatamente uma das opções do enum). Faça isso MESMO que falte algum",
   "detalhe (ex.: o id exato do item, do pedido ou do carrinho) — preencha o payload com",
@@ -59,36 +55,44 @@ export const PLANNER_PERSONA = [
   "",
   // ── BKL-275 (truncation leg) — TEACH THE WORKFLOW SURFACE ────────────────────
   //
-  // LE2-020 put `start_workflow` on the wire but nobody taught this persona it
-  // exists, and the persona said the model's ONLY job was `express_intent` while
-  // listing "cancelar" as an express_intent action. On a cancel turn the model
-  // therefore read an instruction that CONTRADICTED its own tool list, and spent
-  // the whole `max_tokens` budget trying to reconcile the two — the live
-  // reasoning trace loops on "Chame express_intent? Não, express_intent é a
+  // LE2-020 put `start_workflow` on the planner wire but nobody taught this
+  // persona it exists. On a cancel turn the 4B read "sua única função é
+  // express_intent" while looking at a tool list containing `start_workflow`,
+  // and spent the whole `max_tokens` budget trying to reconcile the two — the
+  // live reasoning trace loops on "Chame express_intent? Não, express_intent é a
   // capability… as ferramentas são start_…" until the budget dies. That is the
-  // real mechanism behind the "empty completion" cancels: `finish_reason:length`
-  // with an empty content field, NOT a refusal (BKL-278 characterization).
+  // real mechanism behind the "empty completion" cancels: `finish_reason:
+  // "length"` with empty content — TRUNCATION, not a refusal and not engine
+  // nondeterminism (BKL-278 refuted both).
   //
   // The same class is already documented one screen down: CLAIM_PLANNER_PERSONA
-  // exists precisely because this persona's "sua única função é express_intent"
-  // SUPPRESSES a non-express_intent tool call and yields zero tool calls. This is
-  // that fix, for the workflow surface instead of the claims surface.
+  // exists precisely because this persona SUPPRESSES a non-express_intent tool
+  // call and yields zero tool calls. This is that fix, for the workflow surface.
   //
-  // MEASURED on the pinned engine (nemotron-3-nano:4b, epoch 54cf4353d5a32564,
-  // production max_tokens 1024, 6 cancel phrasings x n=3, serial): BEFORE, 2 of 6
-  // phrasings burned all 1024 tokens and emitted NOTHING while 4 of 6 selected the
-  // workflow only after 267-1016 tokens of deliberation. AFTER, 6 of 6 emit
-  // start_workflow{workflow:"workflow.orders.paid-cancel"} — one byte-identical
-  // response digest across all six — in 98-321 tokens, so the worst case now uses
-  // 31% of the budget instead of 100%. Raising max_tokens was tried FIRST and
-  // rejected: it fixes nothing (one phrasing loops past 3072 tokens, another
-  // resolves to the WRONG order.amend.remove_item), and `reasoning_effort:"none"`
-  // was rejected too (it ends truncation but regresses 3 correct selections).
-  "CANCELAR UM PEDIDO JÁ FEITO: se o cliente pede para cancelar um pedido que já",
-  "existe (ex.: \"cancela meu pedido\", \"cancela o último pedido\", \"quero cancelar o",
-  "pedido 4242\"), chame \"start_workflow\" com o workflow \"workflow.orders.paid-cancel\"",
-  "— NÃO use \"express_intent\" e NÃO use order.amend.remove_item para isso, que serve",
-  "apenas para tirar UM ITEM de um pedido, nunca para cancelar o pedido inteiro.",
+  // THE ACTION LIST ABOVE DELIBERATELY STILL SAYS "cancelar". An earlier arm
+  // removed it, and removing it MEASURABLY LOOSENED the whole list: two
+  // reservation utterances that parse correctly today began emitting an invented
+  // `reservation.ensure`, and an escalate-band cancel invented a
+  // `workflow.orders.paid-confirm`. The list's authority is load-bearing — this
+  // rule is an EXCEPTION to it, not an edit of it. There is a test on that.
+  //
+  // MEASURED over the 38-case extraction corpus (nemotron-3-nano:4b, epoch
+  // 54cf4353d5a32564, PRODUCTION max_tokens 1024, serial, n=3 on every row that
+  // moved): `order.cancel` correct paid-cancel selection 4/20 -> 18/20, and
+  // truncations across the corpus 14 -> 1. Rejected alternatives, all measured:
+  // raising max_tokens (2048/3072) fixes nothing and turns one silence into a
+  // WRONG `order.amend.remove_item`; `reasoning_effort:"none"` ends truncation
+  // but regresses 3 correct selections; adding an anti-invention guard block
+  // fixes the invented ids but its LENGTH truncates a reservation; and an
+  // explicit "never use start_workflow for reservations" reaches 20/20 cancel
+  // while degrading a reservation-create into an EXECUTING `reservation.cancel`
+  // — strictly more dangerous, deliberately not taken.
+  "EXCEÇÃO — CANCELAR UM PEDIDO INTEIRO que o cliente já fez (ex.: \"cancela meu",
+  "pedido\", \"quero cancelar o pedido 4242\"): NÃO use \"express_intent\"; chame a",
+  "ferramenta \"start_workflow\" com workflow \"workflow.orders.paid-cancel\" e slots {}",
+  "(um objeto vazio). Isso vale SOMENTE para cancelar um pedido inteiro — todas as",
+  "outras ações, inclusive reservas e finalização de pedido, continuam em",
+  "\"express_intent\" exatamente como descrito acima.",
   "",
   "Use as ferramentas de leitura apenas para consultar informações. Não invente",
   `capabilities fora da lista. Só NÃO chame "${EXPRESS_INTENT_TOOL}" quando o cliente`,
