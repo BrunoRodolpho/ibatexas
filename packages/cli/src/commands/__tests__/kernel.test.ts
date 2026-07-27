@@ -91,8 +91,11 @@ describe("ibx kernel status", () => {
     // ops.alert.resolve.staff / incident.ticket.close.staff), loyalty 1). The
     // pre-cutover `32` was stale.
     // LE2-021 added order.reorder.request (the reorder-last workflow's
-    // identity-tier anchor): 62 → 63.
-    expect(parsed.knownIntentKinds.count).toBe(63)
+    // identity-tier anchor): 62 → 63. LE2-023 added order.coupon.swap.request
+    // (the swap-for-coupon anchor, identity-tier) and order.coupon.adjust (that
+    // workflow's CLOSED coupon_on_placed_order branch target, workflow-scoped):
+    // 63 → 65.
+    expect(parsed.knownIntentKinds.count).toBe(65)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -171,7 +174,7 @@ describe("ibx kernel status", () => {
     expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 63 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  it("includes all 65 KNOWN_INTENT_KINDS in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)
@@ -202,8 +205,10 @@ describe("ibx kernel status", () => {
     await cmd.parseAsync(["status"], { from: "user" })
     const out = stdout.getOutput()
     // Per-domain counts derived from @ibatexas/intent-kinds (post W5 expansion).
-    // NEW-014 lifts order.* to 22 (order.fiscal.emit joins the order prefix).
-    expect(out).toMatch(/order \(23\)/)
+    // NEW-014 lifts order.* to 22 (order.fiscal.emit joins the order prefix);
+    // LE2-021's order.reorder.request → 23; LE2-023's order.coupon.swap.request
+    // + order.coupon.adjust → 25.
+    expect(out).toMatch(/order \(25\)/)
     expect(out).toMatch(/reservation \(7\)/)
     // whatsapp.* prefix group = 4 (message.send, template.send,
     // session.handover, BKL-030 handoff.request); the pack's 5th kind

@@ -56,14 +56,19 @@ import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 // order.reorder.request, the reorder-last workflow's IDENTITY-tier anchor — it
 // has a registered tool but is never planner-advertised, so CHAT_DRIVABLE stays
 // 20 too; see register-workflow-anchor-tools.ts on why "registered" and
-// "chat-drivable" are deliberately two different facts) ──
+// "chat-drivable" are deliberately two different facts) → 65 (LE2-023 added
+// order.coupon.swap.request, the swap-for-coupon anchor, and
+// order.coupon.adjust, its closed branch's target — the first is IDENTITY-tier
+// and the second is WORKFLOW-SCOPED, so NEITHER is planner-advertised and
+// CHAT_DRIVABLE stays 20 again) ──
 
-describe("count assertions — 63 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014 + LE2-021)", () => {
-  it("KNOWN_INTENT_KINDS has exactly 63 kinds", () => {
+describe("count assertions — 65 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014 + LE2-021 + LE2-023)", () => {
+  it("KNOWN_INTENT_KINDS has exactly 65 kinds", () => {
     // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds)
     // → 61 (BKL-177 PR-B: whatsapp.message.send + template.send) → 62
-    // (NEW-014: +order.fiscal.emit) → 63 (LE2-021: +order.reorder.request).
-    expect(KNOWN_INTENT_KINDS.size).toBe(63)
+    // (NEW-014: +order.fiscal.emit) → 63 (LE2-021: +order.reorder.request) → 65
+    // (LE2-023: +order.coupon.swap.request, +order.coupon.adjust).
+    expect(KNOWN_INTENT_KINDS.size).toBe(65)
   })
 
   it("CHAT_DRIVABLE_TOOL_KINDS has exactly 20 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
@@ -88,11 +93,13 @@ describe("count assertions — 63 KNOWN / 20 CHAT_DRIVABLE pinned against the pr
     expect(source).not.toMatch(/The 18 chat-drivable/)
   })
 
-  it("the 59-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 63", () => {
+  it("the 61-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 65", () => {
     // 66 → 61 (BKL-176: 5 dead payment.charge.*) → 59 (BKL-177 PR-A: 2 kinds)
     // → 57 (BKL-177 PR-B: 2 whatsapp kinds) → 58 (NEW-014: +order.fiscal.emit)
-    // → 59 (LE2-021: +order.reorder.request).
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(59)
+    // → 59 (LE2-021: +order.reorder.request) → 61 (LE2-023:
+    // +order.coupon.swap.request, the swap-for-coupon anchor, and
+    // +order.coupon.adjust, its closed branch's workflow-scoped target).
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(61)
   })
 })
 
