@@ -345,11 +345,13 @@ import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import {
   sessionTokenKey,
   loadCartCtx,
+  loadOrderCtx,
   previousOrderCtxFields,
   resolveAndAssemble,
   resolveCustomerOrderReference,
 } from "./claustrum/resolve-and-assemble.js";
 import { loadPreviousOrder } from "./claustrum/previous-order.js";
+import { projectCouponForOrder } from "./claustrum/coupon-price-projection.js";
 import {
   buildCustomerAuthority,
   customerPrincipalForSession,
@@ -379,9 +381,15 @@ import {
   activityIdentityBase,
   activitySessionArg,
   actorIdentityBase,
+  ORDER_CTX_ACTIVITY_KINDS,
   resolveActivityTool,
+  stampOrderActivityPayload,
 } from "./claustrum/workflow/workflow-composition.js";
 import { projectWorkflowFacts } from "./claustrum/workflow/workflow-facts.js";
+import type {
+  WorkflowParamValue,
+  WorkflowSlots,
+} from "./claustrum/workflow/workflow-params.js";
 import type { WorkflowFacts } from "./claustrum/workflow/workflow-predicates.js";
 import { registerWorkflowAnchorTools } from "./tools/register-workflow-anchor-tools.js";
 import { registerWorkflowScopedTools } from "./tools/register-workflow-scoped-tools.js";
@@ -1859,14 +1867,41 @@ function buildWorkflowRuntime(deps: {
    * request would rather than a stub the workflow layer chose for itself.
    */
   const activityState = async (envelope: IntentEnvelope): Promise<unknown> => {
+    const identity = activityIdentityBase(
+      envelope,
+      // From the turn binding, NOT hardcoded — see the extracted function's
+      // doc for why a guess here would be a money-guard bug.
+      currentWorkflowChannel(),
+      process.env.KERNEL_TENANT_ID,
+    );
+
+    // LE2-023 — AN ORDER ACTIVITY IS ADJUDICATED AGAINST AN ORDER.
+    //
+    // `loadCartCtx` carries no `fulfillmentStatus`, no `paymentStatus` and no
+    // order total, which are precisely the three fields the cancel ladder reads
+    // (`requireCancellable`, `gatePaidCancel`). Routing a cancel through cart
+    // state would meet a money ladder with no money in it — every band silently
+    // unreachable and the guards green over an empty projection. Same
+    // OWNER-SCOPED `loadOrderCtx` the conductor's resolver runs for a directly
+    // parsed cancel, so the in-saga cancel meets exactly the state a direct one
+    // would. See `ORDER_CTX_ACTIVITY_KINDS`.
+    if (ORDER_CTX_ACTIVITY_KINDS.has(String(envelope.kind))) {
+      const payload = (envelope.payload ?? {}) as { orderId?: unknown };
+      const orderId = typeof payload.orderId === "string" ? payload.orderId : null;
+      // `loadOrderCtx` is owner-scoped: it returns a projection only when the
+      // order belongs to this customer, and stamps `resourceOwnerConfirmed`
+      // accordingly. An unauthenticated identity has no customer the read could
+      // mean, so it degrades to the empty projection and the guards REFUSE.
+      const ctx = await loadOrderCtx(
+        identity as never,
+        identity.customerId ?? "",
+        orderId,
+      );
+      return { ctx };
+    }
+
     const ctx = await loadCartCtx(
-      activityIdentityBase(
-        envelope,
-        // From the turn binding, NOT hardcoded — see the extracted function's
-        // doc for why a guess here would be a money-guard bug.
-        currentWorkflowChannel(),
-        process.env.KERNEL_TENANT_ID,
-      ) as never,
+      identity as never,
       // THE ACTIVITY'S OWN PAYLOAD — LE2-022. This was `{}`, which meant
       // `buildCartCtx` projected `paymentMethod: null` and `fulfillment: null`
       // for every workflow activity, and the guards that read those fields
@@ -1910,7 +1945,14 @@ function buildWorkflowRuntime(deps: {
    * ABSENT facts rather than a thrown conversational turn. Absent facts fail
    * closed (see `workflow-predicates.ts`).
    */
-  const workflowFacts = async (actor: IntentActor): Promise<WorkflowFacts> => {
+  const workflowFacts = async (
+    actor: IntentActor,
+    /**
+     * LE2-023 — the selecting turn's customer-authored slots. Only the coupon
+     * facts read them; every LE2-022 fact ignores them entirely.
+     */
+    slots: WorkflowSlots,
+  ): Promise<WorkflowFacts> => {
     const identity = actorIdentityBase(
       actor as { customerId?: string; sessionId?: string },
       // From the turn binding, NOT hardcoded — a guessed channel would
@@ -1928,12 +1970,143 @@ function buildWorkflowRuntime(deps: {
       identity.customerId === null
         ? null
         : await loadPreviousOrder(identity.customerId);
-    return projectWorkflowFacts({ ...ctx, ...previousOrderCtxFields(previous) });
+    const previousFields = previousOrderCtxFields(previous);
+
+    // LE2-023 — THE COUPON FACTS, from the SAME projection the anchor's own ctx
+    // stamp uses (`stampCouponSwapCtx` in resolve-and-assemble.ts) and priced
+    // against the SAME previous-order total the confirm sentence will quote.
+    //
+    // Sharing `projectCouponForOrder` between the two paths is the point rather
+    // than a convenience: the PRE-CHECK decides whether to OFFER the swap and
+    // the GUARD decides whether to allow it, and if those two asked different
+    // questions of the store a customer could be offered a route their own
+    // confirm then refuses. Same read, same predicate, same arithmetic.
+    //
+    // Best-effort like everything else here: the projection swallows its own IO
+    // failure and returns `{}`, so a Medusa outage leaves the coupon facts
+    // ABSENT, the pre-check refuses with its authored reason, and nothing
+    // destructive is offered.
+    const code = typeof slots["code"] === "string" ? slots["code"] : "";
+    const coupon =
+      code === ""
+        ? {}
+        : await projectCouponForOrder({
+            code,
+            orderTotalInCentavos: previousFields.previousOrderTotalInCentavos as
+              | number
+              | undefined,
+          });
+
+    return projectWorkflowFacts({ ...ctx, ...previousFields, ...coupon });
+  };
+
+  /**
+   * LE2-023 — resolve the payload fields no param source may carry.
+   *
+   * The READ half of `stampOrderActivityPayload`, which owns the decision and is
+   * pure. This is the glue: the same OWNER-SCOPED `loadPreviousOrder` that
+   * grounded the confirm sentence supplies the order id, so the saga cancels the
+   * order the customer was actually shown — not one the model named, and not one
+   * resolved from a second view of their history.
+   */
+  const resolveActivityPayload = async (args: {
+    readonly capability: string;
+    readonly payload: Readonly<Record<string, WorkflowParamValue>>;
+    readonly actor: IntentActor;
+  }): Promise<Readonly<Record<string, WorkflowParamValue>>> => {
+    if (!ORDER_CTX_ACTIVITY_KINDS.has(args.capability)) return args.payload;
+    const identity = actorIdentityBase(
+      args.actor as { customerId?: string; sessionId?: string },
+      currentWorkflowChannel(),
+      process.env.KERNEL_TENANT_ID,
+    );
+    const previous =
+      identity.customerId === null
+        ? null
+        : await loadPreviousOrder(identity.customerId);
+    return stampOrderActivityPayload({
+      capability: args.capability,
+      payload: args.payload,
+      customerId: identity.customerId,
+      orderId: previous?.orderId,
+    }) as Readonly<Record<string, WorkflowParamValue>>;
+  };
+
+  /**
+   * LE2-023 — the in-saga `order.cancel` WRITE PATH.
+   *
+   * ── WHY THE REGISTERED TOOL IS DISQUALIFIED ─────────────────────────────────
+   *
+   * `order.cancel`'s registered tool is `cancelOrder`
+   * (packages/tools/src/cart/cancel-order.ts), and it has NO PAID PATH: its
+   * `cancelActivePaymentForOrder` returns early for a settled payment
+   * (`PAID_STATUSES.includes(status) → return`), so a paid cancel routed through
+   * it cancels the ORDER and silently leaves the money where it is. No refund, no
+   * error, nothing in any log saying so — the customer's order is gone and they
+   * have not been paid back.
+   *
+   * `executeOrderCancel` is the shared body the HTTP cancel routes use, and it is
+   * refund-first by construction: it BUILDS AND ADJUDICATES a
+   * `payment.refund.issue` system envelope BEFORE any order transition, and
+   * throws `PaidCancelRefundNotSettledError` if that refund does not reach
+   * EXECUTE. So the FE-T03 magnitude bands stay live inside the saga, and
+   * no-half-apply cuts both ways: no settled refund ⟹ no cancel. The throw
+   * surfaces here as a step that did not execute, which stops the run and fires
+   * the declared compensators — an honest render rather than a half-cancelled
+   * order.
+   *
+   * ── AND WHY IT IS NOT REGISTERED IN THE TOOL REGISTRY ───────────────────────
+   *
+   * Because the registry is last-write-wins and keyed by capability, so
+   * registering a second `order.cancel` handler would replace the real one for
+   * EVERY plane — the HTTP routes and the direct conversational cancel included.
+   * A workflow-plane concern must not be able to redefine what a directly-parsed
+   * cancel does. Same reasoning that keeps the anchor handlers in
+   * `register-workflow-anchor-tools.ts` out of the LLM-callable roster.
+   */
+  const dispatchOrderCancel = async (envelope: IntentEnvelope): Promise<unknown> => {
+    const payload = (envelope.payload ?? {}) as {
+      orderId?: unknown;
+      actorId?: unknown;
+      reason?: unknown;
+    };
+    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
+    const customerId = typeof payload.actorId === "string" ? payload.actorId : "";
+    if (orderId === "" || customerId === "") {
+      // Unreachable behind the kernel — `requireOrderIdForMutation` REFUSEs a
+      // cancel with no order id, and this runs only on EXECUTE. It THROWS rather
+      // than returning a soft failure because the runtime records a step as
+      // executed unless the dispatch throws, and a soft failure here would put a
+      // successful cancel in the trace for a mutation that never happened.
+      throw new Error(
+        "[workflow] order.cancel activity reached dispatch without a resolved orderId/actorId",
+      );
+    }
+    const order = (await createOrderQueryService().getById(orderId, {
+      customerId,
+    })) as { fulfillmentStatus: string; displayId: number } | null;
+    if (order === null) {
+      throw new Error(`[workflow] order.cancel activity: order ${orderId} not readable`);
+    }
+    return executeOrderCancel({
+      orderId,
+      customerId,
+      reason:
+        typeof payload.reason === "string" && payload.reason !== ""
+          ? payload.reason
+          : "Cancelado para aplicar cupom",
+      order,
+      orderCmdSvc: createOrderCommandService(),
+      paymentCmdSvc: createPaymentCommandService(),
+      paymentQuerySvc: createPaymentQueryService(),
+      log: logger as unknown as Parameters<typeof executeOrderCancel>[0]["log"],
+    });
   };
 
   return createWorkflowRuntime({
     workflows: WORKFLOW_DEFINITIONS,
-    projectFacts: async ({ actor }) => workflowFacts(actor),
+    projectFacts: async ({ actor, slots }) => workflowFacts(actor, slots),
+    resolveActivityPayload,
     adjudicateActivity: async (envelope) =>
       (
         await adjudicateAndAudit(
@@ -1948,10 +2121,15 @@ function buildWorkflowRuntime(deps: {
     // missing registry rather than reporting a phantom successful step. Both are
     // decisions rather than glue, so both live — and are tested — next door.
     dispatchActivity: async (envelope, ctx) =>
-      resolveActivityTool(deps.toolsRef.current, envelope, ctx).execute(
-        envelope.payload,
-        ctx,
-      ),
+      // LE2-023 — the ONE capability whose workflow-plane write path differs
+      // from its registered tool, and it differs because the registered tool is
+      // unsound for a paid order. See `dispatchOrderCancel`.
+      String(envelope.kind) === "order.cancel"
+        ? dispatchOrderCancel(envelope)
+        : resolveActivityTool(deps.toolsRef.current, envelope, ctx).execute(
+            envelope.payload,
+            ctx,
+          ),
   });
 }
 

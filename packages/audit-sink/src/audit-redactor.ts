@@ -558,6 +558,12 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   // `sanitizeWorkflowSlots` drops every key the model tries to attach — there is
   // no free-form string slot for PII to reach, smuggled or otherwise.
   "order.reorder.request",
+  // LE2-023 — the swap-for-coupon anchor. `code` + the runtime-written
+  // `_workflowInstanceId` (a UUID) and nothing else; `code` is the same short
+  // opaque promo handle `order.coupon.apply` above carries, and it reaches the
+  // payload only through the workflow's CLOSED slot surface, so
+  // `sanitizeWorkflowSlots` drops every other key the model tries to attach.
+  "order.coupon.swap.request",
   "order.projection.create", // customerId covered by global HASH_FIELDS
   "order.status.reconcile", // orderId/newStatus(short status enum)/source: closed enum
   "order.fiscal.emit", // NEW-014 — orderId only (customerTaxId lives in the PR2 provider input, never on the envelope)

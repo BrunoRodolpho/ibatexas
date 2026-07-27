@@ -103,6 +103,72 @@ export function activitySessionArg(
 }
 
 /**
+ * The activity kinds adjudicated against an ORDER, not against a cart — LE2-023.
+ *
+ * `buildWorkflowRuntime`'s `activityState` projected `loadCartCtx` for every
+ * activity, which was right while the only routed mutations were cart-shaped.
+ * `order.cancel` is not: `requireCancellable` reads `ctx.fulfillmentStatus` and
+ * `gatePaidCancel` reads `ctx.paymentStatus` + `ctx.totalInCentavos`, and a cart
+ * ctx carries none of them. An in-saga cancel adjudicated against cart state
+ * would meet a money ladder with no money in it — every band silently
+ * unreachable, the guards passing green over an empty projection. That is the
+ * structural blind spot BKL-251 found in the conformance sampling, arriving
+ * here by a different door.
+ *
+ * A NAMED SET rather than an `order.`-prefix test, mirroring
+ * `ORDER_BY_ID_KINDS` in the resolver: `order.reorder` and `order.coupon.apply`
+ * are both `order.`-prefixed and both genuinely want cart state, so a prefix
+ * test would break the two activities this route depends on most.
+ */
+export const ORDER_CTX_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
+  "order.cancel",
+]);
+
+/**
+ * Stamp the HOST-RESOLVED payload fields an order activity needs — LE2-023.
+ *
+ * PURE, and separated from the read that feeds it for the reason this whole
+ * module exists: which fields get stamped, on which kinds, from which source is a
+ * decision with a wrong answer, and it was unreachable from a test while it lived
+ * inside the composition root.
+ *
+ * ── WHAT IT STAMPS, AND WHY NEITHER COULD BE A PARAM ────────────────────────
+ *
+ *   `orderId` — from the OWNER-SCOPED previous-order projection, never from the
+ *     model. See `WorkflowRuntimeDeps.resolveActivityPayload`.
+ *   `actorId` — the authenticated customer id, and ONLY that. It is the BKL-103
+ *     proposer stamp, and the conversational plane sets it the same way
+ *     (`threadResolvedIdsIntoPayload`), from the Capsule's authenticated
+ *     customerId rather than from anything on the wire.
+ *
+ * ── FAIL-SAFE, IN THE DIRECTION THAT LEAVES THE GUARDS ARMED ────────────────
+ *
+ * An absent order id or an unauthenticated identity stamps NOTHING. The activity
+ * still runs, and `requireOrderIdForMutation` REFUSEs it — which stops the saga
+ * with an honest render. The alternative, stamping a placeholder, would produce
+ * an envelope that looks well-formed to every guard and names no real order.
+ * Never overwrite an authored binding either: a workflow that declared its own
+ * value said something deliberate, and silently replacing it would make the
+ * definition a lie about what runs.
+ */
+export function stampOrderActivityPayload(args: {
+  readonly capability: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly customerId: string | null;
+  readonly orderId: string | undefined;
+}): Readonly<Record<string, unknown>> {
+  if (!ORDER_CTX_ACTIVITY_KINDS.has(args.capability)) return args.payload;
+  const stamped: Record<string, unknown> = { ...args.payload };
+  if (stamped["orderId"] === undefined && args.orderId !== undefined) {
+    stamped["orderId"] = args.orderId;
+  }
+  if (stamped["actorId"] === undefined && args.customerId !== null) {
+    stamped["actorId"] = args.customerId;
+  }
+  return stamped;
+}
+
+/**
  * Resolve the tool an activity dispatches to, through the REAL registry.
  *
  * ── `resolveTool`, NOT `list().find(...)` ────────────────────────────────────

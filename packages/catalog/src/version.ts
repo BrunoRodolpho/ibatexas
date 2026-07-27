@@ -120,4 +120,16 @@
 // the usual reason and one more: the new `escalated-outcome-template-missing`
 // rule reads this field, so a workflow that compiled clean under v9 can fail to
 // compile under v10 without a single byte of its own definition changing.
-export const CATALOG_VERSION: number = 10
+// v11 (LE2-023, third slice) — a new CAPABILITY: `order.coupon.swap.request`,
+// the swap-for-coupon workflow's identity-tier governance anchor. The README's
+// FIRST trigger, at its letter ("adding… a capability").
+//
+// Bumped from 10 rather than folded into it for the same unconditional reason
+// the last two slices were, and with the same replay consequence: this serial is
+// what an instance PINS, and a turn adjudicated when this kind did not exist is
+// not reproducible against a catalog where it does. The anchor is also the one
+// kind whose absence changes what the PARSER is offered — `advertise` gates the
+// workflow on its matchers, and a definition anchored on a kind the catalog does
+// not declare is `capability-reference-dangling`, a build error — so v10 and v11
+// genuinely describe two different surfaces rather than two spellings of one.
+export const CATALOG_VERSION: number = 11

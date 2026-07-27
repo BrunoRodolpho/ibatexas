@@ -79,6 +79,7 @@ import {
   refuseOrderPastPonr,
   refuseOwnershipDenied,
   refuseSlotsIncomplete,
+  refuseSwapTotalUnknown,
   refuseTransitionIllegal,
   refuseTransitionStatusUnknown,
   refuseTransitionTerminal,

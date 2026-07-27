@@ -45,6 +45,7 @@ import { parseAgentSessionNamespace } from "./agent-guards.js";
 // workflow-scoped reorder handler so the confirm and the act cannot name
 // different orders.
 import { loadPreviousOrder, type PreviousOrder } from "./previous-order.js";
+import { projectCouponForOrder } from "./coupon-price-projection.js";
 // FE-T13 — reuse the ops-plane displayId parser (pure, no ops-specific
 // dependency) rather than re-deriving the same `#1234`-style parse rule.
 import { matchNamedOwnedOrders, parseDisplayIdRef } from "../ops/ops-order-resolution.js";
@@ -360,6 +361,12 @@ export function buildCartCtx(base: Ctx, payload: Ctx, cart: CartLite | null): Ct
  */
 export const PREVIOUS_ORDER_CTX_KINDS: ReadonlySet<string> = new Set([
   "order.reorder.request",
+  // LE2-023 — the swap-for-coupon anchor reads the SAME projection, and reads
+  // more of it: `confirmSwapForCoupon` needs the total to quote, the display id
+  // to name the order, and the two derived booleans
+  // (`previousOrderIsCancelable`, `previousOrderPaymentIsSettled`) that decide
+  // whether the route is possible and whether its refund clause is true.
+  "order.coupon.swap.request",
 ]);
 
 /**
@@ -434,6 +441,55 @@ async function stampPreviousOrderCtx(
   if (!PREVIOUS_ORDER_CTX_KINDS.has(kind)) return;
   if (base.isAuthenticated !== true) return;
   Object.assign(ctx, previousOrderCtxFields(await loadPreviousOrder(customerId)));
+}
+
+/** The kinds whose adjudication reads a COUPON against the previous order. */
+const COUPON_SWAP_CTX_KINDS: ReadonlySet<string> = new Set([
+  "order.coupon.swap.request",
+]);
+
+/**
+ * LE2-023 — stamp the three coupon fields `confirmSwapForCoupon` reads.
+ *
+ * Runs AFTER {@link stampPreviousOrderCtx} and depends on it: the new total is
+ * the PREVIOUS ORDER's total minus the promotion's discount, so the order this
+ * projection prices is the one that projection just resolved. Sequencing it the
+ * other way would price a coupon against `undefined` and stamp no total, which
+ * the guard would then refuse — a silent, always-on failure of exactly the kind
+ * `predicate-fact-unknown` exists to prevent one layer up.
+ *
+ * ── WHY THE CODE COMES OFF THE PAYLOAD AND THE SPELLING DOES NOT ────────────
+ *
+ * The code is a customer-authored SLOT, so the payload is the only place it can
+ * come from — there is no owner-scoped read that could produce "the coupon this
+ * customer meant". What does NOT come off the payload is the spelling the guard
+ * quotes: `projectCouponForOrder` returns the code the STORE matched, which
+ * differs whenever the customer typed lower case, and quoting the store's own
+ * spelling keeps an untrusted string out of the one sentence the customer
+ * approves a cancellation against.
+ *
+ * BEST-EFFORT and total, like every other stamp here: `projectCouponForOrder`
+ * swallows its own IO failure and returns `{}`, so a Medusa outage leaves every
+ * coupon field ABSENT, the guard refuses honestly, and nothing destructive runs.
+ */
+async function stampCouponSwapCtx(
+  ctx: Ctx,
+  base: Ctx,
+  kind: string,
+  payload: Ctx,
+): Promise<void> {
+  if (!COUPON_SWAP_CTX_KINDS.has(kind)) return;
+  if (base.isAuthenticated !== true) return;
+  const code = typeof payload.code === "string" ? payload.code : "";
+  if (code === "") return;
+  const total = ctx.previousOrderTotalInCentavos;
+  Object.assign(
+    ctx,
+    await projectCouponForOrder({
+      code,
+      orderTotalInCentavos: typeof total === "number" ? total : undefined,
+    }),
+  );
 }
 
 async function loadCart(cartId: string): Promise<CartLite> {
@@ -2491,6 +2547,10 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // LE2-021 — the reorder-last anchor's grounding read. Additive, owner-scoped,
   // auth-gated, and identical on the resume path (see the helper's own doc).
   await stampPreviousOrderCtx(ctx, base, kind, customerId);
+
+  // LE2-023 — the swap-for-coupon anchor's coupon read. ORDER-DEPENDENT: it
+  // prices the coupon against the total the stamp above just resolved.
+  await stampCouponSwapCtx(ctx, base, kind, resolvedPayload);
 
   // 034-F1: the ownership-confirmed resource set for the kernel authority graph.
   // ONLY ids the customer-scoped load actually returned (resourceOwnerConfirmed)

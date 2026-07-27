@@ -62,12 +62,26 @@ import {
 } from "./promotion-validity.js";
 
 /**
- * The ctx fields this projection stamps. Both OPTIONAL, and absence is the
+ * The ctx fields this projection stamps. All OPTIONAL, and absence is the
  * honest report of "could not establish" — see the module doc.
  */
 export interface CouponPriceProjection {
   readonly couponIsValid?: boolean;
   readonly couponNewTotalInCentavos?: number;
+  /**
+   * LE2-023 — the code AS THE STORE SPELLS IT, stamped only for a promotion that
+   * was found and is usable.
+   *
+   * Two reasons it is the store's spelling rather than the customer's, and the
+   * second is the one that matters. It is more ACCURATE — the upper-case retry
+   * below means "bemvindo15" legitimately matches `BEMVINDO15`, and quoting the
+   * customer's version back would show them a code that does not exist in the
+   * store. And it is SAFER: the code arrives on an UNTRUSTED payload and ends up
+   * inside `confirmSwapForCoupon`'s customer-facing sentence, so round-tripping
+   * it through the store means the only strings that can reach that sentence are
+   * strings a promotion record actually contains.
+   */
+  readonly couponCode?: string;
 }
 
 /**
@@ -205,17 +219,28 @@ export async function projectCouponForOrder(args: {
   const validity = evaluatePromotionRecord(promo, (args.now ?? Date.now)());
   if (!validity.usable) return { couponIsValid: false };
 
+  // THE STORE'S OWN SPELLING, and only ever the store's. Falls back to what the
+  // customer typed only when the record carries no `code` at all — a shape
+  // `evaluatePromotionRecord` does not reject, since usability is decided by
+  // status and dates rather than by the code field it was looked up by. The
+  // fallback is the customer's trimmed slot, which is the same string the lookup
+  // above matched on, so it is still a code the store answered to.
+  const usable: CouponPriceProjection = {
+    couponIsValid: true,
+    couponCode: typeof promo?.code === "string" && promo.code !== "" ? promo.code : code,
+  };
+
   const total = args.orderTotalInCentavos;
   if (typeof total !== "number" || !Number.isFinite(total) || total < 0) {
-    return { couponIsValid: true };
+    return usable;
   }
   // TARGETING RULES CLOSE THE ARITHMETIC. A rules-bearing promotion may discount
   // only part of a basket, so subtracting its headline value from the whole
   // total is not an approximation — it is a different number. Fail-closed on
   // uncertainty; see `promotionHasTargetingRules`.
-  if (promotionHasTargetingRules(promo)) return { couponIsValid: true };
+  if (promotionHasTargetingRules(promo)) return usable;
 
   const discount = couponDiscountInCentavos(promo?.application_method, total);
-  if (discount === undefined) return { couponIsValid: true };
-  return { couponIsValid: true, couponNewTotalInCentavos: total - discount };
+  if (discount === undefined) return usable;
+  return { ...usable, couponNewTotalInCentavos: total - discount };
 }

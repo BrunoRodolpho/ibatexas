@@ -11,7 +11,9 @@ import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import {
   activityIdentityBase,
   activitySessionArg,
+  ORDER_CTX_ACTIVITY_KINDS,
   resolveActivityTool,
+  stampOrderActivityPayload,
 } from "../workflow-composition.js";
 
 function envelope(
@@ -129,5 +131,82 @@ describe("resolveActivityTool — WHICH implementation an activity runs", () => 
     expect(() => resolveActivityTool(undefined, envelope(), {})).toThrow(
       /no tool registry for activity kind order\.reorder/,
     );
+  });
+});
+
+// ── LE2-023 · the host-resolved payload stamp ───────────────────────────────
+//
+// The fields no `WorkflowParamSource` may carry: an ORDER ID (an identifier, so
+// never model-authored) and the BKL-103 `actorId` PROPOSER STAMP (without which
+// an escalated in-saga cancel is unapprovable — the customer is told a human
+// will review it and no human can).
+
+describe("stampOrderActivityPayload — LE2-023", () => {
+  const IDENT = { customerId: "cus_1", orderId: "order_prev_9" };
+
+  it("stamps orderId and actorId for an order-ctx activity", () => {
+    const out = stampOrderActivityPayload({
+      capability: "order.cancel",
+      payload: {},
+      customerId: IDENT.customerId,
+      orderId: IDENT.orderId,
+    });
+    expect(out).toEqual({ orderId: "order_prev_9", actorId: "cus_1" });
+  });
+
+  it("leaves a NON-order activity's payload byte-identical", () => {
+    // The stamp is opt-in by kind. `order.reorder` and `order.coupon.apply` are
+    // both `order.`-prefixed and both want cart state, which is exactly why the
+    // gate is a named set and not a prefix test.
+    const payload = { code: "BEMVINDO10" };
+    for (const capability of ["order.reorder", "order.coupon.apply"]) {
+      expect(
+        stampOrderActivityPayload({
+          capability,
+          payload,
+          customerId: IDENT.customerId,
+          orderId: IDENT.orderId,
+        }),
+      ).toBe(payload);
+    }
+  });
+
+  it("NEVER overwrites an authored binding", () => {
+    // A workflow that declared its own value said something deliberate; silently
+    // replacing it would make the definition a lie about what runs.
+    const out = stampOrderActivityPayload({
+      capability: "order.cancel",
+      payload: { orderId: "order_authored", actorId: "actor_authored" },
+      customerId: IDENT.customerId,
+      orderId: IDENT.orderId,
+    });
+    expect(out).toEqual({ orderId: "order_authored", actorId: "actor_authored" });
+  });
+
+  it("stamps NOTHING it cannot resolve, leaving the guards armed", () => {
+    // Fail-safe in the direction that keeps `requireOrderIdForMutation` able to
+    // REFUSE. A placeholder would produce an envelope that looks well-formed to
+    // every guard and names no real order.
+    expect(
+      stampOrderActivityPayload({
+        capability: "order.cancel",
+        payload: {},
+        customerId: null,
+        orderId: undefined,
+      }),
+    ).toEqual({});
+
+    expect(
+      stampOrderActivityPayload({
+        capability: "order.cancel",
+        payload: {},
+        customerId: "cus_1",
+        orderId: undefined,
+      }),
+    ).toEqual({ actorId: "cus_1" });
+  });
+
+  it("gates on order.cancel and nothing else, for now", () => {
+    expect([...ORDER_CTX_ACTIVITY_KINDS]).toEqual(["order.cancel"]);
   });
 });

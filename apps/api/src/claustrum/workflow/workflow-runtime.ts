@@ -119,6 +119,29 @@ export interface WorkflowInstance {
   readonly params: ReadonlyMap<string, ResolvedParam>;
   /** Params that did not resolve; a non-empty list fails the run. */
   readonly unresolved: readonly string[];
+  /**
+   * LE2-023 — the CUSTOMER-AUTHORED SLOTS this instance was selected with,
+   * already stripped to the workflow's declared names by the parse seam's
+   * `sanitizeWorkflowSlots`.
+   *
+   * Carried on the instance because a FACT PROJECTION may need one. LE2-022's
+   * facts were all questions about the customer's stored world — their cart,
+   * their last order — which a projection can answer from an actor alone.
+   * LE2-023 adds facts that are questions about the customer's world AND
+   * SOMETHING THEY SAID: `couponIsValid` is not a property of the customer, it
+   * is a property of the customer's order and THIS coupon code. Without the
+   * slots reaching `projectFacts`, every coupon fact would be permanently
+   * ABSENT, every pre-check over one would refuse, and the workflow could never
+   * be offered — the silent always-false failure `predicate-fact-unknown`
+   * exists to prevent one layer up.
+   *
+   * It grants NO new authority. These are the same values `resolveWorkflowParams`
+   * already consumed, from the same closed slot surface, and the projection they
+   * feed does what every other projection here does: a first-party read. A slot
+   * is model-EXTRACTED but customer-AUTHORED (see `WorkflowParamSource`), and
+   * handing one to a store lookup is exactly what the `"slot"` member is for.
+   */
+  readonly slots: WorkflowSlots;
   readonly startedAt: string;
 }
 
@@ -214,6 +237,43 @@ export interface WorkflowRuntimeDeps {
   };
   /** Dispatch an EXECUTE-d activity through the real tool registry. */
   readonly dispatchActivity: (envelope: IntentEnvelope, ctx: unknown) => Promise<unknown>;
+  /**
+   * LE2-023 — HOST-RESOLVED PAYLOAD FIELDS, stamped before the envelope is minted.
+   *
+   * ── WHY THIS SEAM HAS TO EXIST, AND HAS TO BE HERE ──────────────────────────
+   *
+   * Two fields a workflow activity needs cannot come from `WorkflowParamSource`,
+   * and both are needed by `order.cancel`:
+   *
+   *   `orderId` — an IDENTIFIER. The two admissible param sources are a validated
+   *     claim and a customer slot, and an order id is exactly what neither may
+   *     carry: no registry claim exposes one, and a slot would be model-extracted,
+   *     which for an identifier is the confabulation that union exists to prevent.
+   *     It is resolved host-side from the same OWNER-SCOPED previous-order read
+   *     that grounded the confirm sentence, so the order the saga cancels is the
+   *     order the customer was shown.
+   *   `actorId` — the BKL-103 PROPOSER STAMP. `ESCALATION_PROPOSER_STAMPS` reads
+   *     `payload.actorId` to park a resumable escalation, and `gatePaidCancel`'s
+   *     owner-approval overlay refuses to convert without a non-empty proposer.
+   *     Unstamped, an escalated in-saga cancel would be unapprovable — the
+   *     customer told a human would review it, and no human able to.
+   *
+   * It runs BEFORE `buildEnvelope` because `intentHash` covers the payload.
+   * Stamping after would produce a hash that does not describe what the kernel
+   * adjudicates, and every downstream identity — the park's hash match, the
+   * confirmation receipt, the audit row — is keyed on it.
+   *
+   * INJECTED for the reason every other port here is: the runtime must not be
+   * able to reach a store on its own, so the only fields it can add are the ones
+   * its composition resolves for it. ABSENT ⟹ the payload is used verbatim,
+   * which is LE2-022's behaviour exactly and is what every workflow without a
+   * host-resolved field gets.
+   */
+  readonly resolveActivityPayload?: (args: {
+    readonly capability: string;
+    readonly payload: Readonly<Record<string, WorkflowParamValue>>;
+    readonly actor: IntentActor;
+  }) => Promise<Readonly<Record<string, WorkflowParamValue>>>;
   /** This turn's VALIDATED claims, for claim-sourced params. */
   readonly claimsFor?: (turnId: string) => ValidatedClaimValues | undefined;
   /**
@@ -231,6 +291,12 @@ export interface WorkflowRuntimeDeps {
   readonly projectFacts?: (args: {
     readonly turnId: string;
     readonly actor: IntentActor;
+    /**
+     * LE2-023 — the selecting turn's customer-authored slots. See
+     * {@link WorkflowInstance.slots} for why a projection needs them and why
+     * passing them widens nothing.
+     */
+    readonly slots: WorkflowSlots;
   }) => Promise<WorkflowFacts>;
   /**
    * LE2-022 — the catalog serial IN FORCE NOW, as against the one an instance
@@ -643,9 +709,20 @@ async function submitActivity(args: {
   const { deps, instance, activity, stepIndex, payload, actor, ctx, turnId, now } = args;
   const stepStartedAt = now();
 
+  // LE2-023 — host-resolved fields FIRST, so `intentHash` covers them. See
+  // `resolveActivityPayload`.
+  const resolved =
+    deps.resolveActivityPayload === undefined
+      ? payload
+      : await deps.resolveActivityPayload({
+          capability: activity.capability,
+          payload,
+          actor,
+        });
+
   const envelope = buildEnvelope({
     kind: activity.capability,
-    payload,
+    payload: resolved,
     // The SAME actor the selection ran under: a workflow acts for the customer
     // who confirmed it, never for a broader principal.
     actor,
@@ -1121,6 +1198,7 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
   const projectFacts = async (args: {
     readonly turnId: string;
     readonly actor: IntentActor;
+    readonly slots: WorkflowSlots;
   }): Promise<WorkflowFacts> =>
     deps.projectFacts === undefined ? new Map() : deps.projectFacts(args);
 
@@ -1198,6 +1276,12 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
         definition,
         params: resolution.params,
         unresolved: resolution.unresolved,
+        // LE2-023 — the SANITIZED slots, as the parse seam left them. Pinned on
+        // the instance like everything else about its shape, so the confirming
+        // turn projects its facts from the code the customer actually typed on
+        // the SELECTING turn rather than from whatever the resume path happens
+        // to carry.
+        slots,
         startedAt: new Date(now()).toISOString(),
       };
       evictOldest(instances);
@@ -1237,7 +1321,7 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
       // about the same customer at the same instant, so asking twice could give
       // two answers and refuse for a reason that was already stale when it was
       // rendered.
-      const facts = await projectFacts({ turnId, actor });
+      const facts = await projectFacts({ turnId, actor, slots: instance.slots });
 
       for (const precheck of prechecks) {
         if (evaluateWorkflowPredicate(precheck.predicate, facts)) continue;
@@ -1410,7 +1494,7 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
       // this run does. What is NOT pinned is policy: every activity below still
       // meets current-code adjudication, so a guard added since the confirm bites
       // immediately and the run fails closed with an honest render.
-      const facts = await projectFacts({ turnId, actor });
+      const facts = await projectFacts({ turnId, actor, slots: instance.slots });
       const { plan, branches } = resolveRoutePlan(instance, facts, turnId);
 
       // A param that did not resolve fails the run BEFORE anything is

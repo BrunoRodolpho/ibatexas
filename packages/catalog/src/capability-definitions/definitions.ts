@@ -734,6 +734,19 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // repository's first registered-but-unadvertised capability since FE-D28.
   // `toolRosterDrift` is WARN-only in that direction by design.
   { kind: "order.reorder.request", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // LE2-023 — the swap-for-coupon workflow's GOVERNANCE ANCHOR, on exactly the
+  // terms the reorder anchor above sets out: IDENTITY tier because the parser
+  // never picks it by name (it calls `start_workflow`, and the WORKFLOW carries
+  // the language surface), and NOT `workflowScoped` because the selection
+  // envelope is minted from a parse and a scoped anchor is a build error
+  // (`workflow-scoped-reference-unreachable`).
+  //
+  // It carries the whole-workflow confirm (`confirmSwapForCoupon`) and nothing
+  // else; the route's three activities — `order.cancel`, `order.reorder`,
+  // `order.coupon.apply` — each do one governed piece of the work and each meet
+  // their own guards. Registered-but-unadvertised, so its tool is the second
+  // member of `register-workflow-anchor-tools.ts`.
+  { kind: "order.coupon.swap.request", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   { kind: "order.projection.create", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // Ops-foreign-advertised ONLY (BKL-090): absent from orders' OWN planner
   // literal — verified — advertised solely via pack-ops' staff allowlist.

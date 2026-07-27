@@ -131,7 +131,9 @@ export {
   refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseCouponNotUsable,
   refuseNoPreviousOrder,
+  refuseSwapTotalUnknown,
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
@@ -226,6 +228,12 @@ export const ordersPack = {
     // same time the builder was written, which is the whole lesson of the
     // BKL-251 note below.
     "order.reorder.no_history",
+    // LE2-023 — `confirmSwapForCoupon`'s two OWN refusals, declared in the same
+    // commit as their builders for the reason the BKL-251 note below records.
+    // The guard's other two exits reuse `order.reorder.no_history` and
+    // `order.past_ponr`, which are already declared here and are the same facts.
+    "order.coupon.not_usable",
+    "order.coupon.swap.total_unknown",
     // BKL-251 — emitted since BKL-036/034-F1 but never declared here, so the
     // AI-BOM and the config seal under-reported the Pack's refusal vocabulary.
     // `order.past_ponr` fires from `requireCancellable` (a customer cancel past

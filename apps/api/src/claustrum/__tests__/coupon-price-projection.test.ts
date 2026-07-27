@@ -151,7 +151,17 @@ describe("projectCouponForOrder — the arithmetic gate", () => {
       orderTotalInCentavos: 50_000,
     });
 
-    expect(projected).toEqual({ couponIsValid: true, couponNewTotalInCentavos: 48_500 });
+    // LE2-023 — the EXACT shape, `couponCode` included. Kept as `toEqual`
+    // rather than field-wise assertions on purpose: this projection's output is
+    // spread straight onto `OrderState.ctx`, where `confirmSwapForCoupon` reads
+    // it, so a field appearing here that nobody expected is a field a guard may
+    // silently start reading. An exact-shape assertion is how a new one has to
+    // be declared rather than discovered — it is what caught `couponCode`.
+    expect(projected).toEqual({
+      couponIsValid: true,
+      couponNewTotalInCentavos: 48_500,
+      couponCode: "BEMVINDO15",
+    });
   });
 
   it("TARGETING RULES close the arithmetic while validity stays TRUE", async () => {
@@ -197,7 +207,63 @@ describe("projectCouponForOrder — the arithmetic gate", () => {
       code: "BEMVINDO15",
       orderTotalInCentavos: undefined,
     });
-    expect(projected).toEqual({ couponIsValid: true });
+    // Validity AND the code survive an unpriceable basket — the code is a fact
+    // about the promotion, not about the arithmetic.
+    expect(projected).toEqual({ couponIsValid: true, couponCode: "BEMVINDO15" });
+  });
+});
+
+// ── LE2-023 · the code the CONFIRM SENTENCE quotes ──────────────────────────
+//
+// `confirmSwapForCoupon` names the coupon from `ctx.couponCode`, never from the
+// envelope payload. These pin the two properties that makes safe: the spelling
+// is the STORE's, and it is absent for anything not usable.
+
+describe("projectCouponForOrder — couponCode is the STORE's spelling", () => {
+  it("stamps the promotion record's own code, not the caller's", async () => {
+    // The customer typed lower case; the store's promotion is upper case. The
+    // sentence must show what the store has — quoting the customer's version
+    // would show them a code that does not exist.
+    medusaAdminMock.mockResolvedValue(listing(promo()));
+    const projected = await projectCouponForOrder({
+      code: "bemvindo15",
+      orderTotalInCentavos: 50_000,
+    });
+    expect(projected.couponCode).toBe("BEMVINDO15");
+  });
+
+  it("stamps NO code for a coupon that is not usable", async () => {
+    medusaAdminMock.mockResolvedValue(listing(promo({ status: "inactive" })));
+    const projected = await projectCouponForOrder({
+      code: "BEMVINDO15",
+      orderTotalInCentavos: 50_000,
+    });
+    expect(projected).toEqual({ couponIsValid: false });
+    expect(projected.couponCode).toBeUndefined();
+  });
+
+  it("stamps NO code when the lookup could not be MADE", async () => {
+    medusaAdminMock.mockRejectedValue(new Error("medusa down"));
+    const projected = await projectCouponForOrder({
+      code: "BEMVINDO15",
+      orderTotalInCentavos: 50_000,
+    });
+    expect(projected).toEqual({});
+  });
+
+  it("falls back to the caller's code when the record carries none", async () => {
+    // `evaluatePromotionRecord` decides usability from status and dates, never
+    // from the code field it was looked up BY, so a usable record with no `code`
+    // is a shape it does not reject. The fallback is the string the lookup
+    // matched on, so it is still a code the store answered to.
+    const noCode = promo();
+    delete noCode.code;
+    medusaAdminMock.mockResolvedValue(listing(noCode));
+    const projected = await projectCouponForOrder({
+      code: "BEMVINDO15",
+      orderTotalInCentavos: 50_000,
+    });
+    expect(projected.couponCode).toBe("BEMVINDO15");
   });
 });
 

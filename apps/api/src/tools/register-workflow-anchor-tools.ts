@@ -78,9 +78,46 @@ const REORDER_REQUEST_ANCHOR: ToolDefinition<unknown, unknown> = {
   execute: () => Promise.resolve({ approved: true }),
 };
 
+/**
+ * The swap-for-coupon anchor — LE2-023.
+ *
+ * Does nothing, for the same reason `REORDER_REQUEST_ANCHOR` does nothing and
+ * with more at stake. Reaching this executor MEANS the customer approved the
+ * swap: `confirmSwapForCoupon` parked the envelope and only a resumed,
+ * receipt-bearing adjudication returns EXECUTE. The approval IS the act.
+ *
+ * Here the "giving it work would be actively wrong" argument is not a nicety.
+ * The route's first activity CANCELS THE ORDER, and it does so through the
+ * kernel, individually adjudicated, with its own audit row and its own declared
+ * compensator. Any cancelling this executor did would be an ungoverned mutation
+ * riding the anchor's EXECUTE — a real money act with no adjudication of its
+ * own, invisible to the per-activity trace, and unreachable by the compensation
+ * machinery that exists to undo exactly it.
+ *
+ * The same no-soft-failure rule applies: the wrapper overwrites `message` with
+ * the outcome template, so a `{success: false}` returned here would be silently
+ * discarded. Future work in this executor must THROW.
+ */
+const COUPON_SWAP_REQUEST_ANCHOR: ToolDefinition<unknown, unknown> = {
+  id: "ibatexas.order.couponSwapRequest.v1",
+  capability: "order.coupon.swap.request" as CapabilityId,
+  intentKind: "order.coupon.swap.request" as IntentKind,
+  description: "Confirmar a troca de um pedido por um novo com cupom aplicado.",
+  inputSchema: {},
+  outputSchema: {},
+  // The anchor itself moves nothing. The risk of the ROUTE lives on
+  // `order.cancel` (irreversible) and is adjudicated there, by the kernel,
+  // against the full money ladder.
+  riskLevel: "low",
+  execute: () => Promise.resolve({ approved: true }),
+};
+
 /** The anchor handlers this composition can supply, by capability kind. */
 const WORKFLOW_ANCHOR_TOOLS: ReadonlyMap<string, ToolDefinition<unknown, unknown>> =
-  new Map([["order.reorder.request", REORDER_REQUEST_ANCHOR]]);
+  new Map([
+    ["order.reorder.request", REORDER_REQUEST_ANCHOR],
+    ["order.coupon.swap.request", COUPON_SWAP_REQUEST_ANCHOR],
+  ]);
 
 /**
  * Register anchor handlers for the selection capabilities a loaded corpus uses
