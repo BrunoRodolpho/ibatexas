@@ -74,6 +74,10 @@ const { redisFake, orderRowsFake, paymentRowsFake, natsSpy, storeDown } = vi.hoi
 
 vi.mock("redis", () => {
   const client = {
+    // BKL-282 — the marker the isolation guard below the imports reads back.
+    // A literal, not a module const: `vi.mock` factories are hoisted and can
+    // run before this module's body, which would put any const in TDZ.
+    __ibxRedisDouble: true,
     isOpen: true,
     on: () => client,
     connect: async () => client,
@@ -229,6 +233,81 @@ vi.mock("@ibatexas/domain", async (importOriginal) => {
   };
 });
 
+// ── BKL-282: the doubles above only bind under per-file module isolation ──────
+//
+// THE FAILURE THIS REPLACES. Under `vitest --no-isolate` the module registry is
+// shared across files, so `@ibatexas/tools` — already evaluated by an earlier
+// file (e.g. scripted-pipeline, which drives a REAL Redis testcontainer) — keeps
+// its binding to the REAL `redis` package and this file's `vi.mock("redis")`
+// never reaches it. `getRedisClient()` then builds a REAL client against
+// `REDIS_URL` (`seedEnv` points it at localhost:6379, where nothing listens),
+// and every Redis touch pays a full bounded-reconnect cycle: 10 attempts with
+// exponential backoff capped at 3s, restarted by the NEXT call — per
+// `packages/tools/src/redis/client.ts`. Bounded per call, but ~20s × dozens of
+// calls, so the run made no progress for as long as anyone let it sit. A hang
+// is the worst way to report this: it names nothing and it wedges the session
+// that ran it.
+//
+// WHY A GUARD RATHER THAN A REPAIR. `--no-isolate` breaks module doubles by
+// construction — the same leak disarms this file's `@ibatexas/domain`, `stripe`
+// and NATS mocks too, and no per-file code can re-bind an import another file
+// already resolved. So the honest outcome is to FAIL FAST, naming the flag and
+// the mechanism, instead of degrading into a silent reconnect spin.
+//
+// The probe has to be asked of `@ibatexas/tools`, NOT of `redis`: importing
+// `redis` HERE always yields this file's double (vitest binds the mock for the
+// importing file), while the leak is entirely about which module instance TOOLS
+// resolved. So the guard reads the client tools actually hands out, and it pins
+// the client's own fail-fast knobs first — if the double is missing, that call
+// reaches a real socket, and these two make it give up at once instead of
+// starting the very spin the guard exists to prevent.
+//
+// This costs a default run one no-op call on the fake and asserts nothing about
+// behaviour: it is a statement of the harness contract the file is written
+// against.
+const { getRedisClient, rk } = await import("@ibatexas/tools");
+
+{
+  const saved = {
+    url: process.env.REDIS_URL,
+    connectTimeout: process.env.REDIS_CONNECT_TIMEOUT_MS,
+    reconnects: process.env.REDIS_MAX_RECONNECT_ATTEMPTS,
+  };
+  process.env.REDIS_URL = saved.url ?? "redis://localhost:6379";
+  process.env.REDIS_CONNECT_TIMEOUT_MS = "50";
+  process.env.REDIS_MAX_RECONNECT_ATTEMPTS = "0";
+  let doubleInstalled = false;
+  try {
+    const client = (await getRedisClient()) as unknown as {
+      __ibxRedisDouble?: unknown;
+    };
+    doubleInstalled = client.__ibxRedisDouble === true;
+  } catch {
+    doubleInstalled = false;
+  } finally {
+    for (const [key, value] of [
+      ["REDIS_URL", saved.url],
+      ["REDIS_CONNECT_TIMEOUT_MS", saved.connectTimeout],
+      ["REDIS_MAX_RECONNECT_ATTEMPTS", saved.reconnects],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  if (!doubleInstalled) {
+    throw new Error(
+      "[paid-cancel-parity] the `redis` double is NOT the client `@ibatexas/tools` " +
+        "hands out: tools kept its binding to the REAL `redis` package, so every " +
+        "Redis touch in this file would open a live socket and reconnect-spin " +
+        "instead of reading the in-memory fake. This is what `--no-isolate` does to " +
+        "a mock-based suite — a shared module registry keeps the binding an earlier " +
+        "file resolved, and the same leak disarms this file's `@ibatexas/domain`, " +
+        "`stripe` and NATS doubles too. Run this suite with vitest's default " +
+        "per-file isolation. (BKL-282)",
+    );
+  }
+}
+
 const {
   composeCustomerConductor,
   makeAuditedAdjudicator,
@@ -243,7 +322,6 @@ const {
 type CustomerChannel = import("./customer-e2e-harness.js").CustomerChannel;
 type ScriptedToolCall = import("./customer-e2e-harness.js").ScriptedToolCall;
 
-const { rk } = await import("@ibatexas/tools");
 const { loadCartCtx, loadOrderCtx, resolveAndAssemble, previousOrderCtxFields } =
   await import("../claustrum/resolve-and-assemble.js");
 const { loadPreviousOrder } = await import("../claustrum/previous-order.js");
@@ -391,10 +469,36 @@ function withCancelRoutes(
       const method = (init?.method ?? "GET").toUpperCase();
 
       // Both write paths end at Medusa's native cancel.
+      //
+      // BKL-281 — this arm answers for MEDUSA and writes NOTHING into
+      // `orderRowsFake`, which is the DOMAIN projection's fixture and a
+      // different store.
+      //
+      // Production keeps them separate on purpose: `executeOrderCancel`
+      // transitions the domain projection through `createOrderCommandService`
+      // (authoritative, awaited) and then mirrors the cancel to Medusa in a
+      // DETACHED `void (async () => …)()` — order-actions.ts "finding 29" —
+      // so `public."order"` stops reading stale. The mirror updates Medusa's
+      // own row, never the projection.
+      //
+      // The double used to flip `fulfillmentStatus` here too, and that
+      // conflation is what made this file order-dependent. The detached call
+      // resolves the global `fetch` stub at CALL time, so whenever it lands
+      // late it goes through whichever harness is CURRENT: a cancel driven on
+      // one arm re-wrote the fixture the NEXT arm had just seeded as pending,
+      // and the workflow arm met `already_cancelled` on its own fresh order.
+      // It only bit the FIRST cancel of a vitest process (a cold medusa admin
+      // token + an unloaded module graph delay the mirror past the re-seed;
+      // once warm it lands inside its own arm and is a no-op on an
+      // already-canceled row) — which is precisely why the file was green in
+      // declaration order and red whenever a cancel test ran first.
+      //
+      // Nothing is lost by not writing: every `orderStatus` assertion in this
+      // file reads a status the DOMAIN transition wrote, in the same arm,
+      // synchronously — and the two `not.toBe("canceled")` cases can no longer
+      // be falsified by a stray write from a retired arm.
       if (method === "POST" && /^\/admin\/orders\/[^/]+\/cancel$/.test(path)) {
         base.calls.push({ method, path });
-        const row = orderRowsFake.rows.find((r) => r["id"] === ORDER_ID);
-        if (row !== undefined) row["fulfillmentStatus"] = "canceled";
         return json({ order: { id: ORDER_ID, status: "canceled" } });
       }
       const orderMatch = /^\/admin\/orders\/([^/]+)$/.exec(path);
