@@ -620,36 +620,52 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // bare "o que vocês têm/servem", DISJOINT from the per-item spans below and from the
   // BKL-152 date-anchor family (which only touches the schedule spans). Over-inclusion is
   // DEMOTE-ONLY safe: an empty/unreadable catalog → ABSENT evidence → honest UNKNOWN.
+  //
+  // BKL-273 — the `!ALLERGEN_FAMILY_RE` condition that used to sit here is GONE, and
+  // its removal is the ticket. Suppressing the SPAN did not route an allergen-marked
+  // overview ask to the conservative abstain: it left the turn with NO read span at
+  // all, so §O#15 had nothing to complete, no claims render fired, and the REAL
+  // responder authored the dietary sentence itself — measured at the customer seam
+  // (BKL-270 audit). The span now always fires and the guard lives on the READ
+  // (menu-item-resolver.ts `resolveMenuOverviewText`), exactly as LE2-029 placed the
+  // pairing guard on `resolvePairings` for the same reason.
   const isMenuOverview =
     notOrderScoped &&
     !mutationImperative &&
-    !ALLERGEN_FAMILY_RE.test(t) &&
     /\bcard[áa]pio\b|\bmenu\b|o que (voc[êe]s )?(t[êe]m|servem)( (pra|para) comer)?|quais (os |as )?(pratos|op[çc][õo]es)/.test(t);
   if (isMenuOverview) classes.push("MENU_OVERVIEW_Q");
 
   if (notOrderScoped && !mutationImperative && /quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]/.test(t)) {
     classes.push("MENU_ITEM_PRICE_Q");
   }
-  // NB: allergen-family phrasing ("ingredientes", "contém glúten/lactose") is
-  // DELIBERATELY excluded — it routes to the carved-out MENU_ITEM_ALLERGENS
-  // (honest-UNKNOWN + staff handoff, BKL-123/143), never a rendered CONTENTS answer.
+  // BKL-273 — allergen-family phrasing ("ingredientes", "contém glúten/lactose") NO
+  // LONGER suppresses this span. It still never produces a rendered CONTENTS answer,
+  // but the refusal now happens on the READ (menu-item-resolver.ts
+  // `composeMenuContentsText` returns `undefined` for an allergen-marked ask → NO
+  // evidence → honest UNKNOWN → the BKL-184 abstain + staff handoff). Suppressing the
+  // span instead dropped the turn off the deterministic path entirely and handed the
+  // dietary question to the model, which is the failure this ticket fixes.
   // `!isMenuOverview` keeps a WHOLE-menu question ("o que tem no cardápio") disjoint from
   // the per-ITEM contents span ("o que vem no combo") — the overview owns it.
-  if (notOrderScoped && !mutationImperative && !isMenuOverview && !ALLERGEN_FAMILY_RE.test(t) && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
+  if (notOrderScoped && !mutationImperative && !isMenuOverview && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
     classes.push("MENU_ITEM_CONTENTS_Q");
   }
 
   // BKL-214 — a dietary-PREFERENCE question ("tem opção vegetariana?", "prato vegano?").
   // RESTRICTED to pure-preference tags (vegetariano/vegano) — matches ONLY those stems.
-  // GATED on `!ALLERGEN_FAMILY_RE`: an allergen-adjacent diet ("sem glúten", "sem
-  // lactose", "contém…") trips the allergen net and routes to the carved-out conservative
-  // abstain path (BKL-143/123), NEVER a rendered dietary list. `!mutationImperative` keeps
-  // "tira o vegetariano do carrinho" on the mutation path. Over-inclusion is DEMOTE-ONLY
-  // safe: no tagged product → ABSENT evidence → honest UNKNOWN, never a fabricated option.
+  // `!mutationImperative` keeps "tira o vegetariano do carrinho" on the mutation path.
+  // Over-inclusion is DEMOTE-ONLY safe: no tagged product → ABSENT evidence → honest
+  // UNKNOWN, never a fabricated option.
+  //
+  // BKL-273 — the `!ALLERGEN_FAMILY_RE` condition that used to sit here is GONE. An
+  // allergen-adjacent diet ("tem opção vegetariana sem glúten?") still NEVER produces a
+  // rendered dietary list — the guard moved to the READ (menu-item-resolver.ts
+  // `resolveDietaryOptionsText`), which returns `undefined` for such an ask → NO
+  // evidence → honest UNKNOWN → the BKL-184 abstain + staff handoff. Suppressing the
+  // span sent the turn to the model instead, which authored the "sem glúten" answer.
   if (
     notOrderScoped &&
     !mutationImperative &&
-    !ALLERGEN_FAMILY_RE.test(t) &&
     /vegetarian[ao]?|\bvegan[ao]?\b/.test(t)
   ) {
     classes.push("MENU_DIETARY_Q");

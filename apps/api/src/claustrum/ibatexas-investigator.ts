@@ -473,7 +473,13 @@ export function createFirstPartyTurnReads(
           });
         }
         if (wantsMenuContents) {
-          const contentsText = composeMenuContentsText(resolved);
+          // BKL-273 — the SAME request text the claim planner passes (its
+          // `state.perception.text`), so the allergen guard decides identically on
+          // both sides and the recorded/derived C6 values stay byte-equal.
+          const contentsText = composeMenuContentsText(
+            resolved,
+            input.cognition.perception.text,
+          );
           // No first-party description → record NO evidence → honest UNKNOWN (never a
           // fabricated blurb). Only push when the catalog actually has contents text.
           if (contentsText !== undefined) {
@@ -498,11 +504,15 @@ export function createFirstPartyTurnReads(
     // → NO evidence → honest UNKNOWN (never a fabricated menu). The `menu:item_unpublished`
     // W6 falsifier is DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
     if (menuSpans.includes("MENU_OVERVIEW_Q")) {
-      const overviewText = await resolveMenuOverviewText(input.cognition.turnId, {
-        channel: input.cognition.perception.channel,
-        sessionId: input.cognition.conversationId,
-        customerId,
-      });
+      const overviewText = await resolveMenuOverviewText(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+        {
+          channel: input.cognition.perception.channel,
+          sessionId: input.cognition.conversationId,
+          customerId,
+        },
+      );
       if (overviewText !== undefined) {
         reads.push({
           key: MENU_OVERVIEW_KEY,
@@ -525,11 +535,16 @@ export function createFirstPartyTurnReads(
     if (menuSpans.includes("MENU_DIETARY_Q")) {
       const tags = detectDietaryPreferenceTags(input.cognition.perception.text);
       for (const tag of tags) {
-        const dietaryText = await resolveDietaryOptionsText(input.cognition.turnId, tag, {
-          channel: input.cognition.perception.channel,
-          sessionId: input.cognition.conversationId,
-          customerId,
-        });
+        const dietaryText = await resolveDietaryOptionsText(
+          input.cognition.turnId,
+          tag,
+          input.cognition.perception.text,
+          {
+            channel: input.cognition.perception.channel,
+            sessionId: input.cognition.conversationId,
+            customerId,
+          },
+        );
         if (dietaryText !== undefined) {
           reads.push({
             key: MENU_DIETARY_KEY(tag),
