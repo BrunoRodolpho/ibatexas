@@ -443,7 +443,7 @@ async function outboxRemove(envPrefix: string, event: string, data: string): Pro
  * pair can alias another and cause a false dedup (a dropped event).
  */
 export function publishMsgId(event: string, data: string): string {
-  return createHash("sha256").update(event).update(" ").update(data).digest("hex")
+  return createHash("sha256").update(event).update("\x00").update(data).digest("hex")
 }
 
 export async function publishNatsEvent<T extends Record<string, unknown> = Record<string, unknown>>(event: string, payload: T): Promise<void> {

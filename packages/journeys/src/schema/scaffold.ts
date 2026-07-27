@@ -213,7 +213,7 @@ function deriveExpects(observed: readonly ScaffoldObservedDecision[]): {
       skipped += 1
       continue
     }
-    const key = `${o.intentKind} ${o.decision}`
+    const key = `${o.intentKind}\x00${o.decision}`
     if (seen.has(key)) continue // duplicates: IN_ORDER + tuple reconciliation tolerate repeats
     seen.add(key)
     const optional =

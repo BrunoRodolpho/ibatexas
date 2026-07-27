@@ -367,7 +367,7 @@ export function resolveDeliveryCoverage(
   turnId: string,
   text: string,
 ): Promise<DeliveryCoverageResolution> {
-  const key = `${turnId} ${text}`;
+  const key = `${turnId}\x00${text}`;
   const cached = deliveryCoverageMemo.get(key);
   if (cached !== undefined) return cached;
   const pending = resolveDeliveryCoverageUncached(text);
