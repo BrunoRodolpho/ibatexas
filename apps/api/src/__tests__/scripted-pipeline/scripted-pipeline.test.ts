@@ -335,28 +335,40 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       expect(result.response.text).toBe(
         "Olá! Tudo ótimo por aqui. Como posso ajudar?",
       );
-      // 4 from the IBX-GC-006 run above + 1 from this re-drive.
+      // 3 from the IBX-GC-006 run above + 2 from this re-drive.
       //
-      // LE2-009 changed this count from 6 to 5, and the change IS the funnel's L1
-      // tier doing its job: this test re-drives a BYTE-IDENTICAL utterance through
-      // the real `bootstrapClaustrum`, which now wires exact-match parse
-      // memoization, so the second turn replays its parse instead of buying a
-      // second extraction completion. (L0 does not fire here — `decideL0` is
-      // fail-closed on a missing funnel context and this test calls `handleTurn`
-      // directly rather than through an ingress that publishes one.)
+      // THE COUNT'S HISTORY, because it has moved twice for opposite reasons.
+      // Pre-funnel it was 5. LE2-009 took it to 4: L1 memoized this turn's parse,
+      // so the re-drive replayed it and bought no second extraction completion.
+      // BKL-274 takes it back to 5, and that is the fix working as designed.
       //
-      // The test keeps its teeth. Its purpose is to pin that the scripted provider
-      // resolves by CONTENT rather than rotating a cursor (plan v2 ledger #13), and
-      // that is still proven twice over: the RESPONDER — which L1 never caches,
-      // because the doctrine is cache-the-parse-never-the-answer — is still called
-      // on both drives and still returns the same completion for the same content
-      // key, and the re-driven reply text asserted above is identical.
+      // WHY. This turn's parse is SILENT — the model returns prose and selects
+      // nothing (`result.plan.envelopes` is empty above). BKL-274 makes a silent
+      // parse non-cacheable, because at the memoize seam it is indistinguishable
+      // from a failed parse of a real order, and replaying one caches the ANSWER
+      // rather than the parse. So the re-drive buys its own extraction call.
+      //
+      // AND WHY THAT COSTS PRODUCTION NOTHING HERE. "Oi, tudo bem?" is social, and
+      // in production the funnel's L0 tier claims it for ZERO model calls before
+      // L1 is ever consulted. It only reaches the model in this test because
+      // `handleTurn` is called directly rather than through an ingress, and
+      // `decideL0` is fail-closed on the missing funnel context. The extra call is
+      // an artifact of the L0-less drive path, not a production regression.
+      //
+      // The test keeps its teeth, and they were never the planner count. Its
+      // purpose is to pin that the scripted provider resolves by CONTENT rather
+      // than rotating a cursor (plan v2 ledger #13) — still proven twice over: the
+      // RESPONDER is called on both drives and returns the same completion for the
+      // same content key, and the re-driven reply text asserted above is identical.
+      // If anything the anti-cursor proof is now STRONGER, since the planner is
+      // also called twice and also resolves the same key both times.
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes).toHaveLength(4);
-      // ONE planner call across both drives: the second was served from the cache.
+      expect(completes).toHaveLength(5);
+      // TWO planner calls, same content key — neither drive replayed a cached
+      // silence, and the second resolved the same fixture as the first.
       expect(
         completes.filter((c) => c.label === "planner:smalltalk-noop"),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
       // TWO responder calls, same content key, same reply — the anti-cursor proof.
       expect(
         completes.filter((c) => c.label === "responder:smalltalk-noop"),
