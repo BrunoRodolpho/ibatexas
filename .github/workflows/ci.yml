@@ -28,6 +28,22 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # BKL-272 — raw NUL (0x00) guard. A single 0x00 in a tracked source makes
+      # `file` classify it as binary, and grep -I / ripgrep then skip it
+      # SILENTLY (exit 1, no output) — so every grep-shaped check in this repo
+      # (the conformance rule-inventory scanner, count pins, drift mirrors,
+      # stand-down checks) returns a false negative on that file. Git's ~8KB
+      # binary heuristic hides it from review too: 4 of the 7 NULs swept in
+      # BKL-272 sat past 8KB and diffed as ordinary text.
+      #
+      # Runs BEFORE `pnpm install` on purpose: it needs nothing but node (pinned
+      # by setup-node above) and git, so it cannot be skipped for a missing
+      # dependency and gives the fastest possible signal. Per BKL-249 this gate
+      # has NO skipIf/binary-probe shape — a guard that can silently no-op is
+      # exactly the failure mode it exists to prevent, so it exits non-zero even
+      # if `git ls-files` comes back empty.
+      - name: No raw NUL bytes in tracked sources (BKL-272)
+        run: node scripts/check-no-nul-bytes.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ibatexas/domain db:generate
       - run: pnpm lint
