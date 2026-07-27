@@ -178,6 +178,135 @@ describe("L1 write policy — which parses may be memoized", () => {
 
     expect(store.entries.size).toBe(0);
   });
+
+  // ── BKL-274 · THE SILENT PARSE ─────────────────────────────────────────────
+  // The gap the extraction-failure clause above never covered. Every shape it
+  // DOES cover announces itself on the wire (empty completion, thrown
+  // completion, malformed tool-call JSON) and returns long before the memoize
+  // call. This one returns a well-formed 200 carrying prose and selecting
+  // nothing, so it reached `rememberParse` and was stored as `proposals: []`.
+  //
+  // Measured 2026-07-27 on the pinned engine epoch: "me vê um brisket e uma
+  // batata" emits nothing 3/3 passes. Pass 1 spent a real ~8s completion; pass 2
+  // hit `L1 memoized_parse` and served the same silence in 38ms with no model
+  // call. The utterance below is that exact class.
+  it("BKL-274 — REFUSES to memoize a SILENT parse (a 200 that selected nothing)", async () => {
+    const store = memoryStore();
+    // Non-empty text, zero tool calls — NOT `isGenuinelyEmptyCompletion`, so
+    // this survives every extraction-failure gate and reaches the memoize call.
+    const { model, complete } = mockModel([[]]);
+    const { planner, funnel } = buildPlanner({ model, store });
+
+    const plan = await planner.propose(mkState("me vê um brisket e uma batata"));
+
+    // The turn really did go to the wire and really did come back with nothing.
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(plan.envelopes).toEqual([]);
+
+    // …and NOTHING was written, so the customer's repeat re-parses.
+    expect(store.entries.size).toBe(0);
+    expect(funnel.counters?.()).toMatchObject({ stores: 0, bypasses: 1 });
+  });
+
+  // The two controls that make the predicate NARROW rather than "zero
+  // proposals". Both mint no envelope; both must still be cached. If either of
+  // these ever goes red, the fix has started eating legitimate entries.
+  it("BKL-274 control — a READ-ONLY parse has zero proposals and IS still cached", async () => {
+    const store = memoryStore();
+    // A read-tool selection with NO executors wired ⟹ no enrichment hop ⟹
+    // `readEnriched` stays false, so cacheability turns purely on silence.
+    const { model } = mockModel([[{ id: "tc-read", name: "get_cart", input: {} }]]);
+    const { planner, funnel } = buildPlanner({ model, store });
+
+    const plan = await planner.propose(mkState("o que tem no meu carrinho?"));
+
+    expect(plan.envelopes).toEqual([]);
+    expect(store.entries.size).toBe(1);
+    const [entry] = [...store.entries.values()];
+    expect(entry!.proposals).toEqual([]);
+    expect(entry!.readToolCalls.map((c) => c.name)).toEqual(["get_cart"]);
+    expect(funnel.counters?.()).toMatchObject({ stores: 1, bypasses: 0 });
+  });
+
+  it("BKL-274 control — a DROPPED-ONLY parse has zero proposals and IS still cached", async () => {
+    const store = memoryStore();
+    // The model selected a capability the plan does not allow. The
+    // constrained-generation wall dropped it — a deterministic verdict a replay
+    // reproduces exactly, not a failure to parse.
+    const { model } = mockModel([[expressIntent("staff.only.kind", {})]]);
+    const { planner, funnel } = buildPlanner({ model, store });
+
+    const plan = await planner.propose(mkState("cancela o pedido do outro cliente"));
+
+    expect(plan.envelopes).toEqual([]);
+    expect(store.entries.size).toBe(1);
+    const [entry] = [...store.entries.values()];
+    expect(entry!.proposals).toEqual([]);
+    expect(entry!.dropped).toEqual(["staff.only.kind"]);
+    expect(funnel.counters?.()).toMatchObject({ stores: 1, bypasses: 0 });
+  });
+});
+
+// ── BKL-274 · THE READ SIDE ──────────────────────────────────────────────────
+// The write fix stops NEW silence. It does nothing about entries an earlier
+// deploy already wrote, which stay readable for the rest of their 7-day TTL.
+// Re-checking the predicate on lookup neutralizes exactly those and nothing
+// else — which is why this ticket bumps no key component (see the PR body's
+// eviction decision).
+describe("L1 read policy — a stored SILENT entry is never served (BKL-274)", () => {
+  it("treats a pre-existing silent entry as a MISS and re-parses on the wire", async () => {
+    const store = memoryStore();
+    const utterance = "me vê um brisket e uma batata";
+
+    // Seed the store the way the PRE-FIX planner would have: drive one turn with
+    // a real (non-silent) parse to learn the exact production key, then
+    // overwrite that key's value with the silence the old code used to write.
+    // Building the key by hand would test a key this planner never computes.
+    const seeding = mockModel([[expressIntent("order.item.add", { item: "brisket" })]]);
+    const seed = buildPlanner({ model: seeding.model, store });
+    await seed.planner.propose(mkState(utterance, "turn-seed"));
+    expect(store.entries.size).toBe(1);
+    const key = [...store.entries.keys()][0]!;
+    store.entries.set(key, {
+      proposals: [],
+      readToolCalls: [],
+      dropped: [],
+      keyVersion: 1,
+    });
+
+    // Now the customer repeats themselves. The entry is present and its key
+    // matches — pre-fix this was an L1 hit that replayed the silence.
+    const repeat = mockModel([[expressIntent("order.item.add", { item: "brisket" })]]);
+    const { planner, funnel } = buildPlanner({ model: repeat.model, store });
+    const plan = await planner.propose(mkState(utterance, "turn-repeat"));
+
+    // A REAL extraction call happened, and the customer got their intent.
+    expect(repeat.complete).toHaveBeenCalledTimes(1);
+    expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);
+
+    // The refusal is counted as its own operational fact, not hidden in `misses`.
+    expect(funnel.counters?.()).toMatchObject({
+      hits: 0,
+      misses: 1,
+      silentEntriesIgnored: 1,
+    });
+  });
+
+  it("control — a stored NON-silent entry is still served as a hit", async () => {
+    const store = memoryStore();
+    const utterance = "quero uma coca";
+    const seeding = mockModel([[expressIntent("order.item.add", { item: "coca" })]]);
+    const seed = buildPlanner({ model: seeding.model, store });
+    await seed.planner.propose(mkState(utterance, "turn-seed"));
+
+    const repeat = mockModel([[expressIntent("order.item.add", { item: "coca" })]]);
+    const { planner, funnel } = buildPlanner({ model: repeat.model, store });
+    const plan = await planner.propose(mkState(utterance, "turn-repeat"));
+
+    expect(repeat.complete).not.toHaveBeenCalled();
+    expect(plan.envelopes.map((e) => e.kind)).toEqual(["order.item.add"]);
+    expect(funnel.counters?.()).toMatchObject({ hits: 1, silentEntriesIgnored: 0 });
+  });
 });
 
 describe("L1 read policy — what a hit replays", () => {

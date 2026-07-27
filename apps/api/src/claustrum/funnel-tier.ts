@@ -50,6 +50,7 @@ import {
 } from "./alias-canonicalization.js";
 import {
   createParseCacheTelemetry,
+  isSilentParse,
   PARSE_CACHE_TTL_SECONDS,
   type MemoizedParse,
   type ParseCacheCounters,
@@ -602,6 +603,42 @@ export function createParseFunnel(
               telemetry.recordMiss(canonical);
               return undefined;
             }
+            // BKL-274 — THE READ SIDE OF THE SILENCE REFUSAL, and the entire
+            // answer to the pre-fix residue.
+            //
+            // The write side (the planner's `isCacheableParse` call) stops NEW
+            // silence from being stored, but entries written by an earlier
+            // deploy stay readable for the rest of their 7-day TTL, and every
+            // one of them replays the defect. The two ways to reach them are a
+            // key-component bump (which throws away every GOOD entry too, and
+            // spends a component whose declared meaning is a parser-visible
+            // SURFACE change — which this fix is not) and an out-of-band
+            // eviction pass (which the module header deliberately refuses to
+            // own: "there is no separate invalidation path to get wrong").
+            //
+            // Re-checking the predicate HERE is strictly better than both. It
+            // neutralizes exactly the defective entries and nothing else, the
+            // moment this code ships, with no ops action and no honesty cost to
+            // the key. The dead entries simply age out unread.
+            //
+            // It is also the durable guard: the write side is one call site and
+            // could be bypassed by a future writer, while nothing is served
+            // without passing through here.
+            if (isSilentParse(hit)) {
+              telemetry.recordSilentEntryIgnored();
+              telemetry.recordMiss(canonical);
+              logger.info(
+                {
+                  component: "funnel",
+                  event: "funnel.l1.silent_entry_ignored",
+                  keyVersion: key.keyVersion,
+                  keyDigest: key.digest.slice(0, 12),
+                  ...telemetry.snapshot(),
+                },
+                "funnel L1: stored parse emitted nothing — treated as a MISS, never replayed (BKL-274)",
+              );
+              return undefined;
+            }
             telemetry.recordHit();
             return hit;
           },
@@ -611,8 +648,9 @@ export function createParseFunnel(
             cacheable: boolean,
           ): Promise<void> {
             if (!cacheable) {
-              // A read-enriched or extraction-failed parse: counted so the bypass
-              // RATE is visible, never written (see parse-memo.ts's header).
+              // A read-enriched, extraction-failed or SILENT parse (BKL-274):
+              // counted so the bypass RATE is visible, never written (see
+              // parse-memo.ts's header).
               telemetry.recordBypass();
               return;
             }

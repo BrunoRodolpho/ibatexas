@@ -117,6 +117,8 @@ import {
   buildParseCacheKey,
   canonicalizeUtterance,
   isCacheableParse,
+  isSilentParse,
+  type MemoizedParse,
 } from "./parse-memo.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
@@ -2006,21 +2008,56 @@ export function createIbatexasPlanner(
       // the entry exists immediately after the turn instead of racing a dangling
       // promise. Nothing here can throw into the turn.
       if (memo !== undefined && memoKey !== undefined) {
+        const parse: MemoizedParse = {
+          proposals: envelopes.map((envelope) => ({
+            kind: envelope.kind,
+            // The FILTERED payload as it went onto the envelope — i.e. after
+            // FE-T11's `stripUnauthoredPayloadFields` — so a replay can never
+            // reintroduce a smuggled field the live path had already stripped.
+            payload: (envelope as { payload?: unknown }).payload ?? {},
+          })),
+          readToolCalls: readToolCalls.map((c) => ({ name: c.name, input: c.input })),
+          dropped: [...dropped],
+          keyVersion: memoKey.keyVersion,
+        };
+        // BKL-274 — THE SILENCE REFUSAL, computed from the very object about to
+        // be written so the predicate and the payload cannot drift.
+        //
+        // The model returned well-formed prose and selected NOTHING: no intent,
+        // no read tool, not even an out-of-plan call for the wall to drop.
+        // Storing that pins the silence to this utterance for the full TTL, and
+        // the repeat — the customer's only self-service remedy — then replays it
+        // with no model call at all. See parse-memo.ts's header for why this is
+        // the one entry shape that caches the ANSWER rather than the parse.
+        const silent = isSilentParse(parse);
+        if (silent) {
+          logger.warn(
+            {
+              component: "planner",
+              event: "parse_cache.silent_parse_not_memoized",
+              turnId: state.turnId,
+              // The whole point of the line: this turn produced no artifact, so
+              // there is nothing else in the trace to join a repeat against.
+              // Names/counts only — never the utterance.
+              envelopeCount: 0,
+              readToolCalls: 0,
+              droppedOutOfPlan: 0,
+              funnelKeyDigest: memoKey.digest.slice(0, 12),
+            },
+            "planner: parse emitted nothing — NOT memoized, so a repeat re-parses instead of replaying the silence",
+          );
+        }
         await memo.rememberParse(
           memoKey,
-          {
-            proposals: envelopes.map((envelope) => ({
-              kind: envelope.kind,
-              // The FILTERED payload as it went onto the envelope — i.e. after
-              // FE-T11's `stripUnauthoredPayloadFields` — so a replay can never
-              // reintroduce a smuggled field the live path had already stripped.
-              payload: (envelope as { payload?: unknown }).payload ?? {},
-            })),
-            readToolCalls: readToolCalls.map((c) => ({ name: c.name, input: c.input })),
-            dropped: [...dropped],
-            keyVersion: memoKey.keyVersion,
-          },
-          isCacheableParse({ readEnriched, extractionFailed: false }),
+          parse,
+          // `extractionFailed` is a provable literal here, not an assumption:
+          // EVERY extraction-failure path returns above this line — the
+          // completion error, the genuinely-empty completion that survived
+          // repair, and the malformed tool-call JSON. A wire fault can never
+          // reach this call. What the flag never covered — and what BKL-274
+          // added — is the failure that looks exactly like a success on the
+          // wire: a 200 with text and no selection.
+          isCacheableParse({ readEnriched, extractionFailed: false, silent }),
         );
       }
 
