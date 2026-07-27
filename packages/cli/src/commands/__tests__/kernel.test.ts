@@ -95,7 +95,7 @@ describe("ibx kernel status", () => {
     // (the swap-for-coupon anchor, identity-tier) and order.coupon.adjust (that
     // workflow's CLOSED coupon_on_placed_order branch target, workflow-scoped):
     // 63 → 65.
-    expect(parsed.knownIntentKinds.count).toBe(65)
+    expect(parsed.knownIntentKinds.count).toBe(66)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -208,7 +208,7 @@ describe("ibx kernel status", () => {
     // NEW-014 lifts order.* to 22 (order.fiscal.emit joins the order prefix);
     // LE2-021's order.reorder.request → 23; LE2-023's order.coupon.swap.request
     // + order.coupon.adjust → 25.
-    expect(out).toMatch(/order \(25\)/)
+    expect(out).toMatch(/order \(26\)/)
     expect(out).toMatch(/reservation \(7\)/)
     // whatsapp.* prefix group = 4 (message.send, template.send,
     // session.handover, BKL-030 handoff.request); the pack's 5th kind

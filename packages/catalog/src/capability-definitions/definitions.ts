@@ -747,6 +747,28 @@ export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [
   // their own guards. Registered-but-unadvertised, so its tool is the second
   // member of `register-workflow-anchor-tools.ts`.
   { kind: "order.coupon.swap.request", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
+  // LE2-024 — the paid-cancel workflow's GOVERNANCE ANCHOR, on exactly the terms
+  // the two anchors above set out (IDENTITY tier, not `workflowScoped`, its tool
+  // in `register-workflow-anchor-tools.ts`).
+  //
+  // ── WHY THIS ANCHOR IS NOT `escalatable`, WHICH IS THE INTERESTING FIELD ────
+  //
+  // `order.cancel` IS `escalatable: true`, and this anchor fronts it, so the
+  // reflex is to mirror the flag. It would be false. That field's maintenance
+  // contract is "a pack change that adds or drops a BAND moves this in the same
+  // commit", and it is read by the compiler's `escalated-outcome-template-missing`
+  // rule to decide which workflows must author an `escalated` template.
+  //
+  // `confirmPaidCancel` declares no escalate band — it REFUSEs, CONFIRMs, or
+  // returns null, and the ESCALATE the paid-cancel route can reach is raised by
+  // `gatePaidCancel` at the `order.cancel` ACTIVITY (see that guard's doc on why
+  // the band deliberately lives one layer down: an escalation parked on THIS kind
+  // would be unapprovable, re-opening the BKL-103 hole). The workflow still
+  // authors an `escalated` template and the compiler still requires one, because
+  // it routes `order.cancel` — the flag does its job through the activity, which
+  // is where the band actually is. Setting it here would assert a band this kind
+  // does not have.
+  { kind: "order.cancel.request", pack: "ibatexas/pack-orders", mutating: true, tier: "identity" },
   // LE2-023 — DECLARED SO A CLOSED BRANCH CAN NAME IT, AND UNEXECUTABLE BY TWO
   // INDEPENDENT LOCKS. It is the target of the swap-for-coupon workflow's
   // `coupon_on_placed_order` policy branch, which ships CLOSED.

@@ -367,6 +367,12 @@ export const PREVIOUS_ORDER_CTX_KINDS: ReadonlySet<string> = new Set([
   // (`previousOrderIsCancelable`, `previousOrderPaymentIsSettled`) that decide
   // whether the route is possible and whether its refund clause is true.
   "order.coupon.swap.request",
+  // LE2-024 — the paid-cancel anchor reads the same projection again, and reads
+  // it for the same three decisions `confirmPaidCancel` makes: is there an order
+  // (`previousOrderId`), may it still be cancelled (`previousOrderIsCancelable`),
+  // and does cancelling it move money (`previousOrderPaymentIsSettled` +
+  // `previousOrderTotalInCentavos`, the figure the confirm sentence quotes).
+  "order.cancel.request",
 ]);
 
 /**

@@ -62,13 +62,14 @@ import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 // and the second is WORKFLOW-SCOPED, so NEITHER is planner-advertised and
 // CHAT_DRIVABLE stays 20 again) ──
 
-describe("count assertions — 65 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014 + LE2-021 + LE2-023)", () => {
-  it("KNOWN_INTENT_KINDS has exactly 65 kinds", () => {
+describe("count assertions — 66 KNOWN / 20 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014 + LE2-021 + LE2-023 + LE2-024)", () => {
+  it("KNOWN_INTENT_KINDS has exactly 66 kinds", () => {
     // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds)
     // → 61 (BKL-177 PR-B: whatsapp.message.send + template.send) → 62
     // (NEW-014: +order.fiscal.emit) → 63 (LE2-021: +order.reorder.request) → 65
     // (LE2-023: +order.coupon.swap.request, +order.coupon.adjust).
-    expect(KNOWN_INTENT_KINDS.size).toBe(65)
+    // → 66 (LE2-024: +order.cancel.request, the paid-cancel workflow's anchor)
+    expect(KNOWN_INTENT_KINDS.size).toBe(66)
   })
 
   it("CHAT_DRIVABLE_TOOL_KINDS has exactly 20 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
@@ -93,13 +94,14 @@ describe("count assertions — 65 KNOWN / 20 CHAT_DRIVABLE pinned against the pr
     expect(source).not.toMatch(/The 18 chat-drivable/)
   })
 
-  it("the 61-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 65", () => {
+  it("the 62-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 66", () => {
     // 66 → 61 (BKL-176: 5 dead payment.charge.*) → 59 (BKL-177 PR-A: 2 kinds)
     // → 57 (BKL-177 PR-B: 2 whatsapp kinds) → 58 (NEW-014: +order.fiscal.emit)
     // → 59 (LE2-021: +order.reorder.request) → 61 (LE2-023:
     // +order.coupon.swap.request, the swap-for-coupon anchor, and
     // +order.coupon.adjust, its closed branch's workflow-scoped target).
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(61)
+    // → 62 (LE2-024: +order.cancel.request)
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(62)
   })
 })
 

@@ -157,6 +157,12 @@ export {
   CUSTOMER_POST_PONR_FULFILLMENT,
 } from "./policies.js"
 
+// LE2-024 — the ONE paid-cancel confirm sentence, exported so the parity suite
+// can assert both planes render it without re-spelling it a third time. A test
+// that hard-coded the expected string would pass while both callers drifted
+// together, which is exactly the agreement this function exists to remove.
+export { paidCancelConfirmText } from "./policies.js"
+
 export {
   ORDER_TOOL_TO_INTENT,
   ORDER_TOOLS,
@@ -199,6 +205,7 @@ export const ordersPack = {
     "order.reorder",
     "order.reorder.request",
     "order.coupon.swap.request",
+    "order.cancel.request",
     "order.coupon.adjust",
     "order.projection.create",
     "order.status.transition",

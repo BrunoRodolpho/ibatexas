@@ -48,7 +48,7 @@
       },
       {
         "name": "start_workflow",
-        "description": "Iniciar um fluxo pré-autorizado de várias etapas. Use `workflow` (uma das opções do enum) e `slots` com os dados que o cliente informou. Fluxos: workflow.orders.reorder-last: Repetir o último pedido do cliente: monta um carrinho novo com os mesmos itens do pedido anterior, depois de confirmar com ele. (o cliente diz: \"repete meu último pedido\"; \"refaz meu último pedido\"; \"quero pedir a mesma coisa da última vez\"; \"faz o mesmo pedido de novo\"; \"quero repetir a última compra\"; \"bota tudo do meu último pedido no carrinho\"; \"manda o de sempre\") (dados: nenhum) | workflow.orders.swap-for-coupon: Cancelar o pedido atual do cliente e montar um pedido novo igual com um cupom de desconto aplicado, depois de confirmar com ele o valor, o reembolso e o novo total. (o cliente diz: \"cancela meu pedido e faz outro igual com o cupom\"; \"se não der pra usar o cupom, cancela e faz de novo\"; \"quero usar meu cupom no pedido que já fiz\"; \"dá pra aplicar esse cupom no meu pedido?\"; \"refaz meu pedido com desconto\"; \"esqueci de colocar o cupom, dá pra trocar?\"; \"troca meu pedido por um com o cupom\") (dados: code)",
+        "description": "Iniciar um fluxo pré-autorizado de várias etapas. Use `workflow` (uma das opções do enum) e `slots` com os dados que o cliente informou. Fluxos: workflow.orders.reorder-last: Repetir o último pedido do cliente: monta um carrinho novo com os mesmos itens do pedido anterior, depois de confirmar com ele. (o cliente diz: \"repete meu último pedido\"; \"refaz meu último pedido\"; \"quero pedir a mesma coisa da última vez\"; \"faz o mesmo pedido de novo\"; \"quero repetir a última compra\"; \"bota tudo do meu último pedido no carrinho\"; \"manda o de sempre\") (dados: nenhum) | workflow.orders.swap-for-coupon: Cancelar o pedido atual do cliente e montar um pedido novo igual com um cupom de desconto aplicado, depois de confirmar com ele o valor, o reembolso e o novo total. (o cliente diz: \"cancela meu pedido e faz outro igual com o cupom\"; \"se não der pra usar o cupom, cancela e faz de novo\"; \"quero usar meu cupom no pedido que já fiz\"; \"dá pra aplicar esse cupom no meu pedido?\"; \"refaz meu pedido com desconto\"; \"esqueci de colocar o cupom, dá pra trocar?\"; \"troca meu pedido por um com o cupom\") (dados: code) | workflow.orders.paid-cancel: Cancelar um pedido do cliente que já foi pago, confirmando com ele o valor do pedido e que o cancelamento devolve o dinheiro. (o cliente diz: \"cancela o último pedido\"; \"poderia cancelar meu pedido mais recente, por gentileza?\"; \"quero cancelar meu pedido por favor\"; \"quero cancelar o pedido 12345\"; \"quero cancelar meu pedido 12345\"; \"cancela o pedido 12345\"; \"cancela o pedido 12345 de 1200 reais\") (dados: nenhum)",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -56,7 +56,8 @@
               "type": "string",
               "enum": [
                 "workflow.orders.reorder-last",
-                "workflow.orders.swap-for-coupon"
+                "workflow.orders.swap-for-coupon",
+                "workflow.orders.paid-cancel"
               ],
               "description": "O fluxo a ser iniciado."
             },

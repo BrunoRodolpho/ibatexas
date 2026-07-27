@@ -145,4 +145,22 @@
 // construction (the cache key digests the tool array). A turn adjudicated under
 // v11 and one under v12 were shown different choices, which is exactly the
 // distinction the serial exists to preserve.
-export const CATALOG_VERSION: number = 12
+// v13 (LE2-024) — the PAID-CANCEL PARITY RE-PLATFORM. `WORKFLOW_DEFINITIONS`
+// gains `workflow.orders.paid-cancel` and the catalog gains its anchor
+// capability, `order.cancel.request` (identity-tier). The README's FIRST trigger
+// fires on the capability and its workflow-contract trigger on the corpus.
+//
+// The replay consequence is v12's, one workflow further along: `advertise` now
+// returns THREE workflows, so `start_workflow`'s enum and description differ
+// again and every L1 parse cached under v12's surface is unreachable by
+// construction.
+//
+// It is also the first bump whose surface change is CONTESTED rather than purely
+// additive. The new workflow answers "cancel my order" — an ask `order.cancel`
+// has answered by itself since long before any of this — so from v13 the parser
+// is shown two routes to one act. That coexistence is deliberate and STAGED: the
+// ticket's retirement half is gated on the governor's reading of the parity
+// evidence, and until it lands, a turn adjudicated under v12 and one under v13
+// were offered materially different choices for the same sentence. Preserving
+// exactly that distinction is what this serial is for.
+export const CATALOG_VERSION: number = 13

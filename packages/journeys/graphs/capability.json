@@ -3,7 +3,7 @@
   "graph": "capability",
   "meta": {
     "dangling": [],
-    "intentKinds": 65,
+    "intentKinds": 66,
     "packs": 6,
     "personaContexts": [
       "authed-customer",
@@ -429,6 +429,28 @@
           "authed-customer"
         ],
         "chatDrivable": true,
+        "composedPack": "ibatexas/pack-orders",
+        "domain": "order",
+        "flags": [],
+        "knownKind": true,
+        "plausibleDecisions": [
+          "EXECUTE",
+          "REFUSE",
+          "ESCALATE",
+          "REQUEST_CONFIRMATION",
+          "DEFER",
+          "REWRITE"
+        ],
+        "staffRoute": false
+      }
+    },
+    {
+      "id": "intent:order.cancel.request",
+      "type": "intent",
+      "label": "order.cancel.request",
+      "meta": {
+        "advertisedContexts": [],
+        "chatDrivable": false,
         "composedPack": "ibatexas/pack-orders",
         "domain": "order",
         "flags": [],
@@ -1516,7 +1538,7 @@
       "type": "pack",
       "label": "ibatexas/pack-orders",
       "meta": {
-        "intentCount": 25,
+        "intentCount": 26,
         "policyDefault": "REFUSE",
         "version": "1.1.0"
       }
@@ -2110,6 +2132,11 @@
     {
       "from": "pack:ibatexas/pack-orders",
       "to": "intent:order.cancel",
+      "type": "declares"
+    },
+    {
+      "from": "pack:ibatexas/pack-orders",
+      "to": "intent:order.cancel.request",
       "type": "declares"
     },
     {

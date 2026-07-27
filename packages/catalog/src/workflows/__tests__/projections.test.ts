@@ -65,15 +65,16 @@ describe("workflowScopedKinds — the access class, projected from capabilities"
 
 describe("workflowActivityKinds / workflowSelectionKinds", () => {
   it("projects the real corpus's activity and anchor kinds", () => {
-    // LE2-023 — a CONSCIOUS count pin over the production corpus, which is now
-    // two workflows. These two sets drive real composition-time behaviour:
-    // `registerWorkflowScopedTools` throws for an activity kind with no handler
-    // and `registerWorkflowAnchorTools` throws for an anchor with none, so a
-    // silent change here is a boot failure or, worse, a workflow that confirms
-    // with a customer and then cannot dispatch.
+    // LE2-023 — a CONSCIOUS count pin over the production corpus, which LE2-024
+    // makes THREE workflows. These two sets drive real composition-time
+    // behaviour: `registerWorkflowScopedTools` throws for an activity kind with
+    // no handler and `registerWorkflowAnchorTools` throws for an anchor with
+    // none, so a silent change here is a boot failure or, worse, a workflow that
+    // confirms with a customer and then cannot dispatch.
     //
-    // `order.reorder` appears ONCE despite both workflows routing to it — the
-    // dedupe the next case pins directly.
+    // `order.reorder` appears ONCE despite two workflows routing to it, and so
+    // does `order.cancel` now that paid-cancel routes it as well — the dedupe the
+    // next case pins directly.
     expect([...workflowActivityKinds(WORKFLOW_DEFINITIONS)]).toEqual([
       "order.reorder",
       "order.cancel",
@@ -83,6 +84,12 @@ describe("workflowActivityKinds / workflowSelectionKinds", () => {
     expect([...workflowSelectionKinds(WORKFLOW_DEFINITIONS)]).toEqual([
       "order.reorder.request",
       "order.coupon.swap.request",
+      // LE2-024 — the paid-cancel anchor. Unlike the two above it fronts a
+      // capability that ALREADY had a registered tool, so its presence here is
+      // also what keeps `registerWorkflowAnchorTools` from shadowing
+      // `order.cancel`'s real handler: the anchor is a DIFFERENT kind, which is
+      // the whole reason the ASK/ACT split exists.
+      "order.cancel.request",
     ])
   })
 
