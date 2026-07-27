@@ -1863,6 +1863,22 @@ async function loadPacksForGovernance(
  * (JSON / full text). Returns true on a baseline mismatch. Shared by the pack
  * and the managed-agent loops so the comparison logic lives in one place.
  */
+/**
+ * BKL-268 — the pack-bom gate's terminal verdict goes to STDOUT (the report),
+ * never only to stderr, so a captured report can never read green while the
+ * exit code says red. Detail lines stay on stderr.
+ */
+function packBomVerdictFail(line: string): void {
+  console.log(chalk.red(`✗ ${line}`))
+  process.exitCode = 1
+}
+
+/**
+ * Report one component against the baseline. Returns the failure REASON
+ * (BKL-268: the reason is named in the terminal verdict, so the report on
+ * stdout states the failure instead of leaving it stranded on stderr), or
+ * `undefined` when the component matches.
+ */
 function reportBomDigest(
   packId: string,
   digest: string,
@@ -1870,44 +1886,45 @@ function reportBomDigest(
   json: boolean,
   bom: unknown,
   printFull: () => void,
-): boolean {
+): string | undefined {
   if (baseline === undefined) {
     if (json) {
       console.log(JSON.stringify(bom, null, 2))
     } else {
       printFull()
     }
-    return false
+    return undefined
   }
   const want = baseline[packId]
   if (want === undefined) {
     console.error(chalk.red(`✗ ${packId}: sem entrada na baseline`))
-    return true
+    return `${packId} (sem entrada na baseline)`
   }
   if (want === digest) {
     console.log(chalk.green(`✓ ${packId} → ${digest.slice(0, 16)}…`))
-    return false
+    return undefined
   }
   console.error(
     chalk.red(
       `✗ ${packId}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${digest.slice(0, 12)}…)`,
     ),
   )
-  return true
+  return `${packId} (bomDigest divergente)`
 }
 
-/** Generate + report the AI-BOM for every first-party pack. Returns true on a
- *  baseline mismatch. Mutates `digests` with each pack's digest. */
+/** Generate + report the AI-BOM for every first-party pack. Returns the list of
+ *  baseline-mismatch REASONS (empty ⇒ clean). Mutates `digests` with each
+ *  pack's digest. */
 async function appendPackBoms(
   packs: GovernancePack[],
   baseline: Record<string, string> | undefined,
   json: boolean,
   digests: Record<string, string>,
-): Promise<boolean> {
+): Promise<string[]> {
   const { generateAiBom, runConformance, scorePackHealth } = await import(
     "@adjudicate/conformance"
   )
-  let mismatch = false
+  const failures: string[] = []
   for (const pack of packs) {
     const conformance = runConformance(pack as never)
     const manifest = {
@@ -1933,7 +1950,7 @@ async function appendPackBoms(
       kernelVersion: KERNEL_VERSION,
     })
     digests[pack.id] = bom.bomDigest
-    const isMismatch = reportBomDigest(
+    const failure = reportBomDigest(
       pack.id,
       bom.bomDigest,
       baseline,
@@ -1951,30 +1968,29 @@ async function appendPackBoms(
         )
       },
     )
-    if (isMismatch) mismatch = true
+    if (failure !== undefined) failures.push(failure)
   }
-  return mismatch
+  return failures
 }
 
 /** Generate + report the AI-BOM for every managed agent, running the
- *  roster-drift gate first (fail-closed in every mode). Returns true on a
- *  baseline mismatch or roster drift. Mutates `digests`. */
+ *  roster-drift gate first (fail-closed in every mode). Returns the list of
+ *  baseline-mismatch / roster-drift REASONS (empty ⇒ clean). Mutates
+ *  `digests`. */
 async function appendAgentBoms(
   baseline: Record<string, string> | undefined,
   json: boolean,
   digests: Record<string, string>,
-): Promise<boolean> {
+): Promise<string[]> {
   const { AGENT_REGISTRY, agentRosterDrift, generateAgentAiBom } =
     await import("@ibatexas/agents")
-  let mismatch = false
+  const failures: string[] = []
   const driftFindings = agentRosterDrift()
-  if (driftFindings.length > 0) {
-    for (const f of driftFindings) {
-      console.error(
-        chalk.red(`✗ agent-roster drift [${f.agentId}] ${f.code}: ${f.detail}`),
-      )
-    }
-    mismatch = true
+  for (const f of driftFindings) {
+    console.error(
+      chalk.red(`✗ agent-roster drift [${f.agentId}] ${f.code}: ${f.detail}`),
+    )
+    failures.push(`agent-roster drift [${f.agentId}] ${f.code}`)
   }
   for (const def of AGENT_REGISTRY) {
     const bom = generateAgentAiBom(def, {
@@ -1983,7 +1999,7 @@ async function appendAgentBoms(
       kernelMinVersion: KERNEL_MIN_VERSION,
     })
     digests[bom.packId] = bom.bomDigest
-    const isMismatch = reportBomDigest(
+    const failure = reportBomDigest(
       bom.packId,
       bom.bomDigest,
       baseline,
@@ -2004,9 +2020,9 @@ async function appendAgentBoms(
         )
       },
     )
-    if (isMismatch) mismatch = true
+    if (failure !== undefined) failures.push(failure)
   }
-  return mismatch
+  return failures
 }
 
 async function runPackBom(opts: {
@@ -2017,8 +2033,9 @@ async function runPackBom(opts: {
   const packs = await loadPacksForGovernance(opts.pack)
   if (packs.length === 0) {
     const scope = opts.pack ? ` para ${opts.pack}` : ""
-    console.error(chalk.red(`Nenhum pack encontrado${scope}.`))
-    process.exitCode = 1
+    packBomVerdictFail(
+      `pack-bom: nenhum pack encontrado${scope} — verificação NÃO realizada.`,
+    )
     return
   }
 
@@ -2030,15 +2047,16 @@ async function runPackBom(opts: {
         string
       >
     } catch {
-      console.error(chalk.red(`Baseline ilegível: ${opts.verifyFile}`))
-      process.exitCode = 1
+      packBomVerdictFail(
+        `pack-bom: baseline ilegível: ${opts.verifyFile} — verificação NÃO realizada.`,
+      )
       return
     }
   }
 
   const json = opts.json === true
   const digests: Record<string, string> = {}
-  let mismatch = await appendPackBoms(packs, baseline, json, digests)
+  const failures = await appendPackBoms(packs, baseline, json, digests)
 
   // ── Managed agents (T3-3) ──────────────────────────────────────────────
   // The agent roster is part of the AI-BOM: each AgentDefinition in
@@ -2049,7 +2067,7 @@ async function runPackBom(opts: {
   // never be baselined or verified green). Skipped only under `--pack`,
   // which scopes the command to one pack explicitly.
   if (opts.pack === undefined) {
-    if (await appendAgentBoms(baseline, json, digests)) mismatch = true
+    failures.push(...(await appendAgentBoms(baseline, json, digests)))
   }
 
   // When neither verifying nor emitting full JSON, print the digest-lock so an
@@ -2061,7 +2079,27 @@ async function runPackBom(opts: {
     )
     console.log(JSON.stringify(digests, null, 2))
   }
-  if (mismatch) process.exitCode = 1
+
+  // ── BKL-268: terminal verdict, ON STDOUT ───────────────────────────────────
+  // Before this the gate emitted per-component ✓ lines to stdout and every ✗ to
+  // stderr, with no summary at all — so `pack-bom --verify-file > report.txt`
+  // on a DRIFTING tree produced an all-checkmark report while the process
+  // exited 1. The exit code was honest; the report was the liar. The verdict
+  // now lives in the report, names every failing component, and is the same
+  // decision the exit code carries.
+  if (opts.verifyFile !== undefined) {
+    if (failures.length > 0) {
+      packBomVerdictFail(
+        `pack-bom: FALHOU — ${failures.length} de ${Object.keys(digests).length} componente(s) divergem da baseline: ${failures.join("; ")}`,
+      )
+      return
+    }
+    console.log(
+      chalk.green(
+        `✓ pack-bom: OK — ${Object.keys(digests).length} componente(s) conferem com a baseline.`,
+      ),
+    )
+  }
 }
 
 async function runAnalyze(opts: {
