@@ -531,6 +531,33 @@ export async function loadCartCtx(
  * CLOSED to `false` (no cart) on any read error, same posture as
  * `loadCartCtx` itself.
  */
+/**
+ * The cart id this session is currently working on, or `undefined` — LE2-023.
+ *
+ * The same `rk("cart:active:session:<sessionId>")` key `loadCartCtx` reads and
+ * `getOrCreateCart` / `order.reorder`'s handler write. Exported so the workflow
+ * composition can stamp a `cartId` onto an activity payload without opening a
+ * FOURTH inline copy of the key string in this file — the drift that Hard Rule
+ * #7 and the shared `rk()` helper exist to prevent.
+ *
+ * FAIL-CLOSED to `undefined` on any read error, the same posture as
+ * `loadCartCtx` and `hasNonEmptyActiveCart`: an unresolvable cart makes the
+ * guard REFUSE, which is an honest stop rather than a mutation aimed at a cart
+ * nobody could name.
+ */
+export async function readSessionCartId(
+  sessionId: string | undefined,
+): Promise<string | undefined> {
+  if (sessionId === undefined) return undefined;
+  try {
+    const redis = await getRedisClient();
+    const cartId = await redis.get(rk(`cart:active:session:${sessionId}`));
+    return cartId === null || cartId === "" ? undefined : cartId;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function hasNonEmptyActiveCart(sessionId: string | undefined): Promise<boolean> {
   if (sessionId === undefined) return false;
   try {

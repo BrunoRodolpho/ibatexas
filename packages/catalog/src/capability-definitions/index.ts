@@ -8,12 +8,14 @@
  * See `types.ts` for the field contract, `definitions.ts` for the authored
  * data, and the `generate-*.ts` modules for the generated families.
  *
- * The registry is currently 59 capabilities — 20 chat-tier, 39 identity-tier.
+ * The registry is currently 61 capabilities — 20 chat-tier, 41 identity-tier.
  * (The pre-move barrel's doc said "18 chat-tier + 48 identity-tier"; that was
- * the FE-T19/T20 authoring-time count and had gone stale. 59/20/39 is the
- * count the LE2 spec's own "count corrections" note ratifies, and it is what
+ * the FE-T19/T20 authoring-time count and had gone stale; 59/20/39 was
+ * ratified by the LE2 spec's own "count corrections" note and then went stale
+ * itself when LE2-021 and LE2-023 added their workflow anchors. It is what
  * `CAPABILITY_DEFINITIONS.length` actually reports. Counts in prose drift —
- * the array is the source of truth.)
+ * the array is the source of truth, and this line is a courtesy, not a gate;
+ * the gates live in `packages/packs-composed/src/__tests__/`.)
  *
  * The generated families:
  *   - Intent-identity (FE-T20): `generate-chat-drivable-tool-kinds.ts`

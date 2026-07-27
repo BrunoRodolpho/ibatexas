@@ -221,6 +221,7 @@ const { rk } = await import("@ibatexas/tools");
 const {
   loadCartCtx,
   loadOrderCtx,
+  readSessionCartId,
   resolveAndAssemble,
 } = await import("../claustrum/resolve-and-assemble.js");
 const { loadPreviousOrder } = await import("../claustrum/previous-order.js");
@@ -231,6 +232,7 @@ const { createWorkflowRuntime } = await import(
   "../claustrum/workflow/workflow-runtime.js"
 );
 const {
+  CART_ID_ACTIVITY_KINDS,
   ORDER_CTX_ACTIVITY_KINDS,
   actorIdentityBase,
   activityIdentityBase,
@@ -374,6 +376,13 @@ function promotionPayload(
 
 // ── The Medusa egress this route makes ────────────────────────────────────────
 
+/**
+ * Whether the store still reports the fixture coupon as usable. Mutable, and
+ * reset by `beforeEach`, so a test can flip it BETWEEN two turns of the same
+ * flow rather than having to build a second harness.
+ */
+const couponSwitch = { usable: true };
+
 interface SwapMedusaOpts {
   /** The promotion lookup's response body. `null` ⟹ the lookup THROWS. */
   readonly promotion?: Record<string, unknown> | null;
@@ -411,6 +420,10 @@ function withSwapRoutes(
         if (opts.promotion === null) {
           return { ok: false, status: 500, text: async () => "promotions down" };
         }
+        // `couponSwitch` lets a test EXPIRE the coupon between the confirm and
+        // the customer's "sim" — the one window `confirmSwapForCoupon` is the
+        // only defence in. Default `usable`, so every other case is unaffected.
+        if (!couponSwitch.usable) return json({ promotions: [] });
         return json(opts.promotion ?? promotionPayload());
       }
 
@@ -625,12 +638,21 @@ function buildHarness(opts: HarnessOpts = {}) {
     payload: Readonly<Record<string, unknown>>;
     actor: { customerId?: string; sessionId?: string };
   }) => {
-    if (!ORDER_CTX_ACTIVITY_KINDS.has(args.capability)) return args.payload;
     const identity = actorIdentityBase(
       args.actor,
       currentWorkflowChannel(),
       process.env.KERNEL_TENANT_ID,
     );
+    if (CART_ID_ACTIVITY_KINDS.has(args.capability)) {
+      return stampOrderActivityPayload({
+        capability: args.capability,
+        payload: args.payload,
+        customerId: identity.customerId,
+        orderId: undefined,
+        cartId: await readSessionCartId(args.actor.sessionId),
+      });
+    }
+    if (!ORDER_CTX_ACTIVITY_KINDS.has(args.capability)) return args.payload;
     const previous =
       identity.customerId === null ? null : await loadPreviousOrder(identity.customerId);
     return stampOrderActivityPayload({
@@ -832,6 +854,7 @@ beforeEach(() => {
   orderRowsFake.rows = [];
   paymentRowsFake.rows = new Map();
   natsSpy.calls = [];
+  couponSwitch.usable = true;
   seedEnv();
 });
 
@@ -1073,14 +1096,18 @@ describe("LE2-023 — ACCEPT runs the governed saga", () => {
     // own audit row, indistinguishable from a directly-parsed mutation's.
     expect(executed(sink, "order.cancel")).toBe(1);
     expect(executed(sink, "order.reorder")).toBe(1);
+    expect(executed(sink, "order.coupon.apply")).toBe(1);
 
     const trace = workflowTrace(turn2.turnId);
+    expect(trace?.run.outcome).toBe("completed");
     expect(trace?.run.catalogVersion).toBe(CATALOG_VERSION);
     expect(trace?.steps.map((s) => s.activityId)).toEqual([
       "cancel",
       "rebuild",
       "apply-coupon",
     ]);
+    expect(trace?.steps.map((s) => s.decision)).toEqual(["EXECUTE", "EXECUTE", "EXECUTE"]);
+    expect(trace?.run.activitiesExecuted).toBe(3);
     expect(trace?.run.activitiesTotal).toBe(3);
 
     // THE COVERAGE, KERNEL-WITNESSED — LE2-023's whole point, and the assertion
@@ -1110,62 +1137,105 @@ describe("LE2-023 — ACCEPT runs the governed saga", () => {
       orderRowsFake.rows.find((r) => r["id"] === OLDER_ORDER_ID)?.["fulfillmentStatus"],
     ).toBe("delivered");
 
-    // The cart really was rebuilt.
+    // The cart really was rebuilt, and the coupon really was applied.
     expect(
       medusa.calls.filter((c) => c.method === "POST" && c.path === "/store/carts"),
     ).toHaveLength(1);
-  });
-
-  it("KNOWN DEFECT — `apply-coupon` is REFUSED for a missing cartId, and the run says so honestly", async () => {
-    // ── THIS TEST ENCODES A DEFECT, DELIBERATELY, AND MUST GO RED WHEN IT IS
-    //    FIXED. Do not "repair" it by relaxing an assertion — update it. ───────
-    //
-    // MEASURED at the real seam: `requireCartIdForCartOps` (pack-orders) reads
-    // `envelope.payload.cartId` for `order.coupon.apply`, the activity's authored
-    // payload is `{code}` alone, and `resolveActivityPayload` stamps only
-    // `ORDER_CTX_ACTIVITY_KINDS` (= `order.cancel`). So the last step of the
-    // route is REFUSED and the swap never completes.
-    //
-    // It is NOT simply an unstamped field: `reorder` POSTs a FRESH cart and never
-    // writes `rk("cart:active:session:<sid>")` (`getOrCreateCart` is that key's
-    // only writer), so the session still points at the customer's OLD cart.
-    // Stamping the cartId from the session would apply the discount to a basket
-    // they are not buying — breaking the very total they approved a cancellation
-    // against. Closing this needs an owner decision, so the route ships with the
-    // gap VISIBLE rather than papered over.
-    //
-    // WHAT IS PROVEN HERE IS THE SAFETY PROPERTY, and it holds completely: the
-    // customer is never told the swap worked. The two irreversible steps that DID
-    // run are reported, the outcome is `stranded`, and the sentence names what was
-    // done and what was not.
-    const { harness, sink, medusa } = buildHarness({ realResponder: true });
-    const { turn2 } = await selectThenAnswer(harness, "sim");
-
-    const applyRows = sink.byKind("order.coupon.apply");
-    expect(applyRows.map((r) => r.decision.kind)).toEqual(["REFUSE"]);
-    expect(refusalCodeOf(applyRows[0]!.decision)).toBe("order.cart.missing");
-    // The payload the activity was submitted with — the whole of the defect.
-    expect(applyRows[0]!.envelope.payload).toEqual({ code: SLOT_CODE });
-
-    // The coupon never reached the store.
     expect(
       medusa.calls.filter(
         (c) => c.method === "POST" && /^\/store\/carts\/[^/]+\/promotions$/.test(c.path),
       ),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
 
-    // The run reports the truth: two irreversible steps ran, the third did not.
-    const trace = workflowTrace(turn2.turnId);
-    expect(trace?.run.outcome).toBe("stranded");
-    expect(trace?.run.failedActivityId).toBe("apply-coupon");
-    expect(trace?.run.activitiesExecuted).toBe(2);
-
-    // AND THE CUSTOMER IS NEVER TOLD IT WORKED — the property that matters.
-    expect(turn2.response).not.toContain("cupom aplicado");
-    expect(turn2.response).not.toContain("Pronto!");
+    // The reply is the AUTHORED `completed` template, byte-for-byte.
     expect(turn2.response).toBe(
-      "Cancelei seu pedido anterior, mas não consegui montar o novo com o cupom. Já chamei alguém da equipe para resolver isso com você.",
+      "Pronto! Cancelei o pedido anterior e montei um carrinho novo com os mesmos itens e o cupom aplicado. Quer finalizar?",
     );
+  });
+
+  it("the coupon lands on the REBUILT cart, not the basket the customer already had", async () => {
+    // THE MONEY-VISIBLE PROPERTY of the whole route, and the reason the cartId is
+    // host-resolved rather than authored. `requireCartIdForCartOps` reads
+    // `payload.cartId`, a cart id is an IDENTIFIER so no `WorkflowParamSource`
+    // may carry it, and WHICH cart is not a detail: the confirm quoted a new
+    // total for the REBUILT basket, so discounting any other one would break the
+    // sentence the customer approved a cancellation against.
+    //
+    // It works because `order.reorder` now CLAIMS the session's active cart (see
+    // `claimSessionCart`), and the authored route runs the rebuild before the
+    // coupon. Both halves are load-bearing, and this asserts the composition of
+    // them at the egress — the only place the customer could observe it.
+    const { harness, medusa } = buildHarness({ realResponder: true });
+    await selectThenAnswer(harness, "sim");
+
+    const promoPosts = medusa.calls.filter(
+      (c) => c.method === "POST" && /^\/store\/carts\/[^/]+\/promotions$/.test(c.path),
+    );
+    expect(promoPosts).toHaveLength(1);
+    expect(promoPosts[0]!.path).toBe(`/store/carts/${REBUILT_CART_ID}/promotions`);
+    // …and NOT the cart the session started on. Spelled as its own assertion
+    // because that is the wrong answer a session-blind resolution would give,
+    // and it would otherwise pass every other check in this file.
+    expect(promoPosts[0]!.path).not.toContain(CART_ID);
+    // The customer's own code went with it, in the store's spelling.
+    expect(readBody(promoPosts[0]!.body)["promo_codes"]).toEqual([SLOT_CODE]);
+
+    // The session now points at the rebuilt cart, so the "Quer finalizar?" the
+    // completed template ends on targets THAT basket.
+    expect(redisFake.strings.get(rk(`cart:active:session:${CONVERSATION}`))).toBe(
+      REBUILT_CART_ID,
+    );
+  });
+
+  it("a coupon that EXPIRES between the confirm and the \"sim\" is caught BEFORE the cancel", async () => {
+    // THE RESUME PATH, and the reason `confirmSwapForCoupon` re-checks all four
+    // facts the pre-checks already checked. The pre-checks speak at SELECTION,
+    // before any envelope exists; this guard is the ONLY line of defence on the
+    // confirming turn, and the window it covers is real — the customer reads a
+    // confirm, thinks, and answers, and a promotion can end in between.
+    //
+    // The receipt satisfies only the ask-first threshold, so every guard re-runs
+    // against FRESH state. Here that means the customer's own "sim" is refused
+    // — which is the correct outcome, because the reason for cancelling their
+    // order has evaporated.
+    const { harness, sink, medusa } = buildHarness({ realResponder: true });
+
+    const turn1 = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+    expect(turn1.decision.kind).toBe("REQUEST_CONFIRMATION");
+
+    // The store stops honouring the code while the customer is deciding.
+    couponSwitch.usable = false;
+
+    const turn2 = await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: "sim",
+    });
+
+    expect(turn2.decision.kind).toBe("REFUSE");
+    // The stable machine code, not only the prose: the sentence is reviewable
+    // copy and may be reworded, but the code is what an operator filters
+    // `intent_audit` on and it is declared in `ordersPack.basisCodes`.
+    expect(refusalCodeOf(turn2.decision)).toBe("order.coupon.not_usable");
+
+    // NOTHING RAN — and this is the assertion the whole guard exists for. The
+    // order is intact, the money is untouched, no run was even started.
+    expect(executed(sink, "order.cancel")).toBe(0);
+    expect(executed(sink, "order.reorder")).toBe(0);
+    expect(workflowTrace(turn2.turnId)).toBeUndefined();
+    expect(
+      orderRowsFake.rows.find((r) => r["id"] === TARGET_ORDER_ID)?.["fulfillmentStatus"],
+    ).toBe("confirmed");
+    expect(paymentRowsFake.rows.get(PAYMENT_ID)?.["status"]).toBe("paid");
+    expect(mutatingPosts(medusa)).toHaveLength(0);
+
+    // …and the customer is never told anything was cancelled.
+    expect(turn2.response).not.toContain("Cancelei");
+    expect(turn2.response).toContain("Não consegui confirmar esse cupom");
   });
 
   it("the cancel envelope carries the HOST-RESOLVED orderId and the BKL-103 actorId", async () => {

@@ -34,6 +34,15 @@ interface CartSummary {
  * This prevents stale cart data from a previous session bleeding into
  * a new conversation (ephemeral session scoping).
  * Falls back to customerId only for legacy compatibility.
+ *
+ * THIS FUNCTION IS NO LONGER THE KEY'S ONLY WRITER (LE2-023). The workflow
+ * plane's `order.reorder` handler (`apps/api/src/tools/
+ * register-workflow-scoped-tools.ts`) also points the session at the cart it
+ * rebuilds — it has to, because it POSTs a brand-new cart and the customer is
+ * then invited to check it out. Recorded here rather than only there, because
+ * "who decides which cart this conversation is on" is a question a reader
+ * arrives at THIS function to answer, and an out-of-date answer here sent the
+ * last reader looking in the wrong place.
  */
 function cartRedisKey(ctx: AgentContext): string {
   // Session-scoped: each sessionId gets its own cart binding

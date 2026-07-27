@@ -963,3 +963,68 @@ describe("LE2-021 — the reorder-last anchor is never on the capability wire", 
     expect(String(startWorkflow?.description)).toContain('"manda o de sempre"');
   });
 });
+
+describe("LE2-023 — a rebuilt cart BECOMES the session's active cart", () => {
+  // ── THIS PINS A BUG FIX TO THE SHIPPED REORDER-LAST ROUTE. ─────────────────
+  //
+  // MEASURED BEFORE THE FIX, at this seam: after an accepted reorder the active
+  // cart key, the resolved checkout payload and the checkout ctx ALL still read
+  // the OLD cart id. `reorder` POSTs a brand-new cart and nothing wrote its id
+  // anywhere the rest of the system reads, so the customer was told "Montei um
+  // carrinho novo … Quer finalizar?" over a cart their session did not point at
+  // — and `threadResolvedIdsIntoPayload` threads that key onto a checkout
+  // payload, so the follow-up "quero finalizar" would have checked out the
+  // basket they had BEFORE. The rebuilt cart was orphaned the moment it existed.
+  //
+  // `claimSessionCart` in register-workflow-scoped-tools.ts closes it. LE2-023
+  // needed the same contract for its coupon step, which is how it surfaced.
+
+  it("points the session at the rebuilt cart, so a follow-up checkout targets it", async () => {
+    const { harness } = buildHarness();
+    await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+    await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: "sim",
+    });
+
+    // The key itself…
+    expect(redisFake.strings.get(rk(`cart:active:session:${CONVERSATION}`))).toBe(
+      REBUILT_CART_ID,
+    );
+
+    // …and what that means for the NEXT turn, through the REAL resolver: the
+    // checkout the customer is being invited to make targets the rebuilt basket.
+    // Asserted on the resolved PAYLOAD because that is what
+    // `requireCartIdForCartOps` reads and what the executor receives.
+    const resolved = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: {},
+      customerId: CUSTOMER,
+      channel: "web",
+      sessionId: CONVERSATION,
+    } as never);
+    expect((resolved.payload as { cartId?: unknown }).cartId).toBe(REBUILT_CART_ID);
+    expect(resolved.ctx.cartId).toBe(REBUILT_CART_ID);
+    // Directional, and the whole point: NOT the cart the session started on.
+    expect((resolved.payload as { cartId?: unknown }).cartId).not.toBe(CART_ID);
+  });
+
+  it("leaves the session alone when the reorder never produced a cart", async () => {
+    // The fail-safe direction. `claimSessionCart` only writes for a cart id the
+    // reorder actually returned, so a session whose rebuild did not happen keeps
+    // pointing at whatever it had rather than at nothing — losing the binding
+    // would break every later cart op for a customer whose reorder failed.
+    const { harness } = buildHarness({ withHistory: false });
+    await runCustomerTurn(harness, {
+      customerId: CUSTOMER,
+      conversationId: CONVERSATION,
+      text: SELECT_UTTERANCE,
+    });
+    expect(redisFake.strings.get(rk(`cart:active:session:${CONVERSATION}`))).toBe(CART_ID);
+  });
+});

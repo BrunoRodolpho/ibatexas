@@ -4,7 +4,7 @@
 // at a higher altitude than the Zod schema:
 //
 //   1. every `expects[].intentKind` ∈ `KNOWN_INTENT_KINDS` — journeys may
-//      expect system-kind envelopes, so the full 63-kind union (incl.
+//      expect system-kind envelopes, so the full 65-kind union (incl.
 //      pix.* / loyalty.*) is the domain, not just the chat surface;
 //   2. chat-act expectations ⊆ planner-advertised ∪ registered for the
 //      journey's persona context (DR-5) — the planners are probed live from
@@ -203,7 +203,7 @@ export function lintJourney(journey: Journey, file: string): JourneyLintProblem[
     problems.push({ file, journeyId: journey.id, code, path, message })
   }
 
-  // 1. Intent-kind membership — the full 63-kind union is the domain.
+  // 1. Intent-kind membership — the full 65-kind union is the domain.
   journey.expects.forEach((expect, i) => {
     if (!KNOWN_INTENT_KINDS.has(expect.intentKind)) {
       problem(

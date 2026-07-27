@@ -177,6 +177,31 @@ export const ORDER_CTX_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The activity kinds needing a HOST-RESOLVED `cartId` — LE2-023.
+ *
+ * `requireCartIdForCartOps` reads `envelope.payload.cartId`, and a cart id is an
+ * IDENTIFIER, so it has no admissible `WorkflowParamSource` for exactly the
+ * reason `orderId` does not: a claim cannot carry one and a slot would be
+ * model-extracted. The swap-for-coupon route's `apply-coupon` activity therefore
+ * arrives with `{code}` alone and is REFUSED unless the host stamps the target.
+ *
+ * WHICH cart is the whole question, and the answer is the SESSION's active cart
+ * — but only because `order.reorder` now claims it (see `claimSessionCart`).
+ * Before that, the session still pointed at the customer's pre-existing basket
+ * and stamping from it would have discounted a cart they were not buying,
+ * breaking the very total they approved a cancellation against. The ordering is
+ * load-bearing: the rebuild runs BEFORE the coupon in the authored route, so by
+ * the time this stamp is read the session cart IS the rebuilt one.
+ *
+ * A NAMED SET rather than a `cart`-ish prefix test, for the same reason
+ * {@link ORDER_CTX_ACTIVITY_KINDS} is one: every other cart-shaped activity a
+ * future workflow routes should have to opt in deliberately.
+ */
+export const CART_ID_ACTIVITY_KINDS: ReadonlySet<string> = new Set([
+  "order.coupon.apply",
+]);
+
+/**
  * Stamp the HOST-RESOLVED payload fields an order activity needs — LE2-023.
  *
  * PURE, and separated from the read that feeds it for the reason this whole
@@ -208,7 +233,19 @@ export function stampOrderActivityPayload(args: {
   readonly payload: Readonly<Record<string, unknown>>;
   readonly customerId: string | null;
   readonly orderId: string | undefined;
+  /**
+   * LE2-023 — the SESSION's active cart, for {@link CART_ID_ACTIVITY_KINDS}.
+   * Absent stamps nothing, and `requireCartIdForCartOps` then REFUSEs — the
+   * same fail-safe direction the two fields above take.
+   */
+  readonly cartId?: string | undefined;
 }): Readonly<Record<string, unknown>> {
+  if (CART_ID_ACTIVITY_KINDS.has(args.capability)) {
+    if (args.payload["cartId"] !== undefined || args.cartId === undefined) {
+      return args.payload;
+    }
+    return { ...args.payload, cartId: args.cartId };
+  }
   if (!ORDER_CTX_ACTIVITY_KINDS.has(args.capability)) return args.payload;
   const stamped: Record<string, unknown> = { ...args.payload };
   if (stamped["orderId"] === undefined && args.orderId !== undefined) {

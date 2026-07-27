@@ -347,6 +347,7 @@ import {
   loadCartCtx,
   loadOrderCtx,
   previousOrderCtxFields,
+  readSessionCartId,
   resolveAndAssemble,
   resolveCustomerOrderReference,
 } from "./claustrum/resolve-and-assemble.js";
@@ -381,6 +382,7 @@ import {
   activityIdentityBase,
   activitySessionArg,
   actorIdentityBase,
+  CART_ID_ACTIVITY_KINDS,
   ORDER_CTX_ACTIVITY_KINDS,
   resolveActivityTool,
   stampOrderActivityPayload,
@@ -2008,18 +2010,35 @@ function buildWorkflowRuntime(deps: {
    * grounded the confirm sentence supplies the order id, so the saga cancels the
    * order the customer was actually shown — not one the model named, and not one
    * resolved from a second view of their history.
+   *
+   * The CART id is read from the session's active-cart key — the same key
+   * `loadCartCtx` reads and `order.reorder`'s handler now writes, so the coupon
+   * lands on the cart the route just rebuilt rather than on whatever the customer
+   * happened to have before. See `CART_ID_ACTIVITY_KINDS`.
    */
   const resolveActivityPayload = async (args: {
     readonly capability: string;
     readonly payload: Readonly<Record<string, WorkflowParamValue>>;
     readonly actor: IntentActor;
   }): Promise<Readonly<Record<string, WorkflowParamValue>>> => {
-    if (!ORDER_CTX_ACTIVITY_KINDS.has(args.capability)) return args.payload;
     const identity = actorIdentityBase(
       args.actor as { customerId?: string; sessionId?: string },
       currentWorkflowChannel(),
       process.env.KERNEL_TENANT_ID,
     );
+
+    if (CART_ID_ACTIVITY_KINDS.has(args.capability)) {
+      const sessionId = (args.actor as { sessionId?: string }).sessionId;
+      return stampOrderActivityPayload({
+        capability: args.capability,
+        payload: args.payload,
+        customerId: identity.customerId,
+        orderId: undefined,
+        cartId: await readSessionCartId(sessionId),
+      }) as Readonly<Record<string, WorkflowParamValue>>;
+    }
+
+    if (!ORDER_CTX_ACTIVITY_KINDS.has(args.capability)) return args.payload;
     const previous =
       identity.customerId === null
         ? null

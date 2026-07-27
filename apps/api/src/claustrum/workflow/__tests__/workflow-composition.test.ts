@@ -11,6 +11,7 @@ import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core";
 import {
   activityIdentityBase,
   activitySessionArg,
+  CART_ID_ACTIVITY_KINDS,
   feasibilityActor,
   ORDER_CTX_ACTIVITY_KINDS,
   resolveActivityTool,
@@ -258,5 +259,83 @@ describe("feasibilityActor — WHICH identity a pre-check projection is grounded
     expect(
       (ENVELOPE_ACTOR as { customerId?: unknown }).customerId,
     ).toBeUndefined();
+  });
+});
+
+describe("stampOrderActivityPayload — the CART id half (LE2-023)", () => {
+  // `requireCartIdForCartOps` reads `payload.cartId`, and a cart id is an
+  // identifier, so no `WorkflowParamSource` may carry it. Without this stamp the
+  // swap-for-coupon route's last step is REFUSED and the saga never completes.
+
+  it("stamps the session cart onto order.coupon.apply", () => {
+    expect(
+      stampOrderActivityPayload({
+        capability: "order.coupon.apply",
+        payload: { code: "BEMVINDO10" },
+        customerId: "cus_1",
+        orderId: undefined,
+        cartId: "cart_rebuilt",
+      }),
+    ).toEqual({ code: "BEMVINDO10", cartId: "cart_rebuilt" });
+  });
+
+  it("stamps NOTHING when there is no session cart — the guard then REFUSEs", () => {
+    // Fail-safe in the direction that leaves the guard armed. A placeholder
+    // would produce an envelope that looks well-formed and names no real cart.
+    expect(
+      stampOrderActivityPayload({
+        capability: "order.coupon.apply",
+        payload: { code: "X" },
+        customerId: "cus_1",
+        orderId: undefined,
+        cartId: undefined,
+      }),
+    ).toEqual({ code: "X" });
+  });
+
+  it("never overwrites an AUTHORED cartId", () => {
+    // A workflow that bound its own value said something deliberate, and
+    // silently replacing it would make the definition a lie about what runs.
+    expect(
+      stampOrderActivityPayload({
+        capability: "order.coupon.apply",
+        payload: { code: "X", cartId: "cart_authored" },
+        customerId: "cus_1",
+        orderId: undefined,
+        cartId: "cart_session",
+      }),
+    ).toEqual({ code: "X", cartId: "cart_authored" });
+  });
+
+  it("does NOT stamp a cart onto a kind that did not ask for one", () => {
+    // The de-vacuuming control: the set is what gates this, not the presence of
+    // a cartId argument.
+    expect(
+      stampOrderActivityPayload({
+        capability: "order.reorder",
+        payload: {},
+        customerId: "cus_1",
+        orderId: "order_1",
+        cartId: "cart_session",
+      }),
+    ).toEqual({});
+  });
+
+  it("keeps the two stamps on DISJOINT kinds — a cancel gets no cartId", () => {
+    // order.cancel takes the order/actor stamp and must not acquire a cart id
+    // it has no use for; order.coupon.apply takes the cart stamp and must not
+    // acquire an actorId. Separate sets, separate branches, asserted together
+    // so a future merge of the two cannot go unnoticed.
+    expect(
+      stampOrderActivityPayload({
+        capability: "order.cancel",
+        payload: {},
+        customerId: "cus_1",
+        orderId: "order_1",
+        cartId: "cart_session",
+      }),
+    ).toEqual({ orderId: "order_1", actorId: "cus_1" });
+    expect([...CART_ID_ACTIVITY_KINDS]).toEqual(["order.coupon.apply"]);
+    expect([...ORDER_CTX_ACTIVITY_KINDS]).toEqual(["order.cancel"]);
   });
 });
