@@ -334,20 +334,62 @@ async function pcRestart(target = "all"): Promise<void> {
 
 const PROCESS_COMPOSE_PORT = 8080
 
+/** ngrok's local inspector API — the ONLY port an ngrok agent listens on. The
+ *  tunnel itself is an OUTBOUND connection to ngrok's edge, and the api (not
+ *  ngrok) owns :3001, so a sweep over SERVICES ports can never see the agent. */
+const NGROK_INSPECTOR_PORT = 4040
+
+/** Which ports `ibx dev stop -f` sweeps.
+ *
+ *  Exported (and pure) because the tunnel's absence here was invisible: `-f`
+ *  short-circuits `pcStop` BEFORE `process-compose down`, so the `tunnel`
+ *  process's own `shutdown: {signal: 15}` never fires, and the sweep that
+ *  replaces it never matched ngrok. `-f` then SIGKILLs process-compose on :8080,
+ *  so the supervisor dies without reaping anything and ngrok reparents to pid 1
+ *  — still holding the account's reserved domain, which makes the NEXT
+ *  `ibx dev` fail with ERR_NGROK_334 while `stop -f` had reported "Done."
+ *
+ *  A named non-tunnel service must NOT take the tunnel down with it: stopping
+ *  `web` has nothing to do with WhatsApp webhook delivery. */
+export function resolveForceStopPorts(
+  serviceKey: string | undefined,
+  stopAll: boolean,
+  services: Record<string, ServiceDef>,
+): number[] {
+  if (stopAll) {
+    return [
+      ...Object.values(services).map((s) => s.port),
+      // process-compose's own HTTP server
+      PROCESS_COMPOSE_PORT,
+      NGROK_INSPECTOR_PORT,
+    ]
+  }
+  // `tunnel` is a process-compose process, not a SERVICES entry — before this it
+  // fell through the `SERVICES[serviceKey]` lookup to an empty list, so
+  // `ibx dev stop tunnel -f` killed nothing and still printed "Done."
+  if (serviceKey === "tunnel") return [NGROK_INSPECTOR_PORT]
+  const svc = serviceKey ? services[serviceKey] : undefined
+  return svc ? [svc.port] : []
+}
+
 async function forceStop(serviceKey: string | undefined, stopAll: boolean): Promise<void> {
   const { SERVICES } = await import("../services.js")
-  let targets: (typeof SERVICES)[string][]
-  if (stopAll) targets = Object.values(SERVICES)
-  else if (serviceKey) targets = [SERVICES[serviceKey]].filter(Boolean)
-  else targets = []
 
-  const ports = targets.map((s) => s.port)
-  // Also kill process-compose's own HTTP server on stop-all
-  if (stopAll) ports.push(PROCESS_COMPOSE_PORT)
+  if (!stopAll && serviceKey && serviceKey !== "tunnel" && !SERVICES[serviceKey]) {
+    console.log(chalk.yellow(`\n  Unknown service "${serviceKey}" — nothing to force-kill.\n`))
+    return
+  }
+
+  const ports = resolveForceStopPorts(serviceKey, stopAll, SERVICES)
+  const stopsTunnel = stopAll || serviceKey === "tunnel"
   console.log(chalk.bold.yellow(`\n  Force-killing processes on ports: ${ports.join(", ")}\n`))
 
   for (const port of ports) {
     forceKillPort(port)
+  }
+
+  if (stopsTunnel) {
+    killNgrokTunnel(SERVICES.api.port)
   }
 
   if (stopAll) {
@@ -355,6 +397,28 @@ async function forceStop(serviceKey: string | undefined, stopAll: boolean): Prom
   }
 
   console.log(chalk.green("\n  Done.\n"))
+}
+
+/** Kill the ngrok agent by argv, as a complement to the :4040 sweep.
+ *
+ *  The port sweep alone is not sufficient: `--inspect=false` leaves the agent
+ *  with NO listening port at all, and an already-orphaned agent (pid 1) can
+ *  outlive the process-compose run that spawned it by days. Matches the argv
+ *  that BOTH spawn paths produce — process-compose.yaml's `tunnel` command and
+ *  `ibx tunnel` — including the `--url <domain>` variant, which only appends.
+ *
+ *  Scoped to the api port on purpose: an ngrok pointed at :3001 IS this stack's
+ *  webhook tunnel, whoever started it. Tunnels to other ports are left alone. */
+function killNgrokTunnel(apiPort: number): void {
+  const pattern = `ngrok http ${apiPort}`
+  const { stdout } = execaSync("pgrep", ["-f", pattern], { reject: false })
+  const pids = (stdout ?? "").toString().trim().split("\n").filter(Boolean)
+  if (pids.length === 0) {
+    console.log(chalk.gray("    · ngrok tunnel: clear"))
+    return
+  }
+  execaSync("pkill", ["-9", "-f", pattern], { reject: false })
+  console.log(chalk.green(`    ✓ ngrok tunnel: killed ${pids.length} agent(s)`))
 }
 
 function forceKillPort(port: number): void {
@@ -670,8 +734,8 @@ export function registerDevCommands(dev: Command) {
   // ── ibx dev stop [service] ──────────────────────────────────────────────
   dev
     .command("stop [service]")
-    .description("Stop service(s) — omit to stop all + Docker (-f to force-kill ports)")
-    .option("-f, --force", "Force-kill any process listening on service ports")
+    .description("Stop service(s) — omit to stop all + Docker (-f to force-kill ports). `tunnel` stops ngrok.")
+    .option("-f, --force", "Force-kill by port (services + :8080 + ngrok :4040); skips graceful shutdown")
     .action(async (serviceKey: string | undefined, opts: { force?: boolean }) => {
       await pcStop(serviceKey, opts)
     })
