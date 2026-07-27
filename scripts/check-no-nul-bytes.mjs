@@ -43,7 +43,7 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { readFileSync, lstatSync } from "node:fs"
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs"
 import { join, basename } from "node:path"
 
 /** Extensions whose files are legitimately binary and are skipped unread. */
@@ -111,15 +111,35 @@ function main() {
       continue
     }
     const abs = join(repoRoot, rel)
-    let stat
-    try {
-      stat = lstatSync(abs)
-    } catch {
-      continue // listed but absent from the worktree (e.g. sparse checkout)
-    }
-    if (!stat.isFile()) continue // symlink / gitlink — nothing of ours to read
 
-    const buf = readFileSync(abs)
+    // Check and use must be the SAME OBJECT, not the same path. Stat-ing a path
+    // and then reading that path is a TOCTOU race (CodeQL js/file-system-race):
+    // the entry can be swapped between the two calls, so the file we vetted is
+    // not necessarily the file we read. Everything below therefore happens on
+    // one file descriptor — open once, fstat that fd, read that fd.
+    //
+    // O_NOFOLLOW refuses a symlink atomically at open() time (ELOOP), which is
+    // strictly better than the old lstat-then-skip: there is no window in which
+    // a regular file becomes a symlink. `?? 0` is belt-and-suspenders for a
+    // platform whose fs.constants lacks the flag — it exists on darwin and
+    // linux, which is everywhere this runs, CI included.
+    let fd
+    try {
+      fd = openSync(abs, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    } catch {
+      // ENOENT (listed but absent, e.g. sparse checkout), ELOOP (a symlink —
+      // not ours to read), EACCES, or a directory/gitlink. Nothing to scan.
+      continue
+    }
+
+    let buf
+    try {
+      // fstat on the descriptor cannot race: it describes the object we hold.
+      if (!fstatSync(fd).isFile()) continue // directory / gitlink / fifo / device
+      buf = readFileSync(fd) // same fd — never re-opened by path
+    } finally {
+      closeSync(fd)
+    }
     scanned++
 
     const offsets = []
