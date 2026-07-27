@@ -164,17 +164,39 @@ const SUBJECT_HANDLES: ReadonlySet<string> = new Set(
  * Matching is on whole handle occurrences in the canonical text, longest first,
  * so `pulled-pork-congelado` is never read as `pulled-pork`.
  */
+/** Does `needle` occur in `haystack` as a whole token (not inside a longer one)? */
+function occursWholeToken(haystack: string, needle: string): boolean {
+  for (let from = 0; ; ) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) return false;
+    const before = at === 0 ? "" : (haystack[at - 1] ?? "");
+    const after = haystack[at + needle.length] ?? "";
+    if (!/[a-z0-9-]/.test(before) && !/[a-z0-9-]/.test(after)) return true;
+    from = at + 1;
+  }
+}
+
 export function findPairingSubject(text: string): string | undefined {
   const canonical = canonicalizeAliases(text).text.toLowerCase();
+  // Longest first, so `pulled-pork-congelado` is never read as `pulled-pork`.
   const candidates = [...SUBJECT_HANDLES].sort((a, b) => b.length - a.length);
-  return candidates.find((handle) => {
-    const at = canonical.indexOf(handle);
-    if (at < 0) return false;
-    // Whole-token: the handle must not be a fragment of a longer handle.
-    const before = at === 0 ? "" : canonical[at - 1];
-    const after = canonical[at + handle.length] ?? "";
-    return !/[a-z0-9-]/.test(before ?? "") && !/[a-z0-9-]/.test(after);
-  });
+  return candidates.find(
+    (handle) =>
+      occursWholeToken(canonical, handle) ||
+      // …and the SPACED form of the same handle.
+      //
+      // MEASURED GAP, not a defensive extra. A customer who types the product's
+      // real name writes it with spaces ("o que combina com a costela bovina
+      // defumada?"), and the alias canonicaliser does NOT turn that into the
+      // handle: its idempotence pre-pass CONSUMES an already-canonical spaced
+      // name without rewriting it, deliberately, so a second pass cannot corrupt
+      // it. Matching only the hyphenated form therefore missed every customer who
+      // used the full pt-BR name — and it made the SUBSTITUTION branch close to
+      // unreachable, because none of its three subjects has an unambiguous
+      // one-word alias to arrive by: `costela` is the gazetteer's declared
+      // AMBIGUOUS surface (two products), and the other two have no alias at all.
+      occursWholeToken(canonical, handleAsText(handle)),
+  );
 }
 
 // ── The pt-BR scalars (composed in CODE, never model-authored) ───────────────
