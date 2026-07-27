@@ -23,10 +23,13 @@
 // at boot — exactly the state a mock cannot certify. Harness:
 // helpers/claustrum-bootstrap-harness.ts.
 //
-// Tests are ORDERED and share suite state on purpose: the sequence
-// bootstrap #1 → reset → bootstrap #2 IS the acceptance property.
+// The sequence bootstrap #1 → reset → bootstrap #2 IS the acceptance property,
+// so every case DRIVES the part of that sequence it asserts about — from the
+// clean baseline a `beforeEach` reset pins — rather than inheriting it from the
+// case above (BKL-281: shared suite state made this file order-dependent, and
+// order dependence is fixed by owning state, never by pinning the order).
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pg from "pg";
 import {
   CompletionError,
@@ -110,12 +113,44 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
   "bootstrapClaustrum DI + full reset (T2-6a)",
   () => {
     let harness: ClaustrumBootstrapTestHarness;
-    let firstConductor: Conductor;
-    let firstPool: pg.Pool;
+
+    /**
+     * BKL-281 — bootstrap #1, performed by whichever case needs it.
+     *
+     * The sequence bootstrap #1 → reset → bootstrap #2 is still the acceptance
+     * property; what changed is WHO establishes each step's precondition. It
+     * used to be the case above: the first test assigned `firstConductor` /
+     * `firstPool` and the next two read them. Under `--sequence.shuffle` that
+     * made the reset case spy on an UNDEFINED pool ("Cannot convert undefined
+     * or null to object") and the test-only-gate case find a conductor it had
+     * not bootstrapped (`conductorCleared: true` where it asserts a clean
+     * no-op). Every case now builds the state it asserts about, starting from
+     * the baseline the `beforeEach` below pins — which is the same sequence,
+     * just owned rather than inherited.
+     */
+    async function bootstrapFirst(): Promise<{
+      readonly conductor: Conductor;
+      readonly pool: pg.Pool;
+    }> {
+      const conductor = await bootstrapClaustrum({
+        modelProvider: scriptedModelProvider("first"),
+        externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
+      });
+      const pool = getClaustrumPgPoolForTests();
+      expect(pool).not.toBeNull();
+      return { conductor, pool: pool as pg.Pool };
+    }
 
     beforeAll(async () => {
       harness = await setupClaustrumBootstrapHarness();
     }, 300_000);
+
+    // The clean baseline every case starts from: no conductor, no owned pool,
+    // audit-sink leaf DI cleared, kernel MetricsSink unset — regardless of what
+    // ran before it. A no-op when nothing was bootstrapped.
+    beforeEach(async () => {
+      await resetClaustrumForTests();
+    });
 
     afterAll(async () => {
       // Belt-and-braces: end any pool a failed assertion left behind.
@@ -127,17 +162,12 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
     }, 60_000);
 
     it("bootstrap #1: composes a conductor from injected scripted ModelProvider; zero-arg re-call returns the warm singleton", async () => {
-      firstConductor = await bootstrapClaustrum({
-        modelProvider: scriptedModelProvider("first"),
-        externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
-      });
+      const { conductor: firstConductor, pool: firstPool } =
+        await bootstrapFirst();
       expect(getConductor()).toBe(firstConductor);
       // Production double-init parity (index.ts): warm singleton wins.
       await expect(bootstrapClaustrum()).resolves.toBe(firstConductor);
 
-      const pool = getClaustrumPgPoolForTests();
-      expect(pool).not.toBeNull();
-      firstPool = pool as pg.Pool;
       expect(firstPool.ended).toBe(false);
 
       // Boot side-effects present: audit-sink leaf DI wired (bootstrapAuditSinkDI
@@ -148,6 +178,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
     }, 60_000);
 
     it("full reset: conductor cleared, owned pool ended, audit-sink DI fail-closed, metrics sink unset", async () => {
+      const { pool: firstPool } = await bootstrapFirst();
       const endSpy = vi.spyOn(firstPool, "end");
 
       const report = await resetClaustrumForTests();
@@ -175,6 +206,12 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
     });
 
     it("bootstrap #2 in the same process: distinct conductor, fresh live pool, audit sink re-wired, metrics sink reinstalled", async () => {
+      // The whole sequence, inside the case that asserts its end state:
+      // bootstrap #1 → reset → bootstrap #2.
+      const { conductor: firstConductor, pool: firstPool } =
+        await bootstrapFirst();
+      await resetClaustrumForTests();
+
       const secondConductor = await bootstrapClaustrum({
         modelProvider: scriptedModelProvider("second"),
         externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
@@ -221,7 +258,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
 
         expect(getClaustrumPgPoolForTests()).toBe(callerPool);
         // Injected audit sink → bootstrapAuditSinkDI skipped; the leaf DI is
-        // untouched (still cleared from the previous test's reset).
+        // untouched (still cleared by this case's baseline reset).
         expect(__auditSinkInitialized()).toBe(false);
         // Injected metrics sink installed unconditionally.
         expect(hasMetricsSink()).toBe(true);

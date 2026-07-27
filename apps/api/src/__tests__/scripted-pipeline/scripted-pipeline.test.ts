@@ -131,6 +131,19 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
     let assertPool: pg.Pool;
     let fixtures: GoldenConversationFixture[];
     let checkResult: ConformanceResult;
+    /**
+     * BKL-281 — the golden run's call log, FROZEN at the end of `beforeAll`.
+     *
+     * `provider.calls` keeps accumulating for the whole file, so a count taken
+     * off it is cumulative and silently assumes which tests ran first. The
+     * re-drive case below adds two calls of its own, and under
+     * `--sequence.shuffle` it can run BEFORE the count case — which then read
+     * 5 where the golden run made 3 and failed. Snapshotting here gives every
+     * test an absolute view of the drive `beforeAll` performed, whatever order
+     * the file runs in; `beforeAll` itself always runs first, so this is state
+     * the tests own rather than inherit from each other.
+     */
+    let goldenRunCalls: ScriptedModelProvider["calls"] = [];
 
     // Seeded per run; bound to {{ORDER_ID}} at fixture load.
     const ORDER_ID = `t26b-order-${randomUUID()}`;
@@ -264,6 +277,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
         conductor,
         { fixturesDir: FIXTURES_DIR },
       );
+      goldenRunCalls = [...provider.calls];
     }, 420_000);
 
     afterAll(async () => {
@@ -324,7 +338,10 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       //
       // LE2-024 — 3 conversations → 2 (cancel-confirm-gate retired with the
       // ad-hoc paid-cancel route), so 2 planner + 1 responder = 3.
-      const completes = provider.calls.filter((c) => c.method === "complete");
+      // Read off the FROZEN golden-run log (BKL-281), not the live one: this
+      // case is about what the golden drive cost, and the live log also
+      // carries whatever a re-drive case has added by now.
+      const completes = goldenRunCalls.filter((c) => c.method === "complete");
       expect(completes).toHaveLength(3);
       // Content-keyed, never positional: every call resolved to a labeled
       // fixture (an unknown key would have thrown the turn).
@@ -346,6 +363,12 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // The upstream InMemoryModelProvider failure mode (plan v2 ledger #13)
       // is a modulo cursor: a repeated call rotates the script. Re-drive the
       // smalltalk turn — same content key → same completion → same reply.
+      // BKL-281 — this case owns its own arithmetic: it measures the calls IT
+      // adds, from a baseline read at its own start, instead of assuming the
+      // file is at the golden run's count when it begins.
+      const completesBefore = provider.calls.filter(
+        (c) => c.method === "complete",
+      ).length;
       const customerId = cc006CustomerId("smalltalk-noop");
       const conversationId = cc006ConversationId("smalltalk-noop");
       const inbound = {
@@ -368,7 +391,8 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       expect(result.response.text).toBe(
         "Olá! Tudo ótimo por aqui. Como posso ajudar?",
       );
-      // 3 from the IBX-GC-006 run above + 2 from this re-drive.
+      // The baseline this case started from + 2 from this re-drive (in the
+      // file's declaration order that baseline is the golden run's 3).
       //
       // THE COUNT'S HISTORY, because it has moved twice for opposite reasons.
       // Pre-funnel it was 5. LE2-009 took it to 4: L1 memoized this turn's parse,
@@ -396,7 +420,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // If anything the anti-cursor proof is now STRONGER, since the planner is
       // also called twice and also resolves the same key both times.
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes).toHaveLength(5);
+      expect(completes).toHaveLength(completesBefore + 2);
       // TWO planner calls, same content key — neither drive replayed a cached
       // silence, and the second resolved the same fixture as the first.
       expect(
