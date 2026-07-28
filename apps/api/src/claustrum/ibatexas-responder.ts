@@ -43,6 +43,9 @@ import {
   RESPONDER_GROUNDED_SURFACE,
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
+// BKL-262 Stage 2 — the SAME turn-shape net the Stage-1 write-twin rescue uses, so
+// the two stages never disagree about whether a turn is a question or a mutation.
+import { hasMutationImperative } from "./required-claim-decomposer.js";
 import { emitModelCallTrace } from "./llm-trace.js";
 import { completeWithEmptyRetry } from "./complete-with-retry.js";
 import { PINNED_COMPLETION_TEMPERATURE } from "./model-call-defaults.js";
@@ -1440,57 +1443,84 @@ export function createIbatexasResponder(
             decision.refusal.kind !== "SECURITY" &&
             decision.refusal.kind !== "AUTH"
           ) {
-            try {
-              const { system: base, fragmentManifest } = await composeSystem(
-                RESPONDER_CONVERSATIONAL_SURFACE,
-                RESPONDER_PERSONA_PTBR,
-                input.cognition,
-                [],
-                deps.personas?.conversational,
-                deps.personaIds?.conversational,
-              );
-              const refusalNote =
-                `\n\n[CONTEXTO DO TURNO] O comando proposto foi RECUSADO: ${explained}\n` +
-                `A ação NÃO foi executada — NUNCA afirme que foi.\n` +
-                `Responda à mensagem original do operador; se fizer sentido, ` +
-                `explique brevemente e ofereça o caminho certo (reformular ou consultar).`;
-              const system = base + closedNote + refusalNote;
-              const raw = await completeWith({
-                system,
-                fragmentManifest,
-                userText,
-                turnId,
-                maxAttempts: 1,
-                ...(intentHash === undefined ? {} : { intentHash }),
-              });
-              const guarded = clampUngroundedConversational(
-                closedHoursDeliveryGuard(
-                  observedGuardDraft(raw, input.acted, turnId),
-                  scheduleSignal,
-                  scheduled,
-                ),
-                [userText, closedNote],
-              );
-              const untouched = guarded.text === raw.text;
-              if (
-                untouched &&
-                raw.text.trim().length > 0 &&
-                !refusalRecoveryClaimsSuccess(raw.text)
-              ) {
-                return guarded;
-              }
-              logger.warn(
-                { component: "responder", event: "success_guard.clamp", turnId, guard: "refusal_recovery" },
-                "refusal-recovery draft empty, guard-rewritten, or success-claiming — deterministic refusal line applies",
-              );
-            } catch (err) {
-              // Pre-change this path was model-free and could not fail — a
-              // recovery synthesis throw must never abort the refused turn.
-              logger.warn(
-                { component: "responder", event: "refusal_recovery_error", turnId, error: String(err) },
-                "refusal-recovery synthesis threw — deterministic refusal line applies",
-              );
+            // ── BKL-262 STAGE 2 · GROUNDED RECOVERY (owner ruling: option (c)) ──
+            //
+            // This branch used to SYNTHESISE the recovery reply with the model,
+            // gated only by the false-SUCCESS lexicon below. That gate is a
+            // LEXICON, so it catches "pronto, alterei" and lets a fabricated
+            // statement of FACT through clean — which is exactly how "Funcionamos
+            // todos os dias das 10h às 22h!" and a false coverage denial reached
+            // operators (BKL-262's two live proofs). Stage 1 fixed the RANKING for
+            // the write-twin case; everything that still falls through to here —
+            // an un-twinned refused kind, a twin whose read span never fired, a
+            // turn whose claims degraded to UNKNOWN, and the genuine refused
+            // MUTATION — was still answered by model prose.
+            //
+            // The recovery reply is now COMPOSED, never authored. There is no
+            // model call on this path at all, so "Store closes at 10 PM" cannot
+            // appear unless a real read produced it:
+            //
+            //   1. `explained` — the deterministic, single-sourced pt-BR refusal,
+            //      ALWAYS first. It is the load-bearing sentence: the action did
+            //      NOT happen, and the operator must be told that before anything
+            //      else. This is also why the composition can never mask a real
+            //      refusal the way an unguarded validated render would.
+            //   2. The BKL-100 deterministic READ render for this turn, when a
+            //      staff read was actually captured — grounded in the read RESULT,
+            //      no model call and no authored number. This is the "renders only
+            //      validated facts" half.
+            //   3. Otherwise, when the turn was question-SHAPED, the proposition-
+            //      free epistemic self-report (the BKL-184 abstain+offer shape,
+            //      the SAME `safeUnknown` seam the empty-plan branch above uses).
+            //      It asserts nothing about the world.
+            //
+            // A turn with none of the above simply gets the refusal alone, which
+            // is itself an honest self-report.
+            //
+            // SECURITY/AUTH are untouched above and still skip this entirely —
+            // tamper lines and the role-OPAQUE permission copy render verbatim.
+            const recovery: string[] = [explained];
+            const groundedRead = deps.readAnswer?.render(turnId);
+            if (groundedRead !== undefined) {
+              recovery.push(groundedRead);
+            } else if (
+              // The abstention answers a QUESTION. On a MUTATION-shaped turn the
+              // operator asked for an ACTION, so "não localizei essa informação"
+              // answers something nobody asked and reads as a non-sequitur — the
+              // refusal alone is already the complete, honest reply.
+              //
+              // This guard is REQUIRED rather than implied by the safe-unknown gate:
+              // since LE2-013 that gate is the COMPLEMENT OF SMALL TALK, so it fires
+              // on "fecha a loja amanhã" just as readily as on a real question. The
+              // net reused here is the SAME `hasMutationImperative` the BKL-262
+              // Stage-1 write-twin rescue turns on, so the two stages classify turn
+              // shape identically instead of drifting apart.
+              !hasMutationImperative(userText) &&
+              deps.safeUnknown?.gate(userText) === true
+            ) {
+              recovery.push(deps.safeUnknown.render(scheduleSignal, userText));
             }
+            const composed = recovery.join("\n\n");
+            // The lexicon SURVIVES — repurposed from a gate on model prose into a
+            // fail-closed TRIPWIRE on deterministic copy. Nothing here is model
+            // output, so it should never fire; if it ever does, an authored refusal
+            // string or a render template has drifted into claiming the refused
+            // action succeeded, and the narrowest honest reply is the bare refusal.
+            // Keeping it costs one regex on a rare path and removing it would delete
+            // the only assertion that this composition never states a false success.
+            if (refusalRecoveryClaimsSuccess(composed)) {
+              logger.warn(
+                {
+                  component: "responder",
+                  event: "success_guard.clamp",
+                  turnId,
+                  guard: "refusal_recovery_composed",
+                },
+                "composed refusal recovery claims success — deterministic refusal line applies",
+              );
+              return { text: explained };
+            }
+            return { text: composed };
           }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
           // single-sourced, SECURITY-safe). This is the bug fix — and the
