@@ -10,12 +10,18 @@
 import type { ClaimVerdict } from "@adjudicate/core";
 import { describe, expect, it } from "vitest";
 import { isRegistryClaimType, type RegistryClaimType } from "../claim-registry.js";
+// BKL-285 — the classify-only ROUTE gate. Imported here so the reservation
+// create/read split can be asserted on the decision that actually costs the
+// customer their booking, not merely on the span label one step upstream.
+import { classifyOnlyRequiredTypes } from "../classify-only-reads.js";
 import {
   type ActiveResourceOwnership,
   checkRequiredClaimCompleteness,
   classifyRequestSpans,
   decomposeRequiredClaims,
   detectMedicalEmergencyMarkers,
+  hasMutationImperative,
+  hasReservationCreateImperative,
   isAllergenFamilyAsk,
   isMedicalEmergencyAsk,
   isSpanClass,
@@ -249,11 +255,18 @@ describe("required-claim decomposer — BKL-152-edge exact date-anchor (0.8.0 ca
 // this domain) does not.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("classifyRequestSpans — FE-T17 RESERVATION_STATUS_Q (anchored marker)", () => {
+  // BKL-285 — TWO entries left this list, and they left for the SAME reason the
+  // ticket exists: `reservar` and "quero reservar uma mesa" are the CREATE verb,
+  // not a reference to an existing booking. Pinning them as must-FIRE pinned the
+  // defect — a customer asking to BOOK got the status read and lost the booking.
+  // They now live in the BKL-285 create-direction block below. Nothing about the
+  // ANCHORING claim this test makes is weakened by the move: the must-NOT-fire
+  // half (`preservar` — which CONTAINS `reservar` — and the rest of the preserv*
+  // family) is untouched and still proves the left guard.
   it("fires on every reservation verb form this domain sees", () => {
     for (const text of [
       "reserva",
       "reservas",
-      "reservar",
       "reservado",
       "reservada",
       "reservei",
@@ -261,7 +274,6 @@ describe("classifyRequestSpans — FE-T17 RESERVATION_STATUS_Q (anchored marker)
       "minha reserva",
       "qual minha reserva?",
       "como está minha reserva de amanhã?",
-      "quero reservar uma mesa",
       "vocês reservam mesa para hoje?",
     ]) {
       expect(classifyRequestSpans(text), text).toContain("RESERVATION_STATUS_Q");
@@ -338,12 +350,21 @@ describe("classifyRequestSpans — FE-T17 RESERVATION_STATUS_Q (anchored marker)
     }
   });
 
+  // BKL-285 — this clause was PARTIALLY VACUOUS. Its "or on a mesa mutation" half
+  // only ever exercised "cancela a minha mesa", whose `cancel` root the SHARED net
+  // already catches, so the half proved the shared net and nothing about `mesa`.
+  // The mutation that the shared net structurally CANNOT catch — a table BOOKING,
+  // whose verb is the read anchor itself — was never covered. Both are here now.
   it("BKL-224 — 'mesa' anchoring does not false-fire mid-word (mesada) or on a mesa mutation", () => {
     expect(classifyRequestSpans("quero saber da minha mesada")).not.toContain(
       "RESERVATION_STATUS_Q",
     );
     // a mesa MUTATION still routes to the model path (the shared mutationImperative gate)
     expect(classifyRequestSpans("cancela a minha mesa")).not.toContain(
+      "RESERVATION_STATUS_Q",
+    );
+    // …and so does a table BOOKING, which the shared net cannot see (BKL-285).
+    expect(classifyRequestSpans("reserva uma mesa para 4 pessoas às 20h")).not.toContain(
       "RESERVATION_STATUS_Q",
     );
   });
@@ -368,6 +389,147 @@ describe("classifyRequestSpans — FE-T17 RESERVATION_STATUS_Q (anchored marker)
     expect(spans).toContain("ORDER_STATUS_Q");
     expect(spans).toContain("PAYMENT_STATUS_Q");
     expect(spans).not.toContain("RESERVATION_STATUS_Q");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BKL-285 — the reservation CREATE imperative, BOTH DIRECTIONS.
+//
+// THE DEFECT. `reserv` is simultaneously the create VERB and the status read's
+// ANCHOR, so the shared mutation net could never carry it: BKL-217 closed
+// cancel/modify (whose verbs ARE in the shared net) and left CREATE open. Measured
+// on dev d8e5ca60: "reserva uma mesa para 4 pessoas às 20h" returned
+// ["RESERVATION_STATUS_Q"] with hasMutationImperative FALSE — the turn was
+// classify-only eligible, the STATUS read answered, and the booking was dropped
+// while the customer believed they had a table.
+//
+// WHY THE ROUTE, NOT JUST THE LABEL. A span label is one step removed from the
+// harm. `classifyOnlyRequiredTypes` is the actual gate that decides whether the
+// turn skips the model's claim proposal and gets answered deterministically, so
+// these assert on IT: `undefined` means the deterministic read route DECLINED and
+// the turn goes to the model/mutation path, which is the whole deliverable.
+//
+// STYLE-VARIED per the BKL-271 discipline — verb-initial imperatives, clitic
+// forms, volitional + infinitive, the `fazer uma reserva` noun frame, and the
+// no-`reserv`-stem `quero uma mesa` frame — with the accented spellings customers
+// really type (às / à noite / aniversário / sábado). Every probe is FRESH pt-BR
+// authored here: each was checked for exact-match absence from the 697-line
+// in-repo utterance corpus, so none is lifted from a fixture that the net was
+// tuned against.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("classifyRequestSpans — BKL-285 reservation CREATE vs the STATUS read", () => {
+  /** Booking REQUESTS. Every one must leave the deterministic read route. */
+  const CREATE_IMPERATIVES = [
+    // verb-initial imperative + indefinite object (THE REGISTERED DEFECT)
+    "reserva uma mesa para 4 pessoas às 20h",
+    "reserve uma mesa lá pras 21h, somos 6",
+    "reserva 2 mesas pro pessoal do escritório",
+    "reserve mesa pra 4, por favor",
+    // the clitic form
+    "me reserva uma mesa na sexta à noite",
+    // volitional / deontic + the infinitive
+    "gostaria de reservar uma mesa no sábado",
+    "preciso reservar uma mesa pro aniversário da minha mãe",
+    "podem reservar uma mesa pra gente?",
+    // the `fazer uma reserva` NOUN frame
+    "queria fazer uma reserva pra domingo de manhã",
+    // no `reserv` stem at all — the same booking, one paraphrase away
+    "quero uma mesa para 4 pessoas às 20h",
+    "queria uma mesa pra hoje à noite",
+    "gostaria de uma mesa para 2 no jantar",
+  ];
+
+  /** Booking QUESTIONS. Every one must KEEP its read. */
+  const STATUS_ASKS = [
+    "minha mesa está confirmada?",
+    "minha reserva está confirmada?",
+    "qual minha reserva?",
+    "confirmaram a minha mesa?",
+    // the PRETERITE frames — a booking already made, asked about
+    "reservei uma mesa ontem, deu certo?",
+    "fiz uma reserva pro sábado, está de pé?",
+    "vocês reservaram minha mesa?",
+    // the `de mesa` complement a windowed regex would have swallowed
+    "minha reserva de mesa segue valendo?",
+  ];
+
+  it("DIRECTION 1 — a create imperative loses the read span AND the deterministic route", () => {
+    for (const text of CREATE_IMPERATIVES) {
+      expect(hasReservationCreateImperative(text), text).toBe(true);
+      expect(classifyRequestSpans(text), text).not.toContain("RESERVATION_STATUS_Q");
+      // THE DELIVERABLE: the classify-only gate declines, so the turn reaches the
+      // model/mutation path where `reservation.create` can actually be minted.
+      expect(classifyOnlyRequiredTypes(text), text).toBeUndefined();
+    }
+  });
+
+  it("DIRECTION 2 — a status ask KEEPS the read span AND the deterministic route", () => {
+    for (const text of STATUS_ASKS) {
+      expect(hasReservationCreateImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).toContain("RESERVATION_STATUS_Q");
+      const required = classifyOnlyRequiredTypes(text);
+      expect(required, text).toBeDefined();
+      expect(required?.has("RESERVATION_STATUS"), text).toBe(true);
+    }
+  });
+
+  // The create net must not reach the family FE-T17's left guard exists for.
+  // `preservar` CONTAINS `reservar` and `preserve` CONTAINS `reserve`, so these
+  // are the two spellings that would break first if the guard were ever dropped.
+  it("the create net does NOT fire on the preserv* family or on 'reservatório'", () => {
+    for (const text of [
+      "preservar",
+      "preserve o meio ambiente",
+      "vamos preservar o meio ambiente",
+      "preservativo",
+      "o reservatório está vazando",
+    ]) {
+      expect(hasReservationCreateImperative(text), text).toBe(false);
+    }
+  });
+
+  // BKL-217 must stay exactly where it was: these carry a SHARED-net root, so they
+  // are off the read path for a reason this ticket did not touch. If a future edit
+  // moves the create net's job onto the shared net, this keeps the split honest.
+  it("BKL-217's cancel/modify coverage is UNCHANGED (shared net, not the create net)", () => {
+    for (const text of [
+      "cancela minha reserva",
+      "cancelar minha reserva das 18:30",
+      "muda minha reserva para 20h",
+      "troca minha reserva para 4 pessoas",
+      "cancela a minha mesa",
+    ]) {
+      expect(hasMutationImperative(text), text).toBe(true);
+      expect(hasReservationCreateImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).not.toContain("RESERVATION_STATUS_Q");
+    }
+  });
+
+  // THE OPS-PLANE BOUNDARY. `hasMutationImperative` is shared with
+  // ops-write-twin-rescue.ts, which has no reservation-create surface. Widening it
+  // would silently change staff-plane question-vs-mutation routing, so the create
+  // net is OR'd into classifyRequestSpans' LOCAL gate only. This pins that split:
+  // the shared predicate must stay blind to a pure booking request.
+  it("the SHARED mutation net is left untouched by the create family (ops plane unaffected)", () => {
+    for (const text of CREATE_IMPERATIVES) {
+      expect(hasMutationImperative(text), text).toBe(false);
+    }
+  });
+
+  // The FP sweep, as a test rather than a claim in a PR description. Swept against
+  // the 697-line in-repo utterance corpus and the 201-row live catalog vocabulary
+  // (Postgres :5433): 14 corpus hits, all of them genuine booking requests, and
+  // ZERO catalog hits. These four are the catalog-shaped strings a `mesa`/`reserv`
+  // net would collide with if it were widened carelessly.
+  it("FP boundary — ordinary catalog and menu vocabulary never reads as a booking", () => {
+    for (const text of [
+      "quanto custa a costela bovina defumada?",
+      "vocês têm sobremesa hoje?",
+      "quero uma coca gelada e uma porção de fritas",
+      "o que tem no cardápio?",
+    ]) {
+      expect(hasReservationCreateImperative(text), text).toBe(false);
+    }
   });
 });
 

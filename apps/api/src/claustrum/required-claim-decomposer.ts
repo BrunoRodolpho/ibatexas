@@ -698,6 +698,125 @@ export function hasMutationImperative(text: string): boolean {
 }
 
 /**
+ * BKL-285 — the RESERVATION-CREATE net: TRUE iff this text is a request to BOOK a
+ * table, as opposed to a question about a booking that already exists.
+ *
+ * ── WHY THIS CANNOT BE A ROOT IN {@link hasMutationImperative} ────────────────
+ *
+ * Every other customer mutation is caught by a VERB STEM that the matching READ
+ * vocabulary does not contain: `cancel` is not in "meu pedido chegou?", `adicion`
+ * is not in "o que tem no carrinho?". The reservation family is the ONE place
+ * where that separation fails — the mutation verb and the read anchor are THE SAME
+ * STEM. `reserv` is simultaneously the create verb ("reserva uma mesa") and the
+ * noun the status read is anchored on ("minha reserva está confirmada?"), so
+ * adding `reserv` to the shared net would suppress the very span it anchors.
+ * That is exactly why BKL-217 closed cancel/modify — whose verbs (`cancel`,
+ * `mud`/`tro[cq]`) ARE in the shared net — and left CREATE open: create's verb is
+ * the anchor itself. Measured on dev d8e5ca60, all six create phrasings below
+ * returned `["RESERVATION_STATUS_Q"]` with `hasMutationImperative` FALSE.
+ *
+ * The discriminator therefore cannot be the stem. It is the SHAPE: a booking
+ * REQUEST names an INDEFINITE table ("uma mesa", "2 mesas", "mesa"), or uses a
+ * verb form that can only be a request (the infinitive `reservar`, the imperative
+ * `reserve`/`reservem`); a booking QUESTION names a DEFINITE, POSSESSED one
+ * ("minha reserva", "a minha mesa", "o status da minha reserva").
+ *
+ * ── THE FOUR PARTS, AND WHY EACH IS SHAPED THE WAY IT IS ─────────────────────
+ *
+ *   1. {@link RESERVATION_BOOK_VERB_RE} — `reservar` / `reserve` / `reservem`.
+ *      These forms CANNOT refer to an existing reservation: pt-BR has no reading
+ *      of "reservar" that asks about a booking you already hold. The trailing
+ *      guard is what keeps the READ preterites out, and it is load-bearing in
+ *      both directions: `reservaram` ("vocês reservaram minha mesa?") and
+ *      `reservei` are STATUS phrasings and must NOT match, and they do not —
+ *      `reservar` + `am` fails the guard, and `reserv` + `ei` is in no arm.
+ *      The `(?<![a-z])` left guard is the SAME one FE-T17 added for the
+ *      `preserv*` family, and it is needed for the identical reason: `preservar`
+ *      contains `reservar`, `preserve` contains `reserve` (both pinned).
+ *   2. {@link RESERVATION_BOOK_OBJECT_RE} — the AMBIGUOUS `reserva`/`reserve`
+ *      form followed by an INDEFINITE table object ("reserva uma mesa",
+ *      "me reserva 2 mesas", "reserve mesa pra 4"). The determiner is the whole
+ *      discriminator and it is spelled tightly on purpose: the group admits only
+ *      `um`/`uma`/`umas`/a numeral, or nothing at all when `mesa` is ADJACENT.
+ *      It deliberately cannot span an intervening word, because `de` is what a
+ *      READ puts there — "minha reserva DE mesa está confirmada?" must keep its
+ *      span, and a `[^.!?]{0,N}` window would have swallowed it.
+ *   3. {@link RESERVATION_BOOK_NOUN_RE} — `fazer uma reserva`, the commonest
+ *      pt-BR booking phrasing of all, where `reserva` is a NOUN and so part 2
+ *      cannot see it. The verb list is CLOSED (fazer/faz/fazem/faço) rather than
+ *      `faz\w*` for one measured reason: the PRETERITE is a READ. "fiz uma
+ *      reserva ontem, está confirmada?" is a customer asking about a booking they
+ *      already made, so `fiz`/`fez` are excluded and pinned as must-not-fire.
+ *   4. {@link RESERVATION_BOOK_WANT_RE} — the volitional head governing an
+ *      INDEFINITE table, for the create phrasings that never say "reservar" at
+ *      all ("quero uma mesa para 4 pessoas às 20h"). Same harm, same family, one
+ *      paraphrase away — leaving it out would have closed the ticket's literal
+ *      utterance while the customer's next rewording still lost their booking.
+ *      The indefinite determiner is REQUIRED here too, which is what keeps the
+ *      read frame out: "quero saber da MINHA mesa" carries a possessive, not
+ *      `uma`, and the head must GOVERN the object directly.
+ *
+ * ── REJECTED, with the reason, so nobody re-proposes them ────────────────────
+ *
+ *   · A bare TEXT-INITIAL `reserva` arm ("verb-initial position decides it").
+ *     REJECTED: position does not disambiguate this word. "reserva confirmada?"
+ *     and "reserva pra hoje?" open with the NOUN, and the FE-T17 anchoring test's
+ *     own must-fire list contains the bare token "reserva". Requiring the OBJECT
+ *     (part 2) or an unambiguous verb form (part 1) is the measured discriminator;
+ *     position alone is not one.
+ *   · `marc`/`agend` ("quero marcar uma mesa", "agendar uma mesa"). REJECTED for
+ *     THIS ticket, and the reason is `marc`: "marca" is the everyday word for
+ *     BRAND ("qual a marca da cerveja?"), so the stem needs its own TP/FP sweep
+ *     rather than a free ride on this one. Out of scope, named here so it is a
+ *     decision and not an oversight.
+ *   · Folding these roots into {@link hasMutationImperative}. REJECTED: that
+ *     predicate has a SECOND consumer (`ops-write-twin-rescue.ts`, BKL-262
+ *     Stage 1), and the ops plane has no reservation-create surface at all — it
+ *     would be carrying a customer-plane-only meaning into a staff-plane
+ *     question/mutation decision. The narrow net below is OR'd into this
+ *     function's LOCAL gate instead, which buys the identical customer-plane
+ *     routing with zero ops blast radius.
+ *
+ * ── THE FAILURE DIRECTION IS FAIL-SAFE, AS IT IS FOR EVERY GATE HERE ─────────
+ *
+ * A false POSITIVE routes a reservation READ to the model path — the same mild
+ * inefficiency BKL-201/206/217 accept, never a wrong render. A false NEGATIVE is
+ * the registered defect: the customer's booking is silently dropped while a status
+ * read answers confidently. KNOWN RESIDUAL, narrowed but not closed: an imperative
+ * with NO table noun and no indefinite determiner ("reserva pra 4 às 20h") still
+ * rides the read, because that string is genuinely ambiguous with the noun frame.
+ *
+ * Pure. Callers may pass raw text — the lowercase is applied here and is idempotent.
+ */
+export function hasReservationCreateImperative(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    RESERVATION_BOOK_VERB_RE.test(t) ||
+    RESERVATION_BOOK_OBJECT_RE.test(t) ||
+    RESERVATION_BOOK_NOUN_RE.test(t) ||
+    RESERVATION_BOOK_WANT_RE.test(t)
+  );
+}
+
+/**
+ * The booking verb in a form that can ONLY request a booking: infinitive
+ * `reservar`, imperative/subjunctive `reserve`/`reservem`. Ordered longest-first
+ * so `reservem` is not shadowed by `reserve`. The trailing guard is spelled
+ * against the REAL pt-BR alphabet (`à-ÿ` covers ç/á/ã…) — the BKL-271 lesson that
+ * a bare `[a-z]` guard lets `porção` through the `por` branch.
+ */
+const RESERVATION_BOOK_VERB_RE = /(?<![a-z])reserv(?:ar|em|e)(?![a-zà-ÿ])/;
+/** An INDEFINITE table object governed directly by `reserva`/`reserve`. */
+const RESERVATION_BOOK_OBJECT_RE =
+  /(?<![a-z])reserv[ae]\s+(?:(?:umas?|um|\d+)\s+)?mesas?(?![a-zà-ÿ])/;
+/** `fazer uma reserva` — the noun frame. Preterites excluded (they are READS). */
+const RESERVATION_BOOK_NOUN_RE =
+  /(?<![a-z])f(?:azer|azem|a[çc]o|az)\s+(?:uma\s+)?reservas?(?![a-zà-ÿ])/;
+/** A volitional head governing an INDEFINITE table, with no `reserv` stem at all. */
+const RESERVATION_BOOK_WANT_RE =
+  /(?<![a-z])(?:quero|queria|gostaria|preciso)\s+(?:de\s+)?(?:umas?|um|\d+)\s+mesas?(?![a-zà-ÿ])/;
+
+/**
  * BKL-221 — DELIVERY-PROGRESS phrasing: the way a customer asks where their order
  * has got to WITHOUT naming it. The existing strong tokens all require an order
  * NOUN or a verb in the preterite (`pedido`, `sa[ií]u`, `chegou`, `cad[êe]`), so a
@@ -934,7 +1053,17 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // {@link hasMutationImperative} (verbatim move, same two literals, same OR), so the
   // ops write-twin read rescue asks the SAME question rather than spelling a rival
   // one. Every span below still gates on this identical boolean.
-  const mutationImperative = hasMutationImperative(t);
+  // BKL-285 — the RESERVATION-CREATE family joins the gate, but ONLY here, in this
+  // function's LOCAL variable. The shared `hasMutationImperative` is deliberately
+  // NOT widened: it has a second consumer on the OPS plane
+  // (`ops-write-twin-rescue.ts`), which has no reservation-create surface, so the
+  // roots would mean nothing there while changing staff-plane routing. OR-ing at
+  // this seam gives the create imperative exactly the treatment every other
+  // customer mutation already gets — every span below is gated on this one boolean,
+  // so a booking request stops riding ANY classify-only read, not just its own.
+  // See {@link hasReservationCreateImperative} for why the discriminator cannot be
+  // the `reserv` stem (it IS the read anchor) and for the four-part shape net.
+  const mutationImperative = hasMutationImperative(t) || hasReservationCreateImperative(t);
 
   if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
   // inv.18 v2 — the STORE_OPEN_NOW_Q markers are GENERATED from the def source
