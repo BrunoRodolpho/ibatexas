@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ChatErrorView } from './chat.errors'
 
 // Cap individual message content to prevent unbounded memory growth from long SSE streams
 const MAX_MESSAGE_LENGTH = 10_000
@@ -37,6 +38,11 @@ interface ChatState {
   messages: ChatMessage[]
   isLoading: boolean
   error?: string
+  /**
+   * BKL-286: whether the current `error` is recoverable only by starting a new
+   * conversation (a dead session credential). Drives the restart affordance.
+   */
+  errorCanRestart?: boolean
   /** Server-issued secret for guest session ownership (in-memory only) */
   sessionSecret?: string
   /** Server-issued JWT for authenticated session ownership (in-memory only) */
@@ -47,6 +53,8 @@ interface ChatState {
   updateLastMessage: (delta: string) => void
   setLoading: (loading: boolean) => void
   setError: (error?: string) => void
+  /** Set customer-facing failure copy together with its recovery affordance. */
+  setErrorView: (view: ChatErrorView) => void
   setSessionSecret: (secret: string) => void
   setSessionToken: (token: string) => void
   clearHistory: () => void
@@ -79,7 +87,10 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
 
   setLoading: (loading) => set({ isLoading: loading }),
-  setError: (error) => set({ error }),
+  // Clears the restart affordance: a plain error is retryable by default, so a
+  // stale "start a new conversation" button can never outlive the error it came with.
+  setError: (error) => set({ error, errorCanRestart: false }),
+  setErrorView: (view) => set({ error: view.message, errorCanRestart: view.canRestart }),
   setSessionSecret: (secret) => {
     saveSessionSecret(secret)
     set({ sessionSecret: secret })
@@ -91,6 +102,7 @@ export const useChatStore = create<ChatState>((set) => ({
       messages: [],
       isLoading: false,
       error: undefined,
+      errorCanRestart: false,
       sessionSecret: undefined,
       sessionToken: undefined,
     })
