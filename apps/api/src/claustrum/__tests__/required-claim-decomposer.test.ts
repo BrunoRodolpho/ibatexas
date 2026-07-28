@@ -20,6 +20,7 @@ import {
   isMedicalEmergencyAsk,
   isSpanClass,
   REQUIRED_CLAIM_CLOSURE,
+  __SPAN_NET_SOURCES_FOR_TEST,
 } from "../required-claim-decomposer.js";
 
 describe("required-claim decomposer — closure table (SDD §O#15)", () => {
@@ -622,6 +623,53 @@ describe("classifyRequestSpans — BKL-204 capability questions don't force the 
 // `pedido` and `sa[ií]u` in the net. What is still missing is the genuinely BARE
 // form, with no order noun and no preterite verb. The tests below pin the gap
 // that actually exists, not the one the row's title describes.
+// ── The Sonar S5843 restructure, pinned at the SOURCE level ──────────────────
+// Three nets were split at a top-level alternation, or composed from named parts,
+// to fit the regex-complexity budget. Neither transformation can change what a
+// pattern matches — but only while the parts still concatenate back to the SAME
+// STRING, and nothing about a split enforces that on its own.
+//
+// So the pre-restructure sources are frozen here verbatim. This is a stronger
+// statement than any corpus differential: if the reassembly is byte-identical,
+// it is not an equivalent regex, it is THE SAME regex, and no behavioural
+// argument is needed. A differential over 196k strings was run once as
+// belt-and-braces; this is the part that keeps holding after the PR merges.
+//
+// `String.raw` so the expected sources read exactly as they appear in the module
+// (a normal literal would need every backslash doubled, which is precisely how a
+// transcription error would slip in unnoticed).
+describe("span nets — the S5843 restructure is source-identical to the literals it replaced", () => {
+  it("ORDER_ARRIVAL: the two split halves rejoin to the original literal", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.orderArrival).toBe(
+      String.raw`(?<![a-z])a\s+caminho(?![a-z])|(?<![a-z])(?:foi|est[áa]|j[áa])\s+entregue(?![a-z])`,
+    );
+  });
+
+  it("ORDER_ETA: the four composed parts concatenate to the original literal", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.orderEta).toBe(
+      String.raw`(?:falta|demora|tempo)[^.!?]{0,20}(?:para|pra)\s+chegar(?!\s+(?:a[íi]|at[ée]|no\s+restaurante|na\s+loja))`,
+    );
+  });
+
+  it("MENU_OVERVIEW: the three split arms rejoin to the original literal", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.menuOverview).toBe(
+      String.raw`\bcard[áa]pio\b|\bmenu\b|o que (voc[êe]s )?(t[êe]m|servem)(?!\s+n[oa]s?\b|\s+em\b)( (pra|para) comer)?|quais (os |as )?(pratos|op[çc][õo]es)`,
+    );
+  });
+
+  // Guards the guard: a typo that emptied a part would make the assertions above
+  // compare two wrong-but-equal strings only if the expectation were derived from
+  // the code, which it is not — but an accidentally EMPTY reassembly is still worth
+  // ruling out explicitly, since `''` is the one value that could silently satisfy
+  // a future refactor of this very test.
+  it("the reassembled sources are non-empty and well-formed regexes", () => {
+    for (const [name, source] of Object.entries(__SPAN_NET_SOURCES_FOR_TEST)) {
+      expect(source.length, name).toBeGreaterThan(40);
+      expect(() => new RegExp(source), name).not.toThrow();
+    }
+  });
+});
+
 describe("classifyRequestSpans — BKL-221 bare delivery-progress phrasings", () => {
   it("MUST-FIRE on the bare progress asks (measured ∅ before this ticket)", () => {
     for (const text of [
@@ -737,6 +785,34 @@ describe("classifyRequestSpans — BKL-221 bare delivery-progress phrasings", ()
   // BKL-206 — the read-vs-mutation split is upstream of the new tokens too.
   it("MUST-NOT-FIRE when a mutation verb co-occurs (the shared gate still wins)", () => {
     expect(classifyRequestSpans("cancela meu pedido que está a caminho")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  // ── The POSITION-SENSITIVITY of the travel-destination lookahead ─────────────
+  // These pin a property, not a phrasing, and the property is what makes the
+  // arrival net safe to restructure: the exclusion is anchored at the position of
+  // the "para chegar" it follows, NOT applied to the utterance as a whole.
+  //
+  // Concretely — an utterance carrying BOTH senses must still fire, because ONE
+  // occurrence is a genuine arrival ask. Any refactor that lifts the lookahead out
+  // into a separate `&& !TRAVEL_RE.test(t)` check reads the whole string and
+  // returns false here. That refactor is the obvious way to "simplify" this net,
+  // it looks equivalent, and these cases are the reason it is not. (S5843 was
+  // instead addressed by composing the SAME pattern from named parts — see the
+  // net's own comment.)
+  it("the travel exclusion is POSITIONAL: a both-senses utterance still fires", () => {
+    for (const text of [
+      "quanto tempo para chegar aí, e falta muito para chegar?",
+      "falta muito para chegar? quanto tempo para chegar até vocês?",
+      "quanto tempo para chegar no restaurante e quanto tempo falta para chegar",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  it("both arrival stems in ONE utterance still fire (the split is a union)", () => {
+    expect(classifyRequestSpans("está a caminho? já foi entregue?")).toContain(
       "ORDER_STATUS_Q",
     );
   });

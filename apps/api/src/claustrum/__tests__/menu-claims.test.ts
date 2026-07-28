@@ -381,6 +381,39 @@ describe("BKL-142 MENU_OVERVIEW decomposer — whole-menu span, disjoint from pe
     expect(spans).not.toContain("MENU_OVERVIEW_Q");
   });
 
+  // ── The POSITION-SENSITIVITY of the locative lookahead ───────────────────────
+  // A property, not a phrasing. The locative exclusion is anchored at the position
+  // of the "o que tem" it follows, NOT applied to the utterance as a whole: an
+  // utterance carrying BOTH a per-item ask and a whole-menu ask still fires the
+  // overview, because one of its occurrences genuinely is a whole-menu ask.
+  //
+  // This is what a refactor lifting the lookahead into a separate
+  // `&& !LOCATIVE_RE.test(t)` check would break — it reads the whole string and
+  // would return false for all three. The overview net was instead split at its
+  // TOP-LEVEL alternation, which cannot change matching at all; these cases are
+  // what keep a future "simplification" from taking the tempting shortcut.
+  it("BKL-205 — the locative exclusion is POSITIONAL, not whole-utterance", () => {
+    for (const text of [
+      "o que tem no brisket? e o que vocês têm?",
+      "o que vocês têm? o que tem no combo?",
+      "o que tem no cardápio? o que tem no brisket?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("MENU_OVERVIEW_Q");
+    }
+  });
+
+  // S6035 — `(é|e)` became the `[ée]` character class. Same single character,
+  // same matched language; both spellings pinned so the equivalence is a fact
+  // about the code rather than a claim in a commit message.
+  it("BKL-205 — the contents net matches BOTH accented and plain 'do que é feito'", () => {
+    expect(classifyRequestSpans("do que é feito o prato")).toContain(
+      "MENU_ITEM_CONTENTS_Q",
+    );
+    expect(classifyRequestSpans("do que e feito o prato")).toContain(
+      "MENU_ITEM_CONTENTS_Q",
+    );
+  });
+
   // BKL-201/271 — the mutation gate sits UPSTREAM of both menu spans, so the
   // narrowing cannot hand a write turn to the per-item read either.
   it("BKL-205 — a mutation still fires NEITHER menu span (the read-vs-write split holds)", () => {

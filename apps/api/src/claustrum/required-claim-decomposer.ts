@@ -761,13 +761,97 @@ export function hasMutationImperative(text: string): boolean {
  *     bare stem would fire the customer's own order read on a store-policy
  *     question. Left to the model path, which is the fail-SAFE direction.
  */
-// Spelled as TWO literals for the same reason MUTATION_EDIT_ROOTS /
-// MUTATION_LIFECYCLE_ROOTS are (Sonar S5843's regex-complexity budget of 20); the
-// union of matched strings is exactly what one fused literal would match.
-const ORDER_ARRIVAL_RE =
-  /(?<![a-z])a\s+caminho(?![a-z])|(?<![a-z])(?:foi|est[áa]|j[áa])\s+entregue(?![a-z])/;
-const ORDER_ETA_RE =
-  /(?:falta|demora|tempo)[^.!?]{0,20}(?:para|pra)\s+chegar(?!\s+(?:a[íi]|at[ée]|no\s+restaurante|na\s+loja))/;
+// Spelled as SEPARATE literals for the same reason MUTATION_EDIT_ROOTS /
+// MUTATION_LIFECYCLE_ROOTS are (Sonar S5843's regex-complexity budget of 20).
+// The split is at the fused literal's TOP-LEVEL alternation, so the union of
+// matched strings is exactly what one fused literal matched: `A|B` tested with
+// `.test` is true iff `A` matches or `B` matches, which is what the `||` at the
+// use site now spells out. Each half is also independently meaningful and
+// independently testable, which the fused version was not.
+const ORDER_ON_THE_WAY_RE = /(?<![a-z])a\s+caminho(?![a-z])/;
+const ORDER_DELIVERED_RE = /(?<![a-z])(?:foi|est[áa]|j[áa])\s+entregue(?![a-z])/;
+
+/**
+ * The arrival-ETA net, COMPOSED from named parts rather than written as one
+ * literal — same budget, different remedy, because this pattern is a SEQUENCE
+ * and not an alternation, so there is no top-level split point to cut at.
+ *
+ * The alternative was to distribute the head over the tail
+ * (`falta…` / `demora…` / `tempo…` as three literals), and that is exactly the
+ * "second, drifting regex" this module refuses everywhere else (see the BKL-184 /
+ * LE2-002 one-net idiom in `isDeliveryCoverageAsk` and `classifyPairingAsk`): it
+ * would have copied the destination lookahead three times, so a future edit to
+ * the travel-sense exclusion could silently be applied to one copy and not the
+ * others. Naming the four parts costs nothing at runtime and says what each one
+ * is for, which is what the rule is actually about.
+ *
+ * The composed source is asserted BYTE-IDENTICAL to the original literal in
+ * required-claim-decomposer.test.ts, so this restructure cannot have changed the
+ * pattern — only how it is spelled here.
+ */
+/** A time-pressure head: "quanto TEMPO", "FALTA muito", "DEMORA". */
+const ETA_HEAD = "(?:falta|demora|tempo)";
+/** …within a short window, clause-bounded so it cannot reach across sentences. */
+const ETA_WINDOW = "[^.!?]{0,20}";
+/** …of the arrival phrase itself. */
+const ETA_ARRIVAL_PHRASE = "(?:para|pra)\\s+chegar";
+/**
+ * …NOT followed by a second-person destination. "chegar aí" / "chegar até
+ * vocês" / "chegar no restaurante" is the CUSTOMER travelling; bare "chegar" is
+ * the food arriving. Measured: without this the net fires on "quanto tempo para
+ * chegar aí de carro?".
+ */
+const ETA_NOT_TRAVEL = "(?!\\s+(?:a[íi]|at[ée]|no\\s+restaurante|na\\s+loja))";
+const ORDER_ETA_RE = new RegExp(
+  ETA_HEAD + ETA_WINDOW + ETA_ARRIVAL_PHRASE + ETA_NOT_TRAVEL,
+);
+
+// ── The MENU_OVERVIEW net, split at its TOP-LEVEL alternation (Sonar S5843) ───
+// Three independent ways to ask for the whole menu, one constant each. `A|B|C`
+// under `.test` is true iff some alternative matches, which is what the `||` at
+// the use site spells out — so the split is behaviour-preserving by
+// construction, and each arm is now individually named and testable.
+//
+// The SPLIT IS ALSO WHAT MAKES THE BKL-205 ORDERING LEGIBLE: the locative
+// lookahead belongs to the BARE-interrogative arm ALONE. `MENU_WORD_RE` is a
+// separate constant precisely because "o que tem no cardápio?" must keep firing
+// the overview through the menu WORD even though it carries a locative — the
+// property the fused literal expressed only by the accident of alternation
+// order, and which a future edit could have destroyed without any test noticing
+// that the two arms had been conflated.
+/** The menu named outright — wins regardless of any locative complement. */
+const MENU_WORD_RE = /\bcard[áa]pio\b|\bmenu\b/;
+/** The bare interrogative, NOT carrying a locative complement (BKL-205). */
+const MENU_BARE_ASK_RE =
+  /o que (voc[êe]s )?(t[êe]m|servem)(?!\s+n[oa]s?\b|\s+em\b)( (pra|para) comer)?/;
+/** "quais os pratos?" / "quais as opções?" */
+const MENU_LIST_ASK_RE = /quais (os |as )?(pratos|op[çc][õo]es)/;
+
+/**
+ * The REASSEMBLED sources of the three nets that were split or composed to fit
+ * Sonar's S5843 regex-complexity budget. Exposed (the `__…ForTest` idiom this
+ * codebase already uses for `__resetMenuItemMemoForTest` and friends) for exactly
+ * one assertion: that each reassembly is BYTE-IDENTICAL to the single literal it
+ * replaced.
+ *
+ * WHY THIS IS A TEST AND NOT A COMMENT. Splitting `A|B` at a top-level `|`, or
+ * composing a sequence from named parts, cannot change what a pattern matches —
+ * but only while the parts still concatenate back to the same string. A future
+ * edit to one part is unreviewable against that promise unless something checks
+ * it, and "I ran a differential once" is not a property of the repository. The
+ * test that consumes this holds the pre-restructure sources verbatim, so any
+ * drift in any part fails with the two strings side by side.
+ *
+ * Pure data; no runtime consumer.
+ */
+export const __SPAN_NET_SOURCES_FOR_TEST = {
+  /** `ORDER_ON_THE_WAY_RE | ORDER_DELIVERED_RE` */
+  orderArrival: `${ORDER_ON_THE_WAY_RE.source}|${ORDER_DELIVERED_RE.source}`,
+  /** the four ETA parts, concatenated */
+  orderEta: ORDER_ETA_RE.source,
+  /** `MENU_WORD_RE | MENU_BARE_ASK_RE | MENU_LIST_ASK_RE` */
+  menuOverview: `${MENU_WORD_RE.source}|${MENU_BARE_ASK_RE.source}|${MENU_LIST_ASK_RE.source}`,
+} as const;
 
 export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
@@ -921,7 +1005,7 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   const isMenuOverview =
     notOrderScoped &&
     !mutationImperative &&
-    /\bcard[áa]pio\b|\bmenu\b|o que (voc[êe]s )?(t[êe]m|servem)(?!\s+n[oa]s?\b|\s+em\b)( (pra|para) comer)?|quais (os |as )?(pratos|op[çc][õo]es)/.test(t);
+    (MENU_WORD_RE.test(t) || MENU_BARE_ASK_RE.test(t) || MENU_LIST_ASK_RE.test(t));
   if (isMenuOverview) classes.push("MENU_OVERVIEW_Q");
 
   if (notOrderScoped && !mutationImperative && /quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]/.test(t)) {
@@ -950,7 +1034,11 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // overview span, so without the accented form here the utterance would have
   // classified to NOTHING — trading a wrong-family render for no span at all,
   // which BKL-273 established is the worse of the two.
-  if (notOrderScoped && !mutationImperative && !isMenuOverview && /o que (v[êe]m|t[êe]m|acompanha)|do que (é|e) (é |)feit|que v[êe]m (n|em)|composi[çc][ãa]o d/.test(t)) {
+  // The `[ée]` is a CHARACTER CLASS, not the `(é|e)` alternation it replaces
+  // (Sonar S6035). Same single character, same matched language; the group was
+  // capturing and this is not, which is invisible here because the only use is
+  // `.test`. Pinned byte-for-byte against the pre-restructure source by test.
+  if (notOrderScoped && !mutationImperative && !isMenuOverview && /o que (v[êe]m|t[êe]m|acompanha)|do que [ée] (é |)feit|que v[êe]m (n|em)|composi[çc][ãa]o d/.test(t)) {
     classes.push("MENU_ITEM_CONTENTS_Q");
   }
 
@@ -1062,7 +1150,8 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   const paymentMethodsQuestion = /(formas?|op[çc][õo]es)\s+de\s+pagamento/.test(t);
   const orderStatusStrong =
     /pedido|preparo|sa[ií]u|chegou|cad[êe]/.test(t) ||
-    ORDER_ARRIVAL_RE.test(t) ||
+    ORDER_ON_THE_WAY_RE.test(t) ||
+    ORDER_DELIVERED_RE.test(t) ||
     ORDER_ETA_RE.test(t);
   const paymentStatusStrong =
     /pago|cobran[çc]a|pagar|paguei|aprovad/.test(t) ||
