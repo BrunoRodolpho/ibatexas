@@ -665,6 +665,38 @@ export function detectMedicalEmergencyMarkers(text: string): string[] {
   return isMedicalEmergencyAsk(text) ? ["medical-emergency"] : [];
 }
 
+/**
+ * The IMPERATIVE-MUTATION net — TRUE iff this text carries a pt-BR mutation verb.
+ *
+ * EXTRACTED (BKL-262 Stage 1) from {@link classifyRequestSpans}, where it has always
+ * lived as a local const, with the two regexes and the OR moved verbatim to module
+ * scope. Behaviour is unchanged: `classifyRequestSpans` calls this and branches on
+ * the identical boolean.
+ *
+ * It is exported because a SECOND consumer now needs the SAME answer — the ops
+ * write-twin read rescue (`ops-write-twin-rescue.ts`) must distinguish a staff
+ * QUESTION that mis-parsed into a write from a staff MUTATION that the kernel
+ * refused. Spelling a second mutation net there would be a second source of truth
+ * for "is this an imperative", and the two would drift on the very next pt-BR
+ * correction (this net has already absorbed BKL-206 / BKL-238 / BKL-271 fixes).
+ * Callers may pass raw text — the lowercase is applied here and is idempotent.
+ *
+ * Pure. See the block comment inside the function for the full provenance of every
+ * root and lookahead.
+ */
+export function hasMutationImperative(text: string): boolean {
+  const t = text.toLowerCase();
+  // The net is spelled as TWO literals — the CART-EDIT roots and the ORDER-LIFECYCLE
+  // roots — because the fused literal scored 28 on Sonar's regex-complexity budget
+  // of 20 (S5843). BOTH carry the same `(?<![a-z])` left guard, so the union of
+  // matched strings is exactly what the single literal matched.
+  const MUTATION_EDIT_ROOTS =
+    /(?<![a-z])(adicion|acrescent|remov|tir|colo[cq]|p[õo]e|ponh|mud|tro[cq]|limp|esvazi|aument|diminu)/;
+  const MUTATION_LIFECYCLE_ROOTS =
+    /(?<![a-z])(cancel(?!ad)|fech(?!ad|ament|ou|am)|finaliz(?!ad))/;
+  return MUTATION_EDIT_ROOTS.test(t) || MUTATION_LIFECYCLE_ROOTS.test(t);
+}
+
 export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
   const classes: SpanClass[] = [];
@@ -742,17 +774,11 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // customer mutation request. The imperative family is untouched: cancela / cancelar
   // / cancele / cancelei / cancelamento ("quero o cancelamento do pedido") all still
   // match, exactly as fecha/finaliza do past their own lookaheads.
-  // The net is spelled as TWO literals — the CART-EDIT roots and the ORDER-LIFECYCLE
-  // roots — OR'd into the same `mutationImperative` boolean every span below gates
-  // on, because the fused literal scored 28 on Sonar's regex-complexity budget of 20
-  // (S5843). BOTH carry the same `(?<![a-z])` left guard, so the union of matched
-  // strings is exactly what the single literal matched.
-  const MUTATION_EDIT_ROOTS =
-    /(?<![a-z])(adicion|acrescent|remov|tir|colo[cq]|p[õo]e|ponh|mud|tro[cq]|limp|esvazi|aument|diminu)/;
-  const MUTATION_LIFECYCLE_ROOTS =
-    /(?<![a-z])(cancel(?!ad)|fech(?!ad|ament|ou|am)|finaliz(?!ad))/;
-  const mutationImperative =
-    MUTATION_EDIT_ROOTS.test(t) || MUTATION_LIFECYCLE_ROOTS.test(t);
+  // BKL-262 Stage 1 — the net itself now lives in the exported
+  // {@link hasMutationImperative} (verbatim move, same two literals, same OR), so the
+  // ops write-twin read rescue asks the SAME question rather than spelling a rival
+  // one. Every span below still gates on this identical boolean.
+  const mutationImperative = hasMutationImperative(t);
 
   if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
   // inv.18 v2 — the STORE_OPEN_NOW_Q markers are GENERATED from the def source
