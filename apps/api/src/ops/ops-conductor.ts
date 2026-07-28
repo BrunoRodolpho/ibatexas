@@ -422,6 +422,15 @@ export function composeOpsConductor(
           claimsRenderPrecedence: createIbatexasClaimsRenderPrecedence({
             plane: "ops",
             hasDeterministicReadRender: () => captures.length > 0,
+            // BKL-262 Stage 1 (owner ruling 2026-07-27, option (b)) — lattice rule 2a.
+            // A staff QUESTION mis-parsed into a mutating envelope is kernel-REFUSEd,
+            // and rule 2 then keeps a draft that is the conversationalRefusal recovery
+            // synthesis (raw model prose — `renderOpsActionAnswer` abstains on a
+            // refused dispatch). Enabling the rescue lets the VALIDATED read render
+            // outrank that draft when the refused envelope is the declared WRITE TWIN
+            // of the read actually asked. OPS ONLY: the customer plane never passes
+            // this, and a genuine refused MUTATION is excluded by the predicate.
+            writeTwinReadRescue: true,
           }),
         }),
   });

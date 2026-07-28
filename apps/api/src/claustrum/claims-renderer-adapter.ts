@@ -502,6 +502,13 @@ export interface IbatexasClaimsRenderPrecedenceOptions {
    * Absent (customer plane) → no signal → the lattice is byte-identical.
    */
   readonly hasDeterministicReadRender?: () => boolean;
+  /**
+   * BKL-262 Stage 1 — enable the WRITE-TWIN READ RESCUE (lattice rule 2a) on this
+   * plane. The OPS composition passes `true`; the customer plane passes nothing, so
+   * its verdicts are byte-identical. See `ops-write-twin-rescue.ts` for the declared
+   * twin table and the five-conjunct predicate.
+   */
+  readonly writeTwinReadRescue?: boolean;
 }
 
 /**
@@ -527,11 +534,16 @@ export function createIbatexasClaimsRenderPrecedence(
 ): ClaimsRenderPrecedence {
   const plane = opts?.plane ?? "customer";
   const hasDeterministicReadRender = opts?.hasDeterministicReadRender;
+  const writeTwinReadRescue = opts?.writeTwinReadRescue === true;
   return (ctx) => {
-    const signals: RenderPrecedenceSignals =
-      hasDeterministicReadRender === undefined
+    const signals: RenderPrecedenceSignals = {
+      ...(hasDeterministicReadRender === undefined
         ? {}
-        : { deterministicReadRender: hasDeterministicReadRender() };
+        : { deterministicReadRender: hasDeterministicReadRender() }),
+      // BKL-262 Stage 1 — omitted entirely unless the plane opted in, so the customer
+      // signal set stays byte-identical to the pre-BKL-262 shape.
+      ...(writeTwinReadRescue ? { writeTwinReadRescue: true } : {}),
+    };
     const verdict = decideRenderPrecedence(ctx, signals);
     emitRenderPrecedence(ctx, verdict, plane);
     return verdict.decision;

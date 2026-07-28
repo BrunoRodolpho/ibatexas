@@ -34,6 +34,14 @@
 // recovery branch (`conversationalRefusal`) still authors prose for a kernel-refused
 // COMMAND. That is a refusal explanation on a NON-empty plan, not the empty-plan
 // factual path this ticket scopes, and it stays digit-clamped. Left visible.
+//
+// UPDATE — that residual became BKL-262, and it was worse than "left visible": on a
+// MIS-PARSED question the branch shipped fabricated FACTS (live-measured twice). Its
+// RANKING half is now closed by lattice rule 2a and pinned by
+// `ops-write-twin-rescue.e2e.test.ts` — a refused WRITE that is the declared twin of
+// the read actually asked no longer suppresses the validated answer. The branch itself
+// still authors prose for a GENUINE refused command; making that synthesis grounded is
+// BKL-262 Stage 2 and remains open.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Completion, CompletionRequest, ModelProvider } from "@claustrum/core";
