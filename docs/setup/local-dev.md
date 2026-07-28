@@ -122,6 +122,15 @@ ibx dev start --no-observability           # skip the obs stack (drops funnel re
 > when the sink is unset or unreachable. See
 > [docs/cli/reference.md](../cli/reference.md#why-observability-is-a-default-service).
 
+The supervisor's own log — readiness-probe results, restart decisions, exit
+codes; the record that diagnoses a process being killed by its own probe — is
+written to **`$TMPDIR/ibx-dev-supervisor.log`** (echoed in the `-L` argument
+`ibx dev start` prints). It is deliberately *not* process-compose's shared
+`$TMPDIR/process-compose-$USER.log` default: process-compose truncates that file
+on every startup, including `--dry-run` and `version`, so the CI profile gate and
+the test stack used to wipe the running dev stack's log (BKL-288). Per-process
+output is separate — reach it with `process-compose process logs <process>`.
+
 ### Stop everything
 
 ```bash

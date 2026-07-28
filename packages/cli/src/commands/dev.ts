@@ -6,6 +6,11 @@ import ora from "ora"
 import { execa, execaSync } from "execa"
 import { ROOT } from "../utils/root.js"
 import { DEV_FLAGS } from "../lib/dev-flags.js"
+import {
+  DEV_SUPERVISOR_LOG,
+  disposableLogPath,
+  logFileArgs,
+} from "../lib/process-compose-log.js"
 import type { ServiceDef } from "../services.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -34,7 +39,15 @@ const APP_SERVICES = ["commerce", "api", "web", "admin", "qa-viewer", "adj-conso
 
 async function checkProcessCompose(): Promise<boolean> {
   try {
-    await execa("process-compose", ["version"], { reject: true })
+    // BKL-288: `version` initialises the logger and TRUNCATES process-compose's
+    // shared default log. `dev stop` / `dev restart` run this probe while the
+    // supervisor is LIVE, so without an own log path the probe wipes the very
+    // log you are about to read. Throwaway path — nothing ever reads it.
+    await execa(
+      "process-compose",
+      ["version", ...logFileArgs(disposableLogPath("version-probe"))],
+      { reject: true },
+    )
     return true
   } catch {
     return false
@@ -197,6 +210,21 @@ async function confirmStart(opts: StartOpts): Promise<boolean> {
   }
 }
 
+/** argv for THE live dev supervisor.
+ *
+ *  BKL-288: the `-L` pair is load-bearing, not cosmetic. Without it the
+ *  supervisor writes to process-compose's shared `process-compose-$USER.log`
+ *  default, which every OTHER invocation on the machine (a `--dry-run`
+ *  validation, a `version` probe, the test-stack supervisor) truncates on
+ *  startup — silently destroying the running stack's forensic log. An explicit
+ *  stable path is the only way the live log stops being collateral. */
+export function buildPcUpArgs(processes: string[], tui?: boolean): string[] {
+  const args = ["up", "-f", PC_YAML, ...logFileArgs(DEV_SUPERVISOR_LOG)]
+  if (!tui) args.push("-t=false")
+  args.push(...processes)
+  return args
+}
+
 async function pcStart(
   services: string[],
   opts: StartOpts,
@@ -214,15 +242,9 @@ async function pcStart(
   const portsToCheck = Object.values(SERVICES).map((s) => s.port)
   checkGhostProcesses(portsToCheck)
 
-  // Build process-compose args
-  const args = ["up", "-f", PC_YAML]
-
-  if (!opts.tui) args.push("-t=false")
-
   const skipDocker = opts.skipDocker || opts.noDocker
   const processes = resolveProcessList(services, opts, skipDocker)
-
-  args.push(...processes)
+  const args = buildPcUpArgs(processes, opts.tui)
 
   console.log(chalk.bold.blue("\n  IbateXas Dev Environment\n"))
   await printStartPlan(processes, skipDocker)

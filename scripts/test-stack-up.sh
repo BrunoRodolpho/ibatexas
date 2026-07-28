@@ -35,6 +35,12 @@
 #                             parallel runs and volumes apart)
 #   IBX_TEST_PC_PORT          process-compose server port (default 28505 —
 #                             distinct from the dev instance's 8080)
+#   IBX_TEST_PC_LOG           supervisor log path for THIS stack (BKL-288 —
+#                             default ${TMPDIR}/ibx-test-stack-supervisor.log).
+#                             Must NOT be process-compose's shared per-user
+#                             default: this is a SECOND supervisor, and every
+#                             process-compose startup TRUNCATES that default,
+#                             so sharing it would wipe the dev stack's log.
 #   IBX_TEST_APP_WAIT_SECONDS per-app readiness budget (default 600)
 #   IBX_TEST_E2E              "1" → ALSO boot apps/web (:3000) by overlaying
 #                             process-compose.e2e.yaml on the test profile
@@ -58,6 +64,8 @@ PC_FILE="process-compose.test.yaml"
 PC_E2E_FILE="process-compose.e2e.yaml"
 PROJECT="${IBX_TEST_COMPOSE_PROJECT:-ibx-test}"
 PC_PORT="${IBX_TEST_PC_PORT:-28505}"
+# BKL-288: own supervisor log — never process-compose's shared per-user default.
+PC_LOG="${IBX_TEST_PC_LOG:-${TMPDIR:-/tmp}/ibx-test-stack-supervisor.log}"
 APP_WAIT_SECONDS="${IBX_TEST_APP_WAIT_SECONDS:-600}"
 E2E="${IBX_TEST_E2E:-0}"
 # BKL-263: how much of a stuck process's own log a readiness failure prints.
@@ -131,6 +139,7 @@ wait_http() {
         process-compose process logs "$proc" -n "$FAILURE_LOG_LINES" -p "$PC_PORT" >&2 || true
       done
       echo "full logs: process-compose process logs <process> -p $PC_PORT" >&2
+      echo "supervisor log (probe/restart decisions): $PC_LOG" >&2
       return 1
     fi
     sleep 3
@@ -178,8 +187,8 @@ if [[ "$E2E" == "1" ]]; then
   # T2-7: overlay merges the web (:3000) process on top of the test profile.
   PC_FILE_ARGS+=(-f "$PC_E2E_FILE")
 fi
-echo "[3/4] apps: process-compose up ${PC_FILE_ARGS[*]} -e $ENV_FILE -D -p $PC_PORT"
-process-compose up "${PC_FILE_ARGS[@]}" -e "$ENV_FILE" -D -p "$PC_PORT"
+echo "[3/4] apps: process-compose up ${PC_FILE_ARGS[*]} -e $ENV_FILE -D -p $PC_PORT -L $PC_LOG"
+process-compose up "${PC_FILE_ARGS[@]}" -e "$ENV_FILE" -D -p "$PC_PORT" -L "$PC_LOG"
 # FE-D25: poll the parameterized ports — polling the hardcoded :9000/:3001 would
 # silently succeed against DEV's already-healthy endpoints (a false-green that
 # never waits for THIS stack) whenever the ports were reassigned to coexist.
