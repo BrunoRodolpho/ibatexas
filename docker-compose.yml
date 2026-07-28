@@ -8,6 +8,16 @@ services:
     # `extension "vector" is not available`. Same env/healthcheck semantics.
     image: pgvector/pgvector:pg17
     container_name: ibatexas-postgres
+    # BKL-284: the core four carry the BKL-266 treatment too. A Docker Desktop
+    # quit / host reboot / daemon crash left ALL of postgres+redis+typesense+nats
+    # down until the next full `ibx dev`, and every app boots into a void: the
+    # 2026-07-27 incident had Medusa hang before binding :9000 and get SIGTERMed
+    # by its own readiness probe, because :5433 never answered. Second measured
+    # occurrence of apps booting into absent infra. `unless-stopped` still
+    # honours a deliberate `docker stop`, so the opt-out path stays intact.
+    # NOTE: a restart policy does NOT survive `docker compose down` — that
+    # removes the container outright. See the PR body for the removal-path trace.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -29,6 +39,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: ibatexas-redis
+    # BKL-284: see the postgres note — core infra survives a daemon restart.
+    restart: unless-stopped
     # AUDIT-FIX: INFRA-12 — Require password for Redis (prevents unauthenticated access)
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-localdev}"]
     ports:
@@ -49,6 +61,8 @@ services:
   typesense:
     image: typesense/typesense:27.1
     container_name: ibatexas-typesense
+    # BKL-284: see the postgres note — core infra survives a daemon restart.
+    restart: unless-stopped
     environment:
       TYPESENSE_DATA_DIR: /data
       TYPESENSE_API_KEY: ${TYPESENSE_API_KEY}
@@ -69,6 +83,8 @@ services:
   nats:
     image: nats:2.11-alpine
     container_name: ibatexas-nats
+    # BKL-284: see the postgres note — core infra survives a daemon restart.
+    restart: unless-stopped
     # T3-10: server-side auth (docs/security/NATS-AUTH-REQUIREMENTS.md) — the
     # server now REFUSES unauthenticated clients. Config-driven boot (the conf
     # carries jetstream + monitor, replacing the old flag-style command).

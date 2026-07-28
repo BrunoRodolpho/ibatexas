@@ -334,10 +334,40 @@ See [plugins.md](plugins.md) for full documentation.
 | Medusa doesn't start | `ibx dev stop && ibx dev` (fresh start) |
 | Seed fails | Ensure Medusa is running first: `ibx svc health` |
 | CLI command not found | `cd packages/cli && npm link` |
-| Docker containers unhealthy | `docker compose down -v && ibx dev` |
-| PG version mismatch (`initialized by PostgreSQL 15, not compatible with 17`) | `docker compose down -v && ibx bootstrap` |
+| Docker containers unhealthy | `ibx dev stop && ibx dev` — recreates the containers, keeps your data. Still unhealthy? `ibx svc logs <svc>`, then [destructive last resort](#destructive-last-resort) |
+| PG version mismatch (`initialized by PostgreSQL 15, not compatible with 17`) | Point the postgres image back at the old major in `docker-compose.yml`, `docker compose up -d postgres`, then `pg_dump` and restore into the new major. Only if you don't need the data: [destructive last resort](#destructive-last-resort) |
 | `relation "X" does not exist` on startup | Run `ibx bootstrap` or manually: `ibx db migrate` then `ibx db migrate:domain` |
 | `process-compose: command not found` | `brew install f1bonacc1/tap/process-compose` |
 | TUI not rendering | Try `ibx dev start --no-tui` for plain output |
 | `Port XXXX already in use` | Ghost process — run `ibx dev stop -f` to force-kill, then retry |
 | Admin panel returns 503 on all pages | Server-side `ADMIN_API_KEY` is empty (the API returns 503 when no admin keys are configured). Generate with `openssl rand -base64 32` and set the **same** value for `ADMIN_API_KEY` in both the API and admin app envs — the admin proxy forwards it as the `x-admin-key` header. (There is no `NEXT_PUBLIC_ADMIN_API_KEY`; the key is server-side only.) |
+
+### Destructive last resort
+
+> **`docker compose down -v` PERMANENTLY DELETES ALL LOCAL DATA.** The `-v`
+> removes the named volumes for **all four** core services — postgres, redis,
+> typesense *and* nats — not just the one you are debugging. Every local order,
+> customer, seeded product and stored conversation is gone and is **not
+> recoverable**. There is no undo and no backup.
+
+Try `ibx dev stop && ibx dev` first: it recreates the containers while leaving
+the volumes intact, which resolves most "unhealthy" states on its own.
+
+Reach for the destructive path only when the data is genuinely disposable:
+
+```bash
+docker compose down -v    # removes containers AND all four data volumes
+ibx bootstrap             # fresh setup — re-migrates and re-seeds from scratch
+```
+
+Two related notes:
+
+- **`docker system prune -f` also removes containers.** It deletes every
+  *stopped* container, so running it after `ibx dev stop` (which stops the core
+  four rather than removing them) deletes them outright. Named volumes survive;
+  recreate with `ibx dev`. Prefer `docker image prune -f` / `docker builder
+  prune -f`, which touch no containers.
+- **Never add `--remove-orphans`** to a `docker compose` command here. The core
+  and observability stacks share the compose project name `ibatexas`, so that
+  flag applied to *either* compose file removes the *other* file's running
+  containers — restart policy and all.
