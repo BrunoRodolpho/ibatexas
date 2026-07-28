@@ -376,10 +376,24 @@ describe("BKL-262 Stage 1 — a mis-parsed staff QUESTION gets its validated ans
   });
 
   it("the rescue promotes a render that ANSWERS the ask — not merely 'some claim validated'", async () => {
-    // STORE_HOURS alone does NOT satisfy the STORE_OPEN_NOW_Q closure (BKL-121 D3
-    // keeps STORE_HOURS out of REQUIRED_CLAIM_CLOSURE), so §O#15 completeness fails
-    // and the rescue must DECLINE even though a claim did validate. Without the
-    // completeness conjunct this turn would promote a half-answer.
+    // §O#15 completeness must gate the rescue: a turn where SOME claim VALIDATED but
+    // the ask itself is unanswered has to DECLINE, never promote a half-answer.
+    //
+    // BKL-289 RE-VEHICLED THIS TEST (subject unchanged, vehicle strengthened). It
+    // used to create the incompleteness by having the model propose STORE_HOURS
+    // ALONE and letting the required STORE_OPEN_NOW companion stay ABSENT. That is
+    // exactly the omission BKL-289's never-omit-required union now repairs
+    // deterministically, so a proposal omission can no longer produce an incomplete
+    // turn — and leaving the old vehicle in place would have made this test assert
+    // the very defect BKL-289 fixed.
+    //
+    // The incompleteness now comes from a genuine VALIDATION failure instead, which
+    // is both union-immune and a strictly harder case: the companion IS proposed
+    // (unioned in), it simply cannot validate because its first-party read errored.
+    // STORE_HOURS still VALIDATEs from its own healthy read, so the "some claim
+    // validated" premise is preserved and the test stays non-vacuous.
+    scheduleBackend.scheduleThrows = true;
+
     const model = claimsScriptedModel({
       intentCalls: [SCHEDULE_MISPARSE],
       claims: [{ type: "STORE_HOURS", subject: "loja" }],
@@ -390,6 +404,10 @@ describe("BKL-262 Stage 1 — a mis-parsed staff QUESTION gets its validated ans
 
     expect(out.decision.kind).toBe("REFUSE");
     expect(out.response).not.toContain(HOURS_RENDER);
+    // The half-answer is withheld in BOTH directions, and the model's fabricated
+    // hours never take its place.
+    expect(out.response).not.toContain(OPEN_RENDER);
+    expect(out.response).not.toContain(FABRICATED_HOURS);
   });
 });
 

@@ -156,8 +156,15 @@ describe("BKL-121 — tag→derive→VALIDATED for STORE_HOURS (through the real
     );
 
     // The value was BOUND from the recorded entry (model authored none).
-    expect(candidates).toHaveLength(1);
-    const candidate = candidates[0] as CandidateClaim;
+    //
+    // BKL-289 — the candidate set now also carries the STORE_OPEN_NOW companion the
+    // §O#15 closure requires for this utterance and the model omitted (the
+    // never-omit-required union). That is orthogonal to what this test pins, so
+    // select the STORE_HOURS candidate BY TYPE instead of by position, and pin the
+    // companion's presence explicitly rather than letting a length assertion couple
+    // this BKL-121 proof to the unrelated proposal-completeness behaviour.
+    expect(candidates.map((c) => c.type)).toEqual(["STORE_HOURS", "STORE_OPEN_NOW"]);
+    const candidate = candidates.find((c) => c.type === "STORE_HOURS") as CandidateClaim;
     expect(candidate.type).toBe("STORE_HOURS");
     expect(candidate.value).toEqual({ hoursText: "11h–15h / 18h–23h" });
     // The eligibility cap is real: the spec declares falsifierComplete + falsifiers.

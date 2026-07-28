@@ -74,9 +74,18 @@ import {
   classifyOnlyReadsEnabled,
   classifyOnlyRequiredTypes,
   deriveDisambiguationCandidates,
+  // BKL-289 — the EXISTING deterministic public-per-item subject derivation
+  // (classify-only's own), reused verbatim by the required-claim union so both
+  // paths parameterize a public per-resource type from the SAME ledger-named id.
+  presentPublicItemIds,
+  publicPerItemBaseKey,
   type DisambiguationCandidate,
 } from "./classify-only-reads.js";
-import { selectCandidateClaim, type RegistryClaimType } from "./claim-registry.js";
+import {
+  ownerScopedBaseKey,
+  selectCandidateClaim,
+  type RegistryClaimType,
+} from "./claim-registry.js";
 import type { ClaimAuthContext, ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 import { ownedResourceIdsByBaseKey } from "./ibatexas-claims-kernel-deps.js";
 import { completeWithResilience } from "./complete-with-retry.js";
@@ -256,6 +265,133 @@ function synthesizeSafeTerminalCandidates(
     if (candidate !== undefined) synthetic.push(candidate);
   }
   return synthetic;
+}
+
+/**
+ * BKL-289 — UNION SUBJECT DERIVATION. Resolve the DETERMINISTIC subject for a
+ * required-but-unproposed type, or `undefined` when this path cannot parameterize
+ * it WITHOUT guessing. Never reads model output; the subject is either a
+ * key-irrelevant placeholder or a value the LEDGER names.
+ *
+ * Three registry-derived classes (the split is `perResourceKey` + ownership, read
+ * off the registry spec — never a hand-maintained type list, so a new registry row
+ * classifies itself):
+ *
+ *   1. FIXED-SUBJECT (`perResourceKey !== true` — STORE_OPEN_NOW, STORE_INFO,
+ *      MENU_OVERVIEW, the DELIVERY/COUPON/PAIRING pairs). Their evidence,
+ *      falsifier and valueBinding keys are NOT `:{subject}`-parameterized, so ANY
+ *      placeholder yields EXACTLY the keys the investigator recorded. Use the
+ *      AUTHENTICATED principal — the same never-model-output placeholder
+ *      {@link synthesizeSafeTerminalCandidates} already uses on the flake path.
+ *      This is the class the live BKL-289 defect lives in: STORE_OPEN_NOW's
+ *      `schedule:store_open_now` is recorded UNCONDITIONALLY every turn
+ *      (ibatexas-investigator.ts "always relevant, no owner needed"), so the
+ *      unioned candidate binds a FIRST-PARTY value via `bindValueFromLedger` and
+ *      genuinely VALIDATEs (or is demoted by its own present-override falsifier).
+ *
+ *   2. PUBLIC PER-ITEM (`publicPerItemBaseKey` defined — MENU_ITEM_PRICE,
+ *      MENU_ITEM_CONTENTS, MENU_DIETARY, STORE_HOURS_FOR_DATE). The subject is
+ *      read off THIS turn's LEDGER via the EXISTING `presentPublicItemIds`: the
+ *      investigator records `${base}:{id}` only after its OWN deterministic
+ *      resolution, so the LEDGER — never the model — names the admissible item.
+ *      EXACTLY ONE present id → bind it. ZERO → ineligible (no read to stand on;
+ *      the claim could only be UNKNOWN, which is what ABSENCE already yields).
+ *      ≥2 → ineligible: the unambiguous choice is a CLARIFY (the classify-only
+ *      FIX 2 branch), and the union must NEVER force a terminal or guess between
+ *      two resolved items.
+ *
+ *   3. OWNER-SCOPED PER-RESOURCE (`ownerScopedBaseKey` defined —
+ *      ORDER_FULFILLMENT_STAGE, PAYMENT_STATUS, RESERVATION_STATUS,
+ *      CART_CONTENTS, ORDER_HISTORY, PAYMENT_HISTORY): INELIGIBLE BY DESIGN, and
+ *      checked FIRST so it can never fall through to the placeholder branch. Their
+ *      subject must be an OWNED resource id; a ≥2-owned turn's correct outcome is a
+ *      forced CLARIFY and a 0-owned turn's is an honest abstain — both are
+ *      BKL-189/FIX-2 resolutions that belong to the paths that own them. Binding
+ *      the principal as a placeholder here would parameterize a key that is ABSENT
+ *      by construction (a customerId is never an order id), adding an UNKNOWN row
+ *      that degrades the turn exactly as its ABSENCE already does — no gain, and a
+ *      changed perClaim set on every owner-scoped turn. So the union declines.
+ *
+ * Pure over (registry, ledger).
+ */
+function deriveUnionSubject(
+  type: RegistryClaimType,
+  ledger: EvidenceLedger | undefined,
+  principal: string,
+): string | undefined {
+  // Class 3 FIRST — an owner-scoped type is also `perResourceKey`, so testing it
+  // last would let it reach the class-1 placeholder branch.
+  if (ownerScopedBaseKey(type) !== undefined) return undefined;
+  const publicBase = publicPerItemBaseKey(type);
+  // Class 1 — keys are subject-independent; the placeholder is key-irrelevant.
+  if (publicBase === undefined) return principal;
+  // Class 2 — the ledger names the admissible subject, or nothing does.
+  if (ledger === undefined) return undefined;
+  const ids = presentPublicItemIds(ledger, publicBase);
+  return ids.length === 1 ? ids[0] : undefined;
+}
+
+/**
+ * BKL-289 — the §O#15 NEVER-OMIT-REQUIRED UNION. Build a candidate for every
+ * decomposer-REQUIRED type the model did NOT propose this turn and that
+ * {@link deriveUnionSubject} can parameterize deterministically.
+ *
+ * WHY THIS IS SOUND: proposing a claim ASSERTS NOTHING. A candidate is only ever
+ * FRAMING — the deterministic P1 soundness ∘ P2 consistency gates in
+ * `runClaimsKernel` still decide its verdict, `value` stays `undefined` so the
+ * model authors nothing and C6 abstains, and the type comes from the registry-typed
+ * required set (never free-generated). A unioned candidate that cannot validate
+ * resolves UNKNOWN and the completeness gate degrades the turn EXACTLY as the
+ * type's ABSENCE does today — so the gate is strengthened from
+ * degrade-on-omission to never-omit-required, and never weakened.
+ *
+ * THE DEFECT THIS CLOSES (BKL-289, live turns 246f1d64 / 1539337c / c6ff25ca):
+ * "qual o horário de funcionamento?" decomposes to required {STORE_OPEN_NOW}, but
+ * the 4B proposes ONLY STORE_HOURS (byte-identical across drives). STORE_HOURS
+ * VALIDATES against live Redis and is then thrown away, because §O#15 completeness
+ * finds the required STORE_OPEN_NOW companion ABSENT and degrades the whole turn to
+ * the safe-unknown self-report. The sole prior defense was the probabilistic
+ * persona line (personas.ts:133-135) whose own header documents this exact trap —
+ * a prompt guarding a DETERMINISTIC requirement. The union makes that line
+ * belt-and-suspenders rather than load-bearing.
+ *
+ * Pure over (registry, ledger).
+ */
+function unionRequiredCandidates(
+  required: ReadonlySet<RegistryClaimType>,
+  covered: ReadonlySet<string>,
+  actor: { readonly principal: string; readonly sessionId: string },
+  ledger: EvidenceLedger | undefined,
+): {
+  readonly candidates: readonly CandidateClaim[];
+  readonly ineligibleTypes: readonly string[];
+} {
+  const unioned: CandidateClaim[] = [];
+  const ineligibleTypes: string[] = [];
+  for (const type of required) {
+    if (covered.has(type)) continue; // the model already framed this type.
+    const subject = deriveUnionSubject(type, ledger, actor.principal);
+    if (subject === undefined) {
+      ineligibleTypes.push(type);
+      continue;
+    }
+    const candidate = selectCandidateClaim({
+      type,
+      subject,
+      actor,
+      // No model-authored value (tag protocol); `bindValueFromLedger` binds it
+      // from the first-party read, or C6 abstains → honest UNKNOWN.
+      value: undefined,
+    });
+    // Defense-in-depth: the required set is registry-typed by construction, so
+    // `selectCandidateClaim` only returns undefined for an out-of-registry type.
+    if (candidate === undefined) {
+      ineligibleTypes.push(type);
+      continue;
+    }
+    unioned.push(candidate);
+  }
+  return { candidates: unioned, ineligibleTypes };
 }
 
 /**
@@ -499,6 +635,58 @@ export function createIbatexasClaimPlanner(
         input.customerId !== undefined && input.customerId.trim() !== ""
           ? input.customerId
           : "unauthenticated";
+      // BKL-289 — §O#15 NEVER-OMIT-REQUIRED UNION. Deterministically add every
+      // REQUIRED type the model omitted (see {@link unionRequiredCandidates}).
+      //
+      // WHY THE `candidates.length > 0` GATE IS THE RIGHT DOMAIN — and not a
+      // conservatism knob: the §O#15 completeness gate can ONLY degrade a turn it
+      // actually runs on, and it runs IFF `claims.terminal === "RENDER"`
+      // (claims-renderer-adapter.ts), which requires a NON-EMPTY candidate set. So
+      // "turns where a required omission can cost an answer" is EXACTLY "turns with
+      // a non-empty candidate set". Unioning into an EMPTY set would not fix a
+      // degrade (there is none) — it would PROMOTE a successful-empty proposal,
+      // which is precisely what this module's header forbids: the decomposer's
+      // keyword markers also match STATEMENTS, so a promoted empty proposal
+      // overrides the prose draft with a non-sequitur "não localizei…" on a
+      // thanks/statement (the live BKL-110 round-2 defect, turn 157bbfff). This
+      // gate therefore keeps BKL-110's demote-to-empty prose restoration and
+      // BKL-078's documented empty-proposal gap BYTE-IDENTICAL; closing BKL-078
+      // still needs the interrogative-span signal the keyword net does not provide.
+      //
+      // Runs only on the SUCCESSFUL path: on the flake path `candidates` is [] (so
+      // the gate is false) and the F1 synthesis below stays byte-identical.
+      let unionedTypes: readonly string[] = [];
+      if (!flaked && candidates.length > 0) {
+        const proposedSoFar = new Set(candidates.map((c) => c.type));
+        const union = unionRequiredCandidates(
+          required,
+          proposedSoFar,
+          {
+            principal: authPrincipal,
+            sessionId: input.cognition.conversationId,
+          },
+          input.ledger,
+        );
+        if (union.candidates.length > 0) {
+          candidates = [...candidates, ...union.candidates];
+          unionedTypes = union.candidates.map((c) => c.type);
+          logger.info(
+            {
+              component: "claim-planner",
+              event: "claim_planner.required_unioned",
+              turnId: input.cognition.turnId,
+              // The types the model OMITTED and the union restored — the signal
+              // that distinguishes a model-complete turn from a rescued one.
+              unionedTypes: [...new Set(unionedTypes)],
+              ...(union.ineligibleTypes.length > 0
+                ? { ineligibleTypes: [...new Set(union.ineligibleTypes)] }
+                : {}),
+            },
+            "claim-planner unioned §O#15 required claim type(s) the model omitted",
+          );
+        }
+      }
+
       const covered = new Set(candidates.map((c) => c.type));
       const synthetic = flaked
         ? synthesizeSafeTerminalCandidates(required, covered, {
