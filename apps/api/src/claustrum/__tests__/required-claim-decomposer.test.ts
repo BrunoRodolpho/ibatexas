@@ -610,6 +610,150 @@ describe("classifyRequestSpans — BKL-204 capability questions don't force the 
   });
 });
 
+// ── BKL-221 — BARE delivery-PROGRESS phrasings ────────────────────────────────
+// The registered defect: a customer who owns ≥2 orders asks how theirs is coming
+// along WITHOUT naming it, no span fires, classify-only declines, the model's
+// extraction leg REFUSES with `system.extraction_failure`, and the customer gets
+// an ugly degrade instead of the ≥2-owned candidates CLARIFY that BKL-203/204
+// built for exactly this turn.
+//
+// SCOPE NOTE, measured rather than assumed: the phrasing the row was FILED with
+// ("meu pedido já saiu para entrega?") FIRES on dev today — later work put
+// `pedido` and `sa[ií]u` in the net. What is still missing is the genuinely BARE
+// form, with no order noun and no preterite verb. The tests below pin the gap
+// that actually exists, not the one the row's title describes.
+describe("classifyRequestSpans — BKL-221 bare delivery-progress phrasings", () => {
+  it("MUST-FIRE on the bare progress asks (measured ∅ before this ticket)", () => {
+    for (const text of [
+      "está a caminho?",
+      "já está a caminho?",
+      "meu lanche está a caminho?",
+      "falta muito para chegar?",
+      "quanto tempo falta para chegar?",
+      "quanto tempo pra chegar?",
+      "já foi entregue?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  it("the phrasings that ALREADY worked are unchanged (this widens, never replaces)", () => {
+    for (const text of [
+      "meu pedido já saiu para entrega?",
+      "meu pedido chegou?",
+      "já saiu para entrega?",
+      "cadê meu pedido?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  // The BKL-204 boundary, in the direction that matters: a question about what the
+  // STORE does must never force the customer's OWN owner-scoped order read. None of
+  // the three new stems is capability vocabulary, and this asserts it rather than
+  // assuming it.
+  it("MUST-NOT-FIRE on delivery CAPABILITY questions (the BKL-204 boundary holds)", () => {
+    for (const text of [
+      "vocês entregam?",
+      "vocês entregam em Ibaté?",
+      "vocês fazem entrega?",
+      "vocês entregam a domicílio?",
+      "qual a taxa de entrega?",
+      "vocês entregam rápido?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("ORDER_STATUS_Q");
+    }
+  });
+
+  // THE CROSS-NET INTERACTION THIS TICKET HAD TO GET RIGHT. A bare `cheg` stem was
+  // the obvious spelling and is WRONG: `como chegar` is the STORE_INFO_Q directions
+  // vocabulary, so the stem would have fired an owner-scoped ORDER read on a
+  // customer asking for the address — a WRONG-FAMILY render, which the demote-only
+  // argument does not cover. The frame anchor (falta/demora/tempo … para chegar) is
+  // what keeps the two apart, and these assertions are what stop a future
+  // "simplification" back to the bare stem.
+  it("MUST-NOT-FIRE on DIRECTIONS questions (the rejected bare `cheg` stem's collision)", () => {
+    for (const text of [
+      "como chegar no restaurante?",
+      "como chego até vocês?",
+      "qual o caminho para chegar no restaurante?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("ORDER_STATUS_Q");
+    }
+    // …and the directions family still answers, rather than merely not misfiring.
+    expect(classifyRequestSpans("como chegar no restaurante?")).toContain(
+      "STORE_INFO_Q",
+    );
+  });
+
+  // The REJECTED stems, pinned as still-∅ so the rejection is a fact about the
+  // code and not just a paragraph in a comment (the BKL-270 rejected-vocabulary
+  // discipline). Both are genuinely subject-free; "demorar" is additionally the
+  // exact wording of the delivery-ETA capability ask.
+  it("the REJECTED stems stay OUT (subject-free phrasings keep the model path)", () => {
+    expect(classifyRequestSpans("vai demorar muito?")).not.toContain("ORDER_STATUS_Q");
+    expect(classifyRequestSpans("já está pronto?")).not.toContain("ORDER_STATUS_Q");
+  });
+
+  // ── The two false positives the vocabulary sweep CAUGHT in the first cut ──────
+  // Both were live in an earlier draft of this net and are pinned here because a
+  // comment explaining a closed hole does not fail when the hole reopens.
+
+  // The head anchor (falta/demora/tempo) is NOT sufficient on its own: this
+  // satisfies it while asking how long the CUSTOMER takes to travel. What
+  // separates the senses is the DESTINATION — "chegar aí"/"chegar até vocês" is
+  // the customer moving; bare "chegar" is the food arriving.
+  it("MUST-NOT-FIRE on a TRAVEL-time ask (the destination lookahead)", () => {
+    for (const text of [
+      "quanto tempo para chegar aí de carro?",
+      "quanto tempo demora para chegar até vocês?",
+      "quanto tempo para chegar no restaurante?",
+    ]) {
+      expect(classifyRequestSpans(text), text).not.toContain("ORDER_STATUS_Q");
+    }
+    // …while the ARRIVAL sense, which differs ONLY in the destination, still fires.
+    expect(classifyRequestSpans("quanto tempo falta para chegar?")).toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  // A bare `entregue` fires on a customer PLACING an order — and `quero` is
+  // deliberately not a mutation root, so nothing upstream suppresses it. The
+  // question frame (foi/está/já) is what keeps the status ask and drops the order.
+  it("MUST-NOT-FIRE on an order-PLACING utterance carrying `entregue`", () => {
+    expect(classifyRequestSpans("quero uma picanha entregue agora")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+    // …and on the OPS status-VALUE sense, where `entregue` names the enum, not a
+    // question ("marca"/"marc" is in no mutation root, so this is not otherwise
+    // suppressed).
+    expect(classifyRequestSpans("já entregou, marca como entregue")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+    // …while the customer's actual question still fires.
+    expect(classifyRequestSpans("já foi entregue?")).toContain("ORDER_STATUS_Q");
+  });
+
+  // BKL-206 — the read-vs-mutation split is upstream of the new tokens too.
+  it("MUST-NOT-FIRE when a mutation verb co-occurs (the shared gate still wins)", () => {
+    expect(classifyRequestSpans("cancela meu pedido que está a caminho")).not.toContain(
+      "ORDER_STATUS_Q",
+    );
+  });
+
+  // #8 — the new tokens are ownership-gated like every other order-status match, so
+  // a stray fire on someone who owns no order cannot degrade an answerable turn.
+  it("the new tokens stay #8 ownership-gated (a guest forces NO order companion)", () => {
+    const spans = classifyRequestSpans("está a caminho?");
+    expect(spans).toContain("ORDER_STATUS_Q");
+    const guest = decomposeRequiredClaims(spans, {
+      hasActiveOrder: false,
+      hasActivePayment: false,
+    });
+    expect(guest.has("ORDER_FULFILLMENT_STAGE")).toBe(false);
+  });
+});
+
 describe("classifyRequestSpans — BKL-206 order/payment MUTATION imperatives don't ride the status reads", () => {
   it("'cancela meu pedido' (imperative) does NOT fire ORDER_STATUS_Q → routes to the mutation path", () => {
     const spans = classifyRequestSpans("cancela meu pedido");

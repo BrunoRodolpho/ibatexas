@@ -211,6 +211,54 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // turn may resolve them without an authenticated customer.
     "MENU_PAIRINGS",
     "MENU_SUBSTITUTIONS",
+    // BKL-222 — the DAY-SPECIFIC hours family joins the eligible set, so an
+    // "qual o horário de domingo?" stops riding the 4B read-dispatch and gets the
+    // same determinism BKL-183 bought the menu family (SCN-002 degraded on one
+    // pass precisely because this family was model-dispatched).
+    //
+    // STORE_HOURS_FOR_DATE is PUBLIC PER-ITEM, on the MENU_ITEM_PRICE footing:
+    // `perResourceKey: true` with every evidence row `not_applicable`, so
+    // `publicPerItemBaseKey` yields "schedule:store_hours" and the subject is the
+    // `{date}` suffix of the PRESENT `schedule:store_hours:{date}` read. The
+    // LEDGER names the date, never the model — and the date itself comes from
+    // `resolveQueriedScheduleDate` (schedule-date-resolver.ts), a pure regex+clock
+    // parser the investigator and the model-path planner ALREADY both call over
+    // the same `perception.text` (the planner DISCARDS the model's subject for
+    // this type). So there is no model-authored input anywhere on this path —
+    // the criterion this set exists to enforce.
+    "STORE_HOURS_FOR_DATE",
+    // STORE_OPEN_NOW joins ONLY as that family's COMPANION, never as its own
+    // entry point — `classifyOnlyRequiredTypes` declines any turn that requires it
+    // WITHOUT the date type (see the guard there). Two facts force this pairing:
+    //
+    //   1. A date-anchored ask usually fires BOTH spans ("qual o horário de
+    //      domingo?" trips `hor[áa]rio` in the generated STORE_OPEN_NOW markers),
+    //      and the BKL-152 suppression only deletes the open-now companion when
+    //      the queried date is a CONFIRMED non-today. On the day the named weekday
+    //      IS today — and on an unresolvable bare "feriado" — the companion STAYS.
+    //   2. This module's gate is text-pure while the renderer's §O#15 completeness
+    //      gate (claims-renderer-adapter.ts) runs the SEAM-AWARE 3-arg decomposition
+    //      with a live clock. Admitting the date type alone would let the two
+    //      DISAGREE exactly on those days: the gate would build only the date claim,
+    //      completeness would require the open-now companion, find it ABSENT, and
+    //      degrade the turn to a proposition-free UNKNOWN — an intermittent,
+    //      day-of-week-dependent regression, the worst shape to debug.
+    //
+    // The gate therefore decomposes with `seamActive: true` and NO resolved date
+    // (the conservative "the date might be today" branch), so the candidate set is
+    // a SUPERSET of whatever completeness later asks for under any clock.
+    //
+    // FE-D12 residual grows as it does for every addition (a pure hours-read turn
+    // skips the model's §O#9 self-report); an hours ask carries no safety marker,
+    // and an allergen-adjacent one is already excluded by the wholesale carve-out.
+    //
+    // KNOWN, ACCEPTED: the ADDITIVE `STORE_HOURS` (today's hours) proposal is a
+    // model-path-only extra (it sits in RELEVANCE_GOVERNED_TYPES but in NO closure
+    // row), so it does not render on a classify-only hours turn. That is CONSISTENT
+    // with BKL-152 rather than a loss: on a date-anchored question, today's window
+    // is not the subject — which is why that ticket suppresses the open-now
+    // companion in the first place.
+    "STORE_OPEN_NOW",
   ]);
 
 /**
@@ -240,8 +288,35 @@ export function classifyOnlyRequiredTypes(
   // silently answers around it). Deterministic, word-bounded net; a false
   // positive only costs the model path (never a wrong render).
   if (isAllergenFamilyAsk(text)) return undefined;
-  const required = decomposeRequiredClaims(classifyRequestSpans(text));
+  const spans = classifyRequestSpans(text);
+  // BKL-222 — PICKUP_Q declines WHOLESALE, and now does so by NAME rather than as
+  // a by-product of STORE_OPEN_NOW being ineligible. The reason is the #8 guest
+  // carve-out: `ActiveResourceOwnership` is what drops the ORDER_FULFILLMENT_STAGE
+  // companion for a customer who provably owns no order, and this gate calls the
+  // 1-ownership-argument-free decomposition, so that carve-out cannot run here.
+  // Without this line, a date-anchored pickup ask ("que horas posso retirar
+  // amanhã?") from a GUEST would ride the deterministic path, bind an empty
+  // subject for the order companion, and lose its answerable open-now/hours half
+  // to a proposition-free UNKNOWN — reintroducing #8a on the classify-only path.
+  if (spans.includes("PICKUP_Q")) return undefined;
+  // BKL-222 — decompose with the seam ACTIVE and NO resolved date: the
+  // CONSERVATIVE "the queried date might be today" branch, which KEEPS the
+  // STORE_OPEN_NOW companion the BKL-152 suppression would otherwise delete. The
+  // renderer's §O#15 completeness gate re-decomposes with a live clock, so this
+  // gate must never build a SUBSET of what that one will require — see the
+  // STORE_OPEN_NOW entry in the eligible set for the full argument.
+  const required = decomposeRequiredClaims(spans, undefined, { seamActive: true });
   if (required.size === 0) return undefined;
+  // BKL-222 — STORE_OPEN_NOW is eligible ONLY as the date family's companion. A
+  // BARE schedule question ("vocês estão abertos agora?", "que horas fecham?")
+  // requires it ALONE and keeps the model path exactly as before this ticket: its
+  // markers (`abert`/`fechad`/`que horas`/`funciona`/`hor[áa]rio`) are broad
+  // unanchored substrings, and admitting them would widen the deterministic
+  // surface — and the FE-D12 no-safety-marker residual with it — far beyond the
+  // day-specific family this ticket is scoped to.
+  if (required.has("STORE_OPEN_NOW") && !required.has("STORE_HOURS_FOR_DATE")) {
+    return undefined;
+  }
   for (const type of required) {
     if (!CLASSIFY_ONLY_ELIGIBLE_TYPES.has(type)) return undefined;
   }

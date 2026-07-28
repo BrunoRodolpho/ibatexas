@@ -134,6 +134,50 @@ describe("BKL-142 decomposer — span classification (disjoint from cart/order/a
     expect(REQUIRED_CLAIM_CLOSURE.MENU_ITEM_PRICE_Q).toEqual(["MENU_ITEM_PRICE"]);
     expect(REQUIRED_CLAIM_CLOSURE.MENU_ITEM_CONTENTS_Q).toEqual(["MENU_ITEM_CONTENTS"]);
   });
+
+  // ── BKL-205 half 1 — the ACCENTED plural forms ────────────────────────────────
+  // Asserted spelling by spelling, NOT as one loop over a list, because the whole
+  // point is that a stem can match one spelling and miss the other: `vem` matched
+  // and `vêm` did not, and the ASCII spelling passing is exactly what hid it. Same
+  // shape as the BKL-270 `diab[ée]t` vocabulary test and the BKL-271 `p[õo]r`
+  // finding — a false-positive sweep can never surface an empty true-positive set.
+  it("BKL-205 — fires on BOTH the unaccented and the ACCENTED contents forms", () => {
+    // The spelling that already worked (the control — if this ever goes red the
+    // accent fix broke the base case rather than extending it).
+    expect(classifyRequestSpans("o que vem no combo família?")).toContain(
+      "MENU_ITEM_CONTENTS_Q",
+    );
+    // The spelling the net MISSED — measured ∅ on dev before this ticket.
+    expect(classifyRequestSpans("o que vêm no combo família?")).toContain(
+      "MENU_ITEM_CONTENTS_Q",
+    );
+    // `têm` is load-bearing TOGETHER with the overview lookahead (BKL-205 half 2):
+    // that lookahead sends this utterance away from the overview span, so without
+    // the accented form here it would classify to NOTHING at all.
+    expect(classifyRequestSpans("o que têm no prato executivo?")).toContain(
+      "MENU_ITEM_CONTENTS_Q",
+    );
+  });
+
+  // ── BKL-205 half 2 — SPECIFICITY ORDERING ─────────────────────────────────────
+  // The registered defect, in the row's own words: "'o que TEM no X?' renders
+  // MENU_OVERVIEW (overview span shadows the item-contents ask when a product name
+  // follows)". Measured on dev: `["MENU_OVERVIEW_Q"]` — the whole catalogue
+  // returned as the answer to a question about ONE item. Note this was never a
+  // DEGRADE: the turn rendered confidently, off a VALIDATED claim, to the wrong
+  // question. That is why it is fixed at the span and not at the resolver.
+  it("BKL-205 — 'o que tem no <ITEM>?' is a per-ITEM contents ask, not a whole-menu one", () => {
+    for (const text of [
+      "o que tem no brisket?",
+      "o que tem na costela bovina defumada?",
+      "o que tem no combo família?",
+      "o que tem nos acompanhamentos?",
+    ]) {
+      const spans = classifyRequestSpans(text);
+      expect(spans, text).toContain("MENU_ITEM_CONTENTS_Q");
+      expect(spans, text).not.toContain("MENU_OVERVIEW_Q");
+    }
+  });
 });
 
 // ── BKL-142 — MENU_OVERVIEW (the menu-wide, fixed-subject claim) ─────────────────
@@ -283,6 +327,66 @@ describe("BKL-142 MENU_OVERVIEW decomposer — whole-menu span, disjoint from pe
 
   it("the overview span requires ONLY MENU_OVERVIEW", () => {
     expect(REQUIRED_CLAIM_CLOSURE.MENU_OVERVIEW_Q).toEqual(["MENU_OVERVIEW"]);
+  });
+
+  // ── BKL-205 half 2, the MUST-NOT-BREAK half ───────────────────────────────────
+  // The locative lookahead narrows the BARE interrogative arm ONLY. Every genuine
+  // whole-menu phrasing must survive it, and each survives by a DIFFERENT route —
+  // which is the point of listing them separately rather than as one loop:
+  //   · "no cardápio" / "no menu" survive via the INDEPENDENT `\bcard[áa]pio\b` /
+  //     `\bmenu\b` alternatives, which are evaluated ahead of the lookahead. These
+  //     two are the cases that would break if someone "simplified" the regex by
+  //     hanging the lookahead off the whole pattern instead of the bare arm.
+  //   · the rest carry no locative at all, so the lookahead never engages.
+  it("BKL-205 — the whole-menu phrasings all SURVIVE the locative narrowing", () => {
+    // …via the cardápio/menu arms, DESPITE carrying a locative complement.
+    expect(classifyRequestSpans("o que tem no cardápio?")).toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("o que tem no menu de hoje?")).toContain(
+      "MENU_OVERVIEW_Q",
+    );
+    // …and via having no locative at all.
+    expect(classifyRequestSpans("o que vocês têm?")).toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("o que tem pra comer?")).toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("o que vocês servem?")).toContain("MENU_OVERVIEW_Q");
+    // A `de` complement is deliberately NOT excluded — a CATEGORY ask is an
+    // overview, not an item. Pinned so a future widening to "any complement" has
+    // to argue with a test instead of sliding through.
+    expect(classifyRequestSpans("o que vocês têm de sobremesa?")).toContain(
+      "MENU_OVERVIEW_Q",
+    );
+    expect(classifyRequestSpans("o que tem de bebida?")).toContain("MENU_OVERVIEW_Q");
+  });
+
+  // The narrowing must not leak into the OTHER families that own "o que tem no …".
+  it("BKL-205 — the cart family still owns 'o que tem no meu carrinho?'", () => {
+    const spans = classifyRequestSpans("o que tem no meu carrinho?");
+    expect(spans).toContain("CART_CONTENTS_Q");
+    expect(spans).not.toContain("MENU_ITEM_CONTENTS_Q");
+    expect(spans).not.toContain("MENU_OVERVIEW_Q");
+  });
+
+  // …and the cart SYNONYM, which the vocabulary sweep flagged as the one cart
+  // phrasing that carries NONE of the `notOrderScoped` words
+  // (`pedido|carrinho|entrega|frete`), so a menu span is not held off it by that
+  // guard. The cart span is what must own the turn, and it still does.
+  //
+  // The menu-span half MOVED here and the direction is worth stating: before this
+  // ticket it was MENU_OVERVIEW_Q, which VALIDATES and renders the whole
+  // catalogue alongside the cart; now it is the per-item span, whose subject
+  // cannot resolve → ABSENT evidence → honest UNKNOWN → dropped by the kernel's
+  // §D filter. A spurious confident answer became a spurious silent one.
+  it("BKL-205 — the cart SYNONYM 'cesta' keeps its own span (and loses a spurious menu render)", () => {
+    const spans = classifyRequestSpans("o que tem na cesta?");
+    expect(spans).toContain("CART_CONTENTS_Q");
+    expect(spans).not.toContain("MENU_OVERVIEW_Q");
+  });
+
+  // BKL-201/271 — the mutation gate sits UPSTREAM of both menu spans, so the
+  // narrowing cannot hand a write turn to the per-item read either.
+  it("BKL-205 — a mutation still fires NEITHER menu span (the read-vs-write split holds)", () => {
+    const spans = classifyRequestSpans("tira o brisket do carrinho");
+    expect(spans).not.toContain("MENU_ITEM_CONTENTS_Q");
+    expect(spans).not.toContain("MENU_OVERVIEW_Q");
   });
 });
 
