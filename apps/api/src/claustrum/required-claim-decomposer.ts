@@ -697,6 +697,162 @@ export function hasMutationImperative(text: string): boolean {
   return MUTATION_EDIT_ROOTS.test(t) || MUTATION_LIFECYCLE_ROOTS.test(t);
 }
 
+/**
+ * BKL-221 — DELIVERY-PROGRESS phrasing: the way a customer asks where their order
+ * has got to WITHOUT naming it. The existing strong tokens all require an order
+ * NOUN or a verb in the preterite (`pedido`, `sa[ií]u`, `chegou`, `cad[êe]`), so a
+ * BARE progress question matched nothing, `classifyOnlyRequiredTypes` declined, the
+ * turn fell to the model, and the extraction leg REFUSED with
+ * `system.extraction_failure` — an ugly degrade in place of the ≥2-owned
+ * candidates CLARIFY that BKL-203/204 built for exactly this customer.
+ *
+ * These are STRONG tokens (they fire regardless of the BKL-204 capability shape)
+ * because none of them is capability vocabulary: a question about what the STORE
+ * does is phrased "vocês entregam …" / "fazem entrega", never "está a caminho?".
+ * Verified in BOTH directions by the must-fire / must-not-fire lists in
+ * required-claim-decomposer.test.ts.
+ *
+ * Over-firing is bounded, not merely "fail-safe": the #8 ownership gate DROPS the
+ * ORDER_FULFILLMENT_STAGE companion for a customer who provably owns no order, so
+ * a stray match on a guest cannot degrade an otherwise-answerable turn.
+ *
+ * ── THE THREE STEMS, AND THE FRAMES THAT ARE LOAD-BEARING ──────────────────────
+ *
+ *   · `a caminho` — "meu lanche está a caminho?", "já está a caminho?". Anchored on
+ *     BOTH sides so it is the standalone preposition+noun, never a substring.
+ *     Swept: ZERO occurrences in the 201-row live catalog vocabulary and ZERO in
+ *     the 1039-row in-repo utterance corpus.
+ *   · `(?:falta|demora|tempo)…(?:para|pra)\s+chegar`, MINUS a second-person
+ *     destination — the arrival frame. BOTH halves of that shape are measured, not
+ *     guessed, and this is the BKL-271 embedded-match lesson arriving twice:
+ *       – A BARE `cheg` stem was tried FIRST and is WRONG: `como chegar` is the
+ *         STORE_INFO_Q directions vocabulary (`/como (chego|chegar)/`, the span
+ *         below). In-repo the DIRECTIONS frame outnumbers the arrival frame 4:2,
+ *         so a bare stem would have fired an owner-scoped ORDER read on a customer
+ *         asking for the ADDRESS — a wrong-FAMILY answer, which is NOT demote-only.
+ *       – The head anchor alone still leaked, and the sweep caught it: "quanto
+ *         tempo para chegar AÍ de carro?" satisfies `tempo … para chegar` while
+ *         asking how long the CUSTOMER takes to travel. The destination is what
+ *         separates the two senses — "chegar aí"/"chegar até vocês" is the
+ *         customer moving, bare "chegar" is the food arriving — so the trailing
+ *         lookahead drops exactly that. Both directions are pinned by test.
+ *   · `(?:foi|est[áa]|j[áa])\s+entregue` — the STATUS PARTICIPLE IN ITS QUESTION
+ *     FRAME ("já foi entregue?"). The frame is load-bearing and, again, measured: a
+ *     bare `entregue` fires on "quero uma picanha ENTREGUE agora", which is a
+ *     customer PLACING an order (and `quero` is deliberately not a mutation root,
+ *     so nothing upstream suppresses it), and on the ops-plane status VALUE "já
+ *     entregou, marca como ENTREGUE" — the dominant sense of this word in this
+ *     repo is the fulfillment enum, not a customer question. Requiring foi/está/já
+ *     immediately before it keeps the question and drops both.
+ *     Note `entregue` does NOT contain the substring `entrega`, so it is invisible
+ *     to `notOrderScoped` / `notResourceScoped` and to the dual-use `entrega`
+ *     branch below: a genuinely new token, not a widening of an existing one.
+ *
+ * REJECTED, with the measured reason, so nobody re-proposes them:
+ *
+ *   · a bare `cheg` stem — see above; collides with the STORE_INFO directions net.
+ *   · a bare `entregue` — see above; fires on an order-PLACING utterance.
+ *   · `pronto` ("já está pronto?") — the adjective is not order-specific: a
+ *     RESERVATION ("minha mesa já está pronta?") and a generic readiness ask carry
+ *     it too, so it would force an ORDER companion onto a reservation turn.
+ *   · `demorar` alone ("vai demorar muito?") — genuinely subject-free. It is also
+ *     the exact wording of the delivery-ETA CAPABILITY ask the BKL-204 boundary
+ *     keeps OUT of the owner-scoped read ("quanto tempo demora a entrega?"), so a
+ *     bare stem would fire the customer's own order read on a store-policy
+ *     question. Left to the model path, which is the fail-SAFE direction.
+ */
+// Spelled as SEPARATE literals for the same reason MUTATION_EDIT_ROOTS /
+// MUTATION_LIFECYCLE_ROOTS are (Sonar S5843's regex-complexity budget of 20).
+// The split is at the fused literal's TOP-LEVEL alternation, so the union of
+// matched strings is exactly what one fused literal matched: `A|B` tested with
+// `.test` is true iff `A` matches or `B` matches, which is what the `||` at the
+// use site now spells out. Each half is also independently meaningful and
+// independently testable, which the fused version was not.
+const ORDER_ON_THE_WAY_RE = /(?<![a-z])a\s+caminho(?![a-z])/;
+const ORDER_DELIVERED_RE = /(?<![a-z])(?:foi|est[áa]|j[áa])\s+entregue(?![a-z])/;
+
+/**
+ * The arrival-ETA net, COMPOSED from named parts rather than written as one
+ * literal — same budget, different remedy, because this pattern is a SEQUENCE
+ * and not an alternation, so there is no top-level split point to cut at.
+ *
+ * The alternative was to distribute the head over the tail
+ * (`falta…` / `demora…` / `tempo…` as three literals), and that is exactly the
+ * "second, drifting regex" this module refuses everywhere else (see the BKL-184 /
+ * LE2-002 one-net idiom in `isDeliveryCoverageAsk` and `classifyPairingAsk`): it
+ * would have copied the destination lookahead three times, so a future edit to
+ * the travel-sense exclusion could silently be applied to one copy and not the
+ * others. Naming the four parts costs nothing at runtime and says what each one
+ * is for, which is what the rule is actually about.
+ *
+ * The composed source is asserted BYTE-IDENTICAL to the original literal in
+ * required-claim-decomposer.test.ts, so this restructure cannot have changed the
+ * pattern — only how it is spelled here.
+ */
+/** A time-pressure head: "quanto TEMPO", "FALTA muito", "DEMORA". */
+const ETA_HEAD = "(?:falta|demora|tempo)";
+/** …within a short window, clause-bounded so it cannot reach across sentences. */
+const ETA_WINDOW = "[^.!?]{0,20}";
+/** …of the arrival phrase itself. */
+const ETA_ARRIVAL_PHRASE = "(?:para|pra)\\s+chegar";
+/**
+ * …NOT followed by a second-person destination. "chegar aí" / "chegar até
+ * vocês" / "chegar no restaurante" is the CUSTOMER travelling; bare "chegar" is
+ * the food arriving. Measured: without this the net fires on "quanto tempo para
+ * chegar aí de carro?".
+ */
+const ETA_NOT_TRAVEL = "(?!\\s+(?:a[íi]|at[ée]|no\\s+restaurante|na\\s+loja))";
+const ORDER_ETA_RE = new RegExp(
+  ETA_HEAD + ETA_WINDOW + ETA_ARRIVAL_PHRASE + ETA_NOT_TRAVEL,
+);
+
+// ── The MENU_OVERVIEW net, split at its TOP-LEVEL alternation (Sonar S5843) ───
+// Three independent ways to ask for the whole menu, one constant each. `A|B|C`
+// under `.test` is true iff some alternative matches, which is what the `||` at
+// the use site spells out — so the split is behaviour-preserving by
+// construction, and each arm is now individually named and testable.
+//
+// The SPLIT IS ALSO WHAT MAKES THE BKL-205 ORDERING LEGIBLE: the locative
+// lookahead belongs to the BARE-interrogative arm ALONE. `MENU_WORD_RE` is a
+// separate constant precisely because "o que tem no cardápio?" must keep firing
+// the overview through the menu WORD even though it carries a locative — the
+// property the fused literal expressed only by the accident of alternation
+// order, and which a future edit could have destroyed without any test noticing
+// that the two arms had been conflated.
+/** The menu named outright — wins regardless of any locative complement. */
+const MENU_WORD_RE = /\bcard[áa]pio\b|\bmenu\b/;
+/** The bare interrogative, NOT carrying a locative complement (BKL-205). */
+const MENU_BARE_ASK_RE =
+  /o que (voc[êe]s )?(t[êe]m|servem)(?!\s+n[oa]s?\b|\s+em\b)( (pra|para) comer)?/;
+/** "quais os pratos?" / "quais as opções?" */
+const MENU_LIST_ASK_RE = /quais (os |as )?(pratos|op[çc][õo]es)/;
+
+/**
+ * The REASSEMBLED sources of the three nets that were split or composed to fit
+ * Sonar's S5843 regex-complexity budget. Exposed (the `__…ForTest` idiom this
+ * codebase already uses for `__resetMenuItemMemoForTest` and friends) for exactly
+ * one assertion: that each reassembly is BYTE-IDENTICAL to the single literal it
+ * replaced.
+ *
+ * WHY THIS IS A TEST AND NOT A COMMENT. Splitting `A|B` at a top-level `|`, or
+ * composing a sequence from named parts, cannot change what a pattern matches —
+ * but only while the parts still concatenate back to the same string. A future
+ * edit to one part is unreviewable against that promise unless something checks
+ * it, and "I ran a differential once" is not a property of the repository. The
+ * test that consumes this holds the pre-restructure sources verbatim, so any
+ * drift in any part fails with the two strings side by side.
+ *
+ * Pure data; no runtime consumer.
+ */
+export const __SPAN_NET_SOURCES_FOR_TEST = {
+  /** `ORDER_ON_THE_WAY_RE | ORDER_DELIVERED_RE` */
+  orderArrival: `${ORDER_ON_THE_WAY_RE.source}|${ORDER_DELIVERED_RE.source}`,
+  /** the four ETA parts, concatenated */
+  orderEta: ORDER_ETA_RE.source,
+  /** `MENU_WORD_RE | MENU_BARE_ASK_RE | MENU_LIST_ASK_RE` */
+  menuOverview: `${MENU_WORD_RE.source}|${MENU_BARE_ASK_RE.source}|${MENU_LIST_ASK_RE.source}`,
+} as const;
+
 export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
   const classes: SpanClass[] = [];
@@ -821,10 +977,35 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // (BKL-270 audit). The span now always fires and the guard lives on the READ
   // (menu-item-resolver.ts `resolveMenuOverviewText`), exactly as LE2-029 placed the
   // pairing guard on `resolvePairings` for the same reason.
+  // BKL-205 — SPECIFICITY ORDERING (half 2 of the ticket). The bare-interrogative
+  // arm carries a NEGATIVE LOOKAHEAD for a LOCATIVE complement, so "o que tem NO
+  // BRISKET?" stops being answered with the whole menu.
+  //
+  // THE DEFECT, measured on dev: `o que (voc[êe]s )?(t[êe]m|servem)` matched the
+  // "o que tem" prefix of an ITEM question, MENU_OVERVIEW_Q fired, and the
+  // `!isMenuOverview` guard on the per-item span below then SUPPRESSED the very
+  // span the customer's question was about. The turn did not degrade — it
+  // CONFIDENTLY rendered the entire catalogue as the answer to "what is in the
+  // brisket". A wrong-FAMILY render is the one direction the demote-only argument
+  // does not cover, which is why this is a span fix and not a resolver fix.
+  //
+  // WHY A LOCATIVE AND NOT "a resolvable product name" (which is what the ticket
+  // asked for): this module is PURE — no catalog IO, by construction — so it
+  // cannot know whether a name resolves. The deterministic proxy for "the customer
+  // named a SPECIFIC subject" is the locative complement itself: "o que tem" +
+  // no/na/nos/nas/em + <thing>. The whole-menu asks keep their own arms and are
+  // therefore untouched — `\bcard[áa]pio\b` and `\bmenu\b` are INDEPENDENT
+  // alternatives, so "o que tem no cardápio?" / "o que tem no menu de hoje?" still
+  // fire the overview through them, ahead of this lookahead.
+  //
+  // The complement-less overview phrasings are likewise untouched, because none of
+  // them puts a locative right after the verb: "o que vocês têm?", "o que tem pra
+  // comer?", "o que vocês servem?", "o que tem de sobremesa?" (a `de` complement is
+  // deliberately NOT excluded — a category ask is an overview, not an item).
   const isMenuOverview =
     notOrderScoped &&
     !mutationImperative &&
-    /\bcard[áa]pio\b|\bmenu\b|o que (voc[êe]s )?(t[êe]m|servem)( (pra|para) comer)?|quais (os |as )?(pratos|op[çc][õo]es)/.test(t);
+    (MENU_WORD_RE.test(t) || MENU_BARE_ASK_RE.test(t) || MENU_LIST_ASK_RE.test(t));
   if (isMenuOverview) classes.push("MENU_OVERVIEW_Q");
 
   if (notOrderScoped && !mutationImperative && /quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]/.test(t)) {
@@ -839,7 +1020,25 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // dietary question to the model, which is the failure this ticket fixes.
   // `!isMenuOverview` keeps a WHOLE-menu question ("o que tem no cardápio") disjoint from
   // the per-ITEM contents span ("o que vem no combo") — the overview owns it.
-  if (notOrderScoped && !mutationImperative && !isMenuOverview && /o que (vem|tem|acompanha)|do que (é|e) (é |)feit|que vem (n|em)|composi[çc][ãa]o d/.test(t)) {
+  // BKL-205 — the ACCENTED forms join the net (half 1 of the ticket). `vem`/`tem`
+  // were spelled ASCII-only, so the plural `vêm` and `têm` — which is how a
+  // customer writes "o que vêm no combo família?" — matched NOTHING here. This is
+  // the BKL-270/BKL-271 accent lesson recurring for the third time (`diabet` never
+  // matched "diabético"; `p[õo]r` never matched "pôr"): the accented vowel sits
+  // exactly where the plain one would, so the stem's true-positive set on the real
+  // phrasing was EMPTY, and no false-positive sweep can reveal that. Both spellings
+  // are asserted individually by test for that reason.
+  //
+  // `t[êe]m` is load-bearing TOGETHER WITH the overview lookahead above, not
+  // merely nice to have: that lookahead sends "o que têm no combo?" away from the
+  // overview span, so without the accented form here the utterance would have
+  // classified to NOTHING — trading a wrong-family render for no span at all,
+  // which BKL-273 established is the worse of the two.
+  // The `[ée]` is a CHARACTER CLASS, not the `(é|e)` alternation it replaces
+  // (Sonar S6035). Same single character, same matched language; the group was
+  // capturing and this is not, which is invisible here because the only use is
+  // `.test`. Pinned byte-for-byte against the pre-restructure source by test.
+  if (notOrderScoped && !mutationImperative && !isMenuOverview && /o que (v[êe]m|t[êe]m|acompanha)|do que [ée] (é |)feit|que v[êe]m (n|em)|composi[çc][ãa]o d/.test(t)) {
     classes.push("MENU_ITEM_CONTENTS_Q");
   }
 
@@ -949,7 +1148,11 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // opções de pagamento" (a payment-METHODS acceptance question — a capability),
   // where it names the concept, not the customer's payment.
   const paymentMethodsQuestion = /(formas?|op[çc][õo]es)\s+de\s+pagamento/.test(t);
-  const orderStatusStrong = /pedido|preparo|sa[ií]u|chegou|cad[êe]/.test(t);
+  const orderStatusStrong =
+    /pedido|preparo|sa[ií]u|chegou|cad[êe]/.test(t) ||
+    ORDER_ON_THE_WAY_RE.test(t) ||
+    ORDER_DELIVERED_RE.test(t) ||
+    ORDER_ETA_RE.test(t);
   const paymentStatusStrong =
     /pago|cobran[çc]a|pagar|paguei|aprovad/.test(t) ||
     (/pagamento/.test(t) && !paymentMethodsQuestion);

@@ -126,8 +126,59 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     );
   });
 
-  it("a schedule-only question → undefined (STORE_OPEN_NOW is NOT in the eligible set)", () => {
+  // BKL-222 CORRECTION: this test used to be named "…(STORE_OPEN_NOW is NOT in the
+  // eligible set)". That MECHANISM changed — STORE_OPEN_NOW joined the set as the
+  // date family's companion — while the BEHAVIOUR pinned here did not. The guard is
+  // now explicit: a turn requiring STORE_OPEN_NOW WITHOUT STORE_HOURS_FOR_DATE
+  // declines. Renaming rather than deleting keeps the pin and stops the file from
+  // asserting a reason that is no longer true (the BKL-273 lesson).
+  it("a BARE schedule-only question → undefined (open-now is a companion, never an entry point)", () => {
     expect(classifyOnlyRequiredTypes("vocês estão abertos agora?")).toBeUndefined();
+    expect(classifyOnlyRequiredTypes("que horas fecham?")).toBeUndefined();
+    expect(classifyOnlyRequiredTypes("vocês funcionam hoje?")).toBeUndefined();
+    // The mechanism itself, asserted directly so the rename cannot drift back into
+    // a claim about eligibility: the type IS eligible, and the turn declines anyway.
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("STORE_OPEN_NOW")).toBe(true);
+  });
+
+  // BKL-222 — the ticket's own acceptance case, at this gate. A DATE-ANCHORED hours
+  // question now rides the deterministic path instead of the 4B read-dispatch that
+  // made SCN-002 degrade on one pass.
+  it("BKL-222 — a DAY-SPECIFIC hours question → the date family (rides classify-only)", () => {
+    for (const text of [
+      "qual o horário de domingo?",
+      "que horas vocês abrem no sábado?",
+      "vocês abrem amanhã no feriado?",
+      "qual o horário de funcionamento na terça?",
+    ]) {
+      const required = classifyOnlyRequiredTypes(text);
+      expect(required, text).toBeDefined();
+      expect([...(required ?? [])], text).toContain("STORE_HOURS_FOR_DATE");
+    }
+  });
+
+  // BKL-222 — the SUPERSET property that keeps this gate from disagreeing with the
+  // renderer's §O#15 completeness gate. That gate re-decomposes with a LIVE CLOCK,
+  // and on the day the named weekday IS today the BKL-152 suppression does NOT
+  // delete the open-now companion. If this gate decomposed seam-inactively it would
+  // build only the date claim, completeness would find STORE_OPEN_NOW ABSENT, and
+  // the turn would degrade to a proposition-free UNKNOWN — on one day of the week.
+  // So the required set here must CONTAIN the companion on every day.
+  it("BKL-222 — the date family's required set INCLUDES the open-now companion (superset of the seam-aware gate)", () => {
+    const required = classifyOnlyRequiredTypes("qual o horário de domingo?");
+    expect(required).toBeDefined();
+    expect([...(required ?? [])].sort()).toEqual([
+      "STORE_HOURS_FOR_DATE",
+      "STORE_OPEN_NOW",
+    ]);
+    // The seam-AWARE decomposition on the weekday==today branch (seamActive with NO
+    // resolved date) asks for exactly this set — nothing this gate did not build.
+    const seamAware = decomposeRequiredClaims(
+      classifyRequestSpans("qual o horário de domingo?"),
+      undefined,
+      { seamActive: true },
+    );
+    for (const type of seamAware) expect([...(required ?? [])]).toContain(type);
   });
 
   it("FE-D12 pin — an ELIGIBLE span co-occurring with an INELIGIBLE span in ONE message → undefined (declined wholesale, never a half-deterministic mix)", () => {
@@ -150,8 +201,21 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     ).toBeUndefined();
   });
 
-  it("a PICKUP_Q (pulls in the ineligible STORE_OPEN_NOW companion) → undefined (declined wholesale)", () => {
+  // BKL-222 CORRECTION: renamed for the same reason as the schedule-only pin above
+  // — PICKUP_Q no longer declines because STORE_OPEN_NOW is ineligible (it is not),
+  // but because the gate now declines PICKUP_Q BY NAME. The reason is the #8 guest
+  // carve-out: `ActiveResourceOwnership` is what drops the ORDER_FULFILLMENT_STAGE
+  // companion for a customer who provably owns no order, and this gate cannot run
+  // it. The DATE-ANCHORED pickup case is the one that would otherwise have slipped
+  // through the new eligibility, so it is pinned here explicitly.
+  it("a PICKUP_Q → undefined (declined BY NAME — the #8 guest carve-out cannot run at this gate)", () => {
     expect(classifyOnlyRequiredTypes("posso retirar meu pedido agora?")).toBeUndefined();
+    // …including WITH a date anchor, where every required type is now eligible.
+    expect(classifyOnlyRequiredTypes("que horas posso retirar amanhã?")).toBeUndefined();
+    const required = decomposeRequiredClaims(
+      classifyRequestSpans("que horas posso retirar amanhã?"),
+    );
+    expect([...required].every((t) => CLASSIFY_ONLY_ELIGIBLE_TYPES.has(t))).toBe(true);
   });
 
   it("every eligible type is registered with a DETERMINISTIC subject path (owner-scoped, public per-item, or fixed-key)", () => {
@@ -164,7 +228,18 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     // LE2-029 GREW it 16 → 18 (the MENU_PAIRINGS / MENU_SUBSTITUTIONS fixed-key
     // public pair — the house's own authored pairing advice, subject-free like the
     // coupon and delivery pairs), by the same conscious act.
-    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(18);
+    // BKL-222 GREW it 18 → 20 (STORE_HOURS_FOR_DATE, public per-item off the
+    // deterministic `schedule:store_hours:{date}` read, PLUS STORE_OPEN_NOW as its
+    // COMPANION ONLY — a bare schedule question still declines, by an explicit
+    // guard in `classifyOnlyRequiredTypes` rather than by ineligibility). Same
+    // conscious act.
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.size).toBe(20);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("STORE_HOURS_FOR_DATE")).toBe(true);
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("STORE_OPEN_NOW")).toBe(true);
+    // …and the type that has no closure row at all stays out: STORE_HOURS is an
+    // ADDITIVE model-path proposal, never a required companion, so it can never be
+    // built by `buildClassifyOnlyCandidates` (which iterates the required set).
+    expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("STORE_HOURS")).toBe(false);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_PAIRINGS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("MENU_SUBSTITUTIONS")).toBe(true);
     expect(CLASSIFY_ONLY_ELIGIBLE_TYPES.has("ORDER_FULFILLMENT_STAGE")).toBe(true);
