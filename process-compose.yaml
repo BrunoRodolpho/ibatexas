@@ -14,10 +14,75 @@ environment:
 # the test profile's stricter in-command sourcing contract, and
 # packages/cli/src/__tests__/process-compose-validate.test.ts for the gate.
 
+# BKL-287: restart-policy doctrine — `always` for long-runners, NOTHING for
+# one-shots. Measured against process-compose v1.103.0 in a disposable project
+# (full transcript in the PR body); do not "simplify" these values without
+# re-running it, because --dry-run CANNOT check them (see the BKL-249 note above:
+# unknown keys nested inside an `availability:` block are silently ignored, so a
+# typo'd policy validates green and does nothing).
+#
+#   restart: on_failure + child exits 0  →  Completed, restarts:0. NO restart.
+#   restart: on_failure + child exits 7  →  restarts climb to max_restarts.
+#   restart: always     + child exits 0  →  restarts.            ← the fix
+#   restart: always     + healthy child  →  Running, restarts:0. Never churns a
+#                                           process that has not exited.
+#   max_restarts: 0                      →  UNLIMITED (169 restarts in ~3 min).
+#   max_restarts is a WHOLE-SESSION budget and NEVER resets after a stable run
+#     (probe: budget 2, third run stayed up 20 s then exited 0 → no fourth run).
+#
+# Why `always` and not `on_failure`. On 2026-07-28 api, web, admin, adj-console
+# and adjutant all stopped and the dev stack sat apps-down for 25+ minutes. All
+# five ALREADY carried `restart: on_failure` (since f40444ab), so the bug was
+# never a missing policy — it was the WRONG policy, for this exact chain
+# (reproduced end to end in a disposable project, and caught live a second time
+# on 2026-07-28 ~01:00 when web + adjutant died the same way):
+#
+#   1. the app gets slow (a pull triggers a recompile storm; measured GET / at
+#      11 s, 16 s against a probe whose timeout_seconds is 5)
+#   2. its readiness_probe burns through failure_threshold
+#   3. process-compose TERMINATES it, sending shutdown.signal (15 = SIGTERM) —
+#      the readiness probe is acting as a liveness killer
+#   4. the app is a WELL-BEHAVED SIGTERM citizen (apps/api/src/index.ts registers
+#      process.on("SIGTERM", shutdown); `next dev` does the same) so it shuts
+#      down gracefully and exits ZERO
+#   5. `restart: on_failure` sees a zero exit and correctly declines to act
+#   6. final state: Completed / restarts:0 / exit:0 — silent, permanent
+#
+# Step 4 is the trap: handling SIGTERM properly is what makes the death
+# INVISIBLE to on_failure. A process that ignores SIGTERM is recorded as exit -1
+# and would have been restarted. Being well-written is what got these five
+# killed. For a process meant to run all session there is no legitimate exit 0,
+# so the exit code must not be what decides whether it comes back.
+#
+# Survivors corroborate: tunnel and stripe have NO readiness_probe at all
+# (has_ready_probe:false), so step 2 can never fire for them; commerce and
+# qa-viewer have probes that stayed Ready. Every process that died had a probe
+# that went Not Ready; every process without a probe lived.
+#
+# `always` is therefore a MITIGATION, not a cure: it converts a permanent silent
+# outage into an automatic recovery, which is the right trade for a dev stack.
+# It does NOT stop step 3 — an app that stays unready long enough will still
+# burn its whole max_restarts budget and then stay dead. Fixing that means
+# making the probes tolerant of a slow-but-alive dev server (see the companion
+# commit / follow-up), not tuning this block.
+#
+# Why one-shots get NO policy: infra, observability, build-packages, web-clean
+# and admin-clean are SUPPOSED to reach exit 0 — that is success, not failure.
+# A restart policy on them is strictly worse than the disease. Measured: a
+# one-shot under `always` re-ran its side effect 4 more times; with
+# max_restarts: 0 it would re-`docker compose up`, rebuild every package, or
+# `rm -rf .next` under a running Next.js server, forever. They keep
+# `restart: "no"`, and that is deliberate — not an omission to be "fixed".
+#
+# SCOPE LIMIT: this governs processes that EXIT. A process that hangs while
+# still alive is NOT covered — a readiness probe stuck at Not Ready leaves the
+# process Running and no restart policy fires.
+
 log_level: info
 
 processes:
   # ── Infrastructure (one-shot) ────────────────────────────────────────────────
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287). Completing is success.
   infra:
     command: "docker compose up -d --wait"
     availability:
@@ -35,6 +100,7 @@ processes:
   # compose file so the obs stack can be brought up/down independently of the
   # app infra. Grafana provisions the kernel dashboards against VictoriaMetrics;
   # the API publishes /metrics on :3001 (scraped via host.docker.internal).
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287). Completing is success.
   observability:
     command: "docker compose -f docker-compose.observability.yml up -d --wait"
     availability:
@@ -49,6 +115,10 @@ processes:
 
   # ── Package build (one-shot) ────────────────────────────────────────────────
   # Rebuild shared packages so dist/ matches source. Dependency order matters.
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287) — and load-bearing here.
+  # api/web/admin/qa-viewer gate their start on this completing successfully, so
+  # a restart policy would re-run a full turbo build underneath five already-
+  # booted dev servers every time it fired.
   build-packages:
     # Build EVERY shared workspace package — not just types+tools — so no dev app
     # (api / web / admin / qa-viewer, all of which depend on this step) ever boots
@@ -66,6 +136,8 @@ processes:
       restart: "no"
 
   # ── Admin cache cleanup (one-shot) ────────────────────────────────────────
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287). A policy here would
+  # `rm -rf` the .next dir underneath a running admin server.
   admin-clean:
     command: "rm -rf apps/admin/.next"
     availability:
@@ -87,8 +159,10 @@ processes:
       timeout_seconds: 5
       failure_threshold: 30
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -111,13 +185,17 @@ processes:
       timeout_seconds: 5
       failure_threshold: 20
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
 
   # ── Web cache cleanup (one-shot) ────────────────────────────────────────────
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287). A policy here would
+  # `rm -rf` the .next dir underneath a running web server.
   web-clean:
     command: "rm -rf apps/web/.next"
     depends_on:
@@ -142,8 +220,10 @@ processes:
       timeout_seconds: 5
       failure_threshold: 20
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -166,8 +246,10 @@ processes:
       timeout_seconds: 5
       failure_threshold: 20
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -190,8 +272,10 @@ processes:
       timeout_seconds: 5
       failure_threshold: 20
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -219,8 +303,10 @@ processes:
       timeout_seconds: 5
       failure_threshold: 30
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -248,8 +334,10 @@ processes:
       timeout_seconds: 5
       failure_threshold: 30
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -261,7 +349,18 @@ processes:
       api:
         condition: process_healthy
     availability:
-      restart: "no"
+      # BKL-287: the tunnel is the WhatsApp webhook INGRESS — when it dies,
+      # inbound messages stop arriving and nothing else reports unhealthy. That
+      # is the same silent-death class BKL-237 fixed for the stripe forwarder,
+      # so it gets a policy rather than the previous `restart: "no"`.
+      # Deliberately SLOWER and SMALLER than the app policy: ngrok enforces
+      # server-side session limits (a tight reconnect loop trips ERR_NGROK_108
+      # and can lock the authtoken out), and its common failure modes — no
+      # authtoken, a reserved domain already claimed — are permanent, so a long
+      # backoff and a small budget keep a doomed retry cheap and quiet.
+      restart: always
+      max_restarts: 5
+      backoff_seconds: 15
     shutdown:
       signal: 15
       timeout_seconds: 5
@@ -299,8 +398,13 @@ processes:
       api:
         condition: process_healthy
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: was `on_failure`. BKL-237's preflight exits 1 on the permanent
+      # conditions, so under BOTH policies those still retry — the only change
+      # here is that a `stripe listen` death with exit code ZERO is now covered
+      # too, which is precisely the silent webhook outage BKL-237 set out to
+      # kill. The 10 s backoff is kept as-is so a doomed preflight stays quiet.
+      restart: always
+      max_restarts: 5
       backoff_seconds: 10
     shutdown:
       signal: 15
