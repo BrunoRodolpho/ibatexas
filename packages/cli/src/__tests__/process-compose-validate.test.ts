@@ -30,10 +30,20 @@ import os from "node:os"
 import path from "node:path"
 import { execaSync } from "execa"
 import { ROOT } from "../utils/root.js"
+import { DEV_SUPERVISOR_LOG, disposableLogPath } from "../lib/process-compose-log.js"
+
+// BKL-288 — every invocation in THIS file is a throwaway validator, never the
+// live supervisor, so each one carries its own `-L`. Without it, running this
+// suite (locally, or as the CI gate) truncates process-compose's shared
+// `$TMPDIR/process-compose-$USER.log` and destroys the running dev stack's log.
+// Built here from the test's own primitive rather than reused from
+// process-compose-log.ts, so the isolation assertions below stay independent of
+// the helper they are meant to keep honest.
+const OWN_LOG = path.join(os.tmpdir(), `ibx-pc-validate-${process.pid}.log`)
 
 function processComposeInstalled(): boolean {
   try {
-    execaSync("process-compose", ["version"], { reject: true })
+    execaSync("process-compose", ["version", "-L", OWN_LOG], { reject: true })
     return true
   } catch {
     return false
@@ -47,7 +57,7 @@ const PC_INSTALLED = processComposeInstalled()
  *  the signal: 0 + a "Validated N configured processes" line on stdout means the
  *  project loaded; a load failure exits non-zero and reports FTL on stderr. */
 function dryRun(...files: string[]): { exitCode: number; stdout: string; stderr: string } {
-  const args = ["--dry-run", ...files.flatMap((f) => ["-f", f])]
+  const args = ["--dry-run", "-L", OWN_LOG, ...files.flatMap((f) => ["-f", f])]
   const r = execaSync("process-compose", args, { cwd: ROOT, reject: false })
   return {
     exitCode: r.exitCode ?? 1,
@@ -126,5 +136,116 @@ describe.skipIf(!PC_INSTALLED)("process-compose profiles load (BKL-249)", () => 
     )
     expect(exitCode).toBe(0)
     expect(stdout).toMatch(VALIDATED)
+  })
+})
+
+// ── BKL-288 — the gate above must not destroy the live supervisor's log ──────
+//
+// process-compose keeps its own supervisor log (probe results, restart
+// decisions, exit codes) at ONE shared per-user default,
+// $TMPDIR/process-compose-$USER.log, and TRUNCATES it on every invocation that
+// initialises the logger — `up`, `--dry-run` and `version` alike. So the gate
+// above, run while a dev stack is up, used to wipe exactly the forensics that
+// diagnosed the BKL-287 probe-kill class.
+//
+// Both arms run below because only the pair is meaningful: the SURVIVES arm
+// alone would stay green if process-compose stopped truncating at all (nothing
+// left to protect against), and the TRUNCATES arm alone proves no fix. Every
+// invocation here overrides $TMPDIR to a scratch dir, so the "default" path
+// under test is disposable and the developer's real supervisor log is never
+// touched.
+describe.skipIf(!PC_INSTALLED)("process-compose log-path isolation (BKL-288)", () => {
+  const SENTINEL = "SENTINEL-LIVE-SUPERVISOR-FORENSICS"
+
+  /** Fresh scratch $TMPDIR with a sentinel already sitting at the path
+   *  process-compose will compute as its shared default. */
+  function withScratchTmp<T>(fn: (dir: string, defaultLog: string) => T): T {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ibx-pc-288-"))
+    try {
+      const defaultLog = path.join(dir, `process-compose-${os.userInfo().username}.log`)
+      fs.writeFileSync(defaultLog, `${SENTINEL}\n`)
+      return fn(dir, defaultLog)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  function runWithTmp(dir: string, args: string[]): number {
+    const env = { ...process.env, TMPDIR: dir }
+    // A stray PC_LOG_FILE in the ambient environment would redirect the log and
+    // make BOTH arms pass vacuously.
+    delete env.PC_LOG_FILE
+    const r = execaSync("process-compose", args, {
+      cwd: ROOT,
+      reject: false,
+      env,
+      extendEnv: false,
+    })
+    return r.exitCode ?? 1
+  }
+
+  const PROFILE = "process-compose.yaml"
+
+  it("CONTROL — a --dry-run with no log path TRUNCATES the shared default log", () => {
+    withScratchTmp((dir, defaultLog) => {
+      expect(runWithTmp(dir, ["--dry-run", "-f", PROFILE])).toBe(0)
+      expect(fs.readFileSync(defaultLog, "utf8")).not.toContain(SENTINEL)
+    })
+  })
+
+  it("a --dry-run with an explicit -L leaves the shared default log intact", () => {
+    withScratchTmp((dir, defaultLog) => {
+      const own = path.join(dir, "dry-run.log")
+      expect(runWithTmp(dir, ["--dry-run", "-L", own, "-f", PROFILE])).toBe(0)
+      expect(fs.readFileSync(defaultLog, "utf8")).toContain(SENTINEL)
+      expect(fs.existsSync(own)).toBe(true)
+    })
+  })
+
+  it("a `version` probe with an explicit -L leaves the shared default log intact", () => {
+    withScratchTmp((dir, defaultLog) => {
+      // `ibx dev stop` / `ibx dev restart` run this probe against a LIVE stack.
+      const own = path.join(dir, "version.log")
+      expect(runWithTmp(dir, ["version", "-L", own])).toBe(0)
+      expect(fs.readFileSync(defaultLog, "utf8")).toContain(SENTINEL)
+    })
+  })
+
+  it("CONTROL — the same `version` probe without -L truncates it", () => {
+    withScratchTmp((dir, defaultLog) => {
+      expect(runWithTmp(dir, ["version"])).toBe(0)
+      expect(fs.readFileSync(defaultLog, "utf8")).not.toContain(SENTINEL)
+    })
+  })
+
+  // This suite's OWN invocations must obey the doctrine they assert. If
+  // `-L OWN_LOG` is ever dropped from dryRun()/processComposeInstalled(), the
+  // file stops writing its own log and this goes red.
+  it("this suite writes its own log, not the shared default", () => {
+    expect(fs.existsSync(OWN_LOG)).toBe(true)
+    expect(OWN_LOG).not.toBe(path.join(os.tmpdir(), `process-compose-${os.userInfo().username}.log`))
+  })
+})
+
+// Structural half — runs with or without the binary installed.
+describe("the live dev supervisor names its own log path (BKL-288)", () => {
+  const SHARED_DEFAULT = path.join(os.tmpdir(), `process-compose-${os.userInfo().username}.log`)
+
+  it("`ibx dev start` passes -L with a path of its own", async () => {
+    const { buildPcUpArgs } = await import("../commands/dev.js")
+    const args = buildPcUpArgs(["api"], false)
+    const i = args.indexOf("-L")
+    expect(i).toBeGreaterThanOrEqual(0)
+    expect(args[i + 1]).toBe(DEV_SUPERVISOR_LOG)
+    // …and it still starts the stack it was asked to start.
+    expect(args[0]).toBe("up")
+    expect(args).toContain("api")
+    expect(args).toContain("-t=false")
+  })
+
+  it("the supervisor path is NOT the shared per-user default anything else truncates", () => {
+    expect(DEV_SUPERVISOR_LOG).not.toBe(SHARED_DEFAULT)
+    expect(disposableLogPath("probe")).not.toBe(SHARED_DEFAULT)
+    expect(disposableLogPath("probe")).not.toBe(DEV_SUPERVISOR_LOG)
   })
 })

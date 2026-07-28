@@ -65,7 +65,11 @@ jobs:
           echo "${PROCESS_COMPOSE_SHA256}  /tmp/pc.tar.gz" | sha256sum -c -
           tar -xzf /tmp/pc.tar.gz -C /tmp process-compose
           sudo mv /tmp/process-compose /usr/local/bin/process-compose
-          process-compose version
+          # BKL-288: `-L` on every non-supervisor invocation. process-compose
+          # TRUNCATES its shared $TMPDIR/process-compose-$USER.log default on
+          # each startup — `version` and `--dry-run` included — so a bare probe
+          # destroys a running supervisor's forensic log.
+          process-compose version -L /tmp/pc-version-smoke.log
       # Force the lcov reporter for EVERY package so SonarCloud gets coverage
       # from all of them. The root vitest.config sets reporter=[text,lcov], but
       # packages with their OWN vitest.config (apps/api, domain, …) don't inherit
