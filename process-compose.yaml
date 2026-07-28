@@ -14,10 +14,93 @@ environment:
 # the test profile's stricter in-command sourcing contract, and
 # packages/cli/src/__tests__/process-compose-validate.test.ts for the gate.
 
+# BKL-287: restart-policy doctrine — `always` for long-runners, NOTHING for
+# one-shots. Measured against process-compose v1.103.0 in a disposable project
+# (full transcript in the PR body); do not "simplify" these values without
+# re-running it, because --dry-run CANNOT check them (see the BKL-249 note above:
+# unknown keys nested inside an `availability:` block are silently ignored, so a
+# typo'd policy validates green and does nothing).
+#
+#   restart: on_failure + child exits 0  →  Completed, restarts:0. NO restart.
+#   restart: on_failure + child exits 7  →  restarts climb to max_restarts.
+#   restart: always     + child exits 0  →  restarts.            ← the fix
+#   restart: always     + healthy child  →  Running, restarts:0. Never churns a
+#                                           process that has not exited.
+#   max_restarts: 0                      →  UNLIMITED (169 restarts in ~3 min).
+#   max_restarts is a WHOLE-SESSION budget and NEVER resets after a stable run
+#     (probe: budget 2, third run stayed up 20 s then exited 0 → no fourth run).
+#
+# Why `always` and not `on_failure`. On 2026-07-28 api, web, admin, adj-console
+# and adjutant all stopped; VictoriaLogs pins the api outage at 20:41→21:39, 58
+# minutes. All five ALREADY carried `restart: on_failure` (since f40444ab), so
+# the bug was never a missing policy — it was the WRONG policy, for this exact
+# chain (reproduced end to end in a disposable project, and caught live twice
+# more on 2026-07-28 at ~00:58 and ~01:05 when web + adjutant died the same way
+# with NO git pull anywhere near them):
+#
+#   1. the box gets CPU-starved (fleet builds/suites — the BKL-236 inflation
+#      class) and the app's response latency balloons; measured GET / at 11 s
+#      and 16.3 s against a probe whose timeout_seconds is 5
+#   2. its readiness_probe burns through failure_threshold
+#   3. process-compose TERMINATES it, sending shutdown.signal (15 = SIGTERM) —
+#      the readiness probe is acting as a liveness killer
+#   4. the app is a WELL-BEHAVED SIGTERM citizen (apps/api/src/index.ts registers
+#      process.on("SIGTERM", shutdown); `next dev` does the same) so it shuts
+#      down gracefully and exits ZERO
+#   5. `restart: on_failure` sees a zero exit and correctly declines to act
+#   6. final state: Completed / restarts:0 / exit:0 — silent, permanent
+#
+# Step 4 is the trap: handling SIGTERM properly is what makes the death
+# INVISIBLE to on_failure. A process that ignores SIGTERM is recorded as exit -1
+# and would have been restarted. Being well-written is what got these five
+# killed. For a process meant to run all session there is no legitimate exit 0,
+# so the exit code must not be what decides whether it comes back.
+#
+# Survivors corroborate: tunnel and stripe have NO readiness_probe at all
+# (has_ready_probe:false), so step 2 can never fire for them; commerce and
+# qa-viewer have probes that stayed Ready. Every process that died had a probe
+# that went Not Ready; every process without a probe lived.
+#
+# `always` alone is only a MITIGATION: it converts a permanent silent outage
+# into an automatic recovery, but it does NOT stop step 3, and an app that stays
+# unready long enough still burns its whole max_restarts budget and then stays
+# dead. So the READINESS PROBES are the other half of this fix, and they are
+# sized deliberately — see the probe doctrine below. Do not "solve" a probe
+# problem by raising max_restarts.
+#
+# ── PROBE DOCTRINE (BKL-287, second half) ───────────────────────────────────
+# These probes decide whether a process is KILLED, so they must be sized for the
+# machine under LOAD, not idle. This is the BKL-236 lesson transplanted: when a
+# budget is too small for the real operating conditions, raise the budget — never
+# weaken what is being checked. A 5 s timeout is an IDLE-machine number; the same
+# turbo fan-out that inflates test wall-clock 7-10x inflates SSR probe latency,
+# and 16.3 s was measured on a live, healthy web.
+#
+# Two rules hold everywhere below:
+#   • timeout_seconds <= period_seconds, so a slow probe can never overlap the
+#     next one and manufacture its own backlog of failures.
+#   • the kill budget (failure_threshold x period_seconds) is stated per process
+#     in minutes, and every one of them is LARGER than what it replaced — a
+#     process must be unreachable for MINUTES, not seconds, before a probe is
+#     allowed to conclude it is dead rather than merely starved.
+#
+# Why one-shots get NO policy: infra, observability, build-packages, web-clean
+# and admin-clean are SUPPOSED to reach exit 0 — that is success, not failure.
+# A restart policy on them is strictly worse than the disease. Measured: a
+# one-shot under `always` re-ran its side effect 4 more times; with
+# max_restarts: 0 it would re-`docker compose up`, rebuild every package, or
+# `rm -rf .next` under a running Next.js server, forever. They keep
+# `restart: "no"`, and that is deliberate — not an omission to be "fixed".
+#
+# SCOPE LIMIT: this governs processes that EXIT. A process that hangs while
+# still alive is NOT covered — a readiness probe stuck at Not Ready leaves the
+# process Running and no restart policy fires.
+
 log_level: info
 
 processes:
   # ── Infrastructure (one-shot) ────────────────────────────────────────────────
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287). Completing is success.
   infra:
     command: "docker compose up -d --wait"
     availability:
@@ -35,6 +118,7 @@ processes:
   # compose file so the obs stack can be brought up/down independently of the
   # app infra. Grafana provisions the kernel dashboards against VictoriaMetrics;
   # the API publishes /metrics on :3001 (scraped via host.docker.internal).
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287). Completing is success.
   observability:
     command: "docker compose -f docker-compose.observability.yml up -d --wait"
     availability:
@@ -49,6 +133,10 @@ processes:
 
   # ── Package build (one-shot) ────────────────────────────────────────────────
   # Rebuild shared packages so dist/ matches source. Dependency order matters.
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287) — and load-bearing here.
+  # api/web/admin/qa-viewer gate their start on this completing successfully, so
+  # a restart policy would re-run a full turbo build underneath five already-
+  # booted dev servers every time it fired.
   build-packages:
     # Build EVERY shared workspace package — not just types+tools — so no dev app
     # (api / web / admin / qa-viewer, all of which depend on this step) ever boots
@@ -66,6 +154,8 @@ processes:
       restart: "no"
 
   # ── Admin cache cleanup (one-shot) ────────────────────────────────────────
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287). A policy here would
+  # `rm -rf` the .next dir underneath a running admin server.
   admin-clean:
     command: "rm -rf apps/admin/.next"
     availability:
@@ -82,13 +172,19 @@ processes:
         host: "localhost"
         port: 9000
         path: "/health"
+      # BKL-287 kill budget: 20 x 15 s = 5 min (was 30 x 5 s = 2.5 min). Medusa
+      # is the slowest booter in the stack AND api gates its own start on this
+      # probe going healthy, so this one buys boot tolerance as much as
+      # starvation tolerance. Survived the incident; widened for headroom.
       initial_delay_seconds: 10
-      period_seconds: 5
-      timeout_seconds: 5
-      failure_threshold: 30
+      period_seconds: 15
+      timeout_seconds: 15
+      failure_threshold: 20
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -106,18 +202,27 @@ processes:
         host: "localhost"
         port: 3001
         path: "/health"
+      # BKL-287 kill budget: 12 x 15 s = 3 min (was 20 x 3 s = 1 min). Kept
+      # tighter than the Next.js apps on purpose: /health is a cheap Fastify JSON
+      # route, not an SSR render, and tunnel + stripe both gate their start on
+      # this probe, so a long period would show up directly as boot latency.
+      # 15 s still absorbs the 7-10x CPU inflation that a 5 s budget could not.
       initial_delay_seconds: 5
-      period_seconds: 3
-      timeout_seconds: 5
-      failure_threshold: 20
+      period_seconds: 15
+      timeout_seconds: 15
+      failure_threshold: 12
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
 
   # ── Web cache cleanup (one-shot) ────────────────────────────────────────────
+  # ONE-SHOT: `restart: "no"` is deliberate (BKL-287). A policy here would
+  # `rm -rf` the .next dir underneath a running web server.
   web-clean:
     command: "rm -rf apps/web/.next"
     depends_on:
@@ -137,13 +242,21 @@ processes:
         host: "localhost"
         port: 3000
         path: "/"
+      # BKL-287 kill budget: 10 x 30 s = 5 min (was 20 x 3 s = 1 min). This is
+      # THE probe that killed web: `GET /` here is a full server-side React
+      # render on every tick — the most CPU-expensive probe in the stack — and it
+      # was measured answering in 16.3 s on a healthy server under fleet load,
+      # against a 5 s timeout. 30 s is ~2x that worst case. Nothing depends_on
+      # web, so the slower period costs nothing but readiness-display latency.
       initial_delay_seconds: 5
-      period_seconds: 3
-      timeout_seconds: 5
-      failure_threshold: 20
+      period_seconds: 30
+      timeout_seconds: 30
+      failure_threshold: 10
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -161,13 +274,18 @@ processes:
         host: "localhost"
         port: 3002
         path: "/"
+      # BKL-287 kill budget: 10 x 30 s = 5 min (was 20 x 3 s = 1 min). Same SSR
+      # probe shape as web, same starvation exposure — admin was one of the five
+      # killed, and was sitting Not Ready again during this investigation.
       initial_delay_seconds: 5
-      period_seconds: 3
-      timeout_seconds: 5
-      failure_threshold: 20
+      period_seconds: 30
+      timeout_seconds: 30
+      failure_threshold: 10
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -185,13 +303,19 @@ processes:
         host: "localhost"
         port: 3010
         path: "/"
+      # BKL-287 kill budget: 12 x 10 s = 2 min (was 20 x 3 s = 1 min). Smallest
+      # bump in the file, deliberately: Vite serves this statically, it is the
+      # cheapest probe here, and qa-viewer stayed Ready through the incident. It
+      # still gets headroom because CPU starvation is machine-wide, not per-app.
       initial_delay_seconds: 3
-      period_seconds: 3
-      timeout_seconds: 5
-      failure_threshold: 20
+      period_seconds: 10
+      timeout_seconds: 10
+      failure_threshold: 12
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -214,13 +338,18 @@ processes:
         host: "localhost"
         port: 5180
         path: "/"
+      # BKL-287 kill budget: 10 x 30 s = 5 min (was 30 x 3 s = 1.5 min). SSR
+      # probe, and cross-repo: it renders against ibatexas's Postgres, so a slow
+      # DB under the same load inflates this probe on top of the CPU cost.
       initial_delay_seconds: 5
-      period_seconds: 3
-      timeout_seconds: 5
-      failure_threshold: 30
+      period_seconds: 30
+      timeout_seconds: 30
+      failure_threshold: 10
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -243,13 +372,18 @@ processes:
         host: "localhost"
         port: 5182
         path: "/"
+      # BKL-287 kill budget: 10 x 30 s = 5 min (was 30 x 3 s = 1.5 min). Same
+      # cross-repo SSR shape as adj-console. adjutant died twice inside this
+      # investigation alone (~00:58 and ~01:05), both with no pull involved.
       initial_delay_seconds: 5
-      period_seconds: 3
-      timeout_seconds: 5
-      failure_threshold: 30
+      period_seconds: 30
+      timeout_seconds: 30
+      failure_threshold: 10
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: long-runner — `always`, because an exit-0 death is still an outage.
+      restart: always
+      max_restarts: 10
+      backoff_seconds: 5
     shutdown:
       signal: 15
       timeout_seconds: 10
@@ -261,7 +395,18 @@ processes:
       api:
         condition: process_healthy
     availability:
-      restart: "no"
+      # BKL-287: the tunnel is the WhatsApp webhook INGRESS — when it dies,
+      # inbound messages stop arriving and nothing else reports unhealthy. That
+      # is the same silent-death class BKL-237 fixed for the stripe forwarder,
+      # so it gets a policy rather than the previous `restart: "no"`.
+      # Deliberately SLOWER and SMALLER than the app policy: ngrok enforces
+      # server-side session limits (a tight reconnect loop trips ERR_NGROK_108
+      # and can lock the authtoken out), and its common failure modes — no
+      # authtoken, a reserved domain already claimed — are permanent, so a long
+      # backoff and a small budget keep a doomed retry cheap and quiet.
+      restart: always
+      max_restarts: 5
+      backoff_seconds: 15
     shutdown:
       signal: 15
       timeout_seconds: 5
@@ -299,8 +444,13 @@ processes:
       api:
         condition: process_healthy
     availability:
-      restart: on_failure
-      max_restarts: 3
+      # BKL-287: was `on_failure`. BKL-237's preflight exits 1 on the permanent
+      # conditions, so under BOTH policies those still retry — the only change
+      # here is that a `stripe listen` death with exit code ZERO is now covered
+      # too, which is precisely the silent webhook outage BKL-237 set out to
+      # kill. The 10 s backoff is kept as-is so a doomed preflight stays quiet.
+      restart: always
+      max_restarts: 5
       backoff_seconds: 10
     shutdown:
       signal: 15
