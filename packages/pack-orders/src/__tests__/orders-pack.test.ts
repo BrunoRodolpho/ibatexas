@@ -2119,3 +2119,369 @@ describe("ordersPolicyBundle — order.coupon.adjust is DECLARED AND UNEXECUTABL
     expect(decision.kind).not.toBe("REQUEST_CONFIRMATION")
   })
 })
+
+/**
+ * BKL-280 — the stay-home / pickup contradiction guard.
+ *
+ * The V7-proven defect: on "não vou poder sair de casa hoje, fecha aí, pago em
+ * dinheiro na entrega" the 4B emits `order.checkout.create {delivery_type:
+ * "pickup", payment_method: "cash"}` — a valid capability with a wrong payload,
+ * which EXECUTES. `confirmDeliveryContradiction` turns that one case into a
+ * question without touching any other checkout path.
+ *
+ * Note the state these tests use: `totalInCentavos: 5_000` (R$ 50) sits BELOW
+ * the R$ 1.000 `confirmLargeTicket` band, so any REQUEST_CONFIRMATION observed
+ * here is unambiguously THIS guard's and never the money band's — and the
+ * prompt assertions pin exactly which sentence was asked.
+ */
+describe("BKL-280 — confirmDeliveryContradiction", () => {
+  /** The checkout state the V7 row actually adjudicates against. */
+  function checkoutState(overrides: Partial<OrderState["ctx"]> = {}): OrderState {
+    return state({
+      fulfillment: "pickup",
+      paymentMethod: "cash",
+      paymentStatus: null,
+      totalInCentavos: 5_000,
+      ...overrides,
+    })
+  }
+
+  const CONTRADICTION_PROMPT =
+    "O pedido está marcado como retirada no local, mas sua mensagem indica entrega. Como você prefere receber: entrega no seu endereço ou retirada no local?"
+
+  it("THE DEFECT: stay-home marker + delivery_type pickup ⇒ REQUEST_CONFIRMATION, never EXECUTE", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    // The specific sentence — proves it is THIS guard and not the money band.
+    expect(decision.prompt).toBe(CONTRADICTION_PROMPT)
+    // pt-BR customer copy (CLAUDE.md rule #4), offering BOTH options.
+    expect(decision.prompt).toContain("entrega")
+    expect(decision.prompt).toContain("retirada")
+  })
+
+  it("carries a business basis naming the rule (audit provenance)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    const rules = decision.basis.map(
+      (b) => (b.detail as { rule?: string } | undefined)?.rule,
+    )
+    expect(rules).toContain("delivery_type_contradicts_utterance")
+  })
+
+  it("tolerates wire spelling of the pickup value (case/whitespace)", () => {
+    // Can only ever ADD the question, never skip it.
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: " Pickup ",
+      }),
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+  })
+
+  // ── CONTROLS: every other checkout path is untouched ────────────────────
+
+  it("CONTROL — plain pickup ask (no marker) still EXECUTEs", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState(),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("CONTROL — stay-home marker WITH delivery_type delivery is untouched (EXECUTE)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "delivery",
+      }),
+      checkoutState({ fulfillment: "delivery", stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("CONTROL — plain delivery ask (no marker) still EXECUTEs", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "delivery",
+      }),
+      checkoutState({ fulfillment: "delivery" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("CONTROL — an ABSENT flag (unwired host / resume path) leaves the checkout unchanged", () => {
+    // `stayHomeDeliveryMarker` undefined — not false. Lenient-when-absent.
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState(),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("CONTROL — the marker is INERT on a non-checkout kind", () => {
+    // The flag is only ever stamped for order.checkout.create, but even if some
+    // host set it elsewhere the guard must not move another kind's verdict.
+    const payload = {
+      cartId: "cart-1",
+      variantId: "v-1",
+      quantity: 1,
+      allergens: [],
+    }
+    const withFlag = adjudicate(
+      env("order.item.add", payload),
+      state({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    const without = adjudicate(
+      env("order.item.add", payload),
+      state(),
+      ordersPolicyBundle,
+    )
+    expect(withFlag.kind).toBe(without.kind)
+  })
+
+  // ── THE MONEY LADDER IS NOT WEAKENED ───────────────────────────────────
+
+  it("MONEY BAND UNCHANGED — large-ticket delivery checkout still asks the MONEY question", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "card",
+        deliveryType: "delivery",
+      }),
+      checkoutState({
+        fulfillment: "delivery",
+        paymentMethod: "card",
+        totalInCentavos: 150_000,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toContain("R$")
+    expect(decision.prompt).not.toBe(CONTRADICTION_PROMPT)
+  })
+
+  it("ORDERING — on a CONTRADICTING large-ticket cart the contradiction is asked FIRST", () => {
+    // Both guards match and business guards are first-non-null-wins. Below
+    // confirmLargeTicket this guard would be unreachable here: the money
+    // sentence would be asked, a "sim" would satisfy it, and the wrong pickup
+    // checkout would EXECUTE unasked — the defect, for the priciest carts.
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "card",
+        deliveryType: "pickup",
+      }),
+      checkoutState({
+        paymentMethod: "card",
+        totalInCentavos: 150_000,
+        stayHomeDeliveryMarker: true,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toBe(CONTRADICTION_PROMPT)
+  })
+
+  it("MONEY BAND STILL GOVERNS the CORRECTED envelope (answering 'entrega' re-enters the ladder)", () => {
+    // The corrected turn is a NEW envelope carrying deliveryType: delivery.
+    // This guard is silent on it and confirmLargeTicket asks normally — which
+    // is why asking the contradiction first does not SKIP the money band.
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "card",
+        deliveryType: "delivery",
+      }),
+      checkoutState({
+        fulfillment: "delivery",
+        paymentMethod: "card",
+        totalInCentavos: 150_000,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toContain("R$")
+  })
+
+  it("the amount CAP still outranks the guard (a contradicting R$10.000+ cart REFUSEs)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "card",
+        deliveryType: "pickup",
+      }),
+      checkoutState({
+        paymentMethod: "card",
+        totalInCentavos: 1_500_000,
+        stayHomeDeliveryMarker: true,
+      }),
+      ordersPolicyBundle,
+    )
+    // refuseAmountAboveCap runs BEFORE this guard — an over-cap checkout is
+    // still REFUSEd outright, never softened into a mere question.
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  // ── CONFIRMATION-RECEIPT SCOPING (the binding hazard) ───────────────────
+
+  it("a STALE receipt (different intentHash) does NOT bypass the guard", async () => {
+    const { adjudicateAndAudit } = await import("@adjudicate/core")
+    const contradicting = env("order.checkout.create", {
+      cartId: "cart-1",
+      paymentMethod: "cash",
+      deliveryType: "pickup",
+    })
+    // A receipt the customer earned against a DIFFERENT intent earlier in the
+    // conversation. Receipts are scoped to an intentHash, not to a question, so
+    // this is precisely the shape that must NOT let a pickup checkout through.
+    const otherEnvelope = env("order.cancel", {
+      orderId: "o-1",
+      reason: "changed_mind",
+    })
+    expect(otherEnvelope.intentHash).not.toBe(contradicting.intentHash)
+
+    const sink = { emit: async () => {} }
+    const resumed = await adjudicateAndAudit(
+      contradicting,
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+      {
+        sink,
+        confirmationReceipt: {
+          intentHash: otherEnvelope.intentHash,
+          at: DET_TIME,
+        },
+      },
+    )
+    expect(resumed.decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (resumed.decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(resumed.decision.prompt).toBe(CONTRADICTION_PROMPT)
+  })
+
+  it("the guard mints its OWN question — only a MATCHING receipt converts it", async () => {
+    // The positive half of the scoping pin: the confirm is a real, resolvable
+    // question (not a dead end), and it is resolved by a receipt for THIS
+    // envelope. Paired with the stale-receipt test, this proves the conversion
+    // is keyed on identity rather than on "some confirmation exists".
+    const { adjudicateAndAudit } = await import("@adjudicate/core")
+    const contradicting = env("order.checkout.create", {
+      cartId: "cart-1",
+      paymentMethod: "cash",
+      deliveryType: "pickup",
+    })
+    const sink = { emit: async () => {} }
+    const resumed = await adjudicateAndAudit(
+      contradicting,
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+      {
+        sink,
+        confirmationReceipt: {
+          intentHash: contradicting.intentHash,
+          at: DET_TIME,
+        },
+      },
+    )
+    expect(resumed.decision.kind).toBe("EXECUTE")
+  })
+
+  // ── NON-VACUITY / REVERT-TO-RED at the guard seam ──────────────────────
+
+  it("REVERT-TO-RED — with the guard removed the V7 case EXECUTEs the wrong pickup checkout", () => {
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "confirmDeliveryContradiction",
+    )
+    // Sanity: exactly one guard was removed (the filter actually matched).
+    expect(businessWithoutGuard.length).toBe(
+      ordersPolicyBundle.business.length - 1,
+    )
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      { ...ordersPolicyBundle, business: businessWithoutGuard },
+    )
+    // THE MEASURED DEFECT, reproduced: valid capability, wrong payload, EXECUTES.
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REVERT-TO-RED — with the guard removed the CONTROLS are unchanged (the guard is the only difference)", () => {
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "confirmDeliveryContradiction",
+    )
+    const bundleWithout = {
+      ...ordersPolicyBundle,
+      business: businessWithoutGuard,
+    }
+    const controls: ReadonlyArray<[string, OrderState, string]> = [
+      ["plain pickup", checkoutState(), "pickup"],
+      ["plain delivery", checkoutState({ fulfillment: "delivery" }), "delivery"],
+      [
+        "marker + delivery",
+        checkoutState({ fulfillment: "delivery", stayHomeDeliveryMarker: true }),
+        "delivery",
+      ],
+      [
+        "large-ticket delivery",
+        checkoutState({
+          fulfillment: "delivery",
+          paymentMethod: "card",
+          totalInCentavos: 150_000,
+        }),
+        "delivery",
+      ],
+    ]
+    for (const [label, ctxState, deliveryType] of controls) {
+      const e = env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: ctxState.ctx.paymentMethod ?? "cash",
+        deliveryType,
+      })
+      const withGuard = adjudicate(e, ctxState, ordersPolicyBundle)
+      const withoutGuard = adjudicate(e, ctxState, bundleWithout)
+      expect(`${label}:${withGuard.kind}`).toBe(`${label}:${withoutGuard.kind}`)
+    }
+  })
+})

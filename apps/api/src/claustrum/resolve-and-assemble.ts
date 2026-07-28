@@ -737,6 +737,151 @@ export function isAllergenMentionUtterance(text: string | undefined): boolean {
   return typeof text === "string" && ALLERGEN_MENTION_PATTERN.test(text);
 }
 
+/**
+ * BKL-280 — the STAY-HOME / DELIVERY-REQUEST marker net, and the deterministic
+ * detector `confirmDeliveryContradiction` (pack-orders/src/policies.ts) reads
+ * through the `stayHomeDeliveryMarker` ctx flag stamped in `resolveAndAssemble`.
+ *
+ * ── WHAT DEFECT THIS EXISTS FOR ──────────────────────────────────────────────
+ *
+ * V7-proven (bkl278, 2026-07-27, epoch 54cf4353d5a32564): on the utterance
+ * "não vou poder sair de casa hoje, fecha aí, pago em dinheiro na entrega" the
+ * 4B emits `order.checkout.create {delivery_type: "pickup", payment_method:
+ * "cash"}` — a VALID capability carrying a WRONG payload, so it EXECUTEs. The
+ * customer who just said they cannot leave home is signed up to collect their
+ * order in person. It reproduces under EVERY prompt arm measured (V1/V2/V5/V7/
+ * V8/STOCK/PATCHED), so it is a decision-boundary binding failure, not a
+ * persona bug — owner ruling 2026-07-27 chose OPTION B, a deterministic
+ * pack-side contradiction guard, precisely because prompts cannot stabilize it
+ * and a guard outside the model is inherited by every future engine.
+ *
+ * ── WHY A LITERAL MARKER NET AND NOT A CLASSIFIER ────────────────────────────
+ *
+ * The flag must be UNFORGEABLE by the model: it is derived here, at resolve
+ * time, from the customer's OWN utterance text, and never from anything the
+ * model emitted. A probabilistic detector would re-introduce the very failure
+ * mode the guard exists to bound (SDD §H, data-independence). So the net is a
+ * closed list of explicit literal substrings — no fuzzy matching, no stemming,
+ * no scoring.
+ *
+ * ── WHY DIACRITICS ARE FOLDED (and why that is safe HERE) ────────────────────
+ *
+ * The evidence corpus is 100% accent-correct ("não" 2252 occurrences, "nao"
+ * zero), but real WhatsApp customers type both. Folding NFD combining marks
+ * lets ONE ASCII marker match both spellings instead of maintaining a
+ * two-spelling table (the `al[eé]rg` lesson above, generalized). This is NOT
+ * the `canonicalizeUtterance` seam — that one PRESERVES diacritics on purpose
+ * because it disambiguates place names (Ibaté ≠ Ibate). Nothing here resolves
+ * an entity; folding only widens a safety net, so a fold that over-matches
+ * costs a question and never a wrong execution.
+ *
+ * ── HOW THE NET WAS SIZED (measured, not guessed) ────────────────────────────
+ *
+ * Swept against the LIVE catalog (Postgres :5433 — 283 product/category/
+ * variant/ingredient rows: ZERO hits), 1439 real `conversation_messages`, and
+ * 431 in-repo corpus utterances. Against the 26-case governance-tier
+ * `order.checkout.create` extraction corpus the net scores 11/11 on the
+ * delivery cases and 0/11 on the pickup cases — no false negatives, no false
+ * positives. Two measured corrections are baked in and must not be reverted
+ * without re-running that sweep:
+ *   - the bare English "delivery" marker was REMOVED: its only corpus
+ *     occurrence is the NEGATED "não quero delivery não, fecha em dinheiro,
+ *     vou retirar" — a genuine pickup, which it turned into a false positive.
+ *   - "receber em casa" was ADDED: "…gostaria de receber em casa" is a
+ *     delivery checkout the first net silently missed (a false NEGATIVE, the
+ *     expensive direction — a missed contradiction is a wrong EXECUTE).
+ *
+ * The asymmetry is deliberate and is the whole design rule here: a false
+ * positive costs one extra question (annoying, safe); a false negative costs a
+ * wrong executed checkout (the defect). Bias toward asking.
+ */
+function foldForMarkers(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * FAMILY A — explicit statements of being unable/unwilling to LEAVE THE HOUSE.
+ * Negated-verb forms ("não vou poder sair") rather than a bare "sair de casa",
+ * which a legitimate pickup customer could say ("vou sair de casa pra buscar").
+ */
+const STAY_HOME_MARKERS: readonly string[] = [
+  "nao vou poder sair",
+  "nao vou conseguir sair",
+  "nao posso sair",
+  "nao vou sair",
+  "nao consigo sair",
+  "nao da pra sair",
+  "nao tenho como sair",
+  "sem poder sair",
+  "sem sair de casa",
+  "estou em casa",
+  "to em casa",
+  "tou em casa",
+  "fico em casa",
+  "ficar em casa",
+  "preso em casa",
+  "presa em casa",
+];
+
+/**
+ * FAMILY B — explicit asks to RECEIVE the order at an address. Phrase-level,
+ * never the bare word "entrega": "endereço de entrega incorreto" (a cancel
+ * reason) and "vocês entregam em Ibaté?" (a coverage question) both contain it
+ * and neither is a delivery REQUEST.
+ */
+const DELIVERY_REQUEST_MARKERS: readonly string[] = [
+  "na entrega",
+  "pra entrega",
+  "para entrega",
+  "quero entrega",
+  "queria entrega",
+  "com entrega",
+  "entregar aqui",
+  "entregar em casa",
+  "entrega em casa",
+  "entregar na minha casa",
+  "entrega na minha casa",
+  "me entrega",
+  "entrega pra mim",
+  "manda pra minha casa",
+  "manda pra casa",
+  "manda aqui",
+  "mandar aqui",
+  "traz aqui",
+  "trazer aqui",
+  "trazer em casa",
+  "receber em casa",
+  "recebo em casa",
+  "receber aqui",
+  "aqui em casa",
+  "na minha casa",
+  "pra minha casa",
+  "meu endereco",
+];
+
+/** The two families, as ONE closed list. Exported for the marker-table test. */
+export const STAY_HOME_DELIVERY_MARKERS: readonly string[] = [
+  ...STAY_HOME_MARKERS,
+  ...DELIVERY_REQUEST_MARKERS,
+];
+
+/**
+ * Pure — no IO/clock/RNG. TRUE when the utterance carries an explicit stay-home
+ * OR delivery-request marker. Either family alone is sufficient: the second
+ * V7-class failing row ("pode fechar, pago no pix e manda pra minha casa")
+ * carries NO stay-home phrase and no `entrega*` token at all, so an
+ * A-AND-B conjunction would miss it.
+ */
+export function hasStayHomeDeliveryMarker(text: string | undefined): boolean {
+  if (typeof text !== "string") return false;
+  const folded = foldForMarkers(text);
+  return STAY_HOME_DELIVERY_MARKERS.some((m) => folded.includes(m));
+}
+
 // Order kinds resolved by id (→ loadOrderCtx, which confirms customer ownership
 // and sets resourceOwnerConfirmed). 034-F1: every OWNERSHIP_GATED order kind MUST
 // be here (or a payment.* kind, handled by loadPaymentCtx) — otherwise it falls to
@@ -2575,6 +2720,30 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // change their allergies.
   if (kind === "customer.preferences.update" && isAllergenMentionUtterance(utteranceText)) {
     ctx.allergenMentionDetected = true;
+  }
+
+  // BKL-280 — stamp the stay-home/delivery-request ctx flag
+  // `confirmDeliveryContradiction` (pack-orders/src/policies.ts) reads to ask a
+  // customer whether they really meant RETIRADA, when their own words asked for
+  // entrega but the model filled `delivery_type: pickup`.
+  //
+  // Derived from the customer's OWN utterance, NEVER from the model's payload —
+  // the flag is the one input in this decision the model cannot author, which is
+  // the entire point of moving the check outside it (owner ruling, Option B).
+  //
+  // Stamped ONLY for `order.checkout.create`: the marker words are ordinary
+  // Portuguese and appear in cancel reasons ("endereço de entrega incorreto")
+  // and coverage questions ("vocês entregam em Ibaté?"), so a kind gate keeps
+  // the flag off every envelope whose guard could not use it anyway.
+  //
+  // ABSENT ON THE RESUME PATH BY CONSTRUCTION, and that is correct rather than a
+  // gap: `enrichResumeState` (claustrum-bootstrap.ts) re-adjudicates a PARKED
+  // envelope by calling `resolveAndAssemble` with no `utteranceText`, so the flag
+  // is undefined, the guard returns null, and a confirm-resume behaves EXACTLY as
+  // it does today. That is what keeps this change purely ADDITIVE — the money
+  // band ladder and every existing checkout verdict are untouched on resume.
+  if (kind === "order.checkout.create" && hasStayHomeDeliveryMarker(utteranceText)) {
+    ctx.stayHomeDeliveryMarker = true;
   }
 
   // LE2-021 — the reorder-last anchor's grounding read. Additive, owner-scoped,

@@ -100,6 +100,8 @@ const {
   parseRelativeOrderDate,
   resolveReservationSlot,
   isAllergenMentionUtterance,
+  hasStayHomeDeliveryMarker,
+  STAY_HOME_DELIVERY_MARKERS,
 } = await import("../resolve-and-assemble.js");
 
 const BUDGET = 100_000;
@@ -2830,5 +2832,147 @@ describe("resolve-and-assemble — BKL-227 reservation.modify party-size recover
       utteranceText: "mesa para 4 pessoas",
     });
     expect((payload as { newPartySize?: number }).newPartySize).toBeUndefined();
+  });
+});
+
+// ── BKL-280 — the stay-home / delivery-request marker net ───────────────────
+
+describe("hasStayHomeDeliveryMarker — BKL-280 pure detector", () => {
+  // TRUE POSITIVES. Written in the ACCENTED spelling customers actually type
+  // (the evidence corpus is 100% accent-correct: "não" x2252, "nao" x0), plus
+  // the bare-ASCII spelling WhatsApp produces — one folded net must catch both.
+  it.each([
+    // THE V7 DEFECT ROW, verbatim from the evidence corpus.
+    "não vou poder sair de casa hoje, fecha aí, pago em dinheiro na entrega",
+    // …and the same row unaccented, which the fold must catch identically.
+    "nao vou poder sair de casa hoje, fecha ai, pago em dinheiro na entrega",
+    // The SECOND failing corpus row — no stay-home phrase and no `entrega*`
+    // token at all, which is why either family alone must suffice.
+    "pode fechar, pago no pix e manda pra minha casa",
+    "dá pra fechar no cartão e entregar aqui em casa?",
+    "Por gentileza, finalize meu pedido. Pagarei via PIX e gostaria de receber em casa.",
+    "pode finalizar no débito, por favor, e entregar no meu endereço",
+    "finaliza aí, pago na entrega, em espécie",
+    "fecha no pix e entrega em casa, manda o recibo pro meu email",
+    "quero fechar o pedido, pode entregar em casa",
+    "fecha o pedido no cartão, entrega em casa",
+    "fecha o pedido no pix, manda pra minha casa",
+    "fecha o pedido, pago em dinheiro, entrega no meu endereço",
+    "não posso sair de casa, pode entregar?",
+    "estou em casa o dia todo, manda aqui",
+  ])("fires on a stay-home / delivery utterance: %s", (text) => {
+    expect(hasStayHomeDeliveryMarker(text)).toBe(true);
+  });
+
+  // TRUE NEGATIVES. Every genuine PICKUP utterance in the governance-tier
+  // checkout corpus, plus the two known false-positive traps.
+  it.each([
+    "quero fechar o pedido no pix, vou retirar no balcão",
+    "Solicito a finalização do pedido com pagamento no cartão. Farei a retirada no local.",
+    "fecha aí, dinheiro, retiro eu mesmo",
+    "finaliza a compra, pago pela chave pix, vou buscar pessoalmente",
+    "fecha o pedido, vou pagar no crédito e passo aí pra pegar",
+    // THE NEGATION TRAP that removed the bare English "delivery" marker: a
+    // pickup customer who says the word while declining it.
+    "não quero delivery não, fecha em dinheiro, vou retirar",
+    "meu cpf é 123.456.789-00, fecha o pedido no pix, retiro no local",
+    "Por favor, finalize meu pedido. Farei a retirada no balcão.",
+    "fecha o pedido no cartão, vou retirar no balcão",
+    "fecha o pedido no cartão, retiro no local",
+    "pode finalizar no pix, retiro pessoalmente",
+    // A cancel REASON that contains the word "entrega" but asks for nothing.
+    "Solicito o cancelamento do pedido. Motivo: endereço de entrega incorreto.",
+    // A coverage QUESTION, not a delivery request.
+    "vocês entregam em Ibaté?",
+    "qual a taxa de entrega?",
+    // Ordinary checkouts naming no fulfilment at all.
+    "quero fechar o pedido, vou pagar no pix",
+    "consegue fechar meu pedido no cartão?",
+    "quero fechar o pedido",
+    "",
+    undefined,
+  ])("stays silent on: %s", (text) => {
+    expect(hasStayHomeDeliveryMarker(text)).toBe(false);
+  });
+
+  it("is a CLOSED literal net — every marker is lowercase, unaccented ASCII", () => {
+    // The detector folds diacritics before matching, so a marker carrying an
+    // accent (or an uppercase letter) could never match anything. This pins the
+    // invariant at the point a future edit would break it.
+    for (const marker of STAY_HOME_DELIVERY_MARKERS) {
+      expect(marker).toBe(marker.toLowerCase());
+      expect(marker.normalize("NFD")).toBe(marker);
+      expect(/^[a-z ]+$/.test(marker)).toBe(true);
+    }
+  });
+
+  it("the net is non-empty and has no duplicates", () => {
+    expect(STAY_HOME_DELIVERY_MARKERS.length).toBeGreaterThan(0);
+    expect(new Set(STAY_HOME_DELIVERY_MARKERS).size).toBe(
+      STAY_HOME_DELIVERY_MARKERS.length,
+    );
+  });
+
+  it("the bare word 'entrega' is NOT a marker (it appears in cancels and FAQs)", () => {
+    // Regression pin for the sweep's headline false-positive finding: a bare
+    // token would fire on "endereço de entrega incorreto" and "vocês entregam".
+    expect(STAY_HOME_DELIVERY_MARKERS).not.toContain("entrega");
+    expect(STAY_HOME_DELIVERY_MARKERS).not.toContain("entregar");
+    expect(STAY_HOME_DELIVERY_MARKERS).not.toContain("casa");
+    // And the negated-mention trap that cost the English loanword its place.
+    expect(STAY_HOME_DELIVERY_MARKERS).not.toContain("delivery");
+  });
+});
+
+describe("resolveAndAssemble — BKL-280 stayHomeDeliveryMarker ctx stamp", () => {
+  it("stamps the flag for a contradicting checkout utterance", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "cash", delivery_type: "pickup" },
+      customerId: "cus-1",
+      channel: "whatsapp",
+      utteranceText:
+        "não vou poder sair de casa hoje, fecha aí, pago em dinheiro na entrega",
+    });
+    expect(ctx.stayHomeDeliveryMarker).toBe(true);
+    // And the wire rename still happened — the guard reads `deliveryType`.
+    expect(ctx.fulfillment).toBe("pickup");
+  });
+
+  it("does NOT stamp for an ordinary pickup checkout utterance", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "pix", delivery_type: "pickup" },
+      customerId: "cus-1",
+      channel: "whatsapp",
+      utteranceText: "quero fechar o pedido no pix, vou retirar no balcão",
+    });
+    expect(ctx.stayHomeDeliveryMarker).toBeUndefined();
+  });
+
+  it("does NOT stamp for a kind outside order.checkout.create", async () => {
+    // The marker words are ordinary Portuguese and appear in cancel reasons.
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { orderId: "o-1" },
+      customerId: "cus-1",
+      channel: "whatsapp",
+      utteranceText:
+        "Solicito o cancelamento do pedido. Motivo: quero receber em casa.",
+    });
+    expect(ctx.stayHomeDeliveryMarker).toBeUndefined();
+  });
+
+  it("does NOT stamp when there is no utterance — the RESUME path", async () => {
+    // `enrichResumeState` re-resolves a PARKED envelope with no utteranceText.
+    // The flag must be absent so the confirm-resume behaves exactly as before
+    // this guard existed (this is what keeps the change purely additive).
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "cash", delivery_type: "pickup" },
+      customerId: "cus-1",
+      channel: "whatsapp",
+    });
+    expect(ctx.stayHomeDeliveryMarker).toBeUndefined();
   });
 });
