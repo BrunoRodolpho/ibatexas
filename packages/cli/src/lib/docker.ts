@@ -124,9 +124,22 @@ function pgVersionMismatchHint(logs: string): string[] | null {
       "    PostgreSQL does not support in-place major version upgrades.",
     ),
     "",
-    chalk.white("    To fix (destroys local data — you'll need to re-bootstrap):"),
-    chalk.cyan("      docker compose down -v          # removes volumes"),
-    chalk.cyan("      ibx bootstrap                   # fresh setup"),
+    // BKL-284: non-destructive path FIRST. The old hint led with a bare
+    // `docker compose down -v`, which is both a container REMOVER (a restart
+    // policy cannot survive it) and a volume DESTROYER — and `down -v` with no
+    // -f applies to the whole core file, so it wipes redis/typesense/nats data
+    // too, not just the postgres volume the diagnostic is about.
+    chalk.white("    Preferred — keep your data (pin the image back to the old major):"),
+    chalk.cyan(`      # set the postgres image back to pgvector/pgvector:pg${oldVer} in docker-compose.yml`),
+    chalk.cyan("      docker compose up -d postgres"),
+    chalk.cyan(`      # then dump with pg_dump and restore into pg${newVer}`),
+    "",
+    chalk.red("    Last resort — PERMANENTLY DELETES ALL LOCAL DATA:"),
+    chalk.red("    `down -v` destroys the postgres, redis, typesense AND nats"),
+    chalk.red("    volumes. Every local order, seed and conversation is gone and"),
+    chalk.red("    is NOT recoverable. Only run this on a throwaway local stack."),
+    chalk.cyan("      docker compose down -v          # removes containers + ALL volumes"),
+    chalk.cyan("      ibx bootstrap                   # fresh setup, re-seeds from scratch"),
   ]
 }
 
@@ -156,7 +169,20 @@ function permissionOrDiskHint(logs: string): string[] | null {
   return [
     "",
     chalk.yellow(reason),
-    chalk.white("    Try cleaning up Docker resources:"),
+    // BKL-284: `docker system prune -f` REMOVES EVERY STOPPED CONTAINER. After
+    // an `ibx dev stop` (which runs `docker compose stop`, leaving the core four
+    // Exited) this hint deletes postgres/redis/typesense/nats outright — a
+    // restart policy cannot save a container that no longer exists. That is one
+    // of the two candidate mechanisms for the 2026-07-27 vanish incident, so the
+    // narrow reclaims are listed first and the broad one carries its blast radius.
+    chalk.white("    Try the narrow reclaims first (these touch no containers):"),
+    chalk.cyan("      docker image prune -f           # dangling images only"),
+    chalk.cyan("      docker builder prune -f         # build cache only"),
+    "",
+    chalk.yellow("    Broader — REMOVES ALL STOPPED CONTAINERS:"),
+    chalk.yellow("    If the ibatexas stack is merely stopped (e.g. you ran `ibx dev"),
+    chalk.yellow("    stop`), this DELETES postgres/redis/typesense/nats. Named volumes"),
+    chalk.yellow("    survive, so recreate them with `ibx dev` (or `docker compose up -d`)."),
     chalk.cyan("      docker system prune -f"),
   ]
 }
