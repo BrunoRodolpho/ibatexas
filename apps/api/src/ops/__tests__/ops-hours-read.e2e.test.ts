@@ -352,15 +352,41 @@ describe("BKL-234 — the honesty rules still hold on the hours read", () => {
     expect(out.response).not.toContain(HOURS_RENDER);
   });
 
-  // The residual coupling, documented rather than hidden: STORE_HOURS alone still
-  // degrades, because §O#15 requires the STORE_OPEN_NOW companion the span asked for.
-  // The persona naming the PAIR is what keeps production off this path; if that line
-  // is ever dropped, this test says exactly what breaks.
-  it("hours ALONE still degrades — the persona must propose the pair (§O#15 coupling)", async () => {
+  // BKL-289 INVERTED THIS TEST — deliberately, and this is the ops twin of the fix.
+  //
+  // It used to pin the residual coupling as CORRECT: "STORE_HOURS alone still
+  // degrades, because §O#15 requires the STORE_OPEN_NOW companion the span asked
+  // for. The persona naming the PAIR is what keeps production off this path." That
+  // residual WAS the BKL-289 defect — a deterministic requirement guarded only by a
+  // probabilistic prompt line. It reproduced live on the customer plane (turns
+  // 246f1d64 / 1539337c / c6ff25ca): the 4B proposed STORE_HOURS alone, the hours
+  // claim VALIDATED against live Redis, and §O#15 threw the whole answer away.
+  //
+  // The never-omit-required union now adds the omitted STORE_OPEN_NOW companion
+  // deterministically, so an omitting model no longer costs the operator the answer.
+  // The persona line stays as belt-and-suspenders but is no longer load-bearing.
+  it("hours ALONE now RENDERS — the union supplies the companion the model omitted", async () => {
+    const response = await runHoursTurn("Qual horário de funcionamento?", [
+      { type: "STORE_HOURS", subject: "loja" },
+    ]);
+
+    expect(response).toContain(HOURS_RENDER);
+    // The unioned companion did not merely appear — it VALIDATED and rendered.
+    expect(response).toContain(OPEN_RENDER);
+    expect(response).not.toBe(SAFE_UNKNOWN);
+  });
+
+  // …and the degrade is UNWEAKENED: when the unioned companion cannot validate, the
+  // turn still degrades and the validated hours do NOT leak past it. This is the
+  // control that keeps the test above from reading as "§O#15 was loosened".
+  it("hours ALONE still DEGRADES when the unioned companion cannot validate", async () => {
+    scheduleBackend.scheduleThrows = true;
+
     const response = await runHoursTurn("Qual horário de funcionamento?", [
       { type: "STORE_HOURS", subject: "loja" },
     ]);
 
     expect(response).toBe(SAFE_UNKNOWN);
+    expect(response).not.toContain(HOURS_RENDER);
   });
 });
