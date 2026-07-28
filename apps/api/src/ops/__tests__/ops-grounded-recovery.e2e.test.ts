@@ -158,12 +158,49 @@ function claimsScriptedModel(opts: {
   } as ModelProvider & { complete: ReturnType<typeof vi.fn> };
 }
 
-function buildDeps(model: ModelProvider) {
+/** A live ops snapshot the read executor returns (the ops-read-render fixture). */
+const SNAPSHOT = {
+  now: "2026-07-04T21:00:00.000Z",
+  opsAlerts: { open: 3, bySeverity: { low: 1, medium: 1, high: 1 } },
+  incidents: { open: 2 },
+  kitchen: {
+    activeTickets: 4,
+    oldestTicketAgeMs: 300_000,
+    queueDepth: [
+      { status: "pending", count: 1 },
+      { status: "preparing", count: 2 },
+      { status: "ready", count: 1 },
+    ],
+  },
+  caixa: {
+    date: "2026-07-04",
+    ordersCount: 12,
+    grossCentavos: 120_000,
+    settledCentavos: 110_000,
+    refundedCentavos: 5_000,
+    netCentavos: 105_000,
+  },
+  reservations: {
+    date: "2026-07-04",
+    total: 5,
+    byStatus: [
+      { status: "confirmed", count: 4 },
+      { status: "pending", count: 1 },
+    ],
+  },
+  degraded: [],
+};
+
+function buildDeps(
+  model: ModelProvider,
+  opsReadToolExecutors: Record<string, unknown> = {},
+) {
   const sink = makeCapturingAuditSink();
   const { tools } = buildOpsTools({}, sink);
   return {
     sink,
     deps: composeOpsDeps({
+      opsReadToolExecutors,
       adjudicator: makeAuditedAdjudicator({ sink }),
       session: makeStatefulSession(),
       tools,
@@ -187,8 +224,12 @@ function buildDeps(model: ModelProvider) {
   };
 }
 
-async function drive(model: ModelProvider, text: string) {
-  const { deps, sink } = buildDeps(model);
+async function drive(
+  model: ModelProvider,
+  text: string,
+  opsReadToolExecutors: Record<string, unknown> = {},
+) {
+  const { deps, sink } = buildDeps(model, opsReadToolExecutors);
   const out = await runOpsTurn(deps, { role: "OWNER", staffId: "owner1", text });
   return { out, sink };
 }
@@ -346,6 +387,70 @@ describe("BKL-262 Stage 2 — the recovery reply is composed, never authored", (
     const { out } = await drive(model, "fecha a loja amanhã");
 
     expect(out.response).toBe(refusalOf(out));
+  });
+});
+
+// ── Class F — a captured READ on a refused turn ──────────────────────────────
+
+describe("BKL-262 Stage 2 — F · why the grounded-read arm has no live class today", () => {
+  /**
+   * THE FINDING, pinned as a test rather than asserted in a comment.
+   *
+   * Sonar flagged the grounded-read arm of the composition as uncovered, and the
+   * reason turned out to be structural rather than a gap in the fixtures: on the ops
+   * plane a one-hop READ and an `express_intent` NEVER co-occur on the same turn.
+   * Measured both directions below — the read executor runs when the completion
+   * carries only the read, and does NOT run when an `express_intent` rides along.
+   *
+   * Consequence: the "append the captured read to the refusal" arm cannot be reached
+   * end-to-end today, because a refused turn (which needs ≥1 envelope) is by
+   * construction a turn on which no read was dispatched. The arm is therefore
+   * DEFENSIVE rather than dead — it is the correct behaviour the moment the planner
+   * gains compound read+write turns (the BKL-029 composition direction), and
+   * withholding a read the operator asked for because an unrelated mutation was
+   * refused would be the mirror image of BKL-262's own harm.
+   *
+   * Its behaviour is covered directly at the responder seam in
+   * `apps/api/src/claustrum/__tests__/ops-refusal-recovery-composition.test.ts`.
+   *
+   * WHEN THIS TEST GOES RED it means the planner started composing reads with
+   * intents — at which point class F becomes live and belongs in the taxonomy above.
+   */
+  it("a read one-hop and an express_intent do not co-occur (so no refused turn carries a read)", async () => {
+    const readOnly = vi.fn(async () => SNAPSHOT);
+    await drive(
+      claimsScriptedModel({
+        intentCalls: [{ id: "tc-read", name: "ops_snapshot", input: {} }],
+        responderText: FABRICATED_HOURS,
+      }),
+      "como está o painel?",
+      { ops_snapshot: readOnly },
+    );
+    // Control: the wiring works — a read ALONE is dispatched and captured.
+    expect(readOnly).toHaveBeenCalled();
+
+    const withIntent = vi.fn(async () => SNAPSHOT);
+    const { out } = await drive(
+      claimsScriptedModel({
+        intentCalls: [
+          { id: "tc-read", name: "ops_snapshot", input: {} },
+          expressIntent("schedule.override.set", {
+            blocks: [],
+            date: "amanhã",
+            isOpen: true,
+          }),
+        ],
+        responderText: FABRICATED_HOURS,
+      }),
+      "como está o painel? e fecha a loja amanhã",
+      { ops_snapshot: withIntent },
+    );
+
+    // …but the SAME read call alongside an intent is never dispatched.
+    expect(withIntent).not.toHaveBeenCalled();
+    // The turn is still a refused-mutation turn, and still ships no model prose.
+    expect(out.decision.kind).toBe("REFUSE");
+    expect(out.response).not.toContain(FABRICATED_HOURS);
   });
 });
 
