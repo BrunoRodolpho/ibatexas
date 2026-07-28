@@ -11,6 +11,14 @@ interface SessionState {
 
   // Actions
   initSession: () => void
+  /**
+   * BKL-286: abandon the current conversation and mint a fresh sessionId.
+   * Unlike {@link initSession} (which preserves an existing id) this ALWAYS
+   * rotates — it is the recovery for a session whose server-side credential can
+   * no longer be satisfied. Auth state is untouched: a signed-in customer stays
+   * signed in, they simply get a new conversation.
+   */
+  resetSession: () => void
   /** Sync Zustand state after API login. Token is in httpOnly cookie — never passed to JS. */
   login: (customerId: string) => void
   setCustomer: (customerId: string, userType: 'customer' | 'staff') => void
@@ -52,6 +60,8 @@ export const useSessionStore = create<SessionState>()(
         if (sessionId) return
         set({ sessionId: generateSessionId(), userType: 'guest', customerId: undefined })
       },
+
+      resetSession: () => set({ sessionId: generateSessionId() }),
 
       login: (customerId) => {
         // Token is handled via httpOnly cookie set by the API.

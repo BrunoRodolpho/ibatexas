@@ -710,11 +710,18 @@ async function runConductorTurn(params: {
 
 // ── GET (SSE) helpers (S3776: keep the route handler's cognitive complexity low) ──
 
+/**
+ * Machine-readable reason for an access denial (BKL-286). Carried ALONGSIDE the
+ * pt-BR prose so the web client can pick its recovery copy structurally instead
+ * of string-matching a sentence that copy edits would silently break.
+ */
+const SSE_ERROR_CODE_SESSION_DENIED = "session_denied";
+
 /** Write a terminal SSE error frame (event-stream headers + end). */
-function writeSseError(reply: FastifyReply, message: string): void {
+function writeSseError(reply: FastifyReply, message: string, code?: string): void {
   reply.raw.setHeader("Content-Type", "text/event-stream");
   reply.raw.flushHeaders();
-  reply.raw.write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
+  reply.raw.write(`data: ${JSON.stringify({ type: "error", message, ...(code && { code }) })}\n\n`);
   reply.raw.end();
 }
 
@@ -737,7 +744,7 @@ async function denyStreamAccess(
       // Authenticated stream: must own the session.
       const owner = await redis.get(rk(`session:owner:${sessionId}`));
       if (owner && customerId !== owner) {
-        writeSseError(reply, "Acesso negado.");
+        writeSseError(reply, "Acesso negado.", SSE_ERROR_CODE_SESSION_DENIED);
         return true;
       }
     } else {
@@ -750,7 +757,7 @@ async function denyStreamAccess(
       // returns "Sessão não encontrada" (preserving dev's GET contract).
       const expectedSecret = await redis.get(rk(`session:secret:${sessionId}`));
       if (expectedSecret && providedSecret !== expectedSecret) {
-        writeSseError(reply, "Acesso negado.");
+        writeSseError(reply, "Acesso negado.", SSE_ERROR_CODE_SESSION_DENIED);
         return true;
       }
     }
