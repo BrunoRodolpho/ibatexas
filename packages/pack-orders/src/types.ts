@@ -539,6 +539,29 @@ export interface OrderState {
      */
     readonly amendItemConfirmed?: boolean
     /**
+     * BKL-280 — TRUE when the customer's OWN utterance on this turn carried an
+     * explicit stay-home ("não vou poder sair de casa") or delivery-request
+     * ("pago na entrega", "manda pra minha casa") marker.
+     *
+     * Stamped deterministically by the host at resolve time
+     * (`hasStayHomeDeliveryMarker` → `resolveAndAssemble`,
+     * apps/api/src/claustrum/resolve-and-assemble.ts) from a CLOSED list of
+     * literal substrings. Data-independent in the SDD §H sense and, critically,
+     * MODEL-UNFORGEABLE: it is derived from the customer's text, never from the
+     * payload the planner emitted — which is what lets
+     * `confirmDeliveryContradiction` (`./policies.ts`) catch a
+     * `delivery_type: pickup` the model got wrong. Raw prose never reaches the
+     * guard; only this boolean does.
+     *
+     * Like every other host-supplied flag on this ctx, LENIENT WHEN ABSENT: an
+     * unwired host (or the confirm-RESUME path, which re-resolves with no
+     * utterance text) leaves it undefined, the guard returns null, and the
+     * checkout ladder behaves byte-identically to before this flag existed. The
+     * guard only ever ADDS a question; absence can never turn a REFUSE into an
+     * EXECUTE.
+     */
+    readonly stayHomeDeliveryMarker?: boolean
+    /**
      * FE-T05 (Language Engine, HydratedIntentIR provenance) — how the target
      * order for `order.status.transition` was resolved:
      *   - `"authoritative"` — the staff gave an EXPLICIT reference (a display

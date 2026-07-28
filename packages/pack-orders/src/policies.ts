@@ -1061,6 +1061,109 @@ const confirmLargeTicket = nameGuard(
 ) as OrderGuard
 
 /**
+ * BKL-280 — THE STAY-HOME / PICKUP CONTRADICTION GUARD.
+ *
+ * A customer says, in their own words, that they cannot leave the house — or
+ * simply asks for delivery — and the checkout envelope that reaches the kernel
+ * carries `deliveryType: "pickup"`. That combination is never what the customer
+ * asked for, so this guard REQUESTS CONFIRMATION and lets them choose.
+ *
+ * ── THE DEFECT, AND WHY IT IS FIXED HERE INSTEAD OF IN A PROMPT ──────────────
+ *
+ * V7-proven (bkl278, 2026-07-27): on "não vou poder sair de casa hoje, fecha
+ * aí, pago em dinheiro na entrega" the 4B emits `order.checkout.create
+ * {delivery_type: "pickup", payment_method: "cash"}`. Every gate upstream
+ * passes — the capability is real, the payload type-checks, the slots are
+ * filled, the money band is under threshold — so it EXECUTES. The wrongness is
+ * entirely in ONE field, and nothing in the pipeline was positioned to notice
+ * that the field contradicts the sentence that produced it.
+ *
+ * The measured evidence is that this is NOT a persona bug: the same row emits
+ * pickup under every prompt arm tried (V1/V2/V5/V7/V8/STOCK/PATCHED), and a
+ * neutral-padding control — a paragraph mentioning nothing about checkout —
+ * moves it just as well. The model is sitting on a decision boundary that
+ * prompt text does not stabilize. Owner ruling 2026-07-27 (OPTION B, Option A
+ * "explicitly rejected as an endless prompt battle"): the contradiction between
+ * "cannot leave home" and "pickup" exists independently of any prompt, so the
+ * check belongs outside the model, where every future engine inherits it. That
+ * is what the kernel is for.
+ *
+ * ── WHY REQUEST_CONFIRMATION AND NOT REFUSE ──────────────────────────────────
+ *
+ * Governor's disposition, per the same ruling: a MISREAD customer should be
+ * ASKED, not punished. The customer did nothing wrong — the model did — so the
+ * remedy is one question, never a refusal they cannot act on.
+ *
+ * ── THE INPUT IS MODEL-UNFORGEABLE, WHICH IS THE WHOLE MECHANISM ─────────────
+ *
+ * `state.ctx.stayHomeDeliveryMarker` is stamped by the HOST at resolve time
+ * from the customer's own utterance against a closed literal marker list
+ * (`hasStayHomeDeliveryMarker`, apps/api/src/claustrum/resolve-and-assemble.ts);
+ * `deliveryType` comes off the payload the MODEL filled. The guard fires on the
+ * disagreement between a thing the model cannot author and a thing it can. Were
+ * the flag model-supplied, the same mis-binding that sets `pickup` could clear
+ * the flag, and the guard would be theatre. Raw prose never crosses this seam —
+ * only the boolean does.
+ *
+ * ── ORDERING: BEFORE `confirmLargeTicket`, DELIBERATELY ──────────────────────
+ *
+ * Business guards are first-non-null-wins, so on a contradicting checkout at or
+ * above R$ 1.000 exactly one of the two questions gets asked. It must be this
+ * one. Behind `confirmLargeTicket` the large-ticket confirm would fire first,
+ * the customer's "sim" would satisfy it, and the corrected-delivery question
+ * would never be put — the defect would survive untouched for precisely the
+ * most expensive carts. Ahead of it, the contradiction is settled first and the
+ * money band still governs the CORRECTED envelope: answering "entrega" changes
+ * the payload, which changes the `intentHash`, which is a new adjudication in
+ * which this guard is silent and `confirmLargeTicket` asks normally. The money
+ * ladder is not weakened; it is merely asked second.
+ *
+ * ── THIS GUARD ONLY EVER ADDS A QUESTION ─────────────────────────────────────
+ *
+ * Both conditions must hold, and both are narrow. An absent flag (unwired host,
+ * or the confirm-RESUME path, which re-resolves with no utterance text) returns
+ * null; a `delivery`-typed checkout returns null; a pickup checkout with no
+ * marker returns null. Every existing checkout verdict — plain pickup, plain
+ * delivery, the money bands, the PIX defer, the slot/cart/auth gates — is
+ * reached exactly as before. Nothing here can turn a REFUSE into an EXECUTE:
+ * the only transition this guard can cause is EXECUTE → REQUEST_CONFIRMATION.
+ *
+ * ── CONFIRMATION-RECEIPT SCOPING ─────────────────────────────────────────────
+ *
+ * The kernel's 2a override converts a REQUEST_CONFIRMATION only on
+ * `receipt.intentHash === envelope.intentHash`, so a receipt minted against a
+ * DIFFERENT envelope (a stale "sim" from an earlier turn) cannot satisfy this
+ * confirm — pinned by a dedicated test rather than assumed, because receipts
+ * are scoped to an intent, not to the question that was asked.
+ */
+const confirmDeliveryContradiction: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.checkout.create") return null
+  if (state.ctx.stayHomeDeliveryMarker !== true) return null
+  const deliveryType = (envelope.payload as { deliveryType?: unknown })
+    .deliveryType
+  // Case/whitespace-tolerant on purpose: the conductor normalizes the wire
+  // value through DELIVERY_TYPE_VALUE_SYNONYMS ("retirada"/"buscar" → "pickup"),
+  // but the HTTP cart route threads its own, and tolerating spelling here can
+  // only ever ADD the question — never skip it.
+  if (
+    typeof deliveryType !== "string" ||
+    deliveryType.trim().toLowerCase() !== "pickup"
+  ) {
+    return null
+  }
+  return decisionRequestConfirmation(
+    "O pedido está marcado como retirada no local, mas sua mensagem indica entrega. Como você prefere receber: entrega no seu endereço ou retirada no local?",
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        rule: "delivery_type_contradicts_utterance",
+        kind: envelope.kind,
+        deliveryType: "pickup",
+      }),
+    ],
+  )
+}
+
+/**
  * THE PAID-CANCEL CONFIRM SENTENCE — ONE definition, TWO callers (LE2-024).
  *
  * ── WHY THIS IS A FUNCTION AND NOT TWO STRING LITERALS ───────────────────────
@@ -1969,6 +2072,16 @@ export const ordersPolicyBundle: PolicyBundle<
     // large-cancel escalation unchanged.
     gatePaidCancel,
     escalateLargeCancel,
+    // BKL-280 — MUST stay ABOVE `confirmLargeTicket`. Both match
+    // `order.checkout.create` and business guards are first-non-null-wins, so on a
+    // contradicting checkout at/above R$ 1.000 exactly one question gets asked.
+    // Below the large-ticket confirm this guard is unreachable for precisely the
+    // most expensive carts: the money confirm would fire first, a "sim" would
+    // satisfy it, and the wrong pickup checkout would EXECUTE unasked — the very
+    // defect. Above it, the contradiction is settled first and the money band
+    // still governs the CORRECTED envelope (a different payload ⇒ a different
+    // intentHash ⇒ a fresh adjudication where this guard is silent).
+    confirmDeliveryContradiction,
     confirmLargeTicket,
     // LE2-023 — BEFORE the EXECUTE producers (see the guard's own ordering
     // note): `executeW5Kinds` matches `order.coupon.swap.request` too, and
