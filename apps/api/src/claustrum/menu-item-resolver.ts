@@ -390,9 +390,13 @@ export function resolveMenuOverviewText(
 // territory (celiac / lactose-intolerance) — a "sem glúten" list is a "não contém glúten"
 // assurance by another name, which the RATIFIED BKL-143/BKL-123 conservative rulings
 // forbid, and the registry's own MENU_DIETARY_OPTIONS carve-out comment already gated.
-// Those asks trip `ALLERGEN_FAMILY_RE` (glúten|lactose) in the span classifier and NEVER
-// reach this read — they route to the conservative honest-abstain path. This claim only
-// ever asserts a PREFERENCE attribute ("is tagged vegetarian"), never a health guarantee.
+// BKL-273 CORRECTION (this used to read "those asks trip ALLERGEN_FAMILY_RE in the span
+// classifier and NEVER reach this read" — false since PR #441): such asks DO reach this
+// read now. The span deliberately still fires, so the question stays inside §O#15
+// completeness, and the abstain happens HERE at the read (see the guard at the top of
+// `resolveDietaryOptionsText`, and BKL-270's registry-declared `dietaryPosture`). This
+// claim only ever asserts a PREFERENCE attribute ("is tagged vegetarian"), never a
+// health guarantee.
 
 /** The dietary-PREFERENCE tags MENU_DIETARY may render. Deliberately EXCLUDES the
  *  allergen-adjacent `sem_gluten`/`sem_lactose` (BKL-143/123 conservative gate). */

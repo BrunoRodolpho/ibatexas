@@ -42,6 +42,7 @@ import {
   CUSTOMER_CLAIM_SCOPE,
   REGISTRY_SPECS,
   type ClaimPlaneScope,
+  type DietaryPosture,
   type RegistryClaimSpec,
 } from "../claustrum/claim-registry.js";
 import {
@@ -147,9 +148,20 @@ export const OPS_RESERVATIONS_TODAY_FIELD = "reservationsTodayText";
  *     ledger entry, so C6 compares a first-party value against itself and the
  *     model can never author a number (the tag-then-derive contract).
  */
-function opsReadClaimSpec(key: string, field: string): RegistryClaimSpec {
+function opsReadClaimSpec(
+  key: string,
+  field: string,
+  dietaryPosture: DietaryPosture,
+): RegistryClaimSpec {
   return {
     kind: "read_claim",
+    // BKL-270 — a PARAMETER, deliberately, not a constant baked into the factory.
+    // Three ops types share this factory; hardcoding the posture would lock all
+    // three to one value forever, and a future ops read that genuinely needs a
+    // different one would have to either fork the factory or (far more likely)
+    // silently inherit the wrong posture. That silent-inheritance class is exactly
+    // what BKL-270 exists to remove, so the factory refuses to decide.
+    dietaryPosture,
     minSourceIntegrity: "structured",
     requiredEvidence: [
       {
@@ -203,15 +215,28 @@ function opsSupersededFalsifierKey(key: string): string {
  * adding a type without its schema is a COMPILE error (`satisfies`), exactly like
  * the customer `REGISTRY_SPECS`.
  */
+// BKL-270 — all three ops reads declare `answer-anyway`, and the reason is the
+// PLANE rather than the render: BKL-143's forbidden implication is about what a
+// CUSTOMER is told, and this plane speaks to STAFF. None of the three renders food
+// in any case (they are counts and a pending-escalation figure), so both arguments
+// point the same way. The field is declared here — not made optional for non-customer
+// planes — because an optional field is precisely the silence Option C removes: the
+// ops plane must STATE its posture, even when the answer is easy.
 export const OPS_REGISTRY_SPECS = {
-  [OPS_ORDERS_TODAY]: opsReadClaimSpec(OPS_ORDERS_TODAY_KEY, OPS_ORDERS_TODAY_FIELD),
+  [OPS_ORDERS_TODAY]: opsReadClaimSpec(
+    OPS_ORDERS_TODAY_KEY,
+    OPS_ORDERS_TODAY_FIELD,
+    "answer-anyway",
+  ),
   [OPS_PENDING_ESCALATIONS]: opsReadClaimSpec(
     OPS_PENDING_ESCALATIONS_KEY,
     OPS_PENDING_ESCALATIONS_FIELD,
+    "answer-anyway",
   ),
   [OPS_RESERVATIONS_TODAY]: opsReadClaimSpec(
     OPS_RESERVATIONS_TODAY_KEY,
     OPS_RESERVATIONS_TODAY_FIELD,
+    "answer-anyway",
   ),
 } satisfies Record<OpsClaimType, RegistryClaimSpec>;
 

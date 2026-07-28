@@ -45,7 +45,8 @@ import {
   createIbatexasInvestigator,
   type TurnReadGatherer,
 } from "./ibatexas-investigator.js";
-import type { ClaimPlaneScope } from "./claim-registry.js";
+import { CUSTOMER_CLAIM_SCOPE, type ClaimPlaneScope } from "./claim-registry.js";
+import { assertDietaryPostureDeclared } from "./dietary-posture.js";
 import type { Template } from "./slot-grammar.js";
 import {
   localDateParts,
@@ -291,11 +292,33 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
   // This is what makes a dangling template (a template with no backing
   // ClaimDefinition) mechanically impossible at load.
   assertClaimDefinitionRegistryValid();
+  // BKL-270 — the DIETARY-POSTURE gate, run with the same refuse-to-boot discipline
+  // immediately beside its sibling above (the `claimsRenderDriftProblems()` idiom a
+  // few lines below is the local precedent for an in-repo companion gate). It lives
+  // HERE rather than inside `assertClaimDefinitionRegistryValid` because that
+  // function validates `CLAIM_DEFINITIONS`, and `assembleClaimDefinition` is a LOSSY
+  // projection into the vendored `@adjudicate/core` `ClaimDefinition` type — it
+  // already drops `customerScoped`/`perResourceKey`, and would drop this too.
+  //
+  // Asserts every READ spec declares a posture, that the check was non-vacuous, and
+  // the two key-side soundness properties the read enforcement depends on. An
+  // undeclared read family is already a COMPILE error (the `ReadClaimSpec` union);
+  // this is the runtime backstop for the paths a compile check cannot reach — the
+  // GENERATED STORE_OPEN_NOW spec, and any spec built by a factory.
+  assertDietaryPostureDeclared(CUSTOMER_CLAIM_SCOPE, "customer");
   // LE2-012 — the PLANE's own fail-closed inv.18 assertion, run with the SAME
   // refuse-to-boot discipline immediately after the customer one (a plane registry
   // is a registry: an unaligned ops row must not serve either). Absent on the
   // customer plane ⟹ no-op.
   deps.plane?.assertRegistryValid?.();
+  // BKL-270 — and the posture gate over THIS PLANE's scope. A plane scope is a
+  // SUPERSET of the customer one, so this re-proves the customer half too; what it
+  // ADDS is the ops-only rows, which bind at compile time through
+  // `OPS_REGISTRY_SPECS satisfies Record<OpsClaimType, RegistryClaimSpec>` and must
+  // therefore also be declared and key-sound.
+  if (deps.plane !== undefined) {
+    assertDietaryPostureDeclared(deps.plane.claimScope, "ops");
+  }
   // FE-3.3 (FE-T16) — the customer-plane advertised-⊆-renderable BOOT gate,
   // mirroring the ops plane's `opsPlaneDriftProblems` (ops-conductor.ts): every
   // PROPOSABLE customer claim type (CLAIM_REGISTRY) not in the deliberate

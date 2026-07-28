@@ -167,10 +167,15 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // BKL-214 — MENU_DIETARY is PUBLIC per-item (subject = the dietary TAG the
     // investigator records under `menu:dietary:{tag}` after deterministic tag detection;
     // presentPublicItemIds resolves it, like the menu-item claims). A dietary-preference
-    // question rides classify-only deterministically; the allergen-adjacent diets never
-    // reach here (the span gate). FE-D12 residual widens identically (a dietary-read
-    // classify-only turn skips the model's §O#9 self-report — but such an ask carries no
-    // safety marker; an allergen-adjacent one is excluded upstream).
+    // question rides classify-only deterministically. FE-D12 residual widens identically
+    // (a dietary-read classify-only turn skips the model's §O#9 self-report — but such an
+    // ask carries no safety marker; an allergen-adjacent one is excluded upstream by the
+    // `isAllergenFamilyAsk` decline in `classifyOnlyRequiredTypes`).
+    //
+    // BKL-273 CORRECTION: this used to attribute the exclusion to "the span gate". That
+    // span condition was REMOVED by PR #441 — the diets reach the span on purpose now,
+    // and the protection is the ROUTE decline above plus the read-level abstain. The
+    // OUTCOME is unchanged; only the stated mechanism was wrong.
     "MENU_DIETARY",
     "STORE_INFO",
     // LE2-002 / NEW-007 — the PUBLIC delivery-coverage PAIR joins the eligible set

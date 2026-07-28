@@ -43,15 +43,23 @@ import {
   checkRequiredClaimCompleteness,
   classifyRequestSpans,
   decomposeRequiredClaims,
-  isAllergenFamilyAsk,
   isCouponValidityAsk,
   isDeliveryCoverageAsk,
+  isDietQualifiedAsk,
   isMedicalEmergencyAsk,
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
-import { render } from "./renderer-from-claims.js";
-import { REGISTRY_SPECS } from "./claim-registry.js";
-import type { Template } from "./slot-grammar.js";
+import { render, type RenderedLine } from "./renderer-from-claims.js";
+import {
+  REGISTRY_SPECS,
+  type RegistryClaimSpec,
+  type RegistryClaimType,
+} from "./claim-registry.js";
+import {
+  SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
+  renderPropositionFreeText,
+  type Template,
+} from "./slot-grammar.js";
 
 /**
  * LE2-012 — the CUSTOMER-SCOPED registry types, derived from the ONE source of
@@ -326,6 +334,11 @@ export function createIbatexasClaimsRenderer(
       // planner uses to force the §O#9 ESCALATE), for the emergency template +
       // the staff-surface sink. Absent requestText → false → byte-identical.
       const emergencyAsk = isMedicalEmergencyAsk(context?.requestText ?? "");
+      // BKL-270 — the DIET net (allergen family ∪ the non-allergen conditions:
+      // diabetes/sugar, celiac, intolerance). Hoisted like `emergencyAsk` above
+      // because it is now needed TWICE: once for the abstain copy selector, and once
+      // for the answer-with-abstention append below.
+      const dietAsk = isDietQualifiedAsk(context?.requestText ?? "");
       const result = render(
         // inv.17 — the renderer's REQUIRED input is the kernel-MINTED CanonicalClaim
         // set (`renderableCanonical`, 1:1 with `renderable`), NOT the raw renderable
@@ -341,10 +354,18 @@ export function createIbatexasClaimsRenderer(
         // specific handles. Absent → the generic clarify (byte-identical). Only ever
         // voiced on a CLARIFY terminal; ignored on every other terminal.
         context?.disambiguationCandidates ?? [],
-        // BKL-184 — an allergen-family ask landing on UNKNOWN renders the
+        // BKL-184 — a dietary ask landing on UNKNOWN renders the
         // abstain-plus-handoff-offer variant (the classifier's own net decides;
         // absent requestText → false → generic UNKNOWN, byte-identical).
-        isAllergenFamilyAsk(context?.requestText ?? ""),
+        //
+        // BKL-270 WIDENED this from `isAllergenFamilyAsk` to the diet net, and the
+        // reason is not symmetry: the READ guard now abstains for diabetes and celiac
+        // too, so leaving the COPY on the narrow net would hand a diabetic the generic
+        // "Não localizei essa informação confirmada agora" with NO handoff offer —
+        // strictly worse than the allergen path, and a regression introduced by a
+        // safety fix. The gate stays at resolution; only the copy selector widens,
+        // which keeps the ruling's "allergenAsk stays cosmetic" constraint intact.
+        dietAsk,
         // BKL-209 — a medical-emergency ask landing on ESCALATE renders the
         // emergency safe variant (deterministic net; absent requestText → false →
         // generic escalate, byte-identical).
@@ -371,9 +392,57 @@ export function createIbatexasClaimsRenderer(
           // Observe-side channel — a sink failure never breaks the customer render.
         }
       }
-      return { text: result.text };
+      // BKL-270 — `answer-with-abstention`: the customer gets BOTH halves.
+      //
+      // CART_CONTENTS is the only family with this posture (owner ruling
+      // 2026-07-27). The cart is the customer's OWN prior act, so refusing to show
+      // it because they mentioned an allergy is a severe degradation for exactly the
+      // customer who most needs to check it — but returning it as the answer to "o
+      // que tem no meu carrinho QUE SEJA SEM GLÚTEN?" would assert those items are
+      // safe, which is BKL-143's forbidden implication about food they are about to
+      // eat. So: render the fact, and refuse the FILTER in the same breath.
+      //
+      // This is a NEW composition shape for the claims renderer, and it is worth
+      // being explicit about that: every other safety variant (BKL-184 allergen,
+      // BKL-209 emergency, LE2-002 CEP, LE2-019 coupon) is a template REPLACEMENT
+      // reachable only on a non-RENDER terminal — `renderRenderables` forks on
+      // `terminal !== "RENDER"` before any of them. None of them can express
+      // "answer AND abstain", which is why the append lives here in the adapter
+      // rather than in the renderer core: the kernel and `renderer-from-claims.ts`
+      // stay untouched, and the appended sentence is the RATIFIED BKL-184 copy read
+      // from the same template constant, never a second hand-typed literal that
+      // could drift from it.
+      //
+      // Gated on all three of: the turn named a diet, the turn actually RENDERED,
+      // and a line of an `answer-with-abstention` type really asserted (read off
+      // `result.lines`, so it is PROVEN rather than inferred from the claim set).
+      const text =
+        dietAsk && result.terminal === "RENDER" && rendersAnswerWithAbstention(result.lines)
+          ? `${result.text} ${renderPropositionFreeText(SAFE_UNKNOWN_ALLERGEN_TEMPLATE)}`
+          : result.text;
+      return { text };
     },
   };
+}
+
+/**
+ * BKL-270 — did any line in this render ASSERT a claim whose registry spec declares
+ * `dietaryPosture: "answer-with-abstention"`?
+ *
+ * Registry-driven rather than a hardcoded `=== "CART_CONTENTS"`: a second family
+ * given this posture is covered the moment it declares one, which is the property
+ * Option C exists to buy. Checks `kind === "ASSERTION"` specifically — an ABSTENTION
+ * or UNFILLABLE line for the same type means the fact did NOT reach the customer, so
+ * there is nothing to qualify and the generic abstain already stands on its own.
+ */
+function rendersAnswerWithAbstention(lines: readonly RenderedLine[]): boolean {
+  return lines.some((line) => {
+    if (line.kind !== "ASSERTION" || line.claimType === undefined) return false;
+    const spec: RegistryClaimSpec | undefined = REGISTRY_SPECS[
+      line.claimType as RegistryClaimType
+    ];
+    return spec?.kind === "read_claim" && spec.dietaryPosture === "answer-with-abstention";
+  });
 }
 
 /**

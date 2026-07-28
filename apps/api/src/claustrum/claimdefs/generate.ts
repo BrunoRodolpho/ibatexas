@@ -77,7 +77,13 @@ export function emitGeneratedModule(unit: GenUnit): string {
   const { artifacts: a, sourceFile } = unit;
   const checksum = sourceChecksum(sourceFile);
 
-  // (1) registry spec — assignable to the ibatexas RegistryClaimSpec.
+  // (1) registry spec — assignable to `GeneratedReadClaimSpec`, i.e. a read spec
+  // MINUS `dietaryPosture` (BKL-270). The compiler cannot emit that field —
+  // `compileClaimDefinition` is in the published @adjudicate/core and has no concept
+  // of it, and the value is an OWNER RULING rather than a projection of the source —
+  // so the generated row asserts exactly what it can honestly produce and the
+  // posture is spliced in at the REGISTRY_SPECS site, where a reviewer sees it beside
+  // every other family's.
   const registrySpec = tsLiteral(a.registrySpec);
 
   // (3) render template — wrap the compiled slots in the ibatexas Template shape
@@ -94,12 +100,12 @@ export function emitGeneratedModule(unit: GenUnit): string {
   return [
     HEADER(sourceFile, checksum),
     "",
-    `import type { RegistryClaimSpec, RegistryClaimType } from "../claim-registry.js";`,
+    `import type { GeneratedReadClaimSpec, RegistryClaimType } from "../claim-registry.js";`,
     `import type { Template } from "../slot-grammar.js";`,
     `import type { ClaimDefinition } from "@adjudicate/core";`,
     "",
     `/** (1) GENERATED registry spec row (evidence / falsifiers / value-binding). */`,
-    `export const STORE_OPEN_NOW_REGISTRY_SPEC = ${registrySpec} satisfies RegistryClaimSpec;`,
+    `export const STORE_OPEN_NOW_REGISTRY_SPEC = ${registrySpec} satisfies GeneratedReadClaimSpec;`,
     "",
     `/** (3) GENERATED render template (proposition slots bound 1:1 to self + field). */`,
     `export const STORE_OPEN_NOW_TEMPLATE = ${template} satisfies Template;`,
