@@ -1749,15 +1749,39 @@ describe("ops conductor — menu.special.set reachable end-to-end (SCN-114)", ()
 // ── Wire Truth — ops REFUSE conversational recovery + truthful trace manifests ──
 //
 // Spec: ~/projects/IBX_WIRE_TRUTH_SPEC.md. A kernel-refused PROPOSED command
-// (the BKL-233 misparse class) synthesizes a reply to the operator's actual
-// message; a success-claiming or empty draft clamps back to the deterministic
-// refusal line; and every ops model call names its persona in the trace
-// manifest (single catalog tag) instead of emitting `[]` (the workbench's
-// `persona ?`).
+// (the BKL-233 misparse class) replies to the operator; a success-claiming or
+// empty draft clamps back to the deterministic refusal line; and every ops model
+// call names its persona in the trace manifest (single catalog tag) instead of
+// emitting `[]` (the workbench's `persona ?`).
+//
+// BKL-262 STAGE 2 SUPERSEDED THE FIRST CLAUSE. Wire Truth's recovery SYNTHESIS —
+// a model-authored reply gated by a false-SUCCESS lexicon — is exactly the surface
+// that shipped fabricated facts to operators, so the reply is now COMPOSED
+// deterministically (refusal + grounded facts or a proposition-free abstention)
+// with no model call on the branch. The clamp and trace-manifest clauses stand.
 
 describe("ops conductor — Wire Truth: REFUSE recovery + trace manifests", () => {
-  it("a kernel-refused command (BUSINESS_RULE) synthesizes a reply to the operator's message", async () => {
+  // BKL-262 STAGE 2 INVERTED THIS TEST, and that inversion is the ticket.
+  //
+  // It used to assert the opposite of what it asserts now: that a kernel-refused
+  // command SYNTHESISED a model reply, explicitly `not.toBe(refusal.userFacing)`.
+  // That synthesis is the surface BKL-262 was filed against — gated only by a
+  // false-SUCCESS lexicon, it shipped fabricated hours and a false coverage denial
+  // to operators on turns where nothing had executed. Stage 2 (owner ruling,
+  // option (c)) removes the model call from the branch entirely, so the reply is
+  // now COMPOSED from the deterministic refusal plus, when they exist, grounded
+  // facts or a proposition-free abstention.
+  //
+  // "tira o X do cardápio" is MUTATION-shaped, so no abstention is appended (the
+  // operator asked for an action, not information) and the reply is the refusal
+  // alone. The sibling test below — a success-claiming draft clamping to the
+  // deterministic line — is UNCHANGED and still passes: its expected outcome was
+  // already the deterministic refusal.
+  it("a kernel-refused command (BUSINESS_RULE) replies with the DETERMINISTIC refusal, never model prose", async () => {
     const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: {} }));
+    // Arm the model with a plausible, digit-free, success-word-free recovery. It
+    // passes every lexical guard that used to police this path — and it must still
+    // never reach the operator, because the path no longer calls the model at all.
     const recovery = "Não encontrei esse produto no cardápio. Quer conferir o nome?";
     const { model } = scriptedModel([AVAIL_CALL], recovery);
     // No matching product → product_not_found (BUSINESS_RULE) — the recovery class.
@@ -1771,10 +1795,10 @@ describe("ops conductor — Wire Truth: REFUSE recovery + trace manifests", () =
     expect(out.kind).toBe("REFUSE");
     if (out.kind === "REFUSE") {
       expect(out.refusal.kind).toBe("BUSINESS_RULE");
-      expect(out.response).toBe(recovery);
-      expect(out.response).not.toBe(out.refusal.userFacing);
+      expect(out.response).toBe(out.refusal.userFacing);
+      expect(out.response).not.toBe(recovery);
     }
-    // The refused executor still NEVER runs — recovery is prose, not action.
+    // The refused executor still NEVER runs.
     expect(medusaAdjudicated).not.toHaveBeenCalled();
   });
 

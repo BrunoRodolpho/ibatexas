@@ -118,10 +118,6 @@ const {
 const HOURS_RENDER = "Hoje nosso horário de funcionamento é: 11h–15h / 18h–23h.";
 /** The VALIDATED STORE_OPEN_NOW render (template × the pt-BR meal-period label). */
 const OPEN_RENDER = "No momento, o período de funcionamento é: jantar.";
-/** The proposition-free abstain a degraded claims turn renders. */
-const SAFE_UNKNOWN =
-  "Não localizei essa informação confirmada agora. Quer que eu verifique?";
-
 /** The live zone row behind the Ibaté proof (integer centavos — Hard Rule 2). */
 const IBATE_ZONE = { zoneName: "Ibaté", feeInCentavos: 1500, estimatedMinutes: 50 };
 const IBATE_COVERED: DeliveryCoverageResolution = {
@@ -419,21 +415,35 @@ describe("BKL-262 Stage 1 — a GENUINE refused mutation is never masked", () =>
   it.each(MUTATION_UTTERANCES)(
     "MUTATION %j: the refusal still reaches the operator",
     async (text) => {
-      const refusalDraft = "Não consegui aplicar essa alteração de horário.";
+      // Arm the model with a fabricated fact. Under Stage 2 this branch makes NO
+      // model call, so it can never ship — asserted below.
       const model = claimsScriptedModel({
         intentCalls: [SCHEDULE_MISPARSE],
         claims: [...SCHEDULE_PAIR],
-        responderText: refusalDraft,
+        responderText: FABRICATED_HOURS,
       });
 
       const { out } = await drive(model, text);
 
       expect(out.decision.kind).toBe("REFUSE");
-      // Rule 2 stands: the draft (the refusal explanation) is kept, NOT the render.
+      // Rule 2 stands: the validated render does NOT supersede the refusal.
       expect(out.response).not.toContain(HOURS_RENDER);
       expect(out.response).not.toContain(OPEN_RENDER);
-      // The operator is not told a cheerful fact in place of "that did not happen".
-      expect(out.response).toContain("Não consegui");
+      // The refusal itself LEADS the reply — the operator is told the action did
+      // not happen before anything else.
+      //
+      // BKL-262 STAGE 2 UPDATED THIS ASSERTION. It used to pin the MODEL draft's
+      // wording ("Não consegui…"), which passed only because the recovery branch
+      // synthesised prose. Stage 2 abolishes that synthesis, so the reply is now
+      // the deterministic explainer copy. The PROPERTY under test is unchanged —
+      // a genuine refused mutation still surfaces its refusal, and is not masked
+      // by the validated read — so the assertion is re-pinned to the property
+      // (the refusal leads) rather than to a sentence the model happened to write.
+      const refusal = (out.decision as { refusal?: { userFacing?: string } }).refusal;
+      expect(refusal?.userFacing).toBeTruthy();
+      expect(out.response.startsWith(refusal!.userFacing!)).toBe(true);
+      // …and no model-authored fact rides along.
+      expect(out.response).not.toContain(FABRICATED_HOURS);
     },
   );
 
@@ -467,16 +477,23 @@ describe("BKL-262 Stage 1 — a GENUINE refused mutation is never masked", () =>
 // ── 3. THE UNCHANGED PATHS ───────────────────────────────────────────────────
 
 describe("BKL-262 Stage 1 — every other REFUSE path is byte-unchanged", () => {
-  it("a REFUSE turn with NO validated claims takes the existing path", async () => {
-    // The schedule reads fail, so nothing validates and there is no answer to promote.
-    // This is the pre-existing behaviour and it must be preserved exactly.
+  it("a REFUSE turn with NO validated claims is not rescued (rule 2a declines)", async () => {
+    // The schedule reads fail, so nothing validates and there is no answer to
+    // promote — rule 2a's conjunct 2 declines and rule 2 keeps the draft.
+    //
+    // BKL-262 STAGE 2 UPDATED THIS ASSERTION. It used to additionally pin
+    // `not.toContain(SAFE_UNKNOWN)`, which described the OLD recovery path (model
+    // prose). Stage 2 deliberately replaces that with the epistemic self-report,
+    // so the safe-unknown text now DOES appear here by design — that is the fix,
+    // not a regression, and the fall-through taxonomy is pinned in
+    // ops-grounded-recovery.e2e.test.ts. What this test still owns is the RULE 2a
+    // decision: no validated render is promoted.
     scheduleBackend.hoursThrows = true;
     scheduleBackend.scheduleThrows = true;
-    const refusalDraft = "Não consegui concluir isso agora.";
     const model = claimsScriptedModel({
       intentCalls: [SCHEDULE_MISPARSE],
       claims: [...SCHEDULE_PAIR],
-      responderText: refusalDraft,
+      responderText: FABRICATED_HOURS,
     });
 
     const { out } = await drive(model, "Qual horário de funcionamento?");
@@ -484,7 +501,7 @@ describe("BKL-262 Stage 1 — every other REFUSE path is byte-unchanged", () => 
     expect(out.decision.kind).toBe("REFUSE");
     expect(out.response).not.toContain(HOURS_RENDER);
     expect(out.response).not.toContain(OPEN_RENDER);
-    expect(out.response).not.toContain(SAFE_UNKNOWN);
+    expect(out.response).not.toContain(FABRICATED_HOURS);
   });
 
   it("SMALL TALK is untouched — no spans, no rescue, natural prose survives", async () => {
