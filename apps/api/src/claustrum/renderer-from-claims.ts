@@ -379,7 +379,11 @@ function renderTerminalResult(
   // suppressed-value re-leak), so this stays within §O#5.
   if (terminal === "CLARIFY" && candidates.length > 0) {
     const text = clarifyWithCandidatesText(candidates.map((c) => c.label));
-    return { text, terminal, lines: [{ kind: "TERMINAL", text }] };
+    return {
+      text,
+      terminal,
+      lines: [{ kind: "TERMINAL", text, claimType: SAFE_TEMPLATES.clarify.claimType }],
+    };
   }
   // BKL-184 — an allergen-family ask that lands on honest ignorance renders the
   // abstain-plus-handoff-offer variant (still proposition-free — the defensive
@@ -426,7 +430,7 @@ function renderTerminalResult(
   const text = isPropositionFree(template)
     ? (renderTemplate(template, new Map()) ?? "")
     : "";
-  const line: RenderedLine = { kind: "TERMINAL", text };
+  const line: RenderedLine = { kind: "TERMINAL", text, claimType: template.claimType };
   return { text, terminal, lines: [line] };
 }
 

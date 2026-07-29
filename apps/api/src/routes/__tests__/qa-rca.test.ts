@@ -940,3 +940,132 @@ describe("qa-rca — undelivered replies", () => {
     await app.close();
   });
 });
+
+// ── span attribution route (RCA-legibility) ───────────────────────────────────
+//
+// GET /turns/:turnId/spans replays the PURE span classifiers server-side on the
+// turn's archived inbound text. These pin: the gate, SAFE_ID, the 404 for a
+// turn with no trace rows (incl. L0/L1 funnel turns), the happy path actually
+// running the real classifier (a menu ask fires MENU_OVERVIEW_Q), the
+// ambiguity flag of the window heuristic, and the ≤120-char snippet bound.
+
+describe("qa-rca — span attribution", () => {
+  const SPANS_HEAD = (rows: unknown[]) => (sql: string) => {
+    if (sql.includes("min(recorded_at) AS started_at") && !sql.includes("ended_at")) {
+      return Promise.resolve({ rows });
+    }
+    return Promise.resolve({ rows: [] });
+  };
+
+  it("401s without the bearer", async () => {
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/turns/t-1/spans" });
+    expect(res.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("400s a hostile turn id", async () => {
+    const app = await build();
+    const res = await app.inject({
+      method: "GET",
+      url: `/internal/qa/rca/turns/${encodeURIComponent("bad id!")}/spans`,
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("404s a turn with no turn_trace rows (L0/L1 funnel turns have nothing to attribute)", async () => {
+    db.query = SPANS_HEAD([]);
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/turns/t-l0/spans", headers: AUTH });
+    expect(res.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it("classifies the archived inbound text with the REAL decomposer (menu ask → MENU_OVERVIEW_Q)", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at") && !sql.includes("ended_at")) {
+        return { rows: [{ conversation_id: "conv-1", started_at: "2026-07-29T00:46:10.000Z" }] };
+      }
+      if (sql.includes("conversation_messages")) {
+        return { rows: [{ content: "voces estao com o menu todo disponivel?", sent_at: "2026-07-29T00:46:09.000Z" }] };
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/turns/t-menu/spans", headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      spanClasses: string[];
+      requiredTypes: string[];
+      classifyOnlyEligible: boolean;
+      confidence: string;
+      snippet: string;
+    };
+    expect(body.spanClasses).toContain("MENU_OVERVIEW_Q");
+    expect(body.requiredTypes).toContain("MENU_OVERVIEW");
+    expect(body.classifyOnlyEligible).toBe(true);
+    expect(body.confidence).toBe("single_match");
+    await app.close();
+  });
+
+  it("flags an ambiguous window (≥2 user messages) and classifies the LATEST", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at") && !sql.includes("ended_at")) {
+        return { rows: [{ conversation_id: "conv-1", started_at: "2026-07-29T00:46:10.000Z" }] };
+      }
+      if (sql.includes("conversation_messages")) {
+        // ORDER BY sent_at DESC — the route reads rows[0] as the latest.
+        return {
+          rows: [
+            { content: "tem lasanha?", sent_at: "2026-07-29T00:46:09.000Z" },
+            { content: "oi", sent_at: "2026-07-29T00:44:00.000Z" },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/turns/t-2/spans", headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { confidence: string; snippet: string };
+    expect(body.confidence).toBe("ambiguous");
+    await app.close();
+  });
+
+  it("answers confidence 'none' (not an error) when no message is in the window", async () => {
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at") && !sql.includes("ended_at")) {
+        return { rows: [{ conversation_id: "conv-1", started_at: "2026-07-29T00:46:10.000Z" }] };
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/turns/t-3/spans", headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { confidence: string; spanClasses: string[]; requiredTypes: null };
+    expect(body.confidence).toBe("none");
+    expect(body.spanClasses).toEqual([]);
+    expect(body.requiredTypes).toBeNull();
+    await app.close();
+  });
+
+  it("bounds the snippet to ≤120 chars of (redacted) message text — structure-only otherwise", async () => {
+    const long = "quero saber do cardápio ".repeat(30);
+    db.query = async (sql: string) => {
+      if (sql.includes("min(recorded_at) AS started_at") && !sql.includes("ended_at")) {
+        return { rows: [{ conversation_id: "conv-1", started_at: "2026-07-29T00:46:10.000Z" }] };
+      }
+      if (sql.includes("conversation_messages")) {
+        return { rows: [{ content: long, sent_at: "2026-07-29T00:46:09.000Z" }] };
+      }
+      return { rows: [] };
+    };
+    const app = await build();
+    const res = await app.inject({ method: "GET", url: "/internal/qa/rca/turns/t-4/spans", headers: AUTH });
+    const body = res.json() as { snippet: string };
+    expect(body.snippet.length).toBeLessThanOrEqual(120);
+    await app.close();
+  });
+});

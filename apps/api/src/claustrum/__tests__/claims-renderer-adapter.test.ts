@@ -699,3 +699,151 @@ describe("BKL-184 — allergen-ask UNKNOWN via the adapter (requestText-gated)",
     );
   });
 });
+
+// ── RCA-legibility: claims.template_selected + the precedence turnId pairing ────
+//
+// Two additive observe-only signals for the workbench's reply-provenance view:
+//   - `claims.template_selected` names WHICH safe template voiced a non-RENDER
+//     terminal (the "why these exact words" join) — never emitted on a
+//     VALIDATED_RENDER (no terminal template exists there);
+//   - `claims.render_precedence` now carries the turnId, paired through the
+//     renderer via a WeakMap on the SAME ClaimsKernelResult object handleTurn
+//     hands both seams — concurrency-safe, no core seam change.
+import { createIbatexasClaimsRenderPrecedence } from "../claims-renderer-adapter.js";
+import type { Plan } from "@claustrum/core";
+
+describe("claims-renderer-adapter — RCA-legibility telemetry", () => {
+  const resultOf = (terminal: TurnTerminal): ClaimsKernelResult => {
+    const renderable: readonly ConsistencyClaim[] = [];
+    return {
+      perClaim: [{ subject: "s", type: ORDER_FULFILLMENT_STAGE, verdict: "UNKNOWN" }],
+      renderable,
+      renderableCanonical: [],
+      terminal,
+      consistency: { renderable, terminal, suppressions: [] },
+    };
+  };
+
+  function eventPayloads(
+    spy: ReturnType<typeof vi.spyOn>,
+    event: string,
+  ): Array<Record<string, unknown>> {
+    return spy.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((o) => o?.event === event);
+  }
+
+  it("a CLARIFY terminal emits claims.template_selected naming __SAFE_CLARIFY__ + the turnId", () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      createIbatexasClaimsRenderer().render(resultOf("CLARIFY"), { turnId: "turn-tmpl-1" });
+      const payloads = eventPayloads(infoSpy, "claims.template_selected");
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({
+        component: "claims",
+        terminal: "CLARIFY",
+        templateId: "__SAFE_CLARIFY__",
+        turnId: "turn-tmpl-1",
+        degradedFromRender: false,
+      });
+      // PII-free: the template TEXT never rides the structured payload.
+      expect(JSON.stringify(payloads[0])).not.toContain("registro possível");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("an UNKNOWN terminal names the generic __SAFE_UNKNOWN__", () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      createIbatexasClaimsRenderer().render(resultOf("UNKNOWN"), {});
+      const payloads = eventPayloads(infoSpy, "claims.template_selected");
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({ templateId: "__SAFE_UNKNOWN__" });
+      // No turnId in context → the key is OMITTED, byte-identical to the
+      // claims.terminal idiom.
+      expect(payloads[0]).not.toHaveProperty("turnId");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("a VALIDATED_RENDER emits NO template_selected (no terminal template exists)", () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      const renderable = [
+        claim(ORDER_FULFILLMENT_STAGE, "VALIDATED", { fulfillmentStatus: "preparing" }),
+      ];
+      createIbatexasClaimsRenderer().render(
+        {
+          perClaim: [{ subject: "s", type: ORDER_FULFILLMENT_STAGE, verdict: "VALIDATED" }],
+          renderable,
+          renderableCanonical: mintRenderable(renderable),
+          terminal: "RENDER",
+          consistency: { renderable, terminal: "RENDER", suppressions: [] },
+        },
+        { turnId: "turn-tmpl-2" },
+      );
+      expect(eventPayloads(infoSpy, "claims.template_selected")).toHaveLength(0);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("claims.render_precedence carries the turnId the renderer paired on the SAME claims object", () => {
+    const claims = resultOf("UNKNOWN");
+    // Renderer first (handleTurn's order): pairs claims → turnId in the WeakMap.
+    createIbatexasClaimsRenderer().render(claims, { turnId: "turn-weakmap-1" });
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      // The verdict itself is the lattice's business (pinned in
+      // claims-render-precedence.test.ts) — this test pins only the id pairing.
+      createIbatexasClaimsRenderPrecedence()({
+        decision: { kind: "EXECUTE", basis: [] },
+        plan: { envelopes: [] } as Plan,
+        claims,
+        requestText: "",
+      });
+      const payloads = eventPayloads(infoSpy, "claims.render_precedence");
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({ turnId: "turn-weakmap-1" });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("claims.render_precedence omits the turnId for a claims object the renderer never saw", () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      createIbatexasClaimsRenderPrecedence()({
+        decision: { kind: "EXECUTE", basis: [] },
+        plan: { envelopes: [] } as Plan,
+        claims: resultOf("UNKNOWN"),
+        requestText: "",
+      });
+      const payloads = eventPayloads(infoSpy, "claims.render_precedence");
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).not.toHaveProperty("turnId");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("distinct concurrent turns never cross-attribute (object-keyed, not a scalar stash)", () => {
+    const renderer = createIbatexasClaimsRenderer();
+    const claimsA = resultOf("UNKNOWN");
+    const claimsB = resultOf("CLARIFY");
+    // Interleaved renders — the scalar-stash failure mode this design rejects.
+    renderer.render(claimsA, { turnId: "turn-A" });
+    renderer.render(claimsB, { turnId: "turn-B" });
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      const seam = createIbatexasClaimsRenderPrecedence();
+      seam({ decision: { kind: "EXECUTE", basis: [] }, plan: { envelopes: [] } as Plan, claims: claimsA, requestText: "" });
+      const payloads = eventPayloads(infoSpy, "claims.render_precedence");
+      expect(payloads[0]).toMatchObject({ turnId: "turn-A" });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+});
