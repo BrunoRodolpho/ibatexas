@@ -2612,6 +2612,25 @@ export function createIbatexasPlanner(
         });
       }
 
+      // RCA-legibility — the same summary the trace above encodes, but as a
+      // structured VL event that SURVIVES the audit-redactor's 500-char cap on
+      // `turn_trace.completion` (the trace JSON usually exceeds it, so the
+      // out-of-enum drops and the forced terminal were unreadable downstream).
+      // Types only — never claim values or model text. Arrays pre-stringified
+      // so the value crosses VictoriaLogs and the qa-rca field coercer as ONE
+      // string field regardless of how the log sink treats arrays.
+      logger.info(
+        {
+          component: "claim-planner",
+          event: "claim_planner.proposal_summary",
+          turnId: state.turnId,
+          candidateTypes: JSON.stringify(derivedCandidates.map((c) => c.type)),
+          droppedClaimTypes: JSON.stringify(dropped),
+          ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
+        },
+        `claim-planner proposal: ${derivedCandidates.length} candidate(s), ${dropped.length} out-of-enum drop(s)`,
+      );
+
       return {
         candidates: derivedCandidates,
         completeness,

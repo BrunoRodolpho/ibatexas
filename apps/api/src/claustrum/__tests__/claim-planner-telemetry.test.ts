@@ -212,3 +212,69 @@ describe("proposeClaims — F2 claim-planner LLM-call observability", () => {
     expect(plan.candidates[0]?.type).toBe("STORE_OPEN_NOW");
   });
 });
+
+// ── RCA-legibility: the claim_planner.proposal_summary VL event ──────────────
+//
+// The LLMTrace above is capped at 500 chars by the audit redactor at write, so
+// the out-of-enum drops / forced terminal were unreadable downstream on any
+// real turn (the JSON envelope usually exceeds the cap). The summary event is
+// the truncation-proof projection: types only, arrays PRE-STRINGIFIED so they
+// cross VictoriaLogs and the qa-rca field coercer as one string field.
+import { logger } from "../../lib/logger.js";
+
+describe("proposeClaims — claim_planner.proposal_summary (RCA-legibility)", () => {
+  function summaryPayloads(spy: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+    return spy.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((o) => o?.event === "claim_planner.proposal_summary");
+  }
+
+  it("records an out-of-enum drop + the forced terminal, arrays pre-stringified", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      const planner = plannerWith({
+        // The live 2026-07-29 shape: a mangled type name tagging the whole
+        // utterance as its span — dropped by the wall, span left unmapped.
+        toolCalls: [
+          claimCall({
+            type: "MENU_ITEALLEGENS",
+            subject: "lazanha",
+            spans: [{ mappedClaimType: "MENU_ITEALLEGENS", text: "voces tem lazanha?" }],
+          }),
+        ],
+      });
+      await planner.proposeClaims(cognition("voces tem lazanha?"));
+      const payloads = summaryPayloads(infoSpy);
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({
+        component: "claim-planner",
+        turnId: "turn-OBS-1",
+        // STRINGS, not arrays — the wire-safe encoding is part of the contract.
+        candidateTypes: "[]",
+        droppedClaimTypes: '["MENU_ITEALLEGENS"]',
+        forcedTerminal: "CLARIFY",
+      });
+      // PII-free: types only — never the utterance or a claim value.
+      expect(JSON.stringify(payloads[0])).not.toContain("voces tem lazanha");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("a clean proposal emits the summary with the candidate types and NO forcedTerminal key", async () => {
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      const planner = plannerWith({
+        toolCalls: [claimCall({ type: "STORE_OPEN_NOW", subject: "loja" })],
+        scheduleSignal: OPEN_LUNCH,
+      });
+      await planner.proposeClaims(cognition("vocês estão abertos?"));
+      const payloads = summaryPayloads(infoSpy);
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({ candidateTypes: '["STORE_OPEN_NOW"]', droppedClaimTypes: "[]" });
+      expect(payloads[0]).not.toHaveProperty("forcedTerminal");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+});

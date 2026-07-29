@@ -15,8 +15,12 @@ import { currentRoute, navigate, replaceRoute } from "../lib/nav"
 import {
   buildLinks,
   buildWireSections,
+  claimsFlow,
+  conductorDecision,
   derivePipeline,
+  draftVsShipped,
   fetchConversationPage,
+  fetchSpanAttribution,
   fetchStatus,
   fetchTranscript,
   fetchTurn,
@@ -24,10 +28,14 @@ import {
   findMessages,
   mergeTimeline,
   rcaConfigured,
+  replyProvenance,
+  SpansUnsupportedError,
   stageFacts,
+  templateRef,
   type RcaConversation,
   type RcaConversationGroup,
   type RcaFindHit,
+  type RcaSpanAttribution,
   type RcaStatus,
   type RcaTranscript,
   type RcaTurnDetail,
@@ -302,6 +310,38 @@ export function RcaWorkbench() {
       .finally(() => setLoading(false))
   }, [cfg, selTurn, vlWindow, refreshTick])
 
+  // Span attribution — a lazy, per-turn classifier replay (server-side, pure).
+  // Keyed on the turn id, NOT the detail object: the 5s live tick re-fetches
+  // the detail, but the classification of a fixed inbound text never changes.
+  const [spans, setSpans] = useState<RcaSpanAttribution | null>(null)
+  const [spansState, setSpansState] = useState<"idle" | "loading" | "loaded" | "unsupported" | "error">(
+    "idle",
+  )
+  const spansTurnId = detail?.context.turnId ?? null
+  useEffect(() => {
+    if (cfg === null || spansTurnId === null) {
+      setSpans(null)
+      setSpansState("idle")
+      return
+    }
+    let alive = true
+    setSpans(null)
+    setSpansState("loading")
+    fetchSpanAttribution(cfg, spansTurnId)
+      .then((s) => {
+        if (!alive) return
+        setSpans(s)
+        setSpansState("loaded")
+      })
+      .catch((e: unknown) => {
+        if (!alive) return
+        setSpansState(e instanceof SpansUnsupportedError ? "unsupported" : "error")
+      })
+    return () => {
+      alive = false
+    }
+  }, [cfg, spansTurnId])
+
   // Live auto-refresh: a 5s tick scoped to the current selection — with a turn
   // open it re-reads only that turn (+ its conversation's turn list); with only
   // a conversation open, only that turn list; with nothing selected, the
@@ -418,6 +458,14 @@ export function RcaWorkbench() {
   const timeline = detail !== null ? mergeTimeline(detail) : []
   const pipeline = detail !== null ? derivePipeline(detail) : []
   const links = detail !== null ? buildLinks(detail.context) : null
+  // RCA-legibility derivations (all pure over the loaded detail — no fetch)
+  const provenance = detail !== null ? replyProvenance(detail) : null
+  const dvs = detail !== null ? draftVsShipped(detail) : null
+  const flow = detail !== null ? claimsFlow(detail) : null
+  const decision = detail !== null ? conductorDecision(detail) : null
+  const shippedTemplateId =
+    detail?.vl.find((l) => l.fields?.event === "claims.template_selected")?.fields?.templateId ?? null
+  const shippedTemplateRef = shippedTemplateId !== null ? templateRef(shippedTemplateId) : null
   const firstMs = timeline.find((e) => Number.isFinite(e.tMs))?.tMs ?? Number.NaN
 
   const laneCounts = new Map<TimelineSource, number>()
@@ -787,6 +835,21 @@ export function RcaWorkbench() {
                   <span title="@ibatexas/catalog version this turn ran under (turn_trace.catalog_version)">
                     catalog <b>{detail.context.catalogVersion ?? "—"}</b>
                   </span>
+                  {/* Decision hygiene — the conductor's turn-level decisionKind is
+                      the kernel verdict on the MUTATION PLAN, and a zero-envelope
+                      turn always logs REFUSE (fail-closed empty-plan literal), so
+                      a healthy read turn must not wear a red REFUSE chip. Rendered
+                      UNCONDITIONALLY (— is the finding), like the catalog chip. */}
+                  {decision !== null && (
+                    <span
+                      className={`dec-chip ${
+                        decision.synthetic ? "" : decision.kind !== null ? `dec-chip--${decision.kind}` : ""
+                      }`}
+                      title={decision.title}
+                    >
+                      {decision.label}
+                    </span>
+                  )}
                   {detail.degraded?.adj === true && <span className="degraded-chip">ADJ lane degraded</span>}
                   {detail.degraded?.vl === true && <span className="degraded-chip">VL lane degraded</span>}
                   {detail.degraded?.wire === true && <span className="degraded-chip">WIRE lane degraded</span>}
@@ -859,6 +922,163 @@ export function RcaWorkbench() {
                   ))}
                 </div>
               )}
+            </div>
+
+            {/* reply provenance (RCA-legibility) — who authored the shipped text */}
+            <div className="card">
+              <div className="card__hd">
+                <h2>Reply</h2>
+                <span className="hint">
+                  who authored the shipped text · draft vs shipped · rendered UNCONDITIONALLY (— is the finding)
+                </span>
+              </div>
+              <div className="card__body">
+                <div className="chips" style={{ marginBottom: 8 }}>
+                  <span
+                    className={`prov-chip prov-chip--${provenance?.author ?? "unknown"}`}
+                    title="Reply author path — validated_render (claims), safe_template (proposition-free terminal), responder_prose (model draft), funnel_canned (L0/L1)"
+                  >
+                    {provenance?.author ?? "provenance —"}
+                  </span>
+                  <span className="prov-detail">{provenance?.detail ?? "—"}</span>
+                  {provenance !== null && provenance.mechanism !== null && (
+                    <span className="chip chip--mini" title="claims.render_precedence lattice rule">
+                      rule: {provenance.mechanism}
+                    </span>
+                  )}
+                  {provenance !== null && (
+                    <span
+                      className={`chip chip--mini ${provenance.confidence !== "proven" ? "chip--dim" : ""}`}
+                      title={
+                        provenance.confidence === "proven"
+                          ? "attributed from this turn's own precedence/template events"
+                          : provenance.confidence === "inferred"
+                            ? "inferred from claims.terminal alone (turn predates the provenance telemetry)"
+                            : "not attributable — signals absent or lane degraded"
+                      }
+                    >
+                      {provenance.confidence}
+                    </span>
+                  )}
+                </div>
+
+                {flow !== null && flow.outOfEnum !== null && flow.outOfEnum.length > 0 && (
+                  <div className="callout callout--warn" style={{ marginBottom: 8 }}>
+                    <b>OUT-OF-ENUM claim type dropped:</b> {flow.outOfEnum.join(", ")} — the model
+                    invented a type name; the constrained-generation wall dropped it
+                    {flow.forcedTerminal !== null ? (
+                      <>
+                        {" "}
+                        and the P4 completeness wall forced <b>{flow.forcedTerminal}</b>
+                      </>
+                    ) : null}
+                    .
+                  </div>
+                )}
+
+                {shippedTemplateId !== null && (
+                  <div className="tmpl-ref" style={{ marginBottom: 8 }}>
+                    template <b>{shippedTemplateId}</b>
+                    {shippedTemplateRef !== null && (
+                      <>
+                        {" · "}
+                        {shippedTemplateRef.source} <CopyId value={shippedTemplateRef.source} />
+                        {shippedTemplateRef.ticket !== null && (
+                          <span className="hint"> · {shippedTemplateRef.ticket}</span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                <details className="wire-x__block">
+                  <summary>
+                    draft vs shipped — <b>{dvs?.verdict ?? "unknowable"}</b>
+                    {dvs !== null && dvs.rule !== null ? ` (rule: ${dvs.rule})` : ""}
+                  </summary>
+                  {dvs !== null && (dvs.verdict === "unknowable" || dvs.verdict === "identical_prefix") && (
+                    <div className="callout callout--warn" style={{ margin: "6px 0" }}>
+                      Both sides are independently redacted and clipped (draft: 500 chars at trace
+                      write; shipped: 280 chars on the conductor line; web turns log no reply.sent) —
+                      only <b>prefix</b> equality is decidable, never byte-equality.
+                    </div>
+                  )}
+                  <div className="reply-vs">
+                    <div>
+                      <div className="reply-vs__hd">responder draft (turn_trace)</div>
+                      <pre className="tl-detail">{dvs?.draft ?? "— no responder draft"}</pre>
+                    </div>
+                    <div>
+                      <div className="reply-vs__hd">shipped (conductor turn line)</div>
+                      <pre className="tl-detail">{dvs?.shipped ?? "— no turn-line response"}</pre>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            {/* span attribution (RCA-legibility) — why the message routed this way */}
+            <div className="card">
+              <div className="card__hd">
+                <h2>Span attribution</h2>
+                <span className="hint">deterministic classifier replay on the archived inbound text</span>
+              </div>
+              <div className="card__body">
+                {spansState === "loading" && <div className="hint">classifying…</div>}
+                {spansState === "idle" && <div className="hint">—</div>}
+                {spansState === "unsupported" && (
+                  <div className="hint">
+                    span attribution unavailable — no trace rows for this turn (L0/L1 funnel turns
+                    have nothing to attribute), or the API predates the spans route
+                  </div>
+                )}
+                {spansState === "error" && (
+                  <div className="callout callout--warn">span attribution fetch failed — retry via ↻</div>
+                )}
+                {spansState === "loaded" && spans !== null && (
+                  <>
+                    {spans.confidence === "none" ? (
+                      <div className="hint">
+                        no archived user message found in the association window — nothing to classify
+                      </div>
+                    ) : (
+                      <>
+                        {spans.confidence === "ambiguous" && (
+                          <div className="callout callout--warn" style={{ marginBottom: 8 }}>
+                            ≥2 user messages in the association window (conversation_messages carries
+                            no turn id) — the latest one was classified, but the attribution is a
+                            heuristic here.
+                          </div>
+                        )}
+                        <div className="chips" style={{ marginBottom: 6 }}>
+                          {spans.spanClasses.length > 0 ? (
+                            spans.spanClasses.map((c) => (
+                              <span key={c} className="chip chip--on" title="decomposer span class (required-claim-decomposer.ts)">
+                                {c}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="hint">no span nets fired — the turn rode the model path</span>
+                          )}
+                        </div>
+                        <div className="prov-detail" style={{ marginBottom: 6 }}>
+                          required claims:{" "}
+                          {spans.requiredTypes !== null && spans.requiredTypes.length > 0
+                            ? spans.requiredTypes.join(", ")
+                            : "—"}
+                          {" · classify-only eligible: "}
+                          <b>{spans.classifyOnlyEligible ? "yes" : "no"}</b>
+                        </div>
+                        {spans.snippet !== null && (
+                          <div className="hint">
+                            “{spans.snippet}”{spans.matchedMessageAt !== null ? ` · ${shortDateTime(spans.matchedMessageAt)}` : ""}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
 
             {/* identifiers + deep-links */}

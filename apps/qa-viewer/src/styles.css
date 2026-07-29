@@ -707,6 +707,19 @@ code, pre { font-family: var(--mono); font-size: 12px; }
 
 .degraded-chip { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 5px; background: var(--warn-wash); color: var(--warn); border: 1px dashed var(--warn); }
 
+/* ── RCA-legibility: reply provenance + span attribution cards ── */
+.prov-chip { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink-2); }
+.prov-chip--validated_render { background: var(--ok-wash); color: var(--ok); border-color: var(--ok); }
+.prov-chip--safe_template { background: var(--warn-wash); color: var(--warn); border-color: var(--warn); }
+.prov-chip--responder_prose { background: var(--accent-wash); color: var(--accent); border-color: var(--accent-line); }
+.prov-chip--funnel_canned { background: var(--silent-wash); color: var(--silent); border-color: var(--silent); }
+.prov-chip--unknown { background: var(--silent-wash); color: var(--silent); border-style: dashed; }
+.prov-detail { font-family: var(--mono); font-size: 11.5px; color: var(--ink); }
+.tmpl-ref { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+.reply-vs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; }
+.reply-vs__hd { font-family: var(--mono); font-size: 10px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 3px; }
+.reply-vs .tl-detail { padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel-2); }
+
 .card__hd--wrap { flex-wrap: wrap; row-gap: 7px; }
 .rail__search--inline { width: auto; flex: 0 1 180px; }
 

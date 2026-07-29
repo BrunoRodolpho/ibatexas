@@ -43,6 +43,15 @@ import { FAILED_WHATSAPP_STATUSES } from "../whatsapp/delivery-store.js";
 // LE2-031 — the rail reads as customers, not kernel sessions. The identity
 // ladder + ordering live in a pure module so they are unit-pinnable.
 import { groupConversationsByCustomer } from "./qa-rca-grouping.js";
+// RCA-legibility (spans route) — the PURE span classifiers, replayed server-side
+// on a turn's archived inbound text. First ../claustrum/ imports in this file:
+// both modules are pure data + functions (no I/O, no env, no model), so the
+// dev-route module graph widens without any boot-order or side-effect hazard.
+import {
+  classifyRequestSpans,
+  decomposeRequiredClaims,
+} from "../claustrum/required-claim-decomposer.js";
+import { classifyOnlyRequiredTypes } from "../claustrum/classify-only-reads.js";
 
 // Dedicated lazy read pool (own connection, not the bootstrap writer pool — the
 // RCA surface is dev-only and strictly read-only). connectionString mirrors
@@ -243,6 +252,22 @@ const VL_FIELD_ALLOWLIST = [
   "inbound", // conductor's 280-char REDACTED inbound text
   "response", // conductor's 280-char REDACTED reply text
   "errorCode",
+  // RCA-legibility — reply-provenance fields: the precedence verdict
+  // (claims.render_precedence), the safe-template identity
+  // (claims.template_selected), the claim-planner walls
+  // (claim_planner.proposal_summary / classify_only), and the funnel tier.
+  "mechanism",
+  "decision",
+  "plane",
+  "templateId",
+  "terminal",
+  "forcedTerminal",
+  "suppressedTypes",
+  "suppressionCount",
+  "envelopeCount",
+  "tier",
+  "funnelTier",
+  "funnelReason",
 ] as const;
 function vlFields(l: VlRaw): Record<string, string> | null {
   let out: Record<string, string> | null = null;
@@ -892,6 +917,101 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
           delivery,
           degraded,
         },
+      };
+    },
+  );
+
+  // ── span attribution (RCA-legibility) ─────────────────────────────────────
+  // Re-run the DETERMINISTIC span classifiers on the turn's inbound text so the
+  // workbench can show WHY a message routed the way it did (which span nets
+  // fired, which claim types they force, whether the classify-only read path was
+  // eligible) without grepping regexes. The classifiers are pure (no I/O, no
+  // env) — this replays classification, it mutates nothing.
+  //
+  // CAVEATS the response states rather than hides:
+  //  - conversation_messages carries no turn id; the inbound text is matched by
+  //    the SAME [start-5min, start+15s] window heuristic the turns list uses
+  //    (`confidence` says whether the window was unambiguous).
+  //  - the turn's live classifier input was the pre-archival perception text;
+  //    the archived copy is a faithful-but-not-byte-identical replay.
+  //  - L0/L1 funnel turns write no turn_trace rows → 404 here (nothing to
+  //    attribute — those turns never reach the span classifier's consumers).
+  // Structure-only response: span classes + type names + a 120-char redacted
+  // snippet (the same exposure the turns list already grants via userText).
+  server.get<{ Params: { turnId: string } }>(
+    "/internal/qa/rca/turns/:turnId/spans",
+    RL,
+    async (request, reply) => {
+      const turnId = request.params.turnId;
+      if (!SAFE_ID.test(turnId)) return reply.code(400).send({ error: "invalid turn id" });
+
+      const head = await pool().query(
+        `SELECT conversation_id, min(recorded_at) AS started_at
+         FROM turn_trace WHERE turn_id = $1 GROUP BY conversation_id LIMIT 1`,
+        [turnId],
+      );
+      const h = (head.rows[0] ?? {}) as Record<string, unknown>;
+      const conv = str(h.conversation_id);
+      const startedAt = iso(h.started_at);
+      if (conv === null || startedAt === null) {
+        return reply.code(404).send({ error: "turn not found in turn_trace" });
+      }
+
+      // The inbound user message, by the turns-list window heuristic (no turn id
+      // on conversation_messages). ≥2 candidates in the window → "ambiguous";
+      // the LATEST one is still classified (it is the most likely trigger).
+      const startMs = Date.parse(startedAt);
+      let matched: { at: string; content: string } | null = null;
+      let windowCount = 0;
+      try {
+        const msgRes = await pool().query(
+          `SELECT m.content, m.sent_at FROM ibx_domain.conversations c
+           JOIN ibx_domain.conversation_messages m ON m.conversation_id = c.id
+           WHERE c.session_id = $1 AND m.role = 'user'
+             AND m.sent_at >= $2 AND m.sent_at <= $3
+           ORDER BY m.sent_at DESC`,
+          [conv, new Date(startMs - 300_000).toISOString(), new Date(startMs + 15_000).toISOString()],
+        );
+        const rows = msgRes.rows as Array<Record<string, unknown>>;
+        windowCount = rows.length;
+        const top = rows[0];
+        if (top !== undefined) {
+          const at = iso(top.sent_at);
+          const content = str(top.content);
+          if (at !== null && content !== null) matched = { at, content };
+        }
+      } catch {
+        /* domain schema optional — falls through to confidence "none" */
+      }
+
+      if (matched === null) {
+        return {
+          spanClasses: [],
+          requiredTypes: null,
+          classifyOnlyEligible: false,
+          matchedMessageAt: null,
+          snippet: null,
+          confidence: "none",
+        };
+      }
+
+      const spanClasses = classifyRequestSpans(matched.content);
+      // The seam-active, ownership-free projection — the same call the
+      // classify-only gate makes. Ownership/date-anchor signals are per-turn
+      // runtime state this replay does not have; the set shown is the
+      // OVER-INCLUDING one (demote-only signals could only shrink it).
+      const requiredTypes = [
+        ...decomposeRequiredClaims(spanClasses, undefined, { seamActive: true }),
+      ];
+      const classifyOnlyEligible = classifyOnlyRequiredTypes(matched.content) !== undefined;
+
+      return {
+        spanClasses,
+        requiredTypes,
+        classifyOnlyEligible,
+        matchedMessageAt: matched.at,
+        snippet: redactText(matched.content).slice(0, 120),
+        confidence: windowCount > 1 ? "ambiguous" : "single_match",
       };
     },
   );

@@ -883,8 +883,32 @@ export function stageFacts(d: RcaTurnDetail, key: string): string[] {
     }
     case "claims": {
       const c = claimPlanner(d)
+      const flow = claimsFlow(d)
+      // The pipeline's walls, in flow order — each row only when its source
+      // event answered (null ≠ empty list; absence stays silent, not "[]").
+      const flowFacts: string[] = [
+        ...(flow.classifyOnly ? ["classify-only read path — propose_claim model call skipped"] : []),
+        ...(flow.candidateTypes !== null ? [`candidates: ${flow.candidateTypes.join(", ") || "(none)"}`] : []),
+        ...(flow.outOfEnum !== null && flow.outOfEnum.length > 0
+          ? [`OUT-OF-ENUM DROPPED: ${flow.outOfEnum.join(", ")} (model-invented type name)`]
+          : []),
+        ...(flow.plannerDemoted !== null && flow.plannerDemoted.length > 0
+          ? [`planner demoted: ${flow.plannerDemoted.join(", ")}${flow.demoteReason !== null ? ` (${flow.demoteReason})` : ""}`]
+          : []),
+        ...(flow.validatedTypes !== null ? [`validated: ${flow.validatedTypes.join(", ") || "(none)"}`] : []),
+        ...(flow.kernelDropped !== null && flow.kernelDropped.length > 0
+          ? [`kernel dropped (non-VALIDATED): ${flow.kernelDropped.join(", ")}`]
+          : []),
+        ...(flow.suppressedTypes !== null && flow.suppressedTypes.length > 0
+          ? [`suppressed (consistency): ${flow.suppressedTypes.join(", ")}`]
+          : []),
+        ...(flow.forcedTerminal !== null ? [`FORCED TERMINAL: ${flow.forcedTerminal}`] : []),
+      ]
       return [
-        ...(c === undefined ? ["no claim-planner call"] : callFacts(c)),
+        ...(c === undefined
+          ? [flow.classifyOnly ? "no claim-planner call (deterministic path)" : "no claim-planner call"]
+          : callFacts(c)),
+        ...flowFacts,
         ...fieldFacts(d.vl.find((l) => l.fields?.event === "claims.terminal")),
       ]
     }
@@ -943,6 +967,371 @@ export function stageFacts(d: RcaTurnDetail, key: string): string[] {
     default:
       return []
   }
+}
+
+// ── Derived: reply provenance (RCA-legibility) ──────────────────────────────
+//
+// "Who authored the shipped reply, and why these exact words." Sources, in
+// trust order: the claims.render_precedence / claims.template_selected /
+// claim_planner.* events (new telemetry → "proven"), the claims.terminal line
+// alone (older API → "inferred"), then nothing ("unknowable" under a degraded
+// VL lane). Absence is a signal only when the lane actually answered.
+
+/** Parse a VL type-list field. The emitters pre-JSON.stringify arrays so the
+ *  value crosses VictoriaLogs as ONE string ('["MENU_OVERVIEW"]'); a non-JSON
+ *  scalar (legacy/flattened encoding) degrades to a single-element list rather
+ *  than dropping the signal. null = the field is absent, NOT an empty list. */
+export function parseTypesField(v: string | undefined | null): string[] | null {
+  if (v === undefined || v === null || v === "") return null
+  try {
+    const parsed: unknown = JSON.parse(v)
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [v]
+  } catch {
+    return [v]
+  }
+}
+
+const vlEvent = (d: RcaTurnDetail, event: string): VlLine | undefined =>
+  d.vl.find((l) => l.fields?.event === event)
+
+/** The FINAL `claims.terminal` line. A turn can emit several: the collapse
+ *  seams (`prose_preserved` at the claim-planner, `safe_degraded` at the
+ *  responder gate) fire on the DRAFT, and the render path (the one carrying
+ *  kernelTerminal + the type sets) fires when the renderer runs and supersedes
+ *  — live-verified on turns 54151723 (collapse + render) and bf0e874e (two
+ *  collapse lines, no render). So: prefer the render-path emission; among
+ *  collapse-only lines the LATEST is the final disposition (vl is
+ *  oldest-first). */
+const claimsTerminalLine = (d: RcaTurnDetail): VlLine | undefined => {
+  const all = d.vl.filter((l) => l.fields?.event === "claims.terminal")
+  return all.find((l) => l.fields?.kernelTerminal !== undefined) ?? all[all.length - 1]
+}
+
+export type ReplyAuthor =
+  | "validated_render"
+  | "safe_template"
+  | "responder_prose"
+  | "funnel_canned"
+  | "unknown"
+
+export interface ReplyProvenance {
+  author: ReplyAuthor
+  /** Compact human line: "MENU_OVERVIEW · classify-only",
+   *  "__SAFE_CLARIFY__ · forced CLARIFY", "keep_draft (conversational_prose)". */
+  detail: string
+  /** The precedence-lattice rule that decided render-vs-draft (when logged). */
+  mechanism: string | null
+  confidence: "proven" | "inferred" | "unknowable"
+}
+
+export function replyProvenance(d: RcaTurnDetail): ReplyProvenance {
+  const degraded = d.degraded ?? { adj: false, vl: false, wire: false }
+  const turnLine = vlEvent(d, "turn")
+  // Funnel L0/L1 — the reply is the funnel's own canned/cached answer; those
+  // tiers never reach the claims pipeline (and write no turn_trace rows).
+  const funnelTier = vlEvent(d, "funnel.tier")?.fields?.tier ?? turnLine?.fields?.funnelTier
+  if (funnelTier === "L0" || funnelTier === "L1") {
+    return {
+      author: "funnel_canned",
+      detail: `funnel ${funnelTier}${turnLine?.fields?.funnelReason !== undefined ? ` · ${turnLine.fields.funnelReason}` : ""}`,
+      mechanism: null,
+      confidence: "proven",
+    }
+  }
+
+  const prec = vlEvent(d, "claims.render_precedence")
+  const term = claimsTerminalLine(d)
+  const tmpl = vlEvent(d, "claims.template_selected")
+  const classify = vlEvent(d, "claim_planner.classify_only")
+  const proposal = vlEvent(d, "claim_planner.proposal_summary")
+  const mechanism = prec?.fields?.mechanism ?? null
+  const decision = prec?.fields?.decision
+
+  if (decision === "keep_draft") {
+    return {
+      author: "responder_prose",
+      detail: `draft kept${mechanism !== null ? ` (${mechanism})` : ""}`,
+      mechanism,
+      confidence: "proven",
+    }
+  }
+
+  if (term !== undefined) {
+    const posture = term.fields?.posture ?? term.fields?.kernelTerminal ?? "?"
+    // With the precedence verdict present the attribution is proven; from the
+    // terminal alone (older API) it is inferred — the render may not have
+    // superseded the draft.
+    const confidence: ReplyProvenance["confidence"] = decision === "render" ? "proven" : "inferred"
+    if (posture === "prose_preserved") {
+      return {
+        author: "responder_prose",
+        detail: `prose preserved${term.fields?.reason !== undefined ? ` · ${term.fields.reason}` : ""}`,
+        mechanism,
+        confidence,
+      }
+    }
+    if (posture === "VALIDATED_RENDER") {
+      const types = parseTypesField(term.fields?.validatedTypes)
+      return {
+        author: "validated_render",
+        detail: `${types !== null && types.length > 0 ? types.join(", ") : "validated claims"}${classify !== undefined ? " · classify-only" : ""}`,
+        mechanism,
+        confidence,
+      }
+    }
+    // Non-RENDER terminal (UNKNOWN / ESCALATE / CLARIFY / safe_degraded) — a
+    // safe template voiced it. Name the template when the new event is there.
+    const templateId = tmpl?.fields?.templateId ?? null
+    const forced = proposal?.fields?.forcedTerminal ?? classify?.fields?.forcedTerminal
+    const cause =
+      forced !== undefined
+        ? ` · forced ${forced}`
+        : term.fields?.degradedFromRender === "true"
+          ? " · degraded from RENDER"
+          : term.fields?.reason !== undefined
+            ? ` · ${term.fields.reason}`
+            : ""
+    return {
+      author: "safe_template",
+      detail: `${templateId ?? posture}${cause}`,
+      mechanism,
+      confidence: templateId !== null ? confidence : "inferred",
+    }
+  }
+
+  // No claims engagement recorded. A non-empty responder call → prose reply
+  // (inferred — under a degraded VL lane even that is unknowable).
+  const r = responder(d)
+  if (r !== undefined && !callEmpty(r)) {
+    return {
+      author: "responder_prose",
+      detail: "no claims engagement recorded",
+      mechanism,
+      confidence: degraded.vl ? "unknowable" : "inferred",
+    }
+  }
+  return {
+    author: "unknown",
+    detail: degraded.vl ? "VL lane degraded" : "no provenance signals",
+    mechanism: null,
+    confidence: "unknowable",
+  }
+}
+
+export interface DraftVsShipped {
+  /** The responder's pre-supersession draft (turn_trace; redacted, 500-char cap). */
+  draft: string | null
+  /** The conductor turn line's reply (redacted, 280-char clip). */
+  shipped: string | null
+  /** The precedence-lattice mechanism that decided (when logged). */
+  rule: string | null
+  /** Prefix comparison ONLY — both sides are independently clipped/redacted, so
+   *  byte-equality beyond the shorter clip is unknowable by construction. */
+  verdict: "render_superseded" | "draft_kept" | "identical_prefix" | "unknowable"
+}
+
+export function draftVsShipped(d: RcaTurnDetail): DraftVsShipped {
+  const degraded = d.degraded ?? { adj: false, vl: false, wire: false }
+  const r = responder(d)
+  const draft = r === undefined || callEmpty(r) ? null : r.completion
+  const shipped = vlEvent(d, "turn")?.fields?.response ?? null
+  const prec = vlEvent(d, "claims.render_precedence")
+  const rule = prec?.fields?.mechanism ?? null
+  const decision = prec?.fields?.decision
+  const verdict: DraftVsShipped["verdict"] = (() => {
+    if (decision === "keep_draft") return "draft_kept"
+    if (shipped === null) return "unknowable" // web turns predating the turn-line response, or degraded VL
+    if (draft === null) return decision === "render" ? "render_superseded" : "unknowable"
+    const norm = (s: string) => s.replace(/\s+/g, " ").trim()
+    const a = norm(draft)
+    const b = norm(shipped)
+    const len = Math.min(a.length, b.length, 240)
+    if (len > 0 && a.slice(0, len) === b.slice(0, len)) return "identical_prefix"
+    if (degraded.vl) return "unknowable"
+    return "render_superseded"
+  })()
+  return { draft, shipped, rule, verdict }
+}
+
+/** The claims pipeline's walls, flattened for the drill-down. Every list is
+ *  null when its source event is absent (older API / lane silent) — never
+ *  conflated with an empty list from a present event. */
+export interface ClaimsFlow {
+  candidateTypes: string[] | null
+  validatedTypes: string[] | null
+  /** Kernel-dropped (non-VALIDATED) types — claims.terminal droppedClaimTypes. */
+  kernelDropped: string[] | null
+  /** Planner-demoted (over-proposed, span-irrelevant) — candidate_demoted. */
+  plannerDemoted: string[] | null
+  demoteReason: string | null
+  /** OUT-OF-ENUM proposals the constrained-generation wall dropped — the 4B
+   *  invented a type name (live-caught: "MENU_ITEALLEGENS"). Flag loudly. */
+  outOfEnum: string[] | null
+  forcedTerminal: string | null
+  classifyOnly: boolean
+  suppressedTypes: string[] | null
+}
+
+export function claimsFlow(d: RcaTurnDetail): ClaimsFlow {
+  const term = claimsTerminalLine(d)
+  const proposal = vlEvent(d, "claim_planner.proposal_summary")
+  const demoted = vlEvent(d, "claim_planner.candidate_demoted")
+  const classify = vlEvent(d, "claim_planner.classify_only")
+  return {
+    candidateTypes:
+      parseTypesField(term?.fields?.candidateTypes) ??
+      parseTypesField(proposal?.fields?.candidateTypes) ??
+      parseTypesField(classify?.fields?.candidateTypes),
+    validatedTypes: parseTypesField(term?.fields?.validatedTypes),
+    kernelDropped: parseTypesField(term?.fields?.droppedClaimTypes),
+    plannerDemoted: parseTypesField(demoted?.fields?.droppedClaimTypes),
+    demoteReason: demoted?.fields?.reason ?? null,
+    outOfEnum: parseTypesField(proposal?.fields?.droppedClaimTypes),
+    forcedTerminal: proposal?.fields?.forcedTerminal ?? classify?.fields?.forcedTerminal ?? null,
+    classifyOnly: classify !== undefined,
+    suppressedTypes: parseTypesField(term?.fields?.suppressedTypes),
+  }
+}
+
+/** Decision-label hygiene: the conductor's turn-level `decisionKind` is the
+ *  kernel verdict on the turn's MUTATION PLAN, not on the reply — and a turn
+ *  proposing zero envelopes always adjudicates REFUSE (the fail-closed
+ *  `adjudicatePlan([])` empty-plan literal, claustrum-bootstrap.ts; never
+ *  written to intent_audit). Detect that case so the UI can label it
+ *  READ-ONLY instead of presenting a healthy turn as refused. */
+export interface ConductorDecision {
+  kind: string | null
+  synthetic: boolean
+  label: string
+  title: string
+}
+
+export function conductorDecision(d: RcaTurnDetail): ConductorDecision {
+  const kind = vlEvent(d, "turn")?.fields?.decisionKind ?? null
+  const degraded = d.degraded ?? { adj: false, vl: false, wire: false }
+  const mutations = d.adj.filter((a) => a.kind !== ARCHIVER_KIND && a.decisionKind !== null)
+  if (kind === "REFUSE" && mutations.length === 0) {
+    if (degraded.adj) {
+      return {
+        kind,
+        synthetic: false,
+        label: "REFUSE (unverified)",
+        title:
+          "Turn-level REFUSE with a degraded ADJ lane — cannot verify whether any envelope was actually refused.",
+      }
+    }
+    return {
+      kind,
+      synthetic: true,
+      label: "READ-ONLY",
+      title:
+        "Synthetic empty-plan refusal: a turn proposing zero envelopes always adjudicates REFUSE (fail-closed adjudicatePlan([]) literal). A conversational disposition, not a failed turn; no intent_audit row exists for it.",
+    }
+  }
+  return {
+    kind,
+    synthetic: false,
+    label: kind ?? "—",
+    title:
+      kind === null
+        ? "No conductor turn line recorded."
+        : `Kernel decision on this turn's mutation plan: ${kind}.`,
+  }
+}
+
+// ── Derived: span attribution + template registry (RCA-legibility) ──────────
+
+export interface RcaSpanAttribution {
+  spanClasses: string[]
+  requiredTypes: string[] | null
+  classifyOnlyEligible: boolean
+  matchedMessageAt: string | null
+  snippet: string | null
+  /** "ambiguous" = ≥2 user messages in the association window (no turn id on
+   *  conversation_messages — the server states the heuristic's confidence). */
+  confidence: "single_match" | "ambiguous" | "none"
+}
+
+/** Thrown when the API predates the spans route (404) — the card renders its
+ *  "unavailable" state instead of an error. A 404 also covers L0/L1 funnel
+ *  turns, which write no turn_trace rows and have nothing to attribute. */
+export class SpansUnsupportedError extends Error {
+  constructor() {
+    super("span attribution unavailable (no trace rows, or the API predates the route)")
+    this.name = "SpansUnsupportedError"
+  }
+}
+
+export const fetchSpanAttribution = async (
+  cfg: QaConfig,
+  turnId: string,
+): Promise<RcaSpanAttribution> => {
+  try {
+    return await authedGetJson<RcaSpanAttribution>(
+      cfg,
+      `/internal/qa/rca/turns/${encodeURIComponent(turnId)}/spans`,
+    )
+  } catch (e) {
+    if (e instanceof Error && e.message.endsWith("→ 404")) throw new SpansUnsupportedError()
+    throw e
+  }
+}
+
+/** Where a safe template lives + the ticket that owns its wording — the
+ *  click-through for "why these exact words". Static map over the closed
+ *  `__SAFE_*__` id set (slot-grammar.ts); a new template id simply renders
+ *  without a link until added here. */
+export interface TemplateRef {
+  id: string
+  source: string
+  ticket: string | null
+}
+
+const TEMPLATE_REFS: Readonly<Record<string, TemplateRef>> = {
+  __SAFE_UNKNOWN__: {
+    id: "__SAFE_UNKNOWN__",
+    source: "apps/api/src/claustrum/slot-grammar.ts · SAFE_TEMPLATES.unknown",
+    ticket: null,
+  },
+  __SAFE_REFUSED__: {
+    id: "__SAFE_REFUSED__",
+    source: "apps/api/src/claustrum/slot-grammar.ts · SAFE_TEMPLATES.refused",
+    ticket: null,
+  },
+  __SAFE_ESCALATE__: {
+    id: "__SAFE_ESCALATE__",
+    source: "apps/api/src/claustrum/slot-grammar.ts · SAFE_TEMPLATES.escalate",
+    ticket: null,
+  },
+  __SAFE_CLARIFY__: {
+    id: "__SAFE_CLARIFY__",
+    source: "apps/api/src/claustrum/slot-grammar.ts · SAFE_TEMPLATES.clarify",
+    ticket: "BKL-148 wording · context-aware CLARIFY is BKL-170 (BLOCKED on the ClaimsRenderContext seam)",
+  },
+  __SAFE_UNKNOWN_ALLERGEN__: {
+    id: "__SAFE_UNKNOWN_ALLERGEN__",
+    source: "apps/api/src/claustrum/slot-grammar.ts · SAFE_UNKNOWN_ALLERGEN_TEMPLATE",
+    ticket: "BKL-184",
+  },
+  __SAFE_CLARIFY_DELIVERY_CEP__: {
+    id: "__SAFE_CLARIFY_DELIVERY_CEP__",
+    source: "apps/api/src/claustrum/slot-grammar.ts · SAFE_CLARIFY_DELIVERY_CEP_TEMPLATE",
+    ticket: "LE2-002",
+  },
+  __SAFE_CLARIFY_COUPON_CODE__: {
+    id: "__SAFE_CLARIFY_COUPON_CODE__",
+    source: "apps/api/src/claustrum/slot-grammar.ts · SAFE_CLARIFY_COUPON_CODE_TEMPLATE",
+    ticket: "LE2-019",
+  },
+  __SAFE_ESCALATE_EMERGENCY__: {
+    id: "__SAFE_ESCALATE_EMERGENCY__",
+    source: "apps/api/src/claustrum/slot-grammar.ts · SAFE_ESCALATE_EMERGENCY_TEMPLATE",
+    ticket: "BKL-209",
+  },
+}
+
+export function templateRef(templateId: string): TemplateRef | null {
+  return TEMPLATE_REFS[templateId] ?? null
 }
 
 // ── Derived: deep-links (env-configured bases) ──────────────────────────────

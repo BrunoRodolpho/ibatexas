@@ -49,7 +49,7 @@ import {
   isMedicalEmergencyAsk,
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
-import { render, type RenderedLine } from "./renderer-from-claims.js";
+import { render, type RenderedLine, type RenderResult } from "./renderer-from-claims.js";
 import {
   REGISTRY_SPECS,
   type RegistryClaimSpec,
@@ -114,6 +114,46 @@ function distinctTypes(types: readonly string[]): string[] {
  * `turnId` field WHEN PRESENT; absent (seam unwired / pre-0.8.0) → the field is
  * omitted → byte-identical to the pre-BKL-117 log line.
  */
+/**
+ * RCA-legibility — pair a turn's `ClaimsKernelResult` with its turnId so
+ * {@link emitRenderPrecedence} can stamp the join key. handleTurn passes the SAME
+ * `claims` object first to the renderer (which receives `ClaimsRenderContext.turnId`)
+ * and then to the precedence seam (whose published ctx carries no turnId — the
+ * claustrum seam-bump this used to wait on). Keyed on the object, not a scalar
+ * stash, so interleaved concurrent turns can never cross-attribute; WeakMap, so a
+ * finished turn's entry is collectable with the result itself.
+ */
+const turnIdByClaims = new WeakMap<ClaimsKernelResult, string>();
+
+/**
+ * RCA-legibility — the "why these exact words" half of the reply-provenance work:
+ * one observe-only line naming WHICH safe template voiced a non-RENDER terminal
+ * (`__SAFE_CLARIFY__`, the allergen/emergency/CEP/coupon variants, …). Only fires
+ * off the RENDER path — a VALIDATED_RENDER has no terminal template, and its
+ * provenance is already fully described by `claims.terminal`. PII-free: template
+ * id + terminal only, never the rendered text.
+ */
+function emitTemplateSelected(
+  result: RenderResult,
+  degraded: boolean,
+  turnId?: string,
+): void {
+  if (result.terminal === "RENDER") return;
+  const templateId =
+    result.lines.find((l) => l.kind === "TERMINAL")?.claimType ?? null;
+  logger.info(
+    {
+      component: "claims",
+      event: "claims.template_selected",
+      ...(turnId === undefined ? {} : { turnId }),
+      terminal: result.terminal,
+      templateId,
+      degradedFromRender: degraded,
+    },
+    `claims terminal template selected (${templateId ?? "?"})`,
+  );
+}
+
 function emitClaimsTerminal(
   claims: ClaimsKernelResult,
   degraded: boolean,
@@ -329,6 +369,9 @@ export function createIbatexasClaimsRenderer(
       // reads only structural identity and never the rendered text. BKL-117 — thread
       // the turnId (0.8.0 ClaimsRenderContext) so the terminal joins to turn_trace.
       emitClaimsTerminal(claims, degrade, context?.turnId);
+      // RCA-legibility — pair this claims object with its turnId for the precedence
+      // emitter (handleTurn hands it the SAME object right after this render).
+      if (context?.turnId !== undefined) turnIdByClaims.set(claims, context.turnId);
 
       // BKL-209 — deterministic medical-emergency detection (the SAME net the
       // planner uses to force the §O#9 ESCALATE), for the emergency template +
@@ -382,6 +425,8 @@ export function createIbatexasClaimsRenderer(
         // requestText → false → generic clarify, byte-identical).
         isCouponValidityAsk(context?.requestText ?? ""),
       );
+      // RCA-legibility — name the safe template that voiced a non-RENDER terminal.
+      emitTemplateSelected(result, degrade, context?.turnId);
       // BKL-209 — fire the best-effort SAFETY sink when the turn resolved to a
       // medical-emergency ESCALATE, so staff are notified ("vou avisar nossa
       // equipe" is TRUE). Fire-and-forget + never throws into the render path.
@@ -449,10 +494,11 @@ function rendersAnswerWithAbstention(lines: readonly RenderedLine[]): boolean {
  * BKL-155/153 — emit the ONE structured `claims.render_precedence` signal per turn
  * the 0.7.0 precedence seam is consulted (i.e. a claims result exists AND
  * `claimsRenderer` is wired — the exact `handleTurn` 6a gate that also emits the
- * companion `claims.terminal`). The two lines fire adjacently for the SAME turn, so
- * `kernelTerminal` is the practical JOIN KEY across them (the published seam ctx
- * carries no turnId — same limitation `claims.terminal` documents; closing it needs
- * a claustrum change to thread turnId into the seam context).
+ * companion `claims.terminal`). The published seam ctx still carries no turnId, but
+ * the line now stamps one via {@link turnIdByClaims} — the renderer pairs the
+ * `claims` object with the turnId it received, and handleTurn hands this seam the
+ * SAME object — so the id join to `turn_trace`/`claims.terminal` no longer needs
+ * the adjacency/`kernelTerminal` heuristic (kept as fields for older logs).
  *
  * OBSERVE-ONLY + PII-FREE (same contract as {@link emitClaimsTerminal}): it reads
  * only the turn's STRUCTURAL identity — the seam decision, the deciding rule
@@ -465,10 +511,14 @@ function emitRenderPrecedence(
   verdict: ReturnType<typeof decideRenderPrecedence>,
   plane: string,
 ): void {
+  const turnId = turnIdByClaims.get(ctx.claims);
   logger.info(
     {
       component: "claims",
       event: "claims.render_precedence",
+      // RCA-legibility — the turn_trace join key, recovered via the renderer's
+      // {@link turnIdByClaims} pairing; omitted when the renderer saw no turnId.
+      ...(turnId === undefined ? {} : { turnId }),
       // LE2 decision 6 — BOTH planes now consult this seam, so the line must say
       // WHICH one decided (otherwise a converged-ops verdict is indistinguishable
       // from a customer one in the same log stream).
