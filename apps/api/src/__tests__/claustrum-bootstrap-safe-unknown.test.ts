@@ -219,16 +219,26 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
   },
 );
 
-// ── Bootstrap wiring, static (runs even when containers are skipped) ───────────
+// ── Composition wiring, static (runs even when containers are skipped) ─────────
 //
 // The behavioural proof above is the primary gate, but it lives behind
 // RUN_BOOTSTRAP_HARNESS (default ON, opt-out via IBX_SKIP_REAL_POSTGRES/REDIS). This
 // source-level assertion — the session-lock-injection.test.ts idiom — keeps the
 // BKL-230 wiring link pinned on a container-skipped run too, so an unwiring can
 // never pass silently in BOTH modes at once.
-describe("claustrum-bootstrap wires the customer action render (BKL-215/BKL-230)", () => {
+//
+// R1-S1 — REPOINTED, intent unchanged. The customer composition moved out of
+// claustrum-bootstrap.ts into claustrum/compose-customer-conductor.ts, so that is
+// now the file the `readAnswer.renderAction` link lives in; pinning the bootstrap
+// would pin an adapter that no longer knows the link exists. The new module's unit
+// test (compose-customer-conductor.test.ts) proves the same link BEHAVIOURALLY at
+// unit cost, which is strictly stronger — this stays as the cheap always-on tripwire.
+describe("the customer composition wires the customer action render (BKL-215/BKL-230)", () => {
   const source = readFileSync(
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../claustrum-bootstrap.ts"),
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../claustrum/compose-customer-conductor.ts",
+    ),
     "utf8",
   );
 
@@ -240,7 +250,7 @@ describe("claustrum-bootstrap wires the customer action render (BKL-215/BKL-230)
 
   it("imports renderCustomerActionAnswer from the render module", () => {
     expect(source).toMatch(
-      /renderCustomerActionAnswer[\s\S]{0,120}from "\.\/claustrum\/customer-action-render\.js"/,
+      /renderCustomerActionAnswer[\s\S]{0,120}from "\.\/customer-action-render\.js"/,
     );
   });
 });
