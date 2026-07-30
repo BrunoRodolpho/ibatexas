@@ -35,11 +35,10 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
-import { beginWireTurn } from "../claustrum/wire-capture.js";
+import { runTurnWithContexts } from "../claustrum/turn-context.js";
 import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { Channel, type StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken, getOrCreateCart } from "@ibatexas/tools";
-import { beginWorkflowTurn } from "../claustrum/workflow/workflow-turn.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import { optionalAuth } from "../middleware/auth.js";
 import {
@@ -57,9 +56,6 @@ import {
   unparkParks,
   webCustomerParkTriagePolicy,
 } from "../claustrum/park-reply-triage.js";
-// LE2-007 — the funnel's per-turn context (the confirm-window fact only the ingress
-// can see). See funnel-tier.ts.
-import { closeFunnelTurn, openFunnelTurn } from "../claustrum/funnel-tier.js";
 import {
   classifyTurnDelivery,
   classifyCatchError,
@@ -527,30 +523,23 @@ async function runConductorTurn(params: {
         }
       }
 
-      // ── LE2-007 · publish this turn's FUNNEL CONTEXT ───────────────────────
-      // The one fact the funnel's L0 tier cannot see from inside the loop:
-      // `CognitiveState` carries no session, so the planner cannot tell whether a
-      // confirmation is parked. FE-D32 (ratified) says L0 must NOT fire at all while
-      // a confirm window is open — the restate-then-confirm path above and the
-      // conductor's `matchToParked` own every reply in that window — so the ingress
-      // publishes the authoritative `capsule.loadedSession` reading here, keyed on
-      // this turn's id, and the tier is fail-closed without it. Placed AFTER the two
-      // ingress niceties (both `return` before the turn) and immediately before the
-      // turn, so what L0 reads is the same park set that just failed to match.
-      openFunnelTurn(capsule.turnId, {
-        confirmWindowOpen: (parked?.length ?? 0) > 0,
+      // ── THE TURN, inside this ingress's per-turn CONTEXT SUBSET (R4-S2) ────
+      // `customer-full` = wire truth + the workflow turn binding + the funnel's
+      // per-turn context, in that nesting, closed in that order — owned by
+      // ../claustrum/turn-context.ts, which documents the invariant once.
+      //
+      // `pendingConfirmations` is the SAME `parked` reading the triage above just
+      // used, and the derivation of `confirmWindowOpen` from it lives in the module
+      // (one spelling, shared with the WhatsApp ingress). It is passed HERE —
+      // after the two ingress niceties, both of which `return` before the turn —
+      // so what L0 reads is the same park set that just failed to match.
+      const turn = await runTurnWithContexts({
+        subset: "customer-full",
+        turnId: capsule.turnId,
+        channel: "web",
+        pendingConfirmations: parked,
+        thunk: () => handleTurn(capsule, inbound),
       });
-      // LE2-021 — bind this turn's identity for the workflow decision observer.
-      // The `Adjudicator` port carries no turn id, so the runtime learns which
-      // turn a CONFIRM belongs to out of band, from the async call tree rather
-      // than from a module-scope variable that concurrent turns would overwrite
-      // (workflow/workflow-turn.ts). Nested inside `beginWireTurn` because both
-      // are per-turn ambient contexts over the same call.
-      const turn = await beginWireTurn(() =>
-        beginWorkflowTurn({ turnId: capsule.turnId, channel: "web" }, () =>
-          handleTurn(capsule, inbound),
-        ),
-      );
       // The conductor produced a result — the inner classify below now owns the
       // no-delivery decision, so a later (post-result) throw must not re-open in
       // the catch (F2 gate).
@@ -649,9 +638,9 @@ async function runConductorTurn(params: {
       // Terminal — only when the client is still listening.
       if (!aborted) pushChunk(sessionId, { type: "done" });
     } finally {
-      // LE2-007 — drop this turn's funnel state (the store is LRU-capped, so this is
-      // hygiene rather than a leak guard).
-      closeFunnelTurn(capsule.turnId);
+      // The funnel state was dropped when the turn settled (turn-context.ts's one
+      // `finally`); the capsule outlives the turn because the delivery work above
+      // does, so closing it stays this ingress's job.
       await conductor.closeCapsule(capsule);
     }
   } catch (err) {
