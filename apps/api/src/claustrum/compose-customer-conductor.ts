@@ -138,6 +138,25 @@ export interface CustomerConductorDeps {
    * spread invoked it.
    */
   readonly safeUnknownGateFor: () => SafeUnknownGate | undefined;
+  /**
+   * THE ONE DECLARED TEST-PLANE DIVERGENCE (R1-S2). Replaces the responder the
+   * CONDUCTOR is given; `buildResponder` is still returned and still builds the
+   * production responder, so the managed-agent plane's recomposition path is
+   * unaffected.
+   *
+   * PRODUCTION MUST NOT SET IT. It exists so the e2e harness can be the composer's
+   * second adapter without also adopting the production reply surface: the harness
+   * default is an inert responder whose `decision=X acted=Y` text ~20 suites assert
+   * on, and converting all of them to production reply-shaping at once is a
+   * different change from deleting a drifted composition twin. A harness test that
+   * wants the real responder simply omits this and gets the production one.
+   *
+   * Deliberately a FINISHED PORT rather than a factory: the divergence is "which
+   * responder the conductor got", which is a composition fact the caller already
+   * holds, and a factory would invite a second responder-shaping policy to grow
+   * here — the drift this whole extraction exists to remove.
+   */
+  readonly responderOverride?: ResponderPort;
 }
 
 /** What the composition hands back. */
@@ -364,7 +383,13 @@ export function composeCustomerConductor(
     memory: deps.memory,
     grounding: deps.grounding,
     planner,
-    responder: buildResponder(deps.model),
+    // R1-S2 — the declared test-plane divergence. Absent in production (the only
+    // caller that sets it is the e2e harness), so this is `buildResponder(model)`
+    // there, exactly as before. Note the short-circuit is load-bearing: with an
+    // override no production responder is constructed at all, so
+    // `safeUnknownGateFor` is not invoked either — the harness plane must not pay
+    // for, or be observed through, a responder its conductor never uses.
+    responder: deps.responderOverride ?? buildResponder(deps.model),
     explainer: ibxExplainer,
     handoff: deps.handoff,
     telemetry,

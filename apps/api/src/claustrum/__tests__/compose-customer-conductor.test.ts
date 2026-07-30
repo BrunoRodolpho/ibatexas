@@ -14,7 +14,7 @@
 // are the links under test.
 
 import { describe, expect, it, vi } from "vitest";
-import type { Adjudicator, ModelProvider } from "@claustrum/core";
+import type { Adjudicator, ModelProvider, ResponderPort } from "@claustrum/core";
 import type { Decision } from "@adjudicate/core";
 import {
   composeCustomerConductor,
@@ -108,7 +108,16 @@ interface Doubles {
 
 interface Composed {
   readonly plannerDeps: Record<string, unknown>;
+  /**
+   * What the PRODUCTION responder factory was handed. Present on every path except a
+   * `responderOverride` compose, which builds no production responder at all — read
+   * {@link Composed.productionResponderBuilt} rather than this when the override is in
+   * play (that is what the override cases below assert on).
+   */
   readonly responderDeps: Record<string, unknown>;
+  /** Did the composition construct a production responder? False iff an override
+   *  replaced it before construction. */
+  readonly productionResponderBuilt: boolean;
   readonly conductorOptions: Record<string, unknown>;
   readonly result: ReturnType<typeof composeCustomerConductor>;
   readonly doubles: Doubles;
@@ -123,6 +132,7 @@ function composed(
     readonly withL1?: boolean;
     readonly safeUnknown?: SafeUnknownGate;
     readonly capabilityRetriever?: CustomerConductorDeps["capabilityRetriever"];
+    readonly responderOverride?: ResponderPort;
   } = {},
 ): Composed {
   createIbatexasPlannerSpy.mockClear();
@@ -174,12 +184,21 @@ function composed(
     readToolExecutors: {},
     claimsSeamsFor,
     safeUnknownGateFor,
+    ...(opts.responderOverride === undefined
+      ? {}
+      : { responderOverride: opts.responderOverride }),
   };
 
   const result = composeCustomerConductor(deps);
   return {
     plannerDeps: createIbatexasPlannerSpy.mock.calls[0]![0],
-    responderDeps: createIbatexasResponderSpy.mock.calls[0]![0],
+    // `?.` not `!`: an override compose legitimately never calls this factory. See
+    // Composed.responderDeps.
+    responderDeps: createIbatexasResponderSpy.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >,
+    productionResponderBuilt: createIbatexasResponderSpy.mock.calls.length > 0,
     conductorOptions: createConductorSpy.mock.calls[0]![0],
     result,
     doubles: {
@@ -329,6 +348,49 @@ describe("composeCustomerConductor — the workflow decision observer (LE2-021)"
       "turn-obs-1",
       doubles.rawDecision,
     );
+  });
+});
+
+describe("composeCustomerConductor — the responder override (R1-S2)", () => {
+  /** A distinguishable inert responder — identity is the whole assertion. */
+  const override: ResponderPort = { respond: async () => ({ text: "override" }) };
+
+  it("hands the conductor the OVERRIDE ITSELF, and builds no production responder", () => {
+    const { conductorOptions, productionResponderBuilt, doubles } = composed({
+      responderOverride: override,
+    });
+    expect(conductorOptions["responder"]).toBe(override);
+    // The short-circuit is part of the contract: no production responder is
+    // constructed, so the per-construction safe-unknown factory is not invoked either.
+    expect(productionResponderBuilt).toBe(false);
+    expect(doubles.safeUnknownGateFor).not.toHaveBeenCalled();
+  });
+
+  it("keeps the PRODUCTION-built responder when no override is supplied", () => {
+    const { conductorOptions, productionResponderBuilt } = composed();
+    expect(productionResponderBuilt).toBe(true);
+    // Anti-vacuity: the previous case's sentinel must not be what production returns,
+    // or `toBe(override)` above would hold for the wrong reason.
+    expect(conductorOptions["responder"]).not.toBe(override);
+    expect(conductorOptions["responder"]).toBe(
+      createIbatexasResponderSpy.mock.results[0]!.value,
+    );
+  });
+
+  it("returns a PRODUCTION-shaped buildResponder in BOTH states", () => {
+    for (const responderOverride of [undefined, override]) {
+      const { result } = composed({ responderOverride });
+      const before = createIbatexasResponderSpy.mock.calls.length;
+      const built = result.buildResponder(MODEL);
+      // It went through the production factory (not the override), and it is that
+      // factory's product — so the managed-agent plane's H1 recomposition path is
+      // unaffected by the divergence.
+      expect(createIbatexasResponderSpy.mock.calls.length).toBe(before + 1);
+      expect(built).not.toBe(override);
+      const deps = createIbatexasResponderSpy.mock.calls[before]![0];
+      expect(deps["modelId"]).toBe("test-model");
+      expect(deps).toHaveProperty("readAnswer");
+    }
   });
 });
 
