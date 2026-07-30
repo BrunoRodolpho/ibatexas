@@ -24,6 +24,8 @@ import { compileClaimDefinition } from "@adjudicate/core";
 import { MENU_DIETARY_SOURCE } from "./menu-dietary.claim.js";
 import { MENU_ITEM_CONTENTS_SOURCE } from "./menu-item-contents.claim.js";
 import { MENU_ITEM_PRICE_SOURCE } from "./menu-item-price.claim.js";
+import { ORDER_HISTORY_SOURCE } from "./order-history.claim.js";
+import { PAYMENT_HISTORY_SOURCE } from "./payment-history.claim.js";
 import {
   compilePerResourceClaimDefinition,
   type RepoCompiledArtifacts,
@@ -101,6 +103,23 @@ const UNITS: readonly GenUnit[] = [
     slug: "reservation-status",
     sourceFile: "reservation-status.claim.ts",
     artifacts: compilePerResourceClaimDefinition(RESERVATION_STATUS_SOURCE),
+  },
+  // R2-S5 — the HISTORIES pair, the second and third owner-scoped units. Same widening
+  // and the same `ownershipPolicy: "required"` evidence row as reservation-status; what is
+  // new is only that their SUBJECT is the authenticated customerId rather than a resource
+  // id (one history per customer), which is a runtime fact about the investigator's
+  // ledger keys and needs nothing from the compiler. Each contributes ONE closure row; the
+  // singular-sibling SPLICE that accompanies each span is a SEQUENCING fact about
+  // `classifyRequestSpans` and stays hand-written there (see either source's header).
+  {
+    slug: "order-history",
+    sourceFile: "order-history.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(ORDER_HISTORY_SOURCE),
+  },
+  {
+    slug: "payment-history",
+    sourceFile: "payment-history.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(PAYMENT_HISTORY_SOURCE),
   },
 ];
 

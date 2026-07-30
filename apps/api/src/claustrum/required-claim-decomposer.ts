@@ -45,6 +45,8 @@ import {
 import { MENU_DIETARY_CLOSURE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_CLOSURE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_CLOSURE } from "./claimdefs/menu-item-price.generated.js";
+import { ORDER_HISTORY_CLOSURE } from "./claimdefs/order-history.generated.js";
+import { PAYMENT_HISTORY_CLOSURE } from "./claimdefs/payment-history.generated.js";
 import { RESERVATION_STATUS_CLOSURE } from "./claimdefs/reservation-status.generated.js";
 import { STORE_INFO_CLOSURE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
@@ -158,12 +160,16 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // into RELEVANCE_GOVERNED_TYPES (an over-proposed CART_EMPTY demotes on a
   // non-cart turn).
   CART_CONTENTS_Q: ["CART_CONTENTS", "CART_EMPTY"],
-  // FE-D03 slice C — a history/list question requires its own list-shaped claim. Like
-  // CART_CONTENTS_Q, each is required ONLY by its own span (no unrelated span
-  // force-requires it), so it auto-enrols into the claim-planner RELEVANCE_GOVERNED_TYPES
-  // via the closure-value union (over-proposed history claim demoted on a non-history turn).
-  ORDER_HISTORY_Q: ["ORDER_HISTORY"],
-  PAYMENT_HISTORY_Q: ["PAYMENT_HISTORY"],
+  // inv.18 v2 / R2-S5 — both history rows are GENERATED (span class + required set); the
+  // FE-D03 rationale for each requiring ONLY its own list-shaped claim, and for the row
+  // being what auto-enrols the type into the claim-planner's RELEVANCE_GOVERNED_TYPES,
+  // moved verbatim into `./claimdefs/order-history.claim.ts` /
+  // `./claimdefs/payment-history.claim.ts`. The row shape is identical either way (a span
+  // class mapped to a non-empty required set) — ownership lives on the SPEC's evidence
+  // rows, not here, and the SINGULAR-SIBLING SPLICE that accompanies each of these two
+  // spans is a `classifyRequestSpans` SEQUENCING fact and stays hand-written there.
+  [ORDER_HISTORY_CLOSURE.spanClass]: ORDER_HISTORY_CLOSURE.requires,
+  [PAYMENT_HISTORY_CLOSURE.spanClass]: PAYMENT_HISTORY_CLOSURE.requires,
   // inv.18 v2 / R2-S2 + R2-S3 — the two per-item menu rows are GENERATED (span class +
   // required set); the BKL-142 rationale for requiring ONLY its own PUBLIC claim moved
   // verbatim into `./claimdefs/menu-item-price.claim.ts` /
@@ -1029,6 +1035,39 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
    * non-empty / well-formed backstop below covers this net too.
    */
   reservationStatus: RESERVATION_STATUS_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S5 — the ORDER_HISTORY_Q markers, now GENERATED as THREE arms from
+   * `order-history.claim.ts`, rejoined in declaration order. Same statement as its
+   * predecessors: if this reassembly is byte-identical to the pre-migration literal, it is
+   * not an equivalent regex, it is THE SAME regex.
+   *
+   * Byte-identity here holds two things a rewrite would quietly lose. (1) The accent
+   * CHARACTER CLASSES `hist[óo]rico` and `[úu]ltimos` — the BKL-205/BKL-270/BKL-271
+   * lesson, where an ASCII-only stem has an EMPTY true-positive set on the real phrasing
+   * and no false-positive sweep reveals it. (2) The REVERSED arm 2
+   * (`pedido[^.!?]{0,25}hist[óo]rico`), which this net has and its payment twin does NOT —
+   * the asymmetry is pre-existing and load-bearing, and a "tidy the pair to match" rewrite
+   * would change one net or the other.
+   *
+   * NOTE for the reader of the joined value: arm 3 contains top-level-looking `|`s INSIDE
+   * its `(meus|todos os meus|[úu]ltimos)` group, so a joined string alone cannot witness
+   * where the arm boundaries are. The test therefore pins each arm's source INDIVIDUALLY
+   * off `ORDER_HISTORY_CLOSURE.markers` as well — this entry exists so the shared
+   * non-empty / well-formed backstop below covers this net too.
+   */
+  orderHistory: ORDER_HISTORY_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S5 — the PAYMENT_HISTORY_Q markers, now GENERATED as TWO arms from
+   * `payment-history.claim.ts`, rejoined in declaration order. The accent-class point
+   * above applies identically.
+   *
+   * The arm-boundary ambiguity is STRONGER here than on the order twin: with only two arms
+   * and internal `|`s in BOTH of them (`(pagamento|pagar)` and
+   * `(meus|todos os meus|[úu]ltimos)`), the joined string is genuinely ambiguous about the
+   * split point — so the individual per-arm pins are what carry the proof, and this entry
+   * carries the shared backstop.
+   */
+  paymentHistory: PAYMENT_HISTORY_CLOSURE.markers.map((m) => m.source).join("|"),
 } as const;
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -1468,21 +1507,31 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // (both directions pinned in the tests). "meus pedidos"/"meus pagamentos" trip the
   // order/payment phrasing above, so the suppression (not mere over-inclusion) is what
   // routes them to the history claim.
-  const orderHistoryRef =
-    /hist[óo]rico[^.!?]{0,25}pedido|pedido[^.!?]{0,25}hist[óo]rico|(?<![a-z])(meus|todos os meus|[úu]ltimos)\s+pedidos/.test(
-      t,
-    );
-  const paymentHistoryRef =
-    /hist[óo]rico[^.!?]{0,25}(pagamento|pagar)|(?<![a-z])(meus|todos os meus|[úu]ltimos)\s+pagamentos/.test(
-      t,
-    );
+  // inv.18 v2 / R2-S5 — the MARKERS are now GENERATED from the def sources (each was one
+  // flat top-level alternation, so the generated arms REJOIN to their literal
+  // character-for-character — THREE arms for the order net, TWO for the payment net,
+  // pinned by `__SPAN_NET_SOURCES_FOR_TEST.orderHistory` / `.paymentHistory` and
+  // additionally arm-by-arm, since every net here contains `|`s inside its own groups).
+  //
+  // THE SPLICE IS NOT GENERATED and stays here. It is a SEQUENCING fact about this
+  // function — it mutates the accumulated `classes` array and names the OTHER span's
+  // class key (`ORDER_STATUS_Q` / `PAYMENT_STATUS_Q`, both hand-written rows) — whereas a
+  // def source contributes only its OWN span class, required set and markers. Same
+  // division as every span GUARD conjunction since R2-S1: the compiler models which
+  // markers classify INTO a span, never which classes a span must remove from the set.
+  // The two splices are also ORDER-DEPENDENT on each other's index arithmetic when both
+  // fire ("qual o status de tudo: meus pedidos e meus pagamentos?" → both singulars
+  // removed, leaving `[ORDER_HISTORY_Q, PAYMENT_HISTORY_Q]`), which is precisely the kind
+  // of fact that lives in an interpreter and not in data.
+  const orderHistoryRef = ORDER_HISTORY_CLOSURE.markers.some((m) => m.test(t));
+  const paymentHistoryRef = PAYMENT_HISTORY_CLOSURE.markers.some((m) => m.test(t));
   if (orderHistoryRef) {
-    classes.push("ORDER_HISTORY_Q");
+    classes.push(ORDER_HISTORY_CLOSURE.spanClass);
     const i = classes.indexOf("ORDER_STATUS_Q");
     if (i !== -1) classes.splice(i, 1);
   }
   if (paymentHistoryRef) {
-    classes.push("PAYMENT_HISTORY_Q");
+    classes.push(PAYMENT_HISTORY_CLOSURE.spanClass);
     const i = classes.indexOf("PAYMENT_STATUS_Q");
     if (i !== -1) classes.splice(i, 1);
   }

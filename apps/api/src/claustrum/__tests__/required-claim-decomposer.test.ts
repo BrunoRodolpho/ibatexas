@@ -13,6 +13,9 @@ import { isRegistryClaimType, type RegistryClaimType } from "../claim-registry.j
 // inv.18 v2 / R2-S4 — the GENERATED reservation closure, asserted directly (per-arm
 // marker pins) rather than only through the reassembled `__SPAN_NET_SOURCES_FOR_TEST`
 // string, which cannot witness where the arm boundary sits.
+// inv.18 v2 / R2-S5 — the GENERATED history closures, pinned per arm for the same reason.
+import { ORDER_HISTORY_CLOSURE } from "../claimdefs/order-history.generated.js";
+import { PAYMENT_HISTORY_CLOSURE } from "../claimdefs/payment-history.generated.js";
 import { RESERVATION_STATUS_CLOSURE } from "../claimdefs/reservation-status.generated.js";
 // BKL-285 — the classify-only ROUTE gate. Imported here so the reservation
 // create/read split can be asserted on the decision that actually costs the
@@ -916,6 +919,166 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     expect(RESERVATION_STATUS_CLOSURE.spanClass).toBe("RESERVATION_STATUS_Q");
     expect(RESERVATION_STATUS_CLOSURE.requires).toEqual(["RESERVATION_STATUS"]);
     expect(REQUIRED_CLAIM_CLOSURE.RESERVATION_STATUS_Q).toEqual(["RESERVATION_STATUS"]);
+  });
+
+  // inv.18 v2 / R2-S5 — the two HISTORY nets moved into `order-history.claim.ts` /
+  // `payment-history.claim.ts`. Unlike the reservation net these WERE single flat
+  // alternations, so the reassembled joined value is a real byte-identity statement about
+  // the pre-migration literal — but every arm of both nets contains `|`s inside its own
+  // group, so the joined form alone cannot witness the split points and the per-arm pins
+  // are what carry the proof. Both are asserted.
+  it("ORDER_HISTORY: each generated marker arm is byte-identical to its pre-migration literal", () => {
+    // Arm 1 — `histórico` … `pedido`, in that order, within a no-sentence-boundary
+    // proximity window. The `[óo]` CHARACTER CLASS is the load-bearing part: an
+    // ASCII-only `historico` stem would still pass every unaccented sweep while having an
+    // EMPTY true-positive set on how a customer actually writes it (the
+    // BKL-205/BKL-270/BKL-271 accent lesson, third recurrence).
+    expect(ORDER_HISTORY_CLOSURE.markers[0]!.source).toBe(
+      String.raw`hist[óo]rico[^.!?]{0,25}pedido`,
+    );
+    // Arm 2 — the REVERSED order ("pedidos no meu histórico"). This arm is what the
+    // payment net does NOT have; the asymmetry is pre-existing and byte-identity is what
+    // stops a later "make the pair symmetric" edit from silently changing one net.
+    expect(ORDER_HISTORY_CLOSURE.markers[1]!.source).toBe(
+      String.raw`pedido[^.!?]{0,25}hist[óo]rico`,
+    );
+    // Arm 3 — the possessive/superlative plural, LEFT-anchored, with the same accent
+    // class on `[úu]ltimos`.
+    expect(ORDER_HISTORY_CLOSURE.markers[2]!.source).toBe(
+      String.raw`(?<![a-z])(meus|todos os meus|[úu]ltimos)\s+pedidos`,
+    );
+    // Exactly three arms — a fourth would be new net surface smuggled in as a "move".
+    expect(ORDER_HISTORY_CLOSURE.markers).toHaveLength(3);
+    // …and the joined form IS the pre-migration literal, character for character.
+    expect(__SPAN_NET_SOURCES_FOR_TEST.orderHistory).toBe(
+      String.raw`hist[óo]rico[^.!?]{0,25}pedido|pedido[^.!?]{0,25}hist[óo]rico|(?<![a-z])(meus|todos os meus|[úu]ltimos)\s+pedidos`,
+    );
+  });
+
+  it("PAYMENT_HISTORY: each generated marker arm is byte-identical to its pre-migration literal", () => {
+    // Arm 1 — `histórico` … EITHER noun, the second folded into a group rather than
+    // given its own arm (this net's structural difference from the order twin, together
+    // with having no reversed arm).
+    expect(PAYMENT_HISTORY_CLOSURE.markers[0]!.source).toBe(
+      String.raw`hist[óo]rico[^.!?]{0,25}(pagamento|pagar)`,
+    );
+    // Arm 2 — the possessive/superlative plural, LEFT-anchored.
+    expect(PAYMENT_HISTORY_CLOSURE.markers[1]!.source).toBe(
+      String.raw`(?<![a-z])(meus|todos os meus|[úu]ltimos)\s+pagamentos`,
+    );
+    // Exactly TWO arms — one fewer than the order net, deliberately.
+    expect(PAYMENT_HISTORY_CLOSURE.markers).toHaveLength(2);
+    expect(__SPAN_NET_SOURCES_FOR_TEST.paymentHistory).toBe(
+      String.raw`hist[óo]rico[^.!?]{0,25}(pagamento|pagar)|(?<![a-z])(meus|todos os meus|[úu]ltimos)\s+pagamentos`,
+    );
+  });
+
+  // R2-S5 FINDING, closed here. The marker revert-to-red probe measured that dropping the
+  // order net's REVERSED arm 2 was caught by the byte pin above and by NOTHING ELSE: no
+  // pre-existing or new behavioural case covered the reversed phrasing, so the arm was
+  // byte-pin-only. And the degrade is not benign — with arm 2 gone,
+  // "pedidos no meu histórico" does not fall through to arm 1 (which requires
+  // histórico BEFORE pedido) or arm 3 (which requires the "meus pedidos" adjacency); it
+  // classifies to ORDER_STATUS_Q instead, i.e. the SINGULAR span, which is precisely the
+  // FE-D03 defect the list-shaped type exists to replace. A behavioural must-fire is
+  // strictly stronger than a byte pin for that, because it survives a legitimate future
+  // re-spelling of the arm.
+  it.each([
+    "pedidos no meu histórico",
+    "pedido historico",
+    "quais pedidos aparecem no meu histórico?",
+  ])("MUST-FIRE ORDER_HISTORY_Q on the REVERSED pedido→histórico phrasing: %s", (text) => {
+    const classes = classifyRequestSpans(text);
+    expect(classes).toContain("ORDER_HISTORY_Q");
+    // …and the singular sibling is spliced, which is the half that proves the reversed arm
+    // reached the history branch rather than merely coexisting with the order-phrasing net.
+    expect(classes).not.toContain("ORDER_STATUS_Q");
+  });
+
+  it("the two history nets are NOT interchangeable (the arm-count asymmetry is real)", () => {
+    // Stated as its own case because both per-arm pins above could be satisfied by a
+    // copy-paste of one net into the other's file if the nouns were swapped — the counts
+    // differing is the fact that makes them genuinely two nets.
+    expect(ORDER_HISTORY_CLOSURE.markers).toHaveLength(3);
+    expect(PAYMENT_HISTORY_CLOSURE.markers).toHaveLength(2);
+    expect(__SPAN_NET_SOURCES_FOR_TEST.orderHistory).not.toBe(
+      __SPAN_NET_SOURCES_FOR_TEST.paymentHistory,
+    );
+  });
+
+  it("the generated history closure rows are the pre-migration rows", () => {
+    expect(ORDER_HISTORY_CLOSURE.spanClass).toBe("ORDER_HISTORY_Q");
+    expect(ORDER_HISTORY_CLOSURE.requires).toEqual(["ORDER_HISTORY"]);
+    expect(REQUIRED_CLAIM_CLOSURE.ORDER_HISTORY_Q).toEqual(["ORDER_HISTORY"]);
+    expect(PAYMENT_HISTORY_CLOSURE.spanClass).toBe("PAYMENT_HISTORY_Q");
+    expect(PAYMENT_HISTORY_CLOSURE.requires).toEqual(["PAYMENT_HISTORY"]);
+    expect(REQUIRED_CLAIM_CLOSURE.PAYMENT_HISTORY_Q).toEqual(["PAYMENT_HISTORY"]);
+  });
+
+  // ── THE SPLICE: the half that did NOT migrate. ────────────────────────────────────
+  //
+  // Each history span REMOVES its singular sibling from the accumulated class list. That
+  // is a SEQUENCING fact about `classifyRequestSpans`, not a marker fact, so it stayed
+  // hand-written — and staying hand-written is exactly why it needs pinning HERE: nothing
+  // in the generated closure, the drift guard, or the marker pins above can see it. A
+  // regression that deleted the two `classes.splice(...)` calls would leave every
+  // assertion in this file green except these.
+  describe("R2-S5 — the singular-sibling SPLICE (hand-written, not generated)", () => {
+    it.each([
+      ["qual o status dos meus pedidos?", "ORDER_HISTORY_Q", "ORDER_STATUS_Q"],
+      ["qual o status dos meus pagamentos?", "PAYMENT_HISTORY_Q", "PAYMENT_STATUS_Q"],
+      ["status do meu histórico de pedidos", "ORDER_HISTORY_Q", "ORDER_STATUS_Q"],
+      ["status do meu histórico de pagamentos", "PAYMENT_HISTORY_Q", "PAYMENT_STATUS_Q"],
+    ] as const)(
+      "%s → keeps %s and SPLICES OUT %s",
+      (text, kept, spliced) => {
+        const classes = classifyRequestSpans(text);
+        expect(classes).toContain(kept);
+        // The load-bearing half. Without the splice the singular sibling survives and the
+        // turn carries a required companion about a DIFFERENT (single-subject) resource —
+        // which forces the >=2-owned CLARIFY the list-shaped type exists to replace.
+        expect(classes).not.toContain(spliced);
+      },
+    );
+
+    it("BOTH splices compose, and the surviving ORDER is the sequencing fact", () => {
+      // The index arithmetic matters: the first splice shifts the array before the second
+      // runs. Pinning the exact resulting order is what makes this a test of the
+      // sequencing rather than of set membership.
+      expect(classifyRequestSpans("qual o status de tudo: meus pedidos e meus pagamentos?")).toEqual(
+        ["ORDER_HISTORY_Q", "PAYMENT_HISTORY_Q"],
+      );
+      expect(classifyRequestSpans("meus pedidos e meus pagamentos")).toEqual([
+        "ORDER_HISTORY_Q",
+        "PAYMENT_HISTORY_Q",
+      ]);
+    });
+
+    // The OTHER direction, which is what keeps the splice from being a blanket
+    // suppression: a SINGULAR ask carries no history marker, so its singular span must
+    // survive untouched. Without these rows a "fix" that spliced unconditionally would
+    // pass every case above.
+    it.each([
+      ["cadê meu pedido?", "ORDER_STATUS_Q"],
+      ["onde está meu pedido?", "ORDER_STATUS_Q"],
+      ["qual o status do meu pedido?", "ORDER_STATUS_Q"],
+      ["meu pagamento foi aprovado?", "PAYMENT_STATUS_Q"],
+      ["qual o status do meu pagamento?", "PAYMENT_STATUS_Q"],
+    ] as const)("a SINGULAR ask keeps its span: %s → %s", (text, kept) => {
+      const classes = classifyRequestSpans(text);
+      expect(classes).toContain(kept);
+      expect(classes).not.toContain("ORDER_HISTORY_Q");
+      expect(classes).not.toContain("PAYMENT_HISTORY_Q");
+    });
+
+    it("a BARE status ask still over-includes BOTH singulars (no history marker)", () => {
+      // The bare-"status" fallback is upstream of both splices; with no history marker
+      // present neither fires, so the pre-migration over-inclusion is intact.
+      expect(classifyRequestSpans("qual o status?")).toEqual([
+        "ORDER_STATUS_Q",
+        "PAYMENT_STATUS_Q",
+      ]);
+    });
   });
 
   // Guards the guard: a typo that emptied a part would make the assertions above

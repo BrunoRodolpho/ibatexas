@@ -32,6 +32,16 @@ import {
   MENU_ITEM_PRICE_ID,
   MENU_ITEM_PRICE_REGISTRY_SPEC,
 } from "../menu-item-price.generated.js";
+import { ORDER_HISTORY_SOURCE } from "../order-history.claim.js";
+import {
+  ORDER_HISTORY_ID,
+  ORDER_HISTORY_REGISTRY_SPEC,
+} from "../order-history.generated.js";
+import { PAYMENT_HISTORY_SOURCE } from "../payment-history.claim.js";
+import {
+  PAYMENT_HISTORY_ID,
+  PAYMENT_HISTORY_REGISTRY_SPEC,
+} from "../payment-history.generated.js";
 import { RESERVATION_STATUS_SOURCE } from "../reservation-status.claim.js";
 import {
   RESERVATION_STATUS_ID,
@@ -400,4 +410,242 @@ describe("R2-S4 — the generated spec preserves the OWNERSHIP axis", () => {
       "required",
     ]);
   });
+});
+
+// ── R2-S5 — THE HISTORIES PAIR: the owner-scoped axis, quantified over BOTH. ──────────
+//
+// R2-S4 proved the ownership axis on ONE type. Written as a per-type table so the two
+// histories cannot diverge and so neither can pass on its sibling's evidence — the shape
+// R2-S1 established with `describe.each` over UNITS and the reason the reference-identity
+// table upstairs is a table too.
+//
+// WHAT IS NEW HERE relative to RESERVATION_STATUS, and why it needs its own assertions:
+// these two types' SUBJECT is the AUTHENTICATED customerId, not a resource id. There is
+// exactly ONE history per customer, so the `:{subject}` suffix partitions the ledger BY
+// CUSTOMER rather than by resource — which means a dropped `perResourceKey` flag does not
+// merely fail to find one entry, it COLLAPSES EVERY CUSTOMER'S HISTORY ONTO ONE BARE KEY.
+// That is the cross-customer leak shape, and it is why the turn-seam proof for these two
+// drives two distinct customers rather than two resources of one owner.
+const HISTORY_CASES = [
+  {
+    type: "ORDER_HISTORY",
+    source: ORDER_HISTORY_SOURCE,
+    spec: ORDER_HISTORY_REGISTRY_SPEC,
+    id: ORDER_HISTORY_ID,
+    baseKey: "order_history",
+    falsifierKey: "order_history_changed",
+    spanClass: "ORDER_HISTORY_Q",
+    armCount: 3,
+  },
+  {
+    type: "PAYMENT_HISTORY",
+    source: PAYMENT_HISTORY_SOURCE,
+    spec: PAYMENT_HISTORY_REGISTRY_SPEC,
+    id: PAYMENT_HISTORY_ID,
+    baseKey: "payment_history",
+    falsifierKey: "payment_history_changed",
+    spanClass: "PAYMENT_HISTORY_Q",
+    armCount: 2,
+  },
+] as const;
+
+describe.each(HISTORY_CASES)(
+  "R2-S5 — the generated $type spec preserves the OWNERSHIP axis",
+  ({ type, source, spec, id, baseKey, falsifierKey, armCount }) => {
+    it("ownershipPolicy: required survives the compile, on evidence AND falsifiers", () => {
+      expect(spec.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual(["required"]);
+      expect(spec.falsifiers.map((f) => f.ownershipPolicy)).toEqual(["required"]);
+      // The R2-S4 mechanism assertion, re-made per type: in the COMPILER's output the
+      // spec's evidence array IS the source's array (`toRegistrySpec` does
+      // `requiredEvidence: def.requiredEvidence`, not a field-by-field rebuild), so there
+      // is no copy step in which `ownershipPolicy` could be dropped the way
+      // `perResourceKey` is. This is what makes "no second widening needed" a measured
+      // fact rather than an inference from the published type.
+      const compiled = compilePerResourceClaimDefinition(source);
+      expect(compiled.registrySpec.requiredEvidence).toBe(source.requiredEvidence);
+      expect(compiled.registrySpec.falsifiers).toBe(source.falsifiers);
+      // Reference identity cannot survive the file boundary (the emitted module is a
+      // re-serialization), so deep equality is the strongest statement on this side and
+      // byte-identity via the drift guard carries it the rest of the way.
+      expect(spec.requiredEvidence).toEqual(source.requiredEvidence);
+      expect(spec.falsifiers).toEqual(source.falsifiers);
+    });
+
+    it("ownerScopedBaseKey resolves the UNSUFFIXED base key, joined to a DECLARED ledger prefix", () => {
+      expect(ownerScopedBaseKey(type)).toBe(baseKey);
+      // An unsuffixed base is load-bearing: `ownerScopedBaseKey` feeds
+      // `ownedResourceIdsByBaseKey`, which strips a `${base}:` prefix off ledger keys, so
+      // a pre-suffixed base makes every present owner-scoped read unmatchable and the
+      // legitimate owner gets UNKNOWN.
+      expect(baseKey).not.toContain(":");
+      expect(OWNER_SCOPED_KEY_PREFIXES).toContain(`${baseKey}:`);
+    });
+
+    it("publicPerItemBaseKey stays undefined — the complement holds after adoption", () => {
+      // The assertion that catches a lost `ownershipPolicy`: `publicPerItemBaseKey`
+      // answers for ANY perResourceKey type whose rows are all `not_applicable`, so a
+      // dropped policy flips this from `undefined` to the base key — a customer-scoped
+      // type silently answering as public, which is the IDOR-reopening shape.
+      expect(publicPerItemBaseKey(type)).toBeUndefined();
+      expect(REGISTRY_SPECS[type].customerScoped).toBe(true);
+      expect((REGISTRY_SPECS[type] as { perResourceKey?: boolean }).perResourceKey).toBe(true);
+    });
+
+    it("selectCandidateClaim suffixes by CUSTOMER id AND derives the C1 resource binding", () => {
+      const candidate = selectCandidateClaim({
+        type,
+        subject: "cus_owner_1",
+        actor: { principal: "cus_owner_1" },
+        value: undefined,
+      });
+      expect(candidate).toBeDefined();
+      const s = candidate!.soundness;
+      expect(s.requiredEvidence.map((e) => e.key)).toEqual([`${baseKey}:cus_owner_1`]);
+      expect(s.falsifiers?.map((f) => f.key)).toEqual([`${falsifierKey}:cus_owner_1`]);
+      expect(s.valueBinding?.key).toBe(`${baseKey}:cus_owner_1`);
+      // C6 structural guard (the kernel hard-throws otherwise).
+      expect(s.requiredEvidence.map((e) => e.key)).toContain(s.valueBinding?.key);
+      // fix 2 — the C1 binding, keyed by each SUFFIXED `required` key. Derived FROM the
+      // `ownershipPolicy: "required"` filter, so it is the second consumer that silently
+      // degrades if the policy is lost: with no binding the kernel REFUSES ownership even
+      // for the legitimate owner.
+      expect(s.resources).toEqual({ [`${baseKey}:cus_owner_1`]: "cus_owner_1" });
+    });
+
+    it("TWO customers get DISJOINT suffixed keys — the per-customer partition", () => {
+      // The failure this pins is specific to a customerId-subjected type: a dropped flag
+      // leaves BOTH customers resolving the SAME bare key, so whichever history was read
+      // last answers for everyone. Two candidates, every key distinct.
+      const a = selectCandidateClaim({
+        type,
+        subject: "cus_a",
+        actor: { principal: "cus_a" },
+        value: undefined,
+      })!;
+      const b = selectCandidateClaim({
+        type,
+        subject: "cus_b",
+        actor: { principal: "cus_b" },
+        value: undefined,
+      })!;
+      expect(a.soundness.requiredEvidence[0]!.key).toBe(`${baseKey}:cus_a`);
+      expect(b.soundness.requiredEvidence[0]!.key).toBe(`${baseKey}:cus_b`);
+      expect(a.soundness.requiredEvidence[0]!.key).not.toBe(b.soundness.requiredEvidence[0]!.key);
+      expect(a.soundness.valueBinding?.key).not.toBe(b.soundness.valueBinding?.key);
+      // …and neither is the BARE key, which is what a dropped flag would produce for both.
+      for (const c of [a, b]) {
+        expect(c.soundness.requiredEvidence[0]!.key).not.toBe(baseKey);
+      }
+    });
+
+    it("the REGISTRY_SPECS row is the generated spec + the spliced owner posture, nothing else", () => {
+      expect(REGISTRY_SPECS[type]).toEqual({ ...spec, dietaryPosture: "answer-anyway" });
+      expect(id).toBe(`${type}@1`);
+      // triadScoped is source-declared and is NOT a registry-spec field — it must not
+      // have leaked into the spec row.
+      expect("triadScoped" in REGISTRY_SPECS[type]).toBe(false);
+    });
+
+    it("C1 is the ONLY difference between a VALIDATED owner and a REFUSED non-owner", () => {
+      // The R2-S4 CONTROL/TREATMENT pair, per type. The owns=TRUE arm must VALIDATE,
+      // which proves C6/freshness/integrity/provenance are all satisfied and therefore
+      // cannot be what fails the owns=FALSE arm — without that control this is the
+      // access-class vacuity shape (a negative held up by a different wall than the one
+      // it names).
+      const CUST = "cus_c1_probe";
+      const SUFFIXED = `${baseKey}:${CUST}`;
+      const SUMMARY = "Pedido #1042 (entregue, R$89,00) — mostrando os 1 mais recentes";
+
+      const candidate = selectCandidateClaim({
+        type,
+        subject: CUST,
+        actor: CUST,
+        // Bound to the C6 path the GENERATED spec declares, so value-binding PASSES and
+        // ownership is the live conjunct.
+        value: { historySummaryText: SUMMARY },
+      })!;
+
+      const ledgerFor = (): EvidenceLedger => {
+        const l = new EvidenceLedger("turn-c1-history");
+        l.record({
+          key: SUFFIXED,
+          value: { historySummaryText: SUMMARY },
+          source: "history.listByCustomer",
+          fetchedAt: NOW,
+          sourceMode: "live",
+          taint: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+        });
+        return l;
+      };
+      const depsWith = (owned: readonly string[]) =>
+        createPerTurnClaimsKernelDeps({
+          now: NOW,
+          ownership: { principal: CUST, ownedResources: new Set(owned) },
+          outcomes: [],
+        });
+
+      // CONTROL — the legitimate owner. MUST validate, or the treatment proves nothing.
+      const owner = runClaimsKernel(ledgerFor(), [candidate], depsWith([CUST]));
+      expect(owner.perClaim[0]?.verdict).toBe("VALIDATED");
+      expect(owner.renderable).toHaveLength(1);
+
+      // TREATMENT — identical ledger, identical candidate, identical value; the resource
+      // is simply not owned. "No owner" ≠ "any owner" (Inv 2).
+      const nonOwner = runClaimsKernel(ledgerFor(), [candidate], depsWith(["cus_someone_else"]));
+      expect(nonOwner.perClaim[0]?.verdict).not.toBe("VALIDATED");
+      expect(nonOwner.renderable).toHaveLength(0);
+
+      // And the wall is reached through the GENERATED spec's own row.
+      expect(candidate.soundness.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual([
+        "required",
+      ]);
+    });
+
+    it("the PUBLISHED compiler on the SAME source still drops only perResourceKey", () => {
+      const published = compileClaimDefinition(source);
+      expect("perResourceKey" in published.registrySpec).toBe(false);
+      expect({ ...published.registrySpec, perResourceKey: true }).toEqual(spec);
+      expect(published.registrySpec.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual([
+        "required",
+      ]);
+    });
+
+    it("the compiled closure contributes its OWN span class and required set, and NOTHING about the splice", () => {
+      // The SPLICE FINDING, asserted rather than only argued: a def source's closure
+      // contribution is `spanClass` + `requires` + `markers` — three fields, none of
+      // which can express "remove ORDER_STATUS_Q from the accumulated list". So the
+      // sequencing half provably CANNOT live here, which is why it stays hand-written in
+      // `classifyRequestSpans` and why the two halves compose without either constraining
+      // the other.
+      const compiled = compilePerResourceClaimDefinition(source);
+      expect(compiled.closure).toBeDefined();
+      expect(Object.keys(compiled.closure!).sort()).toEqual([
+        "markers",
+        "requires",
+        "spanClass",
+      ]);
+      expect(compiled.closure!.requires).toEqual([type]);
+      expect(compiled.closure!.markers).toHaveLength(armCount);
+    });
+  },
+);
+
+// The two histories are STRUCTURALLY IDENTICAL on every compiler-modelled facet except
+// the marker arm count — asserted directly, because that sameness is the whole argument
+// for migrating them as ONE slice, and because a future edit that made one of them
+// diverge (a raised integrity floor, a second falsifier, a changed freshness policy)
+// should have to say so here rather than pass silently under a per-type table.
+it("R2-S5 — the two history specs differ ONLY in their key names and marker arms", () => {
+  const normalize = (spec: typeof ORDER_HISTORY_REGISTRY_SPEC | typeof PAYMENT_HISTORY_REGISTRY_SPEC) =>
+    JSON.parse(
+      JSON.stringify(spec).replace(/(order|payment)_history/g, "HISTORY"),
+    ) as unknown;
+  expect(normalize(ORDER_HISTORY_REGISTRY_SPEC)).toEqual(
+    normalize(PAYMENT_HISTORY_REGISTRY_SPEC),
+  );
+  // …and the ONE modelled facet where they legitimately differ, pinned so the sameness
+  // assertion above cannot be read as "the two nets are interchangeable".
+  expect(ORDER_HISTORY_SOURCE.decomposition.markers).toHaveLength(3);
+  expect(PAYMENT_HISTORY_SOURCE.decomposition.markers).toHaveLength(2);
 });
