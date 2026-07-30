@@ -15,7 +15,16 @@
  * Deterministic + pure: no clock, no RNG, no IO, no model.
  */
 import { describe, expect, it } from "vitest";
-import { compileClaimDefinition, EvidenceLedger, runClaimsKernel } from "@adjudicate/core";
+import {
+  compileClaimDefinition,
+  EvidenceLedger,
+  runClaimsKernel,
+  validateClaimDefinitions,
+} from "@adjudicate/core";
+import {
+  assertClaimDefinitionRegistryValid,
+  validateClaimDefinitionRegistry,
+} from "../../claim-definition-registry.js";
 import {
   CLAIM_REGISTRY,
   ownerScopedBaseKey,
@@ -27,6 +36,17 @@ import {
   createPerTurnClaimsKernelDeps,
   OWNER_SCOPED_KEY_PREFIXES,
 } from "../../ibatexas-claims-kernel-deps.js";
+import { REQUIRED_CLAIM_CLOSURE } from "../../required-claim-decomposer.js";
+import { CART_CONTENTS_SOURCE } from "../cart-contents.claim.js";
+import * as cartContentsGenerated from "../cart-contents.generated.js";
+import {
+  CART_CONTENTS_CLOSURE,
+  CART_CONTENTS_ID,
+  CART_CONTENTS_REGISTRY_SPEC,
+} from "../cart-contents.generated.js";
+import { CART_EMPTY_SOURCE } from "../cart-empty.claim.js";
+import * as cartEmptyGenerated from "../cart-empty.generated.js";
+import { CART_EMPTY_ID, CART_EMPTY_REGISTRY_SPEC } from "../cart-empty.generated.js";
 import { MENU_ITEM_PRICE_SOURCE } from "../menu-item-price.claim.js";
 import {
   MENU_ITEM_PRICE_ID,
@@ -648,4 +668,302 @@ it("R2-S5 — the two history specs differ ONLY in their key names and marker ar
   // assertion above cannot be read as "the two nets are interchangeable".
   expect(ORDER_HISTORY_SOURCE.decomposition.markers).toHaveLength(3);
   expect(PAYMENT_HISTORY_SOURCE.decomposition.markers).toHaveLength(2);
+});
+
+// ── R2-S6 — THE CART PRESENCE-COMPLEMENT PAIR: one closure row, two sources. ───────────
+//
+// The ownership axis itself is the R2-S4/R2-S5 axis and is quantified over both members by
+// the table below, exactly as the histories were. What is NEW — and what has no precedent in
+// the five prior slices — is that the two share ONE §O#15 closure row. The design (declared
+// by the SPAN-OWNING source; the twin declares none; agreement enforced by the EXISTING
+// generic INV-4, fail-closed, both directions) is argued in `../cart-contents.claim.ts`'s
+// header; every claim that header makes about the MACHINERY is measured here.
+const CART_CASES = [
+  {
+    type: "CART_CONTENTS",
+    source: CART_CONTENTS_SOURCE,
+    spec: CART_CONTENTS_REGISTRY_SPEC,
+    id: CART_CONTENTS_ID,
+    baseKey: "cart_contents",
+    falsifierKey: "cart_cleared",
+    field: "itemsSummaryText",
+    posture: "answer-with-abstention",
+  },
+  {
+    type: "CART_EMPTY",
+    source: CART_EMPTY_SOURCE,
+    spec: CART_EMPTY_REGISTRY_SPEC,
+    id: CART_EMPTY_ID,
+    baseKey: "cart_empty",
+    falsifierKey: "cart_item_added",
+    field: "emptinessText",
+    posture: "answer-anyway",
+  },
+] as const;
+
+describe.each(CART_CASES)(
+  "R2-S6 — the generated $type spec preserves the OWNERSHIP axis",
+  ({ type, source, spec, id, baseKey, falsifierKey, field, posture }) => {
+    it("ownershipPolicy: required survives the compile, on evidence AND falsifiers", () => {
+      expect(spec.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual(["required"]);
+      expect(spec.falsifiers.map((f) => f.ownershipPolicy)).toEqual(["required"]);
+      const compiled = compilePerResourceClaimDefinition(source);
+      expect(compiled.registrySpec.requiredEvidence).toBe(source.requiredEvidence);
+      expect(compiled.registrySpec.falsifiers).toBe(source.falsifiers);
+      expect(spec.requiredEvidence).toEqual(source.requiredEvidence);
+      expect(spec.falsifiers).toEqual(source.falsifiers);
+    });
+
+    it("ownerScopedBaseKey resolves the UNSUFFIXED base key, joined to a DECLARED ledger prefix", () => {
+      expect(ownerScopedBaseKey(type)).toBe(baseKey);
+      expect(baseKey).not.toContain(":");
+      expect(OWNER_SCOPED_KEY_PREFIXES).toContain(`${baseKey}:`);
+    });
+
+    it("publicPerItemBaseKey stays undefined — the complement holds after adoption", () => {
+      expect(publicPerItemBaseKey(type)).toBeUndefined();
+      expect(REGISTRY_SPECS[type].customerScoped).toBe(true);
+      expect((REGISTRY_SPECS[type] as { perResourceKey?: boolean }).perResourceKey).toBe(true);
+    });
+
+    it("selectCandidateClaim suffixes by CUSTOMER id AND derives the C1 resource binding", () => {
+      const candidate = selectCandidateClaim({
+        type,
+        subject: "cus_owner_1",
+        actor: { principal: "cus_owner_1" },
+        value: undefined,
+      });
+      expect(candidate).toBeDefined();
+      const s = candidate!.soundness;
+      expect(s.requiredEvidence.map((e) => e.key)).toEqual([`${baseKey}:cus_owner_1`]);
+      expect(s.falsifiers?.map((f) => f.key)).toEqual([`${falsifierKey}:cus_owner_1`]);
+      expect(s.valueBinding?.key).toBe(`${baseKey}:cus_owner_1`);
+      expect(s.requiredEvidence.map((e) => e.key)).toContain(s.valueBinding?.key);
+      expect(s.resources).toEqual({ [`${baseKey}:cus_owner_1`]: "cus_owner_1" });
+    });
+
+    it("TWO customers get DISJOINT suffixed keys — the per-customer partition", () => {
+      // The cart's subject is the AUTHENTICATED customerId (one cart per customer), the
+      // ORDER_HISTORY shape: a dropped flag leaves BOTH customers resolving the same bare
+      // key, so whichever cart was read last answers for everyone.
+      const a = selectCandidateClaim({
+        type,
+        subject: "cus_a",
+        actor: { principal: "cus_a" },
+        value: undefined,
+      })!;
+      const b = selectCandidateClaim({
+        type,
+        subject: "cus_b",
+        actor: { principal: "cus_b" },
+        value: undefined,
+      })!;
+      expect(a.soundness.requiredEvidence[0]!.key).toBe(`${baseKey}:cus_a`);
+      expect(b.soundness.requiredEvidence[0]!.key).toBe(`${baseKey}:cus_b`);
+      expect(a.soundness.valueBinding?.key).not.toBe(b.soundness.valueBinding?.key);
+      for (const c of [a, b]) {
+        expect(c.soundness.requiredEvidence[0]!.key).not.toBe(baseKey);
+      }
+    });
+
+    it("the REGISTRY_SPECS row is the generated spec + the spliced owner posture, nothing else", () => {
+      expect(REGISTRY_SPECS[type]).toEqual({ ...spec, dietaryPosture: posture });
+      expect(id).toBe(`${type}@1`);
+      expect("triadScoped" in REGISTRY_SPECS[type]).toBe(false);
+      // The posture is NOT in the generated half — the split the `GeneratedReadClaimSpec`
+      // type exists to enforce, re-measured on the pair that takes two DIFFERENT values.
+      expect("dietaryPosture" in spec).toBe(false);
+    });
+
+    it("C1 is the ONLY difference between a VALIDATED owner and a REFUSED non-owner", () => {
+      const CUST = "cus_c1_cart_probe";
+      const SUFFIXED = `${baseKey}:${CUST}`;
+      // Bound to the C6 path the GENERATED spec declares, so value-binding PASSES and
+      // ownership is the live conjunct. Per-type, since the pair's C6 FIELDS differ.
+      const VALUE = { [field]: "2x Costela — total R$123,00" };
+
+      const candidate = selectCandidateClaim({
+        type,
+        subject: CUST,
+        actor: CUST,
+        value: VALUE,
+      })!;
+
+      const ledgerFor = (): EvidenceLedger => {
+        const l = new EvidenceLedger("turn-c1-cart");
+        l.record({
+          key: SUFFIXED,
+          value: VALUE,
+          source: "cart.readCartContents",
+          fetchedAt: NOW,
+          sourceMode: "live",
+          taint: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+        });
+        return l;
+      };
+      const depsWith = (owned: readonly string[]) =>
+        createPerTurnClaimsKernelDeps({
+          now: NOW,
+          ownership: { principal: CUST, ownedResources: new Set(owned) },
+          outcomes: [],
+        });
+
+      // CONTROL — the legitimate owner. MUST validate, or the treatment proves nothing.
+      const owner = runClaimsKernel(ledgerFor(), [candidate], depsWith([CUST]));
+      expect(owner.perClaim[0]?.verdict).toBe("VALIDATED");
+      expect(owner.renderable).toHaveLength(1);
+
+      // TREATMENT — identical ledger, candidate and value; the resource is simply not owned.
+      const nonOwner = runClaimsKernel(ledgerFor(), [candidate], depsWith(["cus_someone_else"]));
+      expect(nonOwner.perClaim[0]?.verdict).not.toBe("VALIDATED");
+      expect(nonOwner.renderable).toHaveLength(0);
+
+      expect(candidate.soundness.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual([
+        "required",
+      ]);
+    });
+
+    it("the PUBLISHED compiler on the SAME source still drops only perResourceKey", () => {
+      const published = compileClaimDefinition(source);
+      expect("perResourceKey" in published.registrySpec).toBe(false);
+      expect({ ...published.registrySpec, perResourceKey: true }).toEqual(spec);
+      expect(published.registrySpec.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual([
+        "required",
+      ]);
+    });
+  },
+);
+
+// ── THE SHARED CLOSURE ROW — the facet with no precedent (R2-S6). ──────────────────────
+describe("R2-S6 — the SHARED closure row lives on the SPAN-OWNING source", () => {
+  it("the published `requires` is NOT self-referential and is passed through BY REFERENCE", () => {
+    // THE MEASUREMENT THE WHOLE DESIGN RESTS ON. If `toClosure` rebuilt the array, or if the
+    // published schema constrained `requires` to the def's own type, the two-type row would
+    // need a repo-local widening the way `perResourceKey` did. It does neither — so
+    // `per-resource-claim.ts` is UNCHANGED by this slice, and that is a measured fact rather
+    // than an inference from the published type declaration.
+    const compiled = compilePerResourceClaimDefinition(CART_CONTENTS_SOURCE);
+    expect(compiled.closure!.requires).toBe(CART_CONTENTS_SOURCE.decomposition.requires);
+    expect(compiled.closure!.requires).toEqual(["CART_CONTENTS", "CART_EMPTY"]);
+    // …and the PUBLISHED compiler carries it identically: the shared row owes nothing to the
+    // repo-local wrapper.
+    expect(compileClaimDefinition(CART_CONTENTS_SOURCE).closure!.requires).toEqual([
+      "CART_CONTENTS",
+      "CART_EMPTY",
+    ]);
+  });
+
+  it("the twin contributes NO closure at all, and emits no closure export", () => {
+    const compiled = compilePerResourceClaimDefinition(CART_EMPTY_SOURCE);
+    expect(compiled.closure).toBeUndefined();
+    expect("decomposition" in CART_EMPTY_SOURCE).toBe(false);
+    // The generated module for a closure-less unit must not even declare the export (the
+    // emitter's conditional block) — otherwise a consumer could splice a blank row.
+    expect(Object.keys(cartEmptyGenerated)).not.toContain("CART_EMPTY_CLOSURE");
+    expect(Object.keys(cartContentsGenerated)).toContain("CART_CONTENTS_CLOSURE");
+  });
+
+  it("the LIVE closure table row IS the generated one, and requires the whole pair", () => {
+    expect(REQUIRED_CLAIM_CLOSURE.CART_CONTENTS_Q).toBe(CART_CONTENTS_CLOSURE.requires);
+    expect(REQUIRED_CLAIM_CLOSURE.CART_CONTENTS_Q).toEqual(["CART_CONTENTS", "CART_EMPTY"]);
+  });
+
+  it("INV-4 REFUSES a de-synced pair in BOTH directions (the agreement check, fail-closed)", () => {
+    // WHY THIS IS THE AGREEMENT CHECK AND NO NEW FACILITY IS NEEDED. The pair's only
+    // structural obligation is "the shared row names both members". Break it either way and
+    // the EXISTING generic INV-4 — the one `assertClaimDefinitionRegistryValid` already runs
+    // fail-closed at claims-pipeline boot — rejects the whole registry. A bespoke symmetry
+    // check would be a second mechanism guarding an unreachable state.
+    const contents = compilePerResourceClaimDefinition(CART_CONTENTS_SOURCE);
+    const empty = compilePerResourceClaimDefinition(CART_EMPTY_SOURCE);
+
+    // CONTROL — the real pair validates as a cluster. Without it both treatments below
+    // could be failing for a reason unrelated to the row.
+    const world = (
+      rows: Readonly<Record<string, readonly string[]>>,
+      types: readonly string[],
+    ) =>
+      validateClaimDefinitions(
+        {
+          CART_CONTENTS: contents.definition,
+          CART_EMPTY: empty.definition,
+        },
+        {
+          templates: {
+            CART_CONTENTS: contents.renderTemplate,
+            CART_EMPTY: empty.renderTemplate,
+          },
+          closures: rows,
+          registryEnum: types,
+        },
+      );
+    expect(
+      world({ CART_CONTENTS_Q: ["CART_CONTENTS", "CART_EMPTY"] }, ["CART_CONTENTS", "CART_EMPTY"]),
+    ).toEqual({ ok: true });
+
+    // TREATMENT 1 — the owner's row loses the twin (the FORWARD direction: a Triad-scoped
+    // type in no closure value).
+    const forward = world({ CART_CONTENTS_Q: ["CART_CONTENTS"] }, [
+      "CART_CONTENTS",
+      "CART_EMPTY",
+    ]);
+    expect(forward.ok).toBe(false);
+    if (!forward.ok) {
+      expect(forward.code).toBe("DECOMPOSITION_UNREACHABLE");
+      expect(forward.reason).toContain("CART_EMPTY");
+    }
+
+    // TREATMENT 2 — the twin loses its registration while the row still names it (the
+    // REVERSE direction: a closure-referenced type with no registered ClaimDefinition).
+    const reverse = validateClaimDefinitions(
+      { CART_CONTENTS: contents.definition },
+      {
+        templates: { CART_CONTENTS: contents.renderTemplate },
+        closures: { CART_CONTENTS_Q: ["CART_CONTENTS", "CART_EMPTY"] },
+        registryEnum: ["CART_CONTENTS"],
+      },
+    );
+    expect(reverse.ok).toBe(false);
+    if (!reverse.ok) {
+      expect(reverse.code).toBe("DECOMPOSITION_UNREACHABLE");
+      expect(reverse.reason).toContain("CART_EMPTY");
+    }
+  });
+
+  it("the REAL boot validator accepts the real registry with the shared row", () => {
+    // The end of the chain: the two treatments above are synthetic worlds; this is the
+    // function `claims-pipeline.ts` calls, over the REAL 23-type registry and the REAL
+    // cross-tables, with the generated shared row in place.
+    expect(validateClaimDefinitionRegistry()).toEqual({ ok: true });
+    expect(() => assertClaimDefinitionRegistryValid()).not.toThrow();
+  });
+});
+
+// The pair is STRUCTURALLY IDENTICAL on every compiler-modelled facet except the key names,
+// the C6 field, the render literals and the closure ownership — asserted directly, because
+// that sameness is the argument for migrating them as ONE slice, and because a future edit
+// that diverged one of them (a raised floor, a second falsifier, a changed freshness policy)
+// should have to say so here rather than pass silently under a per-type table.
+it("R2-S6 — the two cart specs differ ONLY in their key names and C6 field", () => {
+  const normalize = (spec: unknown) =>
+    JSON.parse(
+      JSON.stringify(spec)
+        .replace(/cart_contents|cart_empty/g, "CART")
+        .replace(/cart_cleared|cart_item_added/g, "CART_FALSIFIER")
+        .replace(/itemsSummaryText|emptinessText/g, "CART_FIELD"),
+    ) as unknown;
+  expect(normalize(CART_CONTENTS_REGISTRY_SPEC)).toEqual(normalize(CART_EMPTY_REGISTRY_SPEC));
+  // …and the facets where they legitimately differ, pinned so the sameness assertion cannot
+  // be read as "the two rows are interchangeable": the POSTURE (an owner ruling — this is
+  // the registry's only `answer-with-abstention` row) and the CLOSURE OWNERSHIP.
+  expect(REGISTRY_SPECS.CART_CONTENTS.dietaryPosture).toBe("answer-with-abstention");
+  expect(REGISTRY_SPECS.CART_EMPTY.dietaryPosture).toBe("answer-anyway");
+  expect(
+    CLAIM_REGISTRY.filter(
+      (t) =>
+        (REGISTRY_SPECS[t] as { dietaryPosture?: string }).dietaryPosture ===
+        "answer-with-abstention",
+    ),
+  ).toEqual(["CART_CONTENTS"]);
 });

@@ -56,6 +56,8 @@ import {
 // "sound-by-convention" (the EGRESS-finding failure shape). The generated definitions
 // are no longer dead: they are the objects the validator actually runs over for these
 // types.
+import { CART_CONTENTS_DEFINITION } from "./claimdefs/cart-contents.generated.js";
+import { CART_EMPTY_DEFINITION } from "./claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_DEFINITION } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "./claimdefs/menu-item-price.generated.js";
@@ -95,9 +97,15 @@ const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaim
   // BKL-139 — CART_CONTENTS is an owner-scoped live read; INV-4 REQUIRES it to appear
   // in some REQUIRED_CLAIM_CLOSURE row (the CART_CONTENTS_Q closure), or boot rejects
   // it as DECOMPOSITION_UNREACHABLE (the FE-T17 gate).
-  "CART_CONTENTS",
   // BKL-163 — CART_EMPTY is the owner-scoped provable-empty twin; INV-4 satisfied by
   // the same CART_CONTENTS_Q closure row (which requires the complementary pair).
+  // R2-S6 — `triadScoped: true` is now DECLARED in cart-contents.claim.ts /
+  // cart-empty.claim.ts, so both memberships are documentation/fail-safe only (the
+  // STORE_OPEN_NOW / RESERVATION_STATUS / histories disposition). For CART_EMPTY the
+  // declared flag is doing MORE work than for any predecessor: it is the half of the
+  // SHARED-CLOSURE-ROW agreement that lives on the non-span-owning twin, so INV-4 refuses
+  // boot the moment cart-contents.claim.ts's `requires` stops naming CART_EMPTY.
+  "CART_CONTENTS",
   "CART_EMPTY",
   // FE-D03 slice C — owner-scoped list reads; INV-4 requires each in a
   // REQUIRED_CLAIM_CLOSURE row (ORDER_HISTORY_Q / PAYMENT_HISTORY_Q).
@@ -172,6 +180,22 @@ const GENERATED_DEFINITIONS: Readonly<
   // shape-for-shape what it hand-assembled before.
   ORDER_HISTORY: ORDER_HISTORY_DEFINITION,
   PAYMENT_HISTORY: PAYMENT_HISTORY_DEFINITION,
+  // R2-S6 — the CART PRESENCE-COMPLEMENT PAIR, the fourth and fifth owner-scoped types to
+  // compile from source and the first pair to SHARE one §O#15 closure row (declared by the
+  // span-owning `cart-contents.claim.ts`; the twin declares none — see that file's header).
+  // `triadScoped: true` is DECLARED in each source, so each type's INV-4 closure obligation
+  // is discharged against the GENERATED CART_CONTENTS_Q row rather than by its membership in
+  // TRIAD_SCOPED_TYPES above (which no longer decides anything for either). That is also
+  // what makes the pair's AGREEMENT fail-closed here, with no new machinery: the validator
+  // this module runs quantifies over BOTH definitions and the one shared row, so a
+  // `requires` that stopped naming CART_EMPTY would leave a Triad-scoped type in no closure
+  // and {@link assertClaimDefinitionRegistryValid} would THROW. `perResourceKey` and the
+  // per-row `ownershipPolicy` are REGISTRY-SPEC facets that `selectCandidateClaim` /
+  // `ownerScopedBaseKey` read, not fields of the generic `ClaimDefinition` the inv.18
+  // validator quantifies over — `assembleClaimDefinition` never propagated either, so what
+  // boot consumes here is shape-for-shape what it hand-assembled before.
+  CART_CONTENTS: CART_CONTENTS_DEFINITION,
+  CART_EMPTY: CART_EMPTY_DEFINITION,
 };
 
 /**

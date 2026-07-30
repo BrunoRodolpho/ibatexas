@@ -21,6 +21,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compileClaimDefinition } from "@adjudicate/core";
+import { CART_CONTENTS_SOURCE } from "./cart-contents.claim.js";
+import { CART_EMPTY_SOURCE } from "./cart-empty.claim.js";
 import { MENU_DIETARY_SOURCE } from "./menu-dietary.claim.js";
 import { MENU_ITEM_CONTENTS_SOURCE } from "./menu-item-contents.claim.js";
 import { MENU_ITEM_PRICE_SOURCE } from "./menu-item-price.claim.js";
@@ -120,6 +122,26 @@ const UNITS: readonly GenUnit[] = [
     slug: "payment-history",
     sourceFile: "payment-history.claim.ts",
     artifacts: compilePerResourceClaimDefinition(PAYMENT_HISTORY_SOURCE),
+  },
+  // R2-S6 — the CART PRESENCE-COMPLEMENT PAIR, the fourth and fifth owner-scoped units and
+  // the FIRST pair to SHARE one closure row. Same widening and the same
+  // `ownershipPolicy: "required"` evidence rows as their three owner-scoped predecessors;
+  // what is new is the closure OWNERSHIP asymmetry: `cart-contents.claim.ts` declares the
+  // `CART_CONTENTS_Q` row INCLUDING its twin in `requires` (the published
+  // `DecompositionSource.requires` is `NonEmpty<string>`, passed through BY REFERENCE — no
+  // widening needed), and `cart-empty.claim.ts` declares NO `decomposition` at all, so it
+  // emits NO closure export. Its `triadScoped: true` is what makes a de-synced pair a
+  // fail-closed INV-4 boot REFUSAL. See cart-contents.claim.ts's header for the full
+  // decision and the shapes that were rejected.
+  {
+    slug: "cart-contents",
+    sourceFile: "cart-contents.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(CART_CONTENTS_SOURCE),
+  },
+  {
+    slug: "cart-empty",
+    sourceFile: "cart-empty.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(CART_EMPTY_SOURCE),
   },
 ];
 

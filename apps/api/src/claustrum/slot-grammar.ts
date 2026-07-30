@@ -42,6 +42,8 @@
 // is a projection of the source's `render.validated` block, with the PROPOSITION
 // `claimType` filled = self, so a template can no longer drift from the registry spec
 // its proposition binds to.
+import { CART_CONTENTS_TEMPLATE } from "./claimdefs/cart-contents.generated.js";
+import { CART_EMPTY_TEMPLATE } from "./claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_TEMPLATE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_TEMPLATE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_TEMPLATE } from "./claimdefs/menu-item-price.generated.js";
@@ -272,38 +274,26 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // `perResourceKey` facet: a slot names a FIELD of the validated value, never a ledger
   // key, so the runtime `:{subject}` suffixing never reaches here.
   [RESERVATION_STATUS]: RESERVATION_STATUS_TEMPLATE,
-  // BKL-139 — the cart-contents validated template. ONE proposition slot binding 1:1
-  // to the C6 valueBinding FIELD (`itemsSummaryText`, claim-registry.ts
-  // `valueBinding.path = ["itemsSummaryText"]`). The value is a DETERMINISTICALLY
+  // BKL-139 / BKL-163 — the cart PRESENCE-COMPLEMENT PAIR's validated templates. ONE
+  // proposition slot each, bound 1:1 to the C6 valueBinding FIELD (`itemsSummaryText` /
+  // `emptinessText`, claim-registry.ts). CART_CONTENTS's value is a DETERMINISTICALLY
   // PRE-COMPOSED pt-BR summary ("2x Costela — total R$123,00"), evidence-bound from the
-  // owner-scoped cart read (turn-reads.ts `composeCartItemsSummary`) — never an enum
-  // (so no claims-labels localization), never model-authored (FE-D04 / BKL-149). Same
-  // single-C6-field shape as STORE_HOURS_FOR_DATE / RESERVATION_STATUS (the frozen
-  // single-scalar kernel drops every sibling read field post-mint).
-  [CART_CONTENTS]: {
-    claimType: CART_CONTENTS,
-    posture: "validated",
-    slots: [
-      lit("No seu carrinho: "),
-      prop(CART_CONTENTS, "itemsSummaryText"),
-      lit("."),
-    ],
-  },
-  // BKL-163 — the provably-empty cart template. ONE proposition slot bound 1:1 to
-  // the C6 valueBinding FIELD (`emptinessText`, claim-registry.ts) — the
-  // code-composed literal "vazio" the investigator records ONLY when the
-  // owner-scoped cart read proved `hasItems: false`. Friendly VALIDATED answer for
-  // the empty cart (replacing the honest-UNKNOWN degrade of PR #291 deviation (a));
-  // the menu pointer is STATIC literal text (an offer, not a proposition).
-  [CART_EMPTY]: {
-    claimType: CART_EMPTY,
-    posture: "validated",
-    slots: [
-      lit("Seu carrinho está "),
-      prop(CART_EMPTY, "emptinessText"),
-      lit(" no momento — quer dar uma olhada no cardápio?"),
-    ],
-  },
+  // owner-scoped cart read (turn-reads.ts `composeCartItemsSummary`); CART_EMPTY's is the
+  // code-composed literal "vazio" the investigator records ONLY when that same read proved
+  // `hasItems: false`. Neither is an enum (so no claims-labels localization) and neither is
+  // model-authored (FE-D04 / BKL-149). Same single-C6-field shape as STORE_HOURS_FOR_DATE /
+  // RESERVATION_STATUS (the frozen single-scalar kernel drops every sibling read field
+  // post-mint). The empty template's menu pointer is STATIC literal text — an OFFER, not a
+  // proposition (Inv 6 permits offers/requests).
+  // inv.18 v2 / R2-S6 — BOTH templates are GENERATED from their ClaimDefinition sources
+  // (./claimdefs/cart-contents.generated.ts / ./claimdefs/cart-empty.generated.ts), so the
+  // frame literals and the bound field can no longer drift from the registry row's C6
+  // `valueBinding` or from the SHARED closure row — all of them are projections of one
+  // source per type. The `CART_CONTENTS` / `CART_EMPTY` const identifiers above stay
+  // exported for the rest of the grammar's consumers; the compiled templates carry the same
+  // `claimType` string by construction (asserted by reference-identity + deep-equal guards).
+  [CART_CONTENTS]: CART_CONTENTS_TEMPLATE,
+  [CART_EMPTY]: CART_EMPTY_TEMPLATE,
   // FE-D03 slice C — the ORDER_HISTORY / PAYMENT_HISTORY validated templates. ONE
   // proposition slot each, bound 1:1 to the C6 valueBinding FIELD (`historySummaryText`,
   // claim-registry.ts). The value is a DETERMINISTICALLY PRE-COMPOSED, bounded

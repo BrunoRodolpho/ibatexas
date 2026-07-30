@@ -14,6 +14,8 @@ import { isRegistryClaimType, type RegistryClaimType } from "../claim-registry.j
 // marker pins) rather than only through the reassembled `__SPAN_NET_SOURCES_FOR_TEST`
 // string, which cannot witness where the arm boundary sits.
 // inv.18 v2 / R2-S5 — the GENERATED history closures, pinned per arm for the same reason.
+// inv.18 v2 / R2-S6 — the GENERATED cart closure: ONE arm, and the SHARED row.
+import { CART_CONTENTS_CLOSURE } from "../claimdefs/cart-contents.generated.js";
 import { ORDER_HISTORY_CLOSURE } from "../claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_CLOSURE } from "../claimdefs/payment-history.generated.js";
 import { RESERVATION_STATUS_CLOSURE } from "../claimdefs/reservation-status.generated.js";
@@ -1013,6 +1015,76 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     expect(PAYMENT_HISTORY_CLOSURE.spanClass).toBe("PAYMENT_HISTORY_Q");
     expect(PAYMENT_HISTORY_CLOSURE.requires).toEqual(["PAYMENT_HISTORY"]);
     expect(REQUIRED_CLAIM_CLOSURE.PAYMENT_HISTORY_Q).toEqual(["PAYMENT_HISTORY"]);
+  });
+
+  // R2-S6 — the CART_CONTENTS_Q net. The DEGENERATE reassembly case: the pre-migration
+  // `cartRef` was ONE regex literal, so there is a single arm and `markers.some(m =>
+  // m.test(t))` is the very `.test(t)` the const ran. Byte-identity is still what holds the
+  // two properties an "equivalent" rewrite would lose — the LEFT anchor and the
+  // SPELLED-OUT plurals.
+  it("CART_CONTENTS: the generated marker is byte-identical to its pre-migration literal", () => {
+    expect(CART_CONTENTS_CLOSURE.markers[0]!.source).toBe(
+      String.raw`(?<![a-z])(carrinho|carrinhos|cesta|cestas|sacola|sacolas)`,
+    );
+    // ONE arm — so the joined reassembly IS the arm, with no ambiguity about a split point.
+    expect(CART_CONTENTS_CLOSURE.markers).toHaveLength(1);
+    expect(__SPAN_NET_SOURCES_FOR_TEST.cartContents).toBe(
+      CART_CONTENTS_CLOSURE.markers[0]!.source,
+    );
+    expect(__SPAN_NET_SOURCES_FOR_TEST.cartContents).toBe(
+      String.raw`(?<![a-z])(carrinho|carrinhos|cesta|cestas|sacola|sacolas)`,
+    );
+  });
+
+  // THE ONE LOAD-BEARING PROPERTY, stated BEHAVIOURALLY so it survives a legitimate future
+  // re-spelling of the arm — the R2-S5 lesson (a byte-pin-only arm is one re-spelling away
+  // from an unnoticed degrade). Every negative below genuinely CONTAINS a cart stem preceded
+  // by a letter, so each row is the anchor doing work rather than a string with no stem in
+  // it; the positives are the control that the net can fire at all.
+  it("CART_CONTENTS: the LEFT anchor keeps a cart word from matching mid-word", () => {
+    for (const text of ["acarrinhoquente", "umacestadefrutas", "minhasacolanova"]) {
+      expect(text, "the negative must actually contain a cart stem").toMatch(
+        /carrinho|cesta|sacola/,
+      );
+      expect(classifyRequestSpans(text), text).not.toContain("CART_CONTENTS_Q");
+    }
+    for (const text of ["meu carrinho", "minha cesta", "minha sacola"]) {
+      expect(classifyRequestSpans(text), text).toContain("CART_CONTENTS_Q");
+    }
+  });
+
+  // A MUST-FIRE CORPUS PIN, and deliberately NOT labelled a plural-arm test.
+  //
+  // MEASURED (R2-S6 revert-to-red 4b): the three plural alternatives are BYTE-PIN-ONLY. The
+  // net has no RIGHT anchor, so `carrinho` already matches inside "carrinhos" — deleting
+  // `carrinhos`/`cestas`/`sacolas` leaves every row here GREEN and is caught by the byte pin
+  // above and nothing else. Writing this as "each spelled-out plural fires on its own" would
+  // therefore have been a VACUOUS test wearing a discriminating name (the access-class
+  // vacuity shape). What it honestly is: all six spellings customers actually use must
+  // classify, whatever the arm's internal spelling becomes.
+  it("CART_CONTENTS: all six cart-word spellings classify (must-fire corpus)", () => {
+    for (const text of [
+      "meu carrinho",
+      "meus carrinhos",
+      "minha cesta",
+      "minhas cestas",
+      "minha sacola",
+      "minhas sacolas",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("CART_CONTENTS_Q");
+    }
+  });
+
+  it("the generated CART closure row is the pre-migration SHARED row", () => {
+    expect(CART_CONTENTS_CLOSURE.spanClass).toBe("CART_CONTENTS_Q");
+    // THE SHARED ROW: one generated contribution, two required types. Every other adopted
+    // row's `requires` is `[self]`; this one names its presence-complement twin, which is
+    // what discharges CART_EMPTY's INV-4 obligation (cart-empty.claim.ts declares no row).
+    expect(CART_CONTENTS_CLOSURE.requires).toEqual(["CART_CONTENTS", "CART_EMPTY"]);
+    expect(REQUIRED_CLAIM_CLOSURE.CART_CONTENTS_Q).toEqual(["CART_CONTENTS", "CART_EMPTY"]);
+    // …and the live table row IS the generated array, not a copy of it — so the row cannot
+    // be edited here without editing the source.
+    expect(REQUIRED_CLAIM_CLOSURE.CART_CONTENTS_Q).toBe(CART_CONTENTS_CLOSURE.requires);
   });
 
   // ── THE SPLICE: the half that did NOT migrate. ────────────────────────────────────
