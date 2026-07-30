@@ -49,12 +49,15 @@ import {
   type RegistryClaimSpec,
   type RegistryClaimType,
 } from "./claim-registry.js";
-// inv.18 v2 — the STORE_OPEN_NOW ClaimDefinition is GENERATED from its single
-// `store-open-now.claim.ts` source by the claimdef-compiler. Boot CONSUMES it
-// VERBATIM (see GENERATED_DEFINITIONS below) as the single source of truth, rather
-// than hand-reassembling it — so "sound-by-construction" cannot quietly decay into
-// "sound-by-convention" (the EGRESS-finding failure shape). The generated definition
-// is no longer dead: it is the object the validator actually runs over for this type.
+// inv.18 v2 — these ClaimDefinitions are GENERATED from their single `*.claim.ts`
+// sources by the claimdef-compiler. Boot CONSUMES them VERBATIM (see
+// GENERATED_DEFINITIONS below) as the single source of truth, rather than
+// hand-reassembling them — so "sound-by-construction" cannot quietly decay into
+// "sound-by-convention" (the EGRESS-finding failure shape). The generated definitions
+// are no longer dead: they are the objects the validator actually runs over for these
+// types.
+import { STORE_HOURS_DEFINITION } from "./claimdefs/store-hours.generated.js";
+import { STORE_INFO_DEFINITION } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_DEFINITION } from "./claimdefs/store-open-now.generated.js";
 import { REQUIRED_CLAIM_CLOSURE } from "./required-claim-decomposer.js";
 import { VALIDATED_TEMPLATES } from "./slot-grammar.js";
@@ -113,6 +116,14 @@ const GENERATED_DEFINITIONS: Readonly<
   Partial<Record<RegistryClaimType, ClaimDefinition>>
 > = {
   STORE_OPEN_NOW: STORE_OPEN_NOW_DEFINITION,
+  // R2-S1 — both are PUBLIC, FIXED-SUBJECT reads (`triadScoped: false` is declared in
+  // their sources, so neither carries an INV-4 closure obligation and neither depends on
+  // TRIAD_SCOPED_TYPES). `perResourceKey` is the facet that keeps the remaining
+  // registry types hand-assembled: the published compiler's source schema has no field
+  // for it, so a `:{subject}`-parameterized type cannot be compiled without widening
+  // that schema.
+  STORE_HOURS: STORE_HOURS_DEFINITION,
+  STORE_INFO: STORE_INFO_DEFINITION,
 };
 
 /**

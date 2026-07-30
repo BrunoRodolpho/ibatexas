@@ -33,10 +33,13 @@ import {
   isRegistryClaimType,
   type RegistryClaimType,
 } from "./claim-registry.js";
-// inv.18 v2 — STORE_OPEN_NOW's closure row (span class + required companions) AND its
-// pt-BR span markers are GENERATED from its ClaimDefinition source by the
-// claimdef-compiler (./claimdefs/store-open-now.generated.ts — DO NOT EDIT). The
-// previously-handwritten closure entry + the marker regex collapse into these splices.
+// inv.18 v2 — these closure rows (span class + required companions) AND their pt-BR span
+// markers are GENERATED from their ClaimDefinition sources by the claimdef-compiler
+// (./claimdefs/*.generated.ts — DO NOT EDIT). The previously-handwritten closure entries
+// + marker regexes collapse into these splices. What the compiler does NOT model is a
+// span GUARD: STORE_INFO_Q's `notResourceScoped && !mutationImperative` conjunction
+// stays hand-written below, wrapping the generated markers.
+import { STORE_INFO_CLOSURE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
 // LE2-019 — the PURE coupon-code extractor (no IO; see promotion-validity.ts's
 // header for why it lives there and not in the resolver).
@@ -174,11 +177,10 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // (BKL-270 `dietaryPosture`), which is the LE2-029 negative result honoured rather
   // than the span being suppressed.
   MENU_DIETARY_Q: ["MENU_DIETARY"],
-  // BKL-136 — a store-location/parking question requires ONLY its own PUBLIC claim
-  // (like the menu spans). Absent/blank store metadata → ABSENT evidence → honest
-  // UNKNOWN; never demotes a co-occurring answer. Public (`not_applicable`) → never
-  // Triad-scoped.
-  STORE_INFO_Q: ["STORE_INFO"],
+  // inv.18 v2 / R2-S1 — STORE_INFO_Q's row is GENERATED (span class + required set); the
+  // BKL-136 rationale for requiring ONLY its own PUBLIC claim moved verbatim into
+  // `./claimdefs/store-info.claim.ts`.
+  [STORE_INFO_CLOSURE.spanClass]: STORE_INFO_CLOSURE.requires,
   // LE2-002 / NEW-007 — a delivery-COVERAGE question requires the complementary
   // PAIR, exactly like CART_CONTENTS_Q requires CART_CONTENTS + CART_EMPTY. The two
   // read COMPLEMENTARY keys (`delivery:coverage` vs `delivery:no_coverage` — at most
@@ -970,6 +972,14 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
   orderEta: ORDER_ETA_RE.source,
   /** `MENU_WORD_RE | MENU_BARE_ASK_RE | MENU_LIST_ASK_RE` */
   menuOverview: `${MENU_WORD_RE.source}|${MENU_BARE_ASK_RE.source}|${MENU_LIST_ASK_RE.source}`,
+  /**
+   * inv.18 v2 / R2-S1 — the STORE_INFO_Q markers, now GENERATED as SEVEN arms from
+   * `store-info.claim.ts`, rejoined in declaration order. Same statement as the three
+   * above, made about a split into a data array rather than into named constants: if
+   * this reassembly is byte-identical to the pre-migration literal, it is not an
+   * equivalent regex, it is THE SAME regex.
+   */
+  storeInfo: STORE_INFO_CLOSURE.markers.map((m) => m.source).join("|"),
 } as const;
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -1199,15 +1209,19 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // VALIDATED claim is not demote-only — the guard must be precise, not
   // over-inclusive). A guarded miss degrades honestly (no span → no forced
   // companion; the planner's own nets still run).
+  //
+  // inv.18 v2 / R2-S1 — the MARKERS are now GENERATED from the def source (they were one
+  // flat top-level alternation, so the seven generated arms REJOIN to that literal
+  // character-for-character — pinned by `__SPAN_NET_SOURCES_FOR_TEST.storeInfo`). The
+  // GUARD conjunction is NOT generated and stays here: the compiler models which markers
+  // classify INTO a span, not which contexts must suppress it.
   const notResourceScoped = !/pedido|entrega|frete|carrinho|reserva|pagamento/.test(t);
   if (
     notResourceScoped &&
     !mutationImperative &&
-    /onde (fica|é|estão|est[áa]|se localiza)|endere[çc]o|localiza[çc][ãa]o|localizad|estacionamento|estacionar|como (chego|chegar)/.test(
-      t,
-    )
+    STORE_INFO_CLOSURE.markers.some((m) => m.test(t))
   ) {
-    classes.push("STORE_INFO_Q");
+    classes.push(STORE_INFO_CLOSURE.spanClass);
   }
 
   // LE2-002 / NEW-007 — a delivery-COVERAGE question ("vocês entregam em Ibaté?",

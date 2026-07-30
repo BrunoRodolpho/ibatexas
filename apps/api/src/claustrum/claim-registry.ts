@@ -46,10 +46,16 @@ import type {
   EvidenceRequirement,
   TurnTerminal,
 } from "@adjudicate/core";
-// inv.18 v2 — the STORE_OPEN_NOW registry spec is GENERATED from its ClaimDefinition
-// source by the claimdef-compiler (./claimdefs/store-open-now.generated.ts — DO NOT
-// EDIT). The ~30-line handwritten stanza collapsed into this one import; the runtime
-// got SMALLER for this type and can no longer drift from the slot grammar / closure.
+// inv.18 v2 — these registry specs are GENERATED from their ClaimDefinition sources by
+// the claimdef-compiler (./claimdefs/*.generated.ts — DO NOT EDIT). Each handwritten
+// stanza (~30 / ~57 / ~32 lines) collapsed into one import; the runtime got SMALLER for
+// these types and can no longer drift from the slot grammar / closure.
+// R2-S1 adopted STORE_HOURS + STORE_INFO on the STORE_OPEN_NOW precedent: all three are
+// PUBLIC and FIXED-SUBJECT, which is what makes them compilable — `perResourceKey` has
+// no representation in the published compiler's source schema, so every
+// `:{subject}`-parameterized type stays hand-written here until that facet exists.
+import { STORE_HOURS_REGISTRY_SPEC } from "./claimdefs/store-hours.generated.js";
+import { STORE_INFO_REGISTRY_SPEC } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generated.js";
 
 /**
@@ -545,68 +551,24 @@ export const REGISTRY_SPECS = {
     ],
     customerScoped: false,
   },
-  // BKL-121 — the full STORE_HOURS validated render chain. The evidence key is
-  // aligned VERBATIM with the investigator's STORE_HOURS_KEY ("schedule:store_hours")
-  // so the candidate validates against the actual recorded ledger entry; the
-  // deriveBoundValue branch (below) + slot-grammar template (slot-grammar.ts) bind the
-  // rendered `hoursText` proposition 1:1 to it (Inv 6). Public, single-key type — NOT
-  // owner-scoped (no perResourceKey; keys are never `:{subject}`-parameterized).
+  // BKL-121 — the full STORE_HOURS validated render chain, now GENERATED from its
+  // ClaimDefinition source (inv.18 v2 / R2-S1). The evidence key + W6 falsifier pair +
+  // C6 value-binding all come from `./claimdefs/store-hours.generated.ts`, compiled
+  // from the single `store-hours.claim.ts` source (which carries the moved BKL-125 ttl
+  // UNITS pin and the falsifier-completeness rationale). This one line REPLACES the
+  // ~57-line handwritten stanza and can never drift from the template, which is
+  // generated too.
+  // BKL-270 — the posture is SPLICED here for the same reason it is on STORE_OPEN_NOW:
+  // `compileClaimDefinition` lives in the published @adjudicate/core with no concept of
+  // `dietaryPosture`, so it cannot emit the field, and splicing keeps the generated
+  // file byte-pure under its source-checksum drift guard. Renders a CLOCK WINDOW
+  // (hoursText, "11h-15h / 18h-23h"). The canonical arguably-safe case: a restrictive
+  // reading ("o horario pra quem come sem lactose") is strained past plausibility, and
+  // refusing to tell a diabetic when the restaurant opens is a pure loss with no safety
+  // gain.
   STORE_HOURS: {
-    kind: "read_claim",
-    // BKL-270 — renders a CLOCK WINDOW (hoursText, "11h-15h / 18h-23h"). The
-    // canonical arguably-safe case: a restrictive reading ("o horario pra quem
-    // come sem lactose") is strained past plausibility, and refusing to tell a
-    // diabetic when the restaurant opens is a pure loss with no safety gain.
+    ...STORE_HOURS_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "trusted_service",
-    requiredEvidence: [
-      {
-        key: "schedule:store_hours",
-        ownershipPolicy: "not_applicable",
-        // UNITS (adversarial-review pin): the kernel enforces this in epoch-
-        // MILLISECONDS — @adjudicate/core soundness.js freshnessVerdict computes
-        // `age = now - entry.fetchedAt` (both Date.now-derived) with NO unit
-        // conversion, even though evidence-requirement.d.ts documents ttl as
-        // "seconds". A bare `3600` is therefore a 3.6-SECOND window, which a
-        // normal claims turn (model latency 5-20s between the investigator read
-        // and validation) exceeds — demoting every STORE_HOURS turn to UNKNOWN.
-        // 3_600_000 ms = the intended 1-hour staleness bound (vacuous within a
-        // per-turn ledger, but honest if entries ever outlive a turn). The
-        // doc/enforcement mismatch is upstream (tracker BKL-125).
-        freshnessPolicy: { kind: "cacheable", ttl: 3_600_000 },
-        sourceIntegrity: "trusted_service",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    // W6 — a TODAY'S-hours claim (BKL-121 / D1) has TWO honest falsifiers: a present
-    // per-date ScheduleOverride OR a present holiday, either of which makes the
-    // weekly-schedule-derived hours untrustworthy for today. BOTH are enumerated
-    // (honest completeness), so the eligibility cap lets STORE_HOURS reach VALIDATED
-    // and the runtime arm demotes it to UNKNOWN when either actually fires this turn.
-    // (`schedule:schedule_override` is the SAME key STORE_OPEN_NOW declares — one
-    // investigator read serves both.)
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "schedule:schedule_override",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "trusted_service",
-        provenancePolicy: "preserve",
-      },
-      {
-        key: "schedule:holiday",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "trusted_service",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered value to the read's ACTUAL `hoursText` field
-    // (ledger-sourced, never model-authored). `valueBinding.key` stays a member of
-    // requiredEvidence so the kernel's C6 structural guard never throws.
-    valueBinding: { key: "schedule:store_hours", path: ["hoursText"] },
   },
   // BKL-138 — the DAY-SPECIFIC hours claim (SCN-002/003). The per-date twin of
   // STORE_HOURS: identical evidence/falsifier/value-binding SHAPE, but `perResourceKey`
@@ -1215,48 +1177,23 @@ export const REGISTRY_SPECS = {
     ],
     valueBinding: { key: "menu:overview", path: ["overviewText"] },
   },
-  // BKL-136 — STORE_INFO: the store address/parking read ("onde fica?"). PUBLIC
-  // fixed-subject single-key like MENU_OVERVIEW (`ownershipPolicy: not_applicable`,
-  // NOT perResourceKey), cacheable at the same 5-minute config-freshness bound. The
-  // `store:info_changed` falsifier is DECLARED (escapes the W6 UNKNOWN-only cap so
-  // STORE_INFO can VALIDATE) but DELIBERATELY UNREAD — the MENU_OVERVIEW
-  // `menu:item_unpublished` disposition: a "changed" signal derived from the SAME
-  // store row the info came from is the same-row tautology #290/#291 removed (a
-  // changed address already reads as the NEW `infoText` — there is no stale present
-  // base to demote within a must-read turn). A future INDEPENDENT store-config
-  // change event could wire the read.
+  // BKL-136 — STORE_INFO: the store address/parking read ("onde fica?"), now GENERATED
+  // from its ClaimDefinition source (inv.18 v2 / R2-S1). The evidence + the
+  // declared-but-deliberately-unread `store:info_changed` W6 falsifier + the C6
+  // value-binding all come from `./claimdefs/store-info.generated.ts`, compiled from the
+  // single `store-info.claim.ts` source (which carries the moved same-row-tautology
+  // rationale and the ttl UNITS pin). This one line REPLACES the ~32-line handwritten
+  // stanza; the template AND the §O#15 closure row + span markers are generated from
+  // the same source, so the three can never drift apart.
+  // BKL-270 — the posture is SPLICED here (the compiler cannot emit it; see
+  // STORE_OPEN_NOW). infoText is address + parking BY CONTRACT
+  // (store.metadata.address / .parking), so no product-content path exists.
+  // CONDITIONAL (borderline B4): if store metadata ever carries dietary marketing copy
+  // this row must be revisited, because the render would then pass owner prose through
+  // to a diet-qualified ask.
   STORE_INFO: {
-    kind: "read_claim",
-    // BKL-270 — infoText is address + parking BY CONTRACT (store.metadata.address /
-    // .parking), so no product-content path exists. CONDITIONAL (borderline B4): if
-    // store metadata ever carries dietary marketing copy this row must be revisited,
-    // because the render would then pass owner prose through to a diet-qualified ask.
+    ...STORE_INFO_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "store:info",
-        ownershipPolicy: "not_applicable",
-        // ttl in epoch-MILLISECONDS (BKL-121/BKL-125 pin) — 300_000 ms = the same
-        // 5-minute config-freshness bound MENU_OVERVIEW ratified (vacuous within a
-        // per-turn ledger).
-        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "store:info_changed",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "store:info", path: ["infoText"] },
   },
   // LE2-002 / NEW-007 — DELIVERY_COVERAGE: the PUBLIC "we deliver there" read.
   // FIXED-SUBJECT single-key (the STORE_INFO / MENU_OVERVIEW shape — no

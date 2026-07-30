@@ -13,12 +13,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import {
-  compileClaimDefinition,
-  validateClaimDefinition,
-  validateClaimDefinitions,
-} from "@adjudicate/core";
-import { STORE_OPEN_NOW_SOURCE } from "../store-open-now.claim.js";
+import { validateClaimDefinition, validateClaimDefinitions } from "@adjudicate/core";
 import { emitGeneratedDoc, emitGeneratedModule, UNITS } from "../generate.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -38,27 +33,38 @@ describe("claimdef generated artifacts — drift guard (fail-closed)", () => {
   }
 });
 
-describe("claimdef compiler — the compiled STORE_OPEN_NOW round-trips through the v1 validator", () => {
-  const out = compileClaimDefinition(STORE_OPEN_NOW_SOURCE);
+// Every compiled unit — not just the first one migrated — must round-trip through the
+// v1 fail-closed validator, and each must reject its OWN generated mutations. Driven off
+// `UNITS` so a new `.claim.ts` inherits the proof by existing; the per-type expectations
+// below are derived from the compiled artifacts, so no case is hand-transcribed.
+describe.each(UNITS.map((u) => [u.artifacts.type, u.artifacts] as const))(
+  "claimdef compiler — the compiled %s round-trips through the v1 validator",
+  (type, out) => {
+    it("the compiled definition + its generated cross-tables VALIDATE", () => {
+      const r = validateClaimDefinitions(
+        { [type]: out.definition },
+        {
+          templates: { [type]: out.renderTemplate },
+          // A type with no §O#15 span contributes NO closure row (STORE_HOURS): its
+          // `triadScoped: false` is what makes that sound — INV-4 imposes a closure
+          // obligation on Triad-scoped types only.
+          closures:
+            out.closure === undefined
+              ? {}
+              : { [out.closure.spanClass]: out.closure.requires },
+          registryEnum: [type],
+        },
+      );
+      expect(r).toEqual({ ok: true });
+    });
 
-  it("the compiled definition + its generated cross-tables VALIDATE", () => {
-    const r = validateClaimDefinitions(
-      { STORE_OPEN_NOW: out.definition },
-      {
-        templates: { STORE_OPEN_NOW: out.renderTemplate },
-        closures: { STORE_OPEN_NOW_Q: out.closure?.requires ?? [] },
-        registryEnum: ["STORE_OPEN_NOW"],
-      },
-    );
-    expect(r).toEqual({ ok: true });
-  });
-
-  it("each generated mutation fixture is REJECTED with its matching invariant code", () => {
-    expect(out.fixtures.mutations.length).toBeGreaterThanOrEqual(4);
-    for (const m of out.fixtures.mutations) {
-      const r = validateClaimDefinition(m.def);
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.code).toBe(m.code);
-    }
-  });
-});
+    it("each generated mutation fixture is REJECTED with its matching invariant code", () => {
+      expect(out.fixtures.mutations.length).toBeGreaterThanOrEqual(4);
+      for (const m of out.fixtures.mutations) {
+        const r = validateClaimDefinition(m.def);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.code).toBe(m.code);
+      }
+    });
+  },
+);
