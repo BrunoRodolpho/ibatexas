@@ -226,3 +226,41 @@ describe("BKL-271 e2e — a pulled-pork READ reaches its deterministic read", ()
     expect(catalog.queries).toContain("o que vem no pulled pork?");
   });
 });
+
+// ── inv.18 v2 / R2-S2 — the same seam, asked of the GENERATED spec ─────────────────
+//
+// MENU_ITEM_PRICE's registry row is now compiled from `menu-item-price.claim.ts` through
+// the repo-local `perResourceKey` widening (claimdefs/per-resource-claim.ts). The two
+// cases above ALREADY prove the end-to-end chain and are the handleTurn-level proof this
+// adoption inherits — they pass only if the generated spec's BARE `menu:item_price` is
+// suffixed to `menu:item_price:{subject}` and resolves the investigator's real per-subject
+// ledger entry. Lose the flag and there is nothing to see: the kernel resolves the bare
+// key, the entry reads ABSENT, the claim degrades to an honest UNKNOWN and the armed prose
+// takes the turn.
+//
+// This block adds what those two cannot say on their own: that the suffixing is
+// SUBJECT-DISCRIMINATING rather than incidentally right for one product. Two distinct
+// subjects are driven through the same conductor and each must come back with ITS OWN
+// catalog price — a per-resource claim's whole reason for existing. A widening that
+// emitted a pre-suffixed key, or dropped the flag so both subjects collapsed onto one bare
+// key, cannot satisfy both cases.
+describe("R2-S2 e2e — the GENERATED per-resource spec resolves PER-SUBJECT evidence", () => {
+  it.each([
+    ["quanto custa o pulled pork?", "prod_pork", "Pulled Pork", "48,00", "89,00"],
+    ["quanto custa o brisket?", "prod_brisket", "Brisket Americano", "89,00", "48,00"],
+  ] as const)(
+    "%s → the subject's OWN price renders, never the sibling's",
+    async (text, subject, title, ownPrice, siblingPrice) => {
+      const response = await runMenuTurn(text, [
+        { type: "MENU_ITEM_PRICE", subject },
+      ]);
+
+      expect(response).toContain(title);
+      expect(response).toContain(ownPrice);
+      // The discriminating half: the OTHER product's price is a real number this very
+      // suite can produce, so a collapsed/unsuffixed key would surface it here.
+      expect(response).not.toContain(siblingPrice);
+      expect(response).not.toBe(MODEL_PORK_PROSE);
+    },
+  );
+});

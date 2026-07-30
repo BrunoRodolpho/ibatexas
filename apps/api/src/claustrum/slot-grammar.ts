@@ -42,6 +42,7 @@
 // is a projection of the source's `render.validated` block, with the PROPOSITION
 // `claimType` filled = self, so a template can no longer drift from the registry spec
 // its proposition binds to.
+import { MENU_ITEM_PRICE_TEMPLATE } from "./claimdefs/menu-item-price.generated.js";
 import { STORE_HOURS_TEMPLATE } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_TEMPLATE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_TEMPLATE } from "./claimdefs/store-open-now.generated.js";
@@ -344,11 +345,15 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // product, never an enum, never model-authored. Same single-C6-field shape as
   // CART_CONTENTS / STORE_HOURS_FOR_DATE (the frozen single-scalar kernel drops every
   // sibling read field post-mint).
-  [MENU_ITEM_PRICE]: {
-    claimType: MENU_ITEM_PRICE,
-    posture: "validated",
-    slots: [prop(MENU_ITEM_PRICE, "priceText"), lit(".")],
-  },
+  // inv.18 v2 / R2-S2 — the MENU_ITEM_PRICE template is GENERATED from its
+  // ClaimDefinition source (./claimdefs/menu-item-price.generated.ts — DO NOT EDIT). Its
+  // single proposition slot is derived from the source's render.prop("priceText") with
+  // claimType filled = self, and the compiler binds it to the SAME source's C6
+  // `valueBinding.path = ["priceText"]` — so the 1:1 slot↔field alignment (Inv 6) is true
+  // BY CONSTRUCTION rather than by two files agreeing. The template is UNAFFECTED by the
+  // type's `perResourceKey` facet: the slot names a FIELD of the validated value, never a
+  // ledger key, so the runtime `:{subject}` suffixing never reaches here.
+  [MENU_ITEM_PRICE]: MENU_ITEM_PRICE_TEMPLATE,
   [MENU_ITEM_CONTENTS]: {
     claimType: MENU_ITEM_CONTENTS,
     posture: "validated",
