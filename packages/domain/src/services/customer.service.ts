@@ -20,7 +20,7 @@
 //                                     gates rating + orderId)
 
 import { createHash } from "node:crypto"
-import { Prisma } from "../generated/prisma-client/client.js"
+import { Prisma, type PrismaClient } from "../generated/prisma-client/client.js"
 import { prisma } from "../client.js"
 import { toE164BR } from "../phone.js"
 import { publishNatsEvent } from "@ibatexas/nats-client"
@@ -53,9 +53,56 @@ import {
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
-export interface CustomerServiceOptions {
+/**
+ * R5-S1 — the prisma-shaped client seam for `createCustomerService`.
+ *
+ * The delegate set is EXHAUSTIVE for the factory: every Prisma access made by
+ * a method on the object `createCustomerService` returns goes through one of
+ * these five model delegates, `$transaction` (array form, `searchForAdmin`) or
+ * `$queryRaw` (`findDormantCustomers`). Widen it only by adding a delegate the
+ * factory genuinely reads — the narrowness is what lets a test double cover the
+ * whole surface instead of guessing.
+ *
+ * Typed as `Pick<PrismaClient, …>` on purpose: the service body keeps the exact
+ * generated argument types, so a wrong `where`/`select` still fails `tsc`. A
+ * test double therefore casts to this type at its own boundary (see
+ * `src/testing/in-memory-client.ts`) rather than the service loosening its
+ * types to accommodate one.
+ *
+ * The module-level exports in this file (`anonymizeCustomer`,
+ * `anonymizeCustomerFromEnvelope`, `exportCustomerData`) are NOT part of the
+ * seam — they still bind the singleton directly. `CustomerAdjudicateOptions`
+ * below is what keeps that fact type-visible.
+ */
+export type CustomerServiceClient = Pick<
+  PrismaClient,
+  | "customer"
+  | "customerPreferences"
+  | "customerOrderItem"
+  | "review"
+  | "address"
+  | "$transaction"
+  | "$queryRaw"
+>
+
+/**
+ * Kernel/audit options shared by the factory and the module-level envelope
+ * entry points. Deliberately carries NO `client` field: the module-level
+ * functions reach past the seam, and an accepted-but-ignored `client` would be
+ * a silent lie. Passing one to `anonymizeCustomerFromEnvelope` is a type error.
+ */
+export interface CustomerAdjudicateOptions {
   readonly auditSink?: AuditSink
   readonly log?: { readonly warn?: (...args: unknown[]) => void; readonly error?: (...args: unknown[]) => void }
+}
+
+export interface CustomerServiceOptions extends CustomerAdjudicateOptions {
+  /**
+   * Prisma-shaped client the service reads and writes through. Defaults to the
+   * module singleton from `../client.js`, so every production call site stays
+   * a bare `createCustomerService()` / `createCustomerService({ auditSink })`.
+   */
+  readonly client?: CustomerServiceClient
 }
 
 // ── Module-local executors ──────────────────────────────────────────────
@@ -64,8 +111,13 @@ export interface CustomerServiceOptions {
 // envelope-typed entry points lives here. The envelope wrappers MUST NOT
 // call the `@deprecated` methods directly (that would route through a
 // deprecated surface); both call these helpers instead.
+//
+// Each takes the client as its first argument so both entry points share one
+// resolved client — the factory resolves `options.client ?? prisma` once and
+// threads it, rather than each helper re-reaching for the singleton.
 
 async function performUpdatePreferences(
+  db: CustomerServiceClient,
   customerId: string,
   input: {
     dietaryRestrictions?: string[]
@@ -89,7 +141,7 @@ async function performUpdatePreferences(
   // partial update the DB preserves omitted fields, and callers cache the
   // return value (Redis profile hash) — returning coerced-empty arrays for
   // omitted fields would poison that cache with emptier preferences.
-  const row = await prisma.customerPreferences.upsert({
+  const row = await db.customerPreferences.upsert({
     where: { customerId },
     create: { customerId, allergenExclusions, dietaryRestrictions, favoriteCategories },
     update: {
@@ -106,17 +158,20 @@ async function performUpdatePreferences(
   }
 }
 
-async function performSubmitReview(input: {
-  customerId: string
-  productId: string
-  orderId: string
-  rating: number
-  comment?: string
-  channel: Channel
-}) {
+async function performSubmitReview(
+  db: CustomerServiceClient,
+  input: {
+    customerId: string
+    productId: string
+    orderId: string
+    rating: number
+    comment?: string
+    channel: Channel
+  },
+) {
   const { customerId, productId, orderId, rating, comment, channel } = input
 
-  await prisma.review.upsert({
+  await db.review.upsert({
     where: { orderId_customerId: { orderId, customerId } },
     create: {
       orderId,
@@ -130,7 +185,7 @@ async function performSubmitReview(input: {
     update: { rating, comment: comment ?? null },
   })
 
-  const stats = await prisma.review.aggregate({
+  const stats = await db.review.aggregate({
     where: { productId },
     _avg: { rating: true },
     _count: { rating: true },
@@ -143,10 +198,11 @@ async function performSubmitReview(input: {
 }
 
 async function performUpdatePixDetails(
+  db: CustomerServiceClient,
   customerId: string,
   data: { name?: string; email?: string; cpf?: string },
 ) {
-  await prisma.customer.update({
+  await db.customer.update({
     where: { id: customerId },
     data: {
       ...(data.name ? { name: data.name } : {}),
@@ -157,10 +213,11 @@ async function performUpdatePixDetails(
 }
 
 async function performUpdateProfile(
+  db: CustomerServiceClient,
   customerId: string,
   data: { name?: string; email?: string },
 ) {
-  await prisma.customer.update({
+  await db.customer.update({
     where: { id: customerId },
     data: {
       ...(data.name ? { name: data.name } : {}),
@@ -181,10 +238,14 @@ export interface CustomerAddressInput {
   isDefault?: boolean
 }
 
-async function performAddAddress(customerId: string, input: CustomerAddressInput) {
+async function performAddAddress(
+  db: CustomerServiceClient,
+  customerId: string,
+  input: CustomerAddressInput,
+) {
   // Prisma requires `number` + `district`; the pack payload leaves them
   // optional, so default rather than reject (S/N = "sem número", common in BR).
-  return prisma.address.create({
+  return db.address.create({
     data: {
       customerId,
       street: input.street,
@@ -204,8 +265,12 @@ async function performAddAddress(customerId: string, input: CustomerAddressInput
  * customer can only remove their OWN address (IDOR-safe — a foreign addressId
  * matches zero rows). Returns the deleted count for the route's 404 decision.
  */
-async function performRemoveAddress(customerId: string, addressId: string) {
-  const { count } = await prisma.address.deleteMany({
+async function performRemoveAddress(
+  db: CustomerServiceClient,
+  customerId: string,
+  addressId: string,
+) {
+  const { count } = await db.address.deleteMany({
     where: { id: addressId, customerId },
   })
   return { count }
@@ -216,6 +281,12 @@ export function createCustomerService(options?: CustomerServiceOptions) {
     ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
     ...(options?.log ? { log: options.log } : {}),
   } as const
+
+  // Resolved ONCE at construction. Omitting `client` is the production shape
+  // and lands on the same lazy singleton proxy the module used to reference
+  // inline, so no production call site changes and no connection is opened any
+  // earlier than before (the proxy still defers until first property access).
+  const db: CustomerServiceClient = options?.client ?? prisma
 
   return {
     /**
@@ -228,7 +299,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
       // or a formatted variant. Idempotent on the already-validated `+<digits>`
       // callers pass today; never touches the BR 9th digit (no merge risk).
       const canonical = toE164BR(phone)
-      return prisma.customer.upsert({
+      return db.customer.upsert({
         where: { phone: canonical },
         create: { phone: canonical, name: name ?? null },
         update: { ...(name ? { name } : {}) },
@@ -265,7 +336,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         favoriteCategories?: string[]
       },
     ) {
-      return performUpdatePreferences(customerId, input)
+      return performUpdatePreferences(db, customerId, input)
     },
 
     /**
@@ -298,7 +369,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
       comment?: string
       channel: Channel
     }) {
-      return performSubmitReview(input)
+      return performSubmitReview(db, input)
     },
 
     /**
@@ -307,8 +378,8 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      */
     async getProfileData(customerId: string) {
       const [customerPrefs, orderItems] = await Promise.all([
-        prisma.customerPreferences.findUnique({ where: { customerId } }),
-        prisma.customerOrderItem.findMany({
+        db.customerPreferences.findUnique({ where: { customerId } }),
+        db.customerOrderItem.findMany({
           where: { customerId },
           orderBy: { orderedAt: "desc" },
           take: 200,
@@ -328,7 +399,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
       items: Array<{ productId: string; variantId: string; quantity: number; priceInCentavos: number }>,
     ) {
       const now = new Date()
-      await prisma.customerOrderItem.createMany({
+      await db.customerOrderItem.createMany({
         data: items.map(({ productId, variantId, quantity, priceInCentavos }) => ({
           customerId,
           productId,
@@ -353,7 +424,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      *   `packages/pack-customer-onboarding`.
      */
     async updatePixDetails(customerId: string, data: { name?: string; email?: string; cpf?: string }) {
-      return performUpdatePixDetails(customerId, data)
+      return performUpdatePixDetails(db, customerId, data)
     },
 
     /**
@@ -364,12 +435,12 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * this. Never call it un-adjudicated for a customer-facing mutation.
      */
     async updateProfile(customerId: string, data: { name?: string; email?: string }) {
-      return performUpdateProfile(customerId, data)
+      return performUpdateProfile(db, customerId, data)
     },
 
     /** List a customer's saved addresses (default first). Read-only, owner-scoped. */
     async listAddresses(customerId: string) {
-      return prisma.address.findMany({
+      return db.address.findMany({
         where: { customerId },
         orderBy: [{ isDefault: "desc" }, { id: "asc" }],
       })
@@ -380,7 +451,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * envelope — the caller adjudicates via `runCustomerIntent` first.
      */
     async addAddress(customerId: string, input: CustomerAddressInput) {
-      return performAddAddress(customerId, input)
+      return performAddAddress(db, customerId, input)
     },
 
     /**
@@ -388,14 +459,14 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * executor for the `customer.address.remove` envelope. Returns { count }.
      */
     async removeAddress(customerId: string, addressId: string) {
-      return performRemoveAddress(customerId, addressId)
+      return performRemoveAddress(db, customerId, addressId)
     },
 
     /**
      * Fetch customer by ID. Used by GET /auth/me.
      */
     async getById(customerId: string) {
-      return prisma.customer.findUniqueOrThrow({
+      return db.customer.findUniqueOrThrow({
         where: { id: customerId },
       })
     },
@@ -409,7 +480,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
       // as upsertFromPhone). Idempotent on the already-normalized phone the
       // whatsapp path passes; never touches the BR 9th digit.
       const canonical = toE164BR(phone)
-      return prisma.customer.upsert({
+      return db.customer.upsert({
         where: { phone: canonical },
         create: { phone: canonical, source: "whatsapp", firstContactAt: new Date() },
         update: {},
@@ -424,7 +495,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      */
     async findDormantCustomers(thresholdDays: number, limit = 200) {
       const cutoff = new Date(Date.now() - thresholdDays * 86400 * 1000)
-      const dormant = await prisma.$queryRaw`
+      const dormant = await db.$queryRaw`
         SELECT c.id, c.phone, c.name
         FROM ibx_domain.customers c
         INNER JOIN ibx_domain.customer_order_items coi ON coi.customer_id = c.id
@@ -442,7 +513,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * Returns grouped items ranked by frequency.
      */
     async getOrderedTogether(customerId: string, productId: string, limit = 5) {
-      const ordersWithProduct = await prisma.customerOrderItem.findMany({
+      const ordersWithProduct = await db.customerOrderItem.findMany({
         where: { customerId, productId },
         select: { medusaOrderId: true },
         distinct: ["medusaOrderId"],
@@ -450,7 +521,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
       if (ordersWithProduct.length === 0) return []
 
       const orderIds = ordersWithProduct.map((o) => o.medusaOrderId)
-      return prisma.customerOrderItem.groupBy({
+      return db.customerOrderItem.groupBy({
         by: ["productId"],
         where: {
           customerId,
@@ -471,7 +542,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
      * (dietary / allergen exclusions) in the same query. Pure read.
      */
     async getByIdForAdmin(customerId: string) {
-      return prisma.customer.findUnique({
+      return db.customer.findUnique({
         where: { id: customerId },
         include: { preferences: true },
       })
@@ -499,8 +570,8 @@ export function createCustomerService(options?: CustomerServiceOptions) {
             }
           : {}
 
-      const [customers, count] = await prisma.$transaction([
-        prisma.customer.findMany({
+      const [customers, count] = await db.$transaction([
+        db.customer.findMany({
           where,
           orderBy: { createdAt: "desc" },
           take: limit,
@@ -514,7 +585,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
             createdAt: true,
           },
         }),
-        prisma.customer.count({ where }),
+        db.customer.count({ where }),
       ])
 
       return { customers, count }
@@ -547,7 +618,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
           const canonical = toE164BR(extras.phone)
           const source = payload.source === "wa-auto" ? "whatsapp" : null
           if (source === "whatsapp") {
-            return prisma.customer.upsert({
+            return db.customer.upsert({
               where: { phone: canonical },
               create: { phone: canonical, source, firstContactAt: new Date() },
               update: {},
@@ -555,7 +626,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
             })
           }
           // OTP source path.
-          const row = await prisma.customer.upsert({
+          const row = await db.customer.upsert({
             where: { phone: canonical },
             create: { phone: canonical, name: extras.name ?? null },
             update: { ...(extras.name ? { name: extras.name } : {}) },
@@ -593,7 +664,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         async (payload) => {
           // Pack's allergenExclusions / dietaryFlags / favoriteCategories are
           // ReadonlyArray<string>; service's update method accepts string[].
-          return performUpdatePreferences(extras.customerId, {
+          return performUpdatePreferences(db, extras.customerId, {
             allergenExclusions: payload.allergenExclusions as string[],
             ...(payload.dietaryFlags === undefined
               ? {}
@@ -635,7 +706,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         state,
         ordersPolicyBundle,
         async (payload) => {
-          return performSubmitReview({
+          return performSubmitReview(db, {
             customerId: extras.customerId,
             productId: payload.productId,
             orderId: payload.orderId,
@@ -666,7 +737,7 @@ export function createCustomerService(options?: CustomerServiceOptions) {
         state,
         customerOnboardingPolicyBundle,
         async (payload) => {
-          return performUpdatePixDetails(extras.customerId, {
+          return performUpdatePixDetails(db, extras.customerId, {
             name: payload.name,
             email: payload.email,
             cpf: payload.cpf,
@@ -688,11 +759,16 @@ export function createCustomerService(options?: CustomerServiceOptions) {
  *
  * The EXECUTE branch invokes `anonymizeCustomer` — the legacy
  * module-level helper — preserving the existing transactional semantics.
+ *
+ * R5-S1: options are `CustomerAdjudicateOptions`, NOT `CustomerServiceOptions`
+ * — `anonymizeCustomer` reaches the singleton directly (it spans ~15 delegates,
+ * `$transaction`, and `$executeRaw`), so there is no client to honour here and
+ * the narrower type refuses one at compile time instead of dropping it.
  */
 export async function anonymizeCustomerFromEnvelope(
   envelope: IntentEnvelope<"customer.anonymize", CustomerAnonymizePayload>,
   state: CustomerOnboardingState,
-  options?: CustomerServiceOptions,
+  options?: CustomerAdjudicateOptions,
 ): Promise<AdjudicatedResult<{ success: true }>> {
   const adjudicateOptions = {
     ...(options?.auditSink ? { auditSink: options.auditSink } : {}),
