@@ -251,9 +251,10 @@ graph does not distinguish `dependencies` from `devDependencies`).
   `buildGeneratedRegion()` output between the committed `GENERATED_BEGIN`/
   `GENERATED_END` markers, and writes the file back. Idempotent — a no-op
   regen logs "already up to date" and produces a zero-diff write.
-  **R6 leg 1a extended this same script to SEVEN target files** — it now also
-  splices each of the six packs' own `xxxPack.intents` arrays (family member 3,
-  below). One command, one marker pair, one CI gate per target.
+  **R6 legs 1a + 1b extended this same script to THIRTEEN target files** — it
+  now also splices each of the six packs' own `xxxPack.intents` arrays (leg 1a,
+  family member 3) and each pack's own kind TYPE UNION in `src/types.ts` (leg
+  1b) — both below. One command, one marker pair, one CI gate per target group.
 - `packages/packs-composed/src/__tests__/regen-intent-kinds-freshness.test.ts`
   — the CI freshness gate: (1) the committed `GENERATED_BEGIN`..`GENERATED_END`
   region is byte-identical to a fresh in-memory `buildGeneratedRegion()` call,
@@ -317,6 +318,74 @@ Two findings worth carrying forward:
    stale) while the source-text gate went red. The complement holds in reverse —
    a `dist` that disagrees with the registry fails the runtime test and is
    invisible to the source-text one. Neither gate subsumes the other.
+
+## R6 leg 1b — the same region pattern applied to the packs' kind TYPE UNIONS
+
+The last hand mirror of the intent-identity family: each pack's own
+`OrderIntentKind`/`ReservationIntentKind`/… union in
+`packages/pack-*/src/types.ts`. It was the EXPENSIVE one — `intent-kinds/src/index.ts`
+closes each of its six generated arrays with
+`as const satisfies readonly OrderIntentKind[]`, so a union that had not been
+hand-updated broke the workspace build (TS2820). Adding a capability was a data
+edit in `definitions.ts` PLUS a hand edit in a second package purely to stop the
+compiler complaining. Now it is the data edit and a regen. Same marker pair,
+same relative-filesystem-path/no-new-dependency-edge design; the six unions
+bring `regenerate-intent-kinds.ts` to **thirteen** target files under one
+command.
+
+- `packages/packs-composed/src/codegen/annotated-member-region.ts` —
+  `renderAnnotatedMemberRegion()`, extracted from leg 1a: the ONE definition of
+  "a GENERATED region that is a list of per-kind members, some carrying
+  hand-written rationale comments". Both `buildPackIntentsRegion` and
+  `buildPackKindUnionRegion` call it, so the two family members cannot drift in
+  comment handling. The extraction is byte-safe by construction, not by
+  inspection — leg 1a's gate diffs the committed arrays against the refactored
+  builder's output, and the first regen after the extraction was a 13-file no-op.
+- `packages/packs-composed/src/codegen/build-pack-kind-union-region.ts` —
+  `buildPackKindUnionRegion(target)`, `PACK_KIND_UNION_TARGETS`, and the
+  union-side annotations table.
+- `packages/packs-composed/src/__tests__/regen-pack-unions-freshness.test.ts`
+  — the CI gate (24 tests): byte-identity per pack, markers exactly once, plus
+  STRUCTURAL declaration/tail assertions.
+
+Three findings worth carrying forward:
+
+1. **Derivability was CHECKED, not assumed.** A union could legitimately have
+   outlived the definitions — `pack-payments`' own BKL-176 note documents 5
+   RETIRED `payment.charge.*` kinds — and absorbing such a member into a
+   generated region would DELETE it on the next regen: a type-level regression
+   dressed up as codegen. Measured against the real projection first: all six
+   unions are exactly `generatePackIntents(CAPABILITY_DEFINITIONS, pack)`, same
+   members, same order, 62 total, **zero union-only members in any pack** (the
+   retired `payment.charge.*` kinds are absent from the unions too). Nothing was
+   absorbed, and the finding is now an executable test case rather than a claim
+   in a comment.
+2. **The annotations table is per FAMILY MEMBER, not per kind.** Leg 1a found
+   five rationale blocks inside the `intents[]` arrays (payments' BKL-176, ops'
+   four). The unions carry rationale too — and it is DIFFERENT rationale in a
+   DIFFERENT pack: `pack-whatsapp`'s union carries two interleaved blocks (W5-6
+   on `conversation.message.append`, F5/L3/BKL-030 on
+   `whatsapp.handoff.request`, 8 lines) that appear in neither
+   `CAPABILITY_DEFINITIONS` nor `pack-whatsapp/src/index.ts`, while the packs
+   whose arrays carry notes carry NONE inside their unions. Note text is a
+   property of the (FILE, kind) pair. One table keyed by kind alone would have
+   invented committed bytes in one direction or the other, so there are two
+   tables behind one renderer.
+3. **A union has no closing token, so the tail needs two pins.** Leg 1a could
+   lean on `],`; a union ends where its members stop. "END marker followed by a
+   blank line" alone leaves a real hole — blank lines are whitespace to
+   TypeScript, so a member hand-added BELOW the blank line is still part of the
+   type and the gate would stay green. The gate therefore also asserts the first
+   non-blank line after the region does not continue the union with another `|`.
+
+**The TS2820 compile-time leg is KEPT, and is genuinely complementary.** It
+proves the TYPE the application compiles against; the source gate proves the
+committed text is what the generator would write. Each sees what the other
+cannot: markers and rationale comments are type-invisible (a corrupted marker or
+a deleted note compiles perfectly), and conversely an ADDED union member
+type-checks fine because `satisfies` only requires the array to be a SUBSET of
+the union — a hand-widened union is invisible to `tsc` and caught only by the
+source gate. Both directions are asserted in that file's last describe block.
 
 ## Tautological-gate retirements (FE-4.3's own named risk)
 

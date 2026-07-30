@@ -121,6 +121,7 @@ import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
  *   - `order.amend.remove_item`    — UNTRUSTED. Granular amend — drop a line.
  */
 export type OrderIntentKind =
+  // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
   | "order.cart.ensure"
   | "order.item.add"
   | "order.item.update"
@@ -147,6 +148,7 @@ export type OrderIntentKind =
   | "order.status.transition"
   | "order.status.reconcile"
   | "order.fiscal.emit"
+  // ═══ END GENERATED REGION ═══
 
 // ── Payloads ────────────────────────────────────────────────────────────
 

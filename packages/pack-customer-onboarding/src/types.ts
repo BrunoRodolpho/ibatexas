@@ -65,6 +65,7 @@
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
 
 export type CustomerOnboardingIntentKind =
+  // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
   | "customer.create"
   | "customer.profile.update"
   | "customer.preferences.update"
@@ -73,6 +74,7 @@ export type CustomerOnboardingIntentKind =
   | "customer.address.remove"
   | "customer.anonymize"
   | "customer.anonymize.cancel"
+  // ═══ END GENERATED REGION ═══
 
 // ── Payloads ────────────────────────────────────────────────────────────
 

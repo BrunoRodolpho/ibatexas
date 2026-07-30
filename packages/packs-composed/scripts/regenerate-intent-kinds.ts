@@ -1,15 +1,16 @@
 #!/usr/bin/env -S npx tsx
-// regenerate-intent-kinds.ts — FE-4 CONTRACT (FE-T26) + R6 leg 1a: writes
+// regenerate-intent-kinds.ts — FE-4 CONTRACT (FE-T26) + R6 legs 1a/1b: writes
 // every GENERATED intent-kind region in the workspace from
 // CAPABILITY_DEFINITIONS.
 //
 // Run: `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds`
 // After: editing packages/catalog/src/capability-definitions/definitions.ts
 //        (add/remove/reorder a capability) — that file moved out of this
-//        package in LE2-014/015 — or editing the per-kind annotations table in
-//        src/codegen/build-pack-intents-region.ts.
+//        package in LE2-014/015 — or editing either per-kind annotations table
+//        (src/codegen/build-pack-intents-region.ts for the arrays,
+//        src/codegen/build-pack-kind-union-region.ts for the unions).
 //
-// SEVEN target files, one marker pair, one command:
+// THIRTEEN target files, one marker pair, one command:
 //   1. ../../intent-kinds/src/index.ts — the 6 per-pack `*_INTENT_KINDS`
 //      mirror arrays + `KNOWN_INTENT_KINDS` (FE-T26).
 //   2-7. ../../pack-*/src/index.ts — each Pack's OWN `xxxPack.intents` array
@@ -17,6 +18,11 @@
 //      a live object literal, so it covers EXACTLY the array contents and
 //      leaves `basisCodes`, `policy`, `planner` and every other
 //      hand-maintained member untouched.
+//   8-13. ../../pack-*/src/types.ts — each Pack's OWN kind TYPE UNION
+//      (`OrderIntentKind` et al., R6 leg 1b). Same splice, same sentinels; the
+//      region covers EXACTLY the union's member lines and leaves the `/** … */`
+//      doc block above the type — and every payload interface below it —
+//      hand-authored.
 //
 // Every target is reached by a plain relative FILESYSTEM path (never a package
 // import) — see build-generated-region.ts's own doc for why this script lives
@@ -25,8 +31,8 @@
 //
 // Idempotent: running it twice in a row with no CAPABILITY_DEFINITIONS change
 // rewrites byte-identical files (a no-op diff) — exactly what
-// regen-intent-kinds-freshness.test.ts and regen-pack-intents-freshness.test.ts
-// assert in CI.
+// regen-intent-kinds-freshness.test.ts, regen-pack-intents-freshness.test.ts
+// and regen-pack-unions-freshness.test.ts assert in CI.
 
 import fs from "node:fs"
 import path from "node:path"
@@ -40,6 +46,10 @@ import {
   buildPackIntentsRegion,
   PACK_INTENTS_TARGETS,
 } from "../src/codegen/build-pack-intents-region.js"
+import {
+  buildPackKindUnionRegion,
+  PACK_KIND_UNION_TARGETS,
+} from "../src/codegen/build-pack-kind-union-region.js"
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 /** packages/packs-composed/scripts → packages/ */
@@ -80,6 +90,11 @@ function main(): void {
   for (const target of PACK_INTENTS_TARGETS) {
     const packIndexPath = path.join(PACKAGES_DIR, target.packageDir, "src/index.ts")
     report(packIndexPath, spliceRegion(packIndexPath, buildPackIntentsRegion(target)))
+  }
+
+  for (const target of PACK_KIND_UNION_TARGETS) {
+    const packTypesPath = path.join(PACKAGES_DIR, target.packageDir, "src/types.ts")
+    report(packTypesPath, spliceRegion(packTypesPath, buildPackKindUnionRegion(target)))
   }
 }
 
