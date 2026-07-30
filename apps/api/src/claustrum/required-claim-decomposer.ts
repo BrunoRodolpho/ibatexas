@@ -38,7 +38,12 @@ import {
 // (./claimdefs/*.generated.ts — DO NOT EDIT). The previously-handwritten closure entries
 // + marker regexes collapse into these splices. What the compiler does NOT model is a
 // span GUARD: STORE_INFO_Q's `notResourceScoped && !mutationImperative` conjunction
-// stays hand-written below, wrapping the generated markers.
+// stays hand-written below, wrapping the generated markers — as does
+// MENU_ITEM_CONTENTS_Q's THREE-conjunct guard (`notOrderScoped && !mutationImperative &&
+// !isMenuOverview`), whose third term is what keeps a whole-menu ask disjoint from the
+// per-item contents span.
+import { MENU_DIETARY_CLOSURE } from "./claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_CONTENTS_CLOSURE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_CLOSURE } from "./claimdefs/menu-item-price.generated.js";
 import { STORE_INFO_CLOSURE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
@@ -156,32 +161,21 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // via the closure-value union (over-proposed history claim demoted on a non-history turn).
   ORDER_HISTORY_Q: ["ORDER_HISTORY"],
   PAYMENT_HISTORY_Q: ["PAYMENT_HISTORY"],
-  // inv.18 v2 / R2-S2 — MENU_ITEM_PRICE_Q's row is GENERATED (span class + required set);
-  // the BKL-142 rationale for requiring ONLY its own PUBLIC claim moved verbatim into
-  // `./claimdefs/menu-item-price.claim.ts`. Its CONTENTS sibling stays hand-written below
-  // until it is adopted in turn.
+  // inv.18 v2 / R2-S2 + R2-S3 — the two per-item menu rows are GENERATED (span class +
+  // required set); the BKL-142 rationale for requiring ONLY its own PUBLIC claim moved
+  // verbatim into `./claimdefs/menu-item-price.claim.ts` /
+  // `./claimdefs/menu-item-contents.claim.ts`.
   [MENU_ITEM_PRICE_CLOSURE.spanClass]: MENU_ITEM_PRICE_CLOSURE.requires,
-  // BKL-142 — a menu question requires ONLY its own PUBLIC claim (no unrelated span
-  // force-requires it; like CART_CONTENTS_Q / RESERVATION_STATUS_Q). An unresolvable
-  // item → ABSENT evidence → honest UNKNOWN; it never demotes a co-occurring answer
-  // beyond its own span. Public (`not_applicable`) → never Triad-scoped.
-  MENU_ITEM_CONTENTS_Q: ["MENU_ITEM_CONTENTS"],
+  [MENU_ITEM_CONTENTS_CLOSURE.spanClass]: MENU_ITEM_CONTENTS_CLOSURE.requires,
   // BKL-142 — a menu-WIDE overview question requires ONLY its own PUBLIC claim (like the
   // per-item menu spans). Empty catalog → ABSENT evidence → honest UNKNOWN; never demotes
   // a co-occurring answer. Public (`not_applicable`) → never Triad-scoped.
   MENU_OVERVIEW_Q: ["MENU_OVERVIEW"],
-  // BKL-214 — a dietary-PREFERENCE question ("tem opção vegetariana?") requires the
-  // MENU_DIETARY claim. Its own span, no unrelated span force-requires it, so it
-  // auto-enrols into RELEVANCE_GOVERNED_TYPES like the other menu claims.
-  //
-  // BKL-273 CORRECTION (this comment used to read "allergen-adjacent diets never
-  // reach this span (ALLERGEN_FAMILY_RE gate)" — that has been FALSE since PR #441):
-  // the span condition was REMOVED and the guard moved to the READ, so a diet-
-  // qualified ask now DOES reach this span, on purpose. Keeping the span mapped is
-  // what holds the question inside §O#15 completeness; the read then abstains
-  // (BKL-270 `dietaryPosture`), which is the LE2-029 negative result honoured rather
-  // than the span being suppressed.
-  MENU_DIETARY_Q: ["MENU_DIETARY"],
+  // inv.18 v2 / R2-S3 — MENU_DIETARY_Q's row is GENERATED (span class + required set);
+  // the BKL-214 rationale, and the BKL-273 correction about WHY keeping this span mapped
+  // is what holds an allergen-adjacent diet ask inside §O#15 completeness, moved verbatim
+  // into `./claimdefs/menu-dietary.claim.ts`.
+  [MENU_DIETARY_CLOSURE.spanClass]: MENU_DIETARY_CLOSURE.requires,
   // inv.18 v2 / R2-S1 — STORE_INFO_Q's row is GENERATED (span class + required set); the
   // BKL-136 rationale for requiring ONLY its own PUBLIC claim moved verbatim into
   // `./claimdefs/store-info.claim.ts`.
@@ -992,6 +986,23 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
    * it is not an equivalent regex, it is THE SAME regex.
    */
   menuItemPrice: MENU_ITEM_PRICE_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S3 — the MENU_ITEM_CONTENTS_Q markers, now GENERATED as FOUR arms from
+   * `menu-item-contents.claim.ts`, rejoined in declaration order. Same statement as
+   * `menuItemPrice` above, and it carries the extra weight here that BKL-205's ACCENTED
+   * forms (`v[êe]m` / `t[êe]m`) live INSIDE these arms: an accented vowel sits exactly
+   * where the plain one would, so losing one would empty the true-positive set on the real
+   * phrasing while every false-positive sweep still passed.
+   */
+  menuItemContents: MENU_ITEM_CONTENTS_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S3 — the MENU_DIETARY_Q markers, now GENERATED as TWO arms from
+   * `menu-dietary.claim.ts`, rejoined in declaration order. Byte-identity is what pins the
+   * ANCHORING ASYMMETRY between the arms (`vegetarian[ao]?` unanchored so it also matches
+   * inside "comida vegetariano"; `\bvegan[ao]?\b` word-bounded) — an "equivalent" rewrite
+   * that anchored both would silently narrow the net.
+   */
+  menuDietary: MENU_DIETARY_CLOSURE.markers.map((m) => m.source).join("|"),
 } as const;
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -1200,8 +1211,22 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // (Sonar S6035). Same single character, same matched language; the group was
   // capturing and this is not, which is invisible here because the only use is
   // `.test`. Pinned byte-for-byte against the pre-restructure source by test.
-  if (notOrderScoped && !mutationImperative && !isMenuOverview && /o que (v[êe]m|t[êe]m|acompanha)|do que [ée] (é |)feit|que v[êe]m (n|em)|composi[çc][ãa]o d/.test(t)) {
-    classes.push("MENU_ITEM_CONTENTS_Q");
+  // inv.18 v2 / R2-S3 — the MARKERS are now GENERATED from the def source (they were one
+  // flat top-level alternation, so the four generated arms REJOIN to that literal
+  // character-for-character — pinned by `__SPAN_NET_SOURCES_FOR_TEST.menuItemContents`).
+  // Everything the two BKL-205/BKL-273 notes above assert about the accented forms and
+  // the `[ée]` character class is a statement about those arms and travels with them. The
+  // GUARD conjunction is NOT generated and stays here: `notOrderScoped` keeps "o que tem
+  // no meu PEDIDO" off the per-item span, `!mutationImperative` keeps "tira o que vem no
+  // combo" on the mutation path, and `!isMenuOverview` keeps a WHOLE-menu ask disjoint
+  // from this per-ITEM one.
+  if (
+    notOrderScoped &&
+    !mutationImperative &&
+    !isMenuOverview &&
+    MENU_ITEM_CONTENTS_CLOSURE.markers.some((m) => m.test(t))
+  ) {
+    classes.push(MENU_ITEM_CONTENTS_CLOSURE.spanClass);
   }
 
   // BKL-214 — a dietary-PREFERENCE question ("tem opção vegetariana?", "prato vegano?").
@@ -1216,12 +1241,17 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // `resolveDietaryOptionsText`), which returns `undefined` for such an ask → NO
   // evidence → honest UNKNOWN → the BKL-184 abstain + staff handoff. Suppressing the
   // span sent the turn to the model instead, which authored the "sem glúten" answer.
+  // inv.18 v2 / R2-S3 — the MARKERS are now GENERATED from the def source (they were one
+  // flat top-level alternation, so the two generated arms REJOIN to that literal
+  // character-for-character — pinned by `__SPAN_NET_SOURCES_FOR_TEST.menuDietary`,
+  // including the load-bearing anchoring asymmetry: `vegetarian[ao]?` unanchored,
+  // `\bvegan[ao]?\b` word-bounded). The GUARD conjunction is NOT generated and stays here.
   if (
     notOrderScoped &&
     !mutationImperative &&
-    /vegetarian[ao]?|\bvegan[ao]?\b/.test(t)
+    MENU_DIETARY_CLOSURE.markers.some((m) => m.test(t))
   ) {
-    classes.push("MENU_DIETARY_Q");
+    classes.push(MENU_DIETARY_CLOSURE.spanClass);
   }
 
   // BKL-136 — a store-LOCATION/parking question ("onde fica o restaurante?", "qual o

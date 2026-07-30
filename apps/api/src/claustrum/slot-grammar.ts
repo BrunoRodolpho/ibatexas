@@ -42,6 +42,8 @@
 // is a projection of the source's `render.validated` block, with the PROPOSITION
 // `claimType` filled = self, so a template can no longer drift from the registry spec
 // its proposition binds to.
+import { MENU_DIETARY_TEMPLATE } from "./claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_CONTENTS_TEMPLATE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_TEMPLATE } from "./claimdefs/menu-item-price.generated.js";
 import { STORE_HOURS_TEMPLATE } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_TEMPLATE } from "./claimdefs/store-info.generated.js";
@@ -345,20 +347,17 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // product, never an enum, never model-authored. Same single-C6-field shape as
   // CART_CONTENTS / STORE_HOURS_FOR_DATE (the frozen single-scalar kernel drops every
   // sibling read field post-mint).
-  // inv.18 v2 / R2-S2 — the MENU_ITEM_PRICE template is GENERATED from its
-  // ClaimDefinition source (./claimdefs/menu-item-price.generated.ts — DO NOT EDIT). Its
-  // single proposition slot is derived from the source's render.prop("priceText") with
+  // inv.18 v2 / R2-S2 + R2-S3 — BOTH templates are GENERATED from their ClaimDefinition
+  // sources (./claimdefs/menu-item-price.generated.ts /
+  // ./claimdefs/menu-item-contents.generated.ts — DO NOT EDIT). Each single proposition
+  // slot is derived from the source's render.prop("priceText") / prop("contentsText") with
   // claimType filled = self, and the compiler binds it to the SAME source's C6
-  // `valueBinding.path = ["priceText"]` — so the 1:1 slot↔field alignment (Inv 6) is true
-  // BY CONSTRUCTION rather than by two files agreeing. The template is UNAFFECTED by the
-  // type's `perResourceKey` facet: the slot names a FIELD of the validated value, never a
-  // ledger key, so the runtime `:{subject}` suffixing never reaches here.
+  // `valueBinding.path` — so the 1:1 slot↔field alignment (Inv 6) is true BY CONSTRUCTION
+  // rather than by two files agreeing. The templates are UNAFFECTED by the types'
+  // `perResourceKey` facet: a slot names a FIELD of the validated value, never a ledger
+  // key, so the runtime `:{subject}` suffixing never reaches here.
   [MENU_ITEM_PRICE]: MENU_ITEM_PRICE_TEMPLATE,
-  [MENU_ITEM_CONTENTS]: {
-    claimType: MENU_ITEM_CONTENTS,
-    posture: "validated",
-    slots: [prop(MENU_ITEM_CONTENTS, "contentsText"), lit(".")],
-  },
+  [MENU_ITEM_CONTENTS]: MENU_ITEM_CONTENTS_TEMPLATE,
   // BKL-142 — the menu-WIDE overview validated template. ONE proposition slot bound
   // 1:1 to the C6 `overviewText` (the deterministic first-party listing composed in
   // menu-item-resolver.ts `composeMenuOverviewText`), never model-authored.
@@ -371,11 +370,11 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // 1:1 to the C6 `dietaryText` (the deterministic tagged-product list composed in
   // menu-item-resolver.ts `composeDietaryOptionsText`), never model-authored. A positive
   // preference list only — the scalar NEVER contains a "não contém X" allergen assurance.
-  [MENU_DIETARY]: {
-    claimType: MENU_DIETARY,
-    posture: "validated",
-    slots: [prop(MENU_DIETARY, "dietaryText")],
-  },
+  // inv.18 v2 / R2-S3 — GENERATED from the ClaimDefinition source
+  // (./claimdefs/menu-dietary.generated.ts — DO NOT EDIT); the ~5-line handwritten entry
+  // collapsed into this spliced import. The BARE single-prop shape (like MENU_OVERVIEW /
+  // STORE_INFO) is unchanged — the composed scalar already ends in its own period.
+  [MENU_DIETARY]: MENU_DIETARY_TEMPLATE,
   // inv.18 v2 / R2-S1 — the STORE_INFO template is GENERATED from its ClaimDefinition
   // source (./claimdefs/store-info.generated.ts — DO NOT EDIT). Its single proposition
   // slot is derived from the source's render.prop("infoText") and bound by the compiler
