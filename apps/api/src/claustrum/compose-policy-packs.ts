@@ -90,7 +90,15 @@ export const sessionTokenBudgetGuard = nameGuard(
 // adopter level (no pack-source change), like the F4 guard. This set MUST mirror
 // ORDER_AUTORESOLVE_KINDS + RESERVATION_AUTORESOLVE_KINDS (resolve-and-assemble.ts):
 // every kind that auto-resolves an implicit target must confirm it here.
-const AUTORESOLVE_CONFIRM_KINDS = new Set([
+//
+// R3-S1 — EXPORTED for the lockstep coverage contract
+// (claustrum/__tests__/autoresolve-confirm-lockstep.test.ts), mirroring how
+// `ORDER_BY_ID_KINDS` / `OWNERSHIP_GATED_KINDS` are exported for the
+// ownership-gating coverage contract. The "MUST mirror" above was comment-only
+// until then — both sides were module-private, so no test could compare them
+// and the mirror had already drifted in a hand-copied replica. Not a runtime
+// API: production reads it only through `confirmOnAutoResolveGuard` below.
+export const AUTORESOLVE_CONFIRM_KINDS = new Set([
   "order.cancel",
   "payment.pix.regenerate",
   "reservation.cancel",

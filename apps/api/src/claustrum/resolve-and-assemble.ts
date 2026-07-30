@@ -920,7 +920,15 @@ export const ORDER_BY_ID_KINDS = new Set([
 // carry an explicit orderId from the amend flow"), a model-driven granular
 // amend needs the SAME "most-recent order" auto-resolve `order.amend.request`
 // already gets. Added here alongside it.
-const ORDER_AUTORESOLVE_KINDS = new Set([
+//
+// R3-S1 — EXPORTED for the lockstep coverage contract
+// (__tests__/autoresolve-confirm-lockstep.test.ts), exactly as
+// `ORDER_BY_ID_KINDS` above is exported for the ownership-gating coverage
+// contract. Before that test the lockstep above was comment-only: both sets
+// were module-private, so nothing could compare them and the mirror had
+// already drifted in a test's hand copy. Not part of the module's runtime API —
+// production code must keep reading it through `applyAutoResolve`.
+export const ORDER_AUTORESOLVE_KINDS = new Set([
   "order.cancel",
   "payment.pix.regenerate",
   "order.amend.request",
@@ -970,7 +978,11 @@ const ORDER_NAMED_REFERENCE_KINDS = new Set([
 // to the customer's one active reservation when unambiguous (never a guess
 // among several), forcing a confirm (AUTORESOLVE_CONFIRM_KINDS,
 // compose-policy-packs.ts, mirrors this addition).
-const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel", "reservation.modify"]);
+//
+// R3-S1 — EXPORTED for the same lockstep coverage contract as
+// `ORDER_AUTORESOLVE_KINDS` above: `AUTORESOLVE_CONFIRM_KINDS` is documented to
+// mirror the UNION of the two, so the contract test needs both halves.
+export const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel", "reservation.modify"]);
 
 // FE-D27 — the kinds whose timeSlotId may be grounded from an NL date/time pair
 // (the pure-chat "mesa pra 4 sexta às 20h" path) instead of a listed slot id.
