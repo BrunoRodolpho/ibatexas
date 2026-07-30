@@ -53,6 +53,22 @@ import { matchNamedOwnedOrders, parseDisplayIdRef } from "../ops/ops-order-resol
 // already uses (turn-reads.ts), rather than re-deriving a byte-parallel copy
 // (FE-D07 duplication lesson). No cycle: turn-reads never imports this module.
 import { ACTIVE_FULFILLMENT_STAGES } from "./turn-reads.js";
+// R3-S2 — the DECLARED resolver→guard signal contract. Every honesty-floor flag
+// this module stamps onto `ctx` goes through `stampResolutionSignal` with a named
+// constant, and the guards that read them (compose-policy-packs.ts, plus
+// pack-orders for the stay-home marker) read the SAME declaration. Before it both
+// ends spelled the key as a bare string on a `Record<string, unknown>`, so a typo
+// on either end compiled clean and left the guard silently inert — PASS, i.e. an
+// un-guarded EXECUTE or a lost honesty floor.
+import {
+  ALLERGEN_MENTION_DETECTED,
+  AMEND_ITEM_UNRESOLVED,
+  AUTO_RESOLVED_MONEY_REF,
+  REVIEW_PRODUCT_UNRESOLVED,
+  SESSION_TOKENS_CONSUMED,
+  STAY_HOME_DELIVERY_MARKER,
+  stampResolutionSignal,
+} from "./resolution-signals.js";
 
 /**
  * Per-session LLM-token Redis counter key. Single source of truth (write side:
@@ -2330,7 +2346,7 @@ async function threadResolvedIdsIntoPayload(
     // leg carries — leaves variantId present, so the flag is never stamped and
     // the resume re-adjudicates normally.
     if (kind === "order.amend.add_item" && typeof out.variantId !== "string") {
-      ctx.amendItemUnresolved = true;
+      stampResolutionSignal(ctx, AMEND_ITEM_UNRESOLVED, true);
     }
   }
   // FE-T09 (D-a) — order.amend.update_qty / order.amend.remove_item: resolve
@@ -2428,7 +2444,7 @@ async function threadResolvedIdsIntoPayload(
     if (resolution.kind === "found") {
       out = { ...out, productId: resolution.productId };
     } else {
-      ctx.reviewProductUnresolved = true;
+      stampResolutionSignal(ctx, REVIEW_PRODUCT_UNRESOLVED, true);
     }
   }
   // FE-T14 — customer.preferences.update: `allergenExclusions` is REQUIRED
@@ -2681,7 +2697,11 @@ async function loadCtxForKind(
 export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledResolution> {
   const { kind, payload, customerId, channel, sessionId, utteranceText } = args;
   const base = identityCtx(customerId, channel);
-  base.sessionTokensConsumed = await readSessionTokensConsumed(channel, customerId);
+  stampResolutionSignal(
+    base,
+    SESSION_TOKENS_CONSUMED,
+    await readSessionTokensConsumed(channel, customerId),
+  );
 
   // T3-4 — agent-session budget read into ctx.agentTokensConsumed (undefined for
   // a normal conversational turn).
@@ -2722,7 +2742,7 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
     sessionId,
   );
 
-  if (autoResolvedMoneyRef) ctx.autoResolvedMoneyRef = true;
+  if (autoResolvedMoneyRef) stampResolutionSignal(ctx, AUTO_RESOLVED_MONEY_REF, true);
 
   // FE-T14 — stamp the allergen-mention ctx flag `refuseAllergenMentionGuard`
   // (compose-policy-packs.ts, an ADOPTER business guard) reads to REFUSE an
@@ -2731,7 +2751,7 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // succeed as a no-op on exactly the turn where the customer asked to
   // change their allergies.
   if (kind === "customer.preferences.update" && isAllergenMentionUtterance(utteranceText)) {
-    ctx.allergenMentionDetected = true;
+    stampResolutionSignal(ctx, ALLERGEN_MENTION_DETECTED, true);
   }
 
   // BKL-280 — stamp the stay-home/delivery-request ctx flag
@@ -2755,7 +2775,10 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // it does today. That is what keeps this change purely ADDITIVE — the money
   // band ladder and every existing checkout verdict are untouched on resume.
   if (kind === "order.checkout.create" && hasStayHomeDeliveryMarker(utteranceText)) {
-    ctx.stayHomeDeliveryMarker = true;
+    // The one signal whose reader lives in a PUBLISHED PACK (pack-orders cannot
+    // import from apps/api), so the contract derives both the key name and the
+    // value type from `OrderState` — see STAY_HOME_DELIVERY_MARKER's docblock.
+    stampResolutionSignal(ctx, STAY_HOME_DELIVERY_MARKER, true);
   }
 
   // LE2-021 — the reorder-last anchor's grounding read. Additive, owner-scoped,

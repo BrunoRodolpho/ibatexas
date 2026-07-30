@@ -44,6 +44,21 @@ import {
   paymentTransitionBandGuard,
   staffRoleGuard,
 } from "./staff-role-guard.js";
+// R3-S2 — the DECLARED resolver→guard signal contract. Each adopter guard below
+// reads its ctx signal through this ONE declaration instead of re-stating the
+// shape in an inline `state as { ctx?: { … } }` cast. Both ends of the channel now
+// name the key through the same constant, so a rename breaks the stamp site AND
+// the read at tsc; before it, a typo on either end compiled clean and the guard
+// silently PASSED (absent key = null = pass).
+import {
+  ALLERGEN_MENTION_DETECTED,
+  AMEND_ITEM_UNRESOLVED,
+  AUTO_RESOLVED_MONEY_REF,
+  REVIEW_PRODUCT_UNRESOLVED,
+  SESSION_TOKENS_CONSUMED,
+  readResolutionSignal,
+  resolutionSignalIsSet,
+} from "./resolution-signals.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -65,9 +80,10 @@ export const SESSION_TOKEN_BUDGET = Number.parseInt(
 export const sessionTokenBudgetGuard = nameGuard(
   "sessionTokenBudget",
   createTokenBudgetGuard<string, unknown, unknown>({
-    extractSessionTokens: (state) =>
-      (state as { ctx?: { sessionTokensConsumed?: number } }).ctx
-        ?.sessionTokensConsumed ?? 0,
+    // `?? 0` kept verbatim: this signal is the one THRESHOLD, and its absent-key
+    // direction is fail-OPEN at zero (a Redis hiccup must never REFUSE a turn),
+    // not the honesty floors' "not true ⇒ pass".
+    extractSessionTokens: (state) => readResolutionSignal(state, SESSION_TOKENS_CONSUMED) ?? 0,
     sessionBudget: Number.isFinite(SESSION_TOKEN_BUDGET)
       ? SESSION_TOKEN_BUDGET
       : 100_000,
@@ -128,11 +144,11 @@ export const confirmOnAutoResolveGuard = nameGuard(
   "confirmOnAutoResolvedRef",
   createConfirmGuard<string, unknown, unknown>({
     matches: (env) => AUTORESOLVE_CONFIRM_KINDS.has(env.kind),
-    extract: (_env, state) =>
-      (state as { ctx?: { autoResolvedMoneyRef?: boolean } }).ctx
-        ?.autoResolvedMoneyRef
-        ? 1
-        : 0,
+    // TRUTHINESS kept verbatim (not `=== true`): this extractor feeds a numeric
+    // threshold, and tightening the test here would change the decision for any
+    // non-boolean value a caller ever put on the flag. Behaviour-preserving
+    // conversion only — the typed read is the change.
+    extract: (_env, state) => (readResolutionSignal(state, AUTO_RESOLVED_MONEY_REF) ? 1 : 0),
     threshold: 1,
     comparator: ">=",
     // BKL-197 — the prompt referred to an ORDER as an "item" (wrong noun) and is
@@ -192,9 +208,9 @@ export const refuseAllergenMentionGuard: Guard<string, unknown, unknown> = nameG
   "refuseAllergenMention",
   (envelope, state) => {
     if (envelope.kind !== "customer.preferences.update") return null;
-    if ((state as { ctx?: { allergenMentionDetected?: boolean } }).ctx?.allergenMentionDetected !== true) {
-      return null;
-    }
+    // `resolutionSignalIsSet` IS the `!== true` this replaced: absent / false /
+    // any non-`true` value all mean PASS.
+    if (!resolutionSignalIsSet(state, ALLERGEN_MENTION_DETECTED)) return null;
     return decisionRefuse(
       refuse("BUSINESS_RULE", ALLERGEN_MENTION_REFUSAL_CODE, ALLERGEN_MENTION_REFUSAL_PT_BR),
       [
@@ -236,9 +252,7 @@ export const refuseUnresolvedAmendItemGuard: Guard<string, unknown, unknown> = n
   "refuseUnresolvedAmendItem",
   (envelope, state) => {
     if (envelope.kind !== "order.amend.add_item") return null;
-    if ((state as { ctx?: { amendItemUnresolved?: boolean } }).ctx?.amendItemUnresolved !== true) {
-      return null;
-    }
+    if (!resolutionSignalIsSet(state, AMEND_ITEM_UNRESOLVED)) return null;
     return decisionRefuse(
       refuse("BUSINESS_RULE", UNRESOLVED_AMEND_ITEM_REFUSAL_CODE, UNRESOLVED_AMEND_ITEM_REFUSAL_PT_BR),
       [
@@ -271,12 +285,7 @@ export const refuseUnresolvedReviewProductGuard: Guard<string, unknown, unknown>
   "refuseUnresolvedReviewProduct",
   (envelope, state) => {
     if (envelope.kind !== "order.review.submit") return null;
-    if (
-      (state as { ctx?: { reviewProductUnresolved?: boolean } }).ctx?.reviewProductUnresolved !==
-      true
-    ) {
-      return null;
-    }
+    if (!resolutionSignalIsSet(state, REVIEW_PRODUCT_UNRESOLVED)) return null;
     return decisionRefuse(
       refuse(
         "BUSINESS_RULE",
