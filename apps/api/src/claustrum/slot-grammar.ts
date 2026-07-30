@@ -47,8 +47,10 @@ import { CART_EMPTY_TEMPLATE } from "./claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_TEMPLATE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_TEMPLATE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_TEMPLATE } from "./claimdefs/menu-item-price.generated.js";
+import { ORDER_FULFILLMENT_STAGE_TEMPLATE } from "./claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_TEMPLATE } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_TEMPLATE } from "./claimdefs/payment-history.generated.js";
+import { PAYMENT_STATUS_TEMPLATE } from "./claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_TEMPLATE } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_TEMPLATE } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_TEMPLATE } from "./claimdefs/store-info.generated.js";
@@ -238,31 +240,31 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
       lit("."),
     ],
   },
-  [ORDER_FULFILLMENT_STAGE]: {
-    claimType: ORDER_FULFILLMENT_STAGE,
-    posture: "validated",
-    slots: [
-      lit("Seu pedido está na etapa: "),
-      // F1 — bind 1:1 to the C6 value-binding FIELD. The kernel validates this
-      // claim's value at `valueBinding.path = ["fulfillmentStatus"]` (claim-
-      // registry.ts) against the ledger; the OrderFulfillmentRead shape's field is
-      // `fulfillmentStatus` (turn-reads.ts), NOT `stage`. The old `stage` slot read
-      // a field the validated value never carries → the proposition was UNFILLABLE
-      // and a legitimately-VALIDATED ORDER claim abstained to UNKNOWN. Reading the
-      // ACTUAL value field makes a VALIDATED ORDER claim render.
-      prop(ORDER_FULFILLMENT_STAGE, "fulfillmentStatus"),
-      lit("."),
-    ],
-  },
-  [PAYMENT_STATUS]: {
-    claimType: PAYMENT_STATUS,
-    posture: "validated",
-    slots: [
-      lit("O status do seu pagamento é: "),
-      prop(PAYMENT_STATUS, "status"),
-      lit("."),
-    ],
-  },
+  // inv.18 v2 / R2-S7 — the STATUS SIBLINGS' validated templates are GENERATED from their
+  // ClaimDefinition sources (./claimdefs/order-fulfillment-stage.generated.ts /
+  // ./claimdefs/payment-status.generated.ts — DO NOT EDIT). Each single proposition slot is
+  // derived from the source's `prop("fulfillmentStatus")` / `prop("status")` with claimType
+  // filled = self, and the compiler binds it to the SAME source's C6 `valueBinding.path` — so
+  // the 1:1 slot↔field alignment (Inv 6) is now true BY CONSTRUCTION rather than by two files
+  // agreeing. The F1 rationale (the kernel validates the ORDER value at
+  // `["fulfillmentStatus"]`, the field the OrderFulfillmentRead shape actually carries; the
+  // old `stage` slot read a field the validated value never carries → the proposition was
+  // UNFILLABLE and a legitimately-VALIDATED ORDER claim abstained to UNKNOWN) moved verbatim
+  // into that source.
+  //
+  // BOTH bound fields are ENUM MEMBERS, so `claims-labels.ts` localizes them to pt-BR off the
+  // keys `ORDER_FULFILLMENT_STAGE.fulfillmentStatus` (7 members) / `PAYMENT_STATUS.status`
+  // (12 members) — a DISPLAY map keyed by `${claimType}.${field}` and assembled from the type
+  // name plus THESE slots' fields. That map stays hand-written at its own site; what the
+  // sources owe it is the field names, unchanged by this migration (asserted by the
+  // slot↔C6-field alignment guards). The `ORDER_FULFILLMENT_STAGE` / `PAYMENT_STATUS` const
+  // identifiers above stay exported for the rest of the grammar's consumers; the compiled
+  // templates carry the same `claimType` string by construction (asserted by
+  // reference-identity + deep-equal guards). UNAFFECTED by either type's `perResourceKey`
+  // facet: a slot names a FIELD of the validated value, never a ledger key, so the runtime
+  // `:{subject}` suffixing never reaches here.
+  [ORDER_FULFILLMENT_STAGE]: ORDER_FULFILLMENT_STAGE_TEMPLATE,
+  [PAYMENT_STATUS]: PAYMENT_STATUS_TEMPLATE,
   // inv.18 v2 / R2-S4 — the reservation-status validated template is GENERATED from its
   // ClaimDefinition source (./claimdefs/reservation-status.generated.ts — DO NOT EDIT).
   // Its single proposition slot is derived from the source's `prop("statusLine")` with

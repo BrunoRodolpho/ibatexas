@@ -15,10 +15,19 @@ import { isRegistryClaimType, type RegistryClaimType } from "../claim-registry.j
 // string, which cannot witness where the arm boundary sits.
 // inv.18 v2 / R2-S5 — the GENERATED history closures, pinned per arm for the same reason.
 // inv.18 v2 / R2-S6 — the GENERATED cart closure: ONE arm, and the SHARED row.
+// inv.18 v2 / R2-S7 — the GENERATED status closures. These two need the per-arm form MORE
+// than their predecessors: the ORDER net spans THREE provenances (a split literal, two
+// relocated consts, one composed sequence) so its pins address slices of the array, and the
+// PAYMENT net is only PART of its span's runtime predicate (two dual-use tokens stay
+// guard-conjoined at the classifier), so a whole-net pin would assert a net nothing runs.
+// STORE_OPEN_NOW's closure comes along to prove no source claims the hand-written PICKUP_Q.
 import { CART_CONTENTS_CLOSURE } from "../claimdefs/cart-contents.generated.js";
+import { ORDER_FULFILLMENT_STAGE_CLOSURE } from "../claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_CLOSURE } from "../claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_CLOSURE } from "../claimdefs/payment-history.generated.js";
+import { PAYMENT_STATUS_CLOSURE } from "../claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_CLOSURE } from "../claimdefs/reservation-status.generated.js";
+import { STORE_OPEN_NOW_CLOSURE } from "../claimdefs/store-open-now.generated.js";
 // BKL-285 — the classify-only ROUTE gate. Imported here so the reservation
 // create/read split can be asserted on the decision that actually costs the
 // customer their booking, not merely on the span label one step upstream.
@@ -1087,6 +1096,125 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     expect(REQUIRED_CLAIM_CLOSURE.CART_CONTENTS_Q).toBe(CART_CONTENTS_CLOSURE.requires);
   });
 
+  // ── R2-S7 — THE STATUS SIBLINGS' nets, split THREE ways by PROVENANCE ─────────────
+  //
+  // These two are the first migrations where the span's runtime predicate is NOT the marker
+  // net alone: each span is a DISJUNCTION of a strong-token net with one or two
+  // GUARD-CONJOINED dual-use tokens. Only the strong net compiled. So the pins below come in
+  // two kinds, and both are needed:
+  //
+  //   (a) BYTE pins on what DID migrate — the arms, per provenance group.
+  //   (b) BEHAVIOURAL pins on what did NOT — the guards. Those live in their own describe
+  //       below, because a byte pin cannot see a guard at all: delete `!capabilityQuestion`
+  //       and every assertion in THIS block stays green.
+  it("ORDER_STATUS: the five generated STRONG arms rejoin to the pre-migration literal", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.orderStatusStrong).toBe(
+      String.raw`pedido|preparo|sa[ií]u|chegou|cad[êe]`,
+    );
+    // The net is EIGHT arms across THREE provenances (5 split from one literal + the 2
+    // already-separate BKL-221 arrival literals + 1 composed ETA sequence). Pinning the total
+    // is what keeps the three slice-addressed pins from silently overlapping or leaving a new
+    // arm unpinned: add a ninth arm anywhere and this row goes red.
+    expect(ORDER_FULFILLMENT_STAGE_CLOSURE.markers).toHaveLength(8);
+  });
+
+  // The RELOCATED arms, pinned INDIVIDUALLY. The two existing ORDER_ARRIVAL / ORDER_ETA cases
+  // above already assert the pre-migration VALUES and now read them off the generated closure
+  // — that they still pass, unedited, is the migration's central claim. These add the
+  // per-arm statement a joined string cannot make (a two-arm join cannot witness its own
+  // boundary), which is the R2-S4/R2-S5 discipline for arms that were never one literal.
+  it("ORDER_STATUS: each RELOCATED arm is byte-identical to the const it replaced", () => {
+    const m = ORDER_FULFILLMENT_STAGE_CLOSURE.markers;
+    expect(m[5]!.source, "ORDER_ON_THE_WAY_RE").toBe(
+      String.raw`(?<![a-z])a\s+caminho(?![a-z])`,
+    );
+    expect(m[6]!.source, "ORDER_DELIVERED_RE").toBe(
+      String.raw`(?<![a-z])(?:foi|est[áa]|j[áa])\s+entregue(?![a-z])`,
+    );
+    expect(m[7]!.source, "ORDER_ETA_RE").toBe(
+      String.raw`(?:falta|demora|tempo)[^.!?]{0,20}(?:para|pra)\s+chegar(?!\s+(?:a[íi]|at[ée]|no\s+restaurante|na\s+loja))`,
+    );
+    // No arm may carry FLAGS. `markers.some((m) => m.test(t))` replaced a chain of `.test`
+    // calls on flagless literals; a `/g` arm would make `.test` STATEFUL via lastIndex, so the
+    // same utterance would classify differently on a second call. Nothing else in the repo
+    // would notice.
+    for (const [i, arm] of m.entries()) expect(arm.flags, `arm ${i}`).toBe("");
+  });
+
+  it("PAYMENT_STATUS: the five generated STRONG arms rejoin to the pre-migration literal", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.paymentStatusStrong).toBe(
+      String.raw`pago|cobran[çc]a|pagar|paguei|aprovad`,
+    );
+    // FIVE arms and no more — the two DUAL-USE tokens (`pagamento`, `pix`) are deliberately
+    // NOT here. Each of them classifies only in conjunction with the ABSENCE of a
+    // capability/payment-methods frame, so folding either in as a bare arm would fire the
+    // owner-scoped MONEY read on "quais as formas de pagamento?" / "vocês aceitam pix?" (the
+    // BKL-204 defect) — and this length pin is what would catch that being tried.
+    expect(PAYMENT_STATUS_CLOSURE.markers).toHaveLength(5);
+    for (const [i, arm] of PAYMENT_STATUS_CLOSURE.markers.entries()) {
+      expect(arm.flags, `arm ${i}`).toBe("");
+    }
+    for (const arm of PAYMENT_STATUS_CLOSURE.markers) {
+      expect(arm.source, "a dual-use token must not have become an arm").not.toMatch(
+        /^(pagamento|pix)$/,
+      );
+    }
+  });
+
+  it("the generated STATUS closure rows are the pre-migration hand-written rows", () => {
+    expect(ORDER_FULFILLMENT_STAGE_CLOSURE.spanClass).toBe("ORDER_STATUS_Q");
+    expect(ORDER_FULFILLMENT_STAGE_CLOSURE.requires).toEqual(["ORDER_FULFILLMENT_STAGE"]);
+    expect(PAYMENT_STATUS_CLOSURE.spanClass).toBe("PAYMENT_STATUS_Q");
+    expect(PAYMENT_STATUS_CLOSURE.requires).toEqual(["PAYMENT_STATUS"]);
+    // The live table rows ARE the generated arrays, not copies — so neither row can be edited
+    // at the table without editing its source.
+    expect(REQUIRED_CLAIM_CLOSURE.ORDER_STATUS_Q).toBe(
+      ORDER_FULFILLMENT_STAGE_CLOSURE.requires,
+    );
+    expect(REQUIRED_CLAIM_CLOSURE.PAYMENT_STATUS_Q).toBe(PAYMENT_STATUS_CLOSURE.requires);
+  });
+
+  // THE HAND-WRITTEN ROW THE RULE LEAVES BEHIND, and the asymmetry it creates.
+  //
+  // R2-S6's rule: a source declares a closure row iff it OWNS the span. NO type owns PICKUP_Q
+  // (its net is its own, it is named after no type, and it requires two types neither of which
+  // is "the pickup type"), so that row stays hand-written — which makes
+  // ORDER_FULFILLMENT_STAGE the first adopted type named by TWO rows, one generated and one
+  // not. This case pins the shape so a future edit cannot quietly fold PICKUP_Q into a source.
+  it("PICKUP_Q stays HAND-WRITTEN and no source declares it", () => {
+    expect(REQUIRED_CLAIM_CLOSURE.PICKUP_Q).toEqual([
+      "STORE_OPEN_NOW",
+      "ORDER_FULFILLMENT_STAGE",
+    ]);
+    // NOT the generated array — a hand-written literal, unlike every adopted row above.
+    expect(REQUIRED_CLAIM_CLOSURE.PICKUP_Q).not.toBe(
+      ORDER_FULFILLMENT_STAGE_CLOSURE.requires,
+    );
+    for (const closure of [
+      ORDER_FULFILLMENT_STAGE_CLOSURE,
+      PAYMENT_STATUS_CLOSURE,
+      STORE_OPEN_NOW_CLOSURE,
+    ]) {
+      expect(closure.spanClass, "no source may claim a span it does not own").not.toBe(
+        "PICKUP_Q",
+      );
+    }
+    // …and the type really is reachable through BOTH rows, which is the fact that masks
+    // INV-4's forward direction for it (see order-fulfillment-stage.claim.ts's header). Stated
+    // here so the masking is a recorded measurement rather than a surprise in a future
+    // INV-4 debugging session.
+    const rowsNamingOrder = Object.entries(REQUIRED_CLAIM_CLOSURE).filter(([, v]) =>
+      (v as readonly string[]).includes("ORDER_FULFILLMENT_STAGE"),
+    );
+    expect(rowsNamingOrder.map(([k]) => k).sort()).toEqual(["ORDER_STATUS_Q", "PICKUP_Q"]);
+    // Its sibling has exactly ONE row, so for PAYMENT_STATUS the forward direction is still a
+    // live de-sync detector — the contrast is the point.
+    const rowsNamingPayment = Object.entries(REQUIRED_CLAIM_CLOSURE).filter(([, v]) =>
+      (v as readonly string[]).includes("PAYMENT_STATUS"),
+    );
+    expect(rowsNamingPayment.map(([k]) => k)).toEqual(["PAYMENT_STATUS_Q"]);
+  });
+
   // ── THE SPLICE: the half that did NOT migrate. ────────────────────────────────────
   //
   // Each history span REMOVES its singular sibling from the accumulated class list. That
@@ -1172,6 +1300,87 @@ describe("span nets — the S5843 restructure is source-identical to the literal
       expect(source.length, name).toBeGreaterThan(20);
       expect(() => new RegExp(source), name).not.toThrow();
     }
+  });
+
+  // ── R2-S7 — THE GUARD HALVES, pinned BEHAVIOURALLY because bytes cannot see them ───
+  //
+  // The status spans are the first migrations where the marker net is a PROPER PART of the
+  // runtime predicate. Everything above is a byte pin, and every byte pin above stays GREEN if
+  // the three guard conjuncts (`!capabilityQuestion` ×2, `!paymentMethodsQuestion`) are
+  // deleted — so without this block the slice would have moved the markers into a source and
+  // left the half that actually decides mis-routing unguarded.
+  //
+  // Each case is a CONTROL/TREATMENT pair over the SAME dual-use token, which is what makes it
+  // a test of the guard rather than of the token: the capability phrasing must NOT fire the
+  // owner-scoped span, and a self-referential phrasing carrying the SAME token MUST.
+  describe("R2-S7 — the DUAL-USE guards stayed at the classifier (not markers)", () => {
+    it.each([
+      // token   capability phrasing (must NOT fire)              self-status (MUST fire)
+      ["entrega", "qual a taxa de entrega?", "cadê minha entrega?", "ORDER_STATUS_Q"],
+      ["entrega", "quanto custa a entrega?", "minha entrega está atrasada", "ORDER_STATUS_Q"],
+      ["pix", "vocês aceitam pix?", "paguei com pix, deu certo?", "PAYMENT_STATUS_Q"],
+    ] as const)(
+      "%s: the CAPABILITY phrasing does not fire %s, the self-status one does",
+      (token, capability, selfStatus, span) => {
+        expect(capability, "the control must carry the dual-use token").toContain(token);
+        expect(selfStatus, "the treatment must carry the SAME token").toContain(token);
+        expect(classifyRequestSpans(capability), capability).not.toContain(span);
+        expect(classifyRequestSpans(selfStatus), selfStatus).toContain(span);
+      },
+    );
+
+    it("pagamento: the payment-METHODS frame does not fire PAYMENT_STATUS_Q", () => {
+      // The `!paymentMethodsQuestion` conjunct. `pagamento` is a STRONG token everywhere
+      // EXCEPT inside "formas/opções de pagamento", where it names the concept — so unlike the
+      // two above, this guard is not the BKL-204 capability net but a frame of its own.
+      for (const text of ["quais as formas de pagamento?", "quais as opções de pagamento?"]) {
+        expect(text).toContain("pagamento");
+        expect(classifyRequestSpans(text), text).not.toContain("PAYMENT_STATUS_Q");
+      }
+      // The control: the same token in a self-status frame fires.
+      expect(classifyRequestSpans("meu pagamento foi aprovado?")).toContain(
+        "PAYMENT_STATUS_Q",
+      );
+    });
+
+    it("neither dual-use token can fire its span through the GENERATED net alone", () => {
+      // The mechanism assertion behind all of the above, and the one that stays true if the
+      // phrasings are ever re-worded: the generated arms must not MATCH the bare dual-use
+      // tokens at all. If a future edit added `entrega` or `pix` as an arm, the guards would
+      // become unreachable and every case above would still pass on the OTHER conjunct.
+      for (const token of ["entrega", "pix"]) {
+        expect(
+          ORDER_FULFILLMENT_STAGE_CLOSURE.markers.some((m) => m.test(token)),
+          `ORDER net must not match bare "${token}"`,
+        ).toBe(false);
+        expect(
+          PAYMENT_STATUS_CLOSURE.markers.some((m) => m.test(token)),
+          `PAYMENT net must not match bare "${token}"`,
+        ).toBe(false);
+      }
+      // `pagamento` likewise — it reaches the span only through its own guarded branch.
+      expect(PAYMENT_STATUS_CLOSURE.markers.some((m) => m.test("pagamento"))).toBe(false);
+    });
+
+    it("the mutation gate still routes a status-shaped MUTATION off both spans", () => {
+      // BKL-206/BKL-238 — `!mutationImperative`, the other guard that did not migrate. These
+      // utterances match the generated nets (they contain `pedido` / `pagar`), so the ONLY
+      // thing keeping them off the read spans is the gate.
+      for (const text of [
+        "cancela meu pedido",
+        "quero fechar o pedido e pagar com pix",
+        "finaliza meu pedido",
+      ]) {
+        expect(
+          ORDER_FULFILLMENT_STAGE_CLOSURE.markers.some((m) => m.test(text)) ||
+            PAYMENT_STATUS_CLOSURE.markers.some((m) => m.test(text)),
+          `${text} must match a generated net, or this row proves nothing`,
+        ).toBe(true);
+        const classes = classifyRequestSpans(text);
+        expect(classes, text).not.toContain("ORDER_STATUS_Q");
+        expect(classes, text).not.toContain("PAYMENT_STATUS_Q");
+      }
+    });
   });
 });
 

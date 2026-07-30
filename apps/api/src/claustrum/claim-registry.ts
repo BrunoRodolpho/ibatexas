@@ -66,8 +66,10 @@ import { CART_EMPTY_REGISTRY_SPEC } from "./claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_REGISTRY_SPEC } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_REGISTRY_SPEC } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_REGISTRY_SPEC } from "./claimdefs/menu-item-price.generated.js";
+import { ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC } from "./claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_REGISTRY_SPEC } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_REGISTRY_SPEC } from "./claimdefs/payment-history.generated.js";
+import { PAYMENT_STATUS_REGISTRY_SPEC } from "./claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_REGISTRY_SPEC } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_REGISTRY_SPEC } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_REGISTRY_SPEC } from "./claimdefs/store-info.generated.js";
@@ -663,103 +665,58 @@ export const REGISTRY_SPECS = {
     ...STORE_OPEN_NOW_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
   },
+  // inv.18 v2 / R2-S7 — the STATUS SIBLINGS are now GENERATED from their ClaimDefinition
+  // sources (`./claimdefs/order-fulfillment-stage.generated.ts` /
+  // `./claimdefs/payment-status.generated.ts`, compiled from the matching `.claim.ts`). The
+  // SIXTH and SEVENTH owner-scoped types to compile from source, on exactly the
+  // RESERVATION_STATUS footing: each required-evidence row carries `ownershipPolicy:
+  // "required"` and is projected VERBATIM (by reference) by the published `toRegistrySpec`,
+  // so `ownerScopedBaseKey` below still resolves `order_fulfillment_stage` / `payment_status`
+  // off the GENERATED specs exactly as it did off these stanzas — and so does the
+  // `ORDER_SUBJECT_BASE_KEYS` display-id set in classify-only-reads.ts, which keys on those
+  // two base names. The generated rows carry the UNSUFFIXED base keys plus
+  // `perResourceKey: true`, and `selectCandidateClaim` suffixes them by `:{subject}` at
+  // select time as before — here the subject is the ORDER id for BOTH types (the
+  // investigator's `order_fulfillment_stage:{orderId}` / `payment_status:{orderId}`; one
+  // active payment per order). These two lines REPLACE ~98 lines of handwritten stanza
+  // (evidence + falsifiers + the C6 bindings, whose rationales moved verbatim into the
+  // sources).
+  //
+  // PAYMENT_STATUS IS THE FIRST GENERATED SPEC TO CARRY THREE REGISTRY FACETS: TWO
+  // falsifiers (both genuinely READ, unlike every predecessor's single deliberately-unread
+  // one), the `first_party_verified` INTEGRITY FLOOR, and `first_party_only` PROVENANCE on
+  // all three rows. No widening was needed for any of them — `toRegistrySpec` spreads the
+  // whole falsifier tuple BY REFERENCE and passes the floor through as a scalar, the same
+  // reference-pass mechanism R2-S4 proved for `ownershipPolicy` — and each field is asserted
+  // individually in `./claimdefs/__tests__/per-resource-claim.test.ts`. So
+  // `./claimdefs/per-resource-claim.ts` is UNCHANGED by this slice; the only facet the
+  // published compiler cannot express remains R2-S2's `perResourceKey`.
+  //
+  // ORDER_FULFILLMENT_STAGE is the first adopted type required by a span it does NOT own:
+  // `PICKUP_Q` needs both an open store and a ready order, and that row stays HAND-WRITTEN
+  // at the closure table per R2-S6's shared-row rule (a source declares a row iff it owns the
+  // span; rows for spans no type owns stay hand-written). Read
+  // order-fulfillment-stage.claim.ts's header for the rule and for the MEASURED consequence:
+  // INV-4 stays green with both rows, but its forward direction is masked as a de-sync
+  // detector for that one type.
+  //
+  // BKL-270 — the postures are SPLICED here for the same reason as on their nine siblings:
+  // `compileClaimDefinition` has no concept of `dietaryPosture`, so it cannot emit the field,
+  // and splicing keeps the generated files byte-pure under their source-checksum drift
+  // guards. Both are `answer-anyway`, and for DIFFERENT reasons worth keeping distinct:
+  // ORDER_FULFILLMENT_STAGE renders a CLOSED 7-MEMBER ENUM (pendente..entregue|cancelado) —
+  // the logistics state of the customer's own order, and withholding it from someone who
+  // disclosed an allergy is actively harmful, because that is exactly the customer who needs
+  // to know whether the food has already left. PAYMENT_STATUS renders a CLOSED 12-MEMBER
+  // ENUM of money state: no food, no product names, nothing a dietary qualifier can attach
+  // to.
   ORDER_FULFILLMENT_STAGE: {
-    kind: "read_claim",
-    // BKL-270 — renders a CLOSED 7-MEMBER ENUM (pendente..entregue|cancelado):
-    // the logistics state of the customer's own order. Withholding it from
-    // someone who disclosed an allergy is actively harmful — that is exactly the
-    // customer who needs to know whether the food has already left.
+    ...ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        // STEP 3 key-alignment: the BASE name now matches the investigator's
-        // `ORDER_FULFILLMENT_KEY` base (`order_fulfillment_stage`,
-        // ibatexas-investigator.ts:162); `selectCandidateClaim` appends `:{subject}`
-        // (perResourceKey) so the kernel resolves the actual per-order entry.
-        key: "order_fulfillment_stage",
-        // Customer-scoped — owner-scoped `getById` (SDD §E / §N P1).
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: true,
-    // The investigator records the schedule-style PER-RESOURCE key — parameterize.
-    perResourceKey: true,
-    // W6 — a present order CANCELLATION falsifies any in-progress fulfillment stage.
-    // DELIBERATELY UNREAD (review ruling 2026-07-17, post-#277): no investigator
-    // read populates `order_cancelled` — the only available read derives from the
-    // SAME per-turn order row as the base ORDER_FULFILLMENT_STAGE read, so firing
-    // it is a tautology that demotes every TRUTHFUL "cancelado" render to UNKNOWN
-    // while catching zero staleness the base misses. The declaration stays for a
-    // future INDEPENDENT cancellation signal (e.g. the order-events stream);
-    // rendering cancellation as a first-class claim is tracked as BKL-160.
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "order_cancelled",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered stage to the read's ACTUAL field (ledger-sourced).
-    // Wall-2 reconcile (fix 4a): the OrderFulfillmentRead shape field is
-    // `fulfillmentStatus` (turn-reads.ts), NOT `stage` — the old `["stage"]` path
-    // projected `undefined` on both sides → C6 ABSTAIN → the claim demoted UNKNOWN
-    // even for the legit owner. The path now matches the read field so C6 compares
-    // a real scalar (the claim-planner adapter, `ibatexas-claim-planner.ts`, binds
-    // the owner-scoped candidate value to the SAME present ledger entry →
-    // claimSide === evidenceSide → C6 PASSes by construction, without skipping any
-    // conjunct: ownership/freshness/falsifiers all still run). `valueBinding.key` stays a member of
-    // requiredEvidence (suffixed `:{subject}` in lockstep) so the kernel's C6
-    // structural guard never throws.
-    valueBinding: { key: "order_fulfillment_stage", path: ["fulfillmentStatus"] },
   },
   PAYMENT_STATUS: {
-    kind: "read_claim",
-    // BKL-270 — renders a CLOSED 12-MEMBER ENUM. Money state: no food, no product
-    // names, nothing a dietary qualifier can attach to.
+    ...PAYMENT_STATUS_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "first_party_verified",
-    requiredEvidence: [
-      {
-        key: "payment_status",
-        // Ownership required via OrderProjection-join; first-party only money read.
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "first_party_verified",
-        provenancePolicy: "first_party_only",
-      },
-    ],
-    customerScoped: true,
-    // STEP 3 key-alignment: the investigator records `payment_status:{id}`
-    // (ibatexas-investigator.ts:164) — parameterize this type's keys by subject.
-    perResourceKey: true,
-    // W6 — a `paid` payment status is falsified by a present refund OR chargeback
-    // (opposite money direction). BOTH are enumerated (honest completeness).
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "payment_refund",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "first_party_verified",
-        provenancePolicy: "first_party_only",
-      },
-      {
-        key: "payment_chargeback",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "first_party_verified",
-        provenancePolicy: "first_party_only",
-      },
-    ],
-    // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
-    valueBinding: { key: "payment_status", path: ["status"] },
   },
   // inv.18 v2 / R2-S4 — RESERVATION_STATUS is now GENERATED from its ClaimDefinition
   // source (`./claimdefs/reservation-status.generated.ts`, compiled from

@@ -46,8 +46,10 @@ import { CART_CONTENTS_CLOSURE } from "./claimdefs/cart-contents.generated.js";
 import { MENU_DIETARY_CLOSURE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_CLOSURE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_CLOSURE } from "./claimdefs/menu-item-price.generated.js";
+import { ORDER_FULFILLMENT_STAGE_CLOSURE } from "./claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_CLOSURE } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_CLOSURE } from "./claimdefs/payment-history.generated.js";
+import { PAYMENT_STATUS_CLOSURE } from "./claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_CLOSURE } from "./claimdefs/reservation-status.generated.js";
 import { STORE_INFO_CLOSURE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
@@ -136,8 +138,22 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // so an over-proposed date-hours claim is DEMOTED on a turn whose date-hours span did
   // not fire (the smalltalk-hijack guard) yet KEPT when it did.
   STORE_HOURS_FOR_DATE_Q: ["STORE_HOURS_FOR_DATE"],
-  ORDER_STATUS_Q: ["ORDER_FULFILLMENT_STAGE"],
-  PAYMENT_STATUS_Q: ["PAYMENT_STATUS"],
+  // inv.18 v2 / R2-S7 — both STATUS rows are GENERATED (span class + required set); the
+  // rationale for each requiring ONLY its own claim, and for the row being what auto-enrols
+  // the type into the claim-planner's RELEVANCE_GOVERNED_TYPES, moved verbatim into
+  // `./claimdefs/order-fulfillment-stage.claim.ts` / `./claimdefs/payment-status.claim.ts`.
+  // The row shape is identical either way (a span class mapped to a non-empty required set) —
+  // ownership lives on the SPEC's evidence rows, not here.
+  //
+  // WHAT STAYS HAND-WRITTEN, and where to look for it: every GUARD that gates these two spans
+  // in `classifyRequestSpans` (the dual-use `entrega`/`pix` capability conjuncts, the
+  // `pagamento` payment-methods conjunct, `!mutationImperative`), the BARE-"status" FALLBACK
+  // that pushes both classes from outside either type's net, the FE-D03 history SPLICES that
+  // remove them again, and — the one that matters for the table itself — the PICKUP_Q row
+  // below, which requires ORDER_FULFILLMENT_STAGE without owning any span. See each source's
+  // header for the marker/guard decomposition.
+  [ORDER_FULFILLMENT_STAGE_CLOSURE.spanClass]: ORDER_FULFILLMENT_STAGE_CLOSURE.requires,
+  [PAYMENT_STATUS_CLOSURE.spanClass]: PAYMENT_STATUS_CLOSURE.requires,
   // inv.18 v2 / R2-S4 — RESERVATION_STATUS_Q's row is GENERATED (span class + required
   // set); the FE-T17 rationale for requiring ONLY the reservation claim, and for this row
   // being what auto-enrols RESERVATION_STATUS into the claim-planner's
@@ -227,6 +243,19 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // (the LE2-002 defect). PUBLIC (`not_applicable`) → never Triad-scoped.
   PAIRING_Q: ["MENU_PAIRINGS", "MENU_SUBSTITUTIONS"],
   // §O#15 worked example — a pickup question requires BOTH companions.
+  //
+  // inv.18 v2 / R2-S7 — this row STAYS HAND-WRITTEN, and it is the first row to stay so for
+  // the reason R2-S6's shared-row rule names: a source declares a closure row iff it OWNS the
+  // span, and NO type owns PICKUP_Q. Its marker net (`/retir|buscar|pegar/` in
+  // `classifyRequestSpans`) is its OWN, it is named after no claim type, and it requires TWO
+  // types neither of which is "the pickup type" — you can only collect a ready order from an
+  // OPEN store. Putting this row in either source would publish a false assertion (that a
+  // pickup question IS an order-stage question, or IS an open-now question), which is the dead
+  // artifact inv.18 v2 exists to prevent. Both members ARE generated types, so the reverse
+  // direction of INV-4 still covers this row; what it costs is documented in
+  // `./claimdefs/order-fulfillment-stage.claim.ts`'s header (the forward direction can no
+  // longer catch a de-sync of the ORDER_STATUS_Q row alone, because THIS row keeps
+  // ORDER_FULFILLMENT_STAGE reachable on its own).
   PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
 } satisfies Record<SpanClass, readonly RegistryClaimType[]>;
 
@@ -829,113 +858,27 @@ const RESERVATION_BOOK_WANT_RE =
   /(?<![a-z])(?:quero|queria|gostaria|preciso)\s+(?:de\s+)?(?:umas?|um|\d+)\s+mesas?(?![a-zà-ÿ])/;
 
 /**
- * BKL-221 — DELIVERY-PROGRESS phrasing: the way a customer asks where their order
- * has got to WITHOUT naming it. The existing strong tokens all require an order
- * NOUN or a verb in the preterite (`pedido`, `sa[ií]u`, `chegou`, `cad[êe]`), so a
- * BARE progress question matched nothing, `classifyOnlyRequiredTypes` declined, the
- * turn fell to the model, and the extraction leg REFUSED with
- * `system.extraction_failure` — an ugly degrade in place of the ≥2-owned
- * candidates CLARIFY that BKL-203/204 built for exactly this customer.
+ * inv.18 v2 / R2-S7 — the ORDER_STATUS_Q net's THREE PROVENANCES, and the one index this
+ * module still needs to know about them.
  *
- * These are STRONG tokens (they fire regardless of the BKL-204 capability shape)
- * because none of them is capability vocabulary: a question about what the STORE
- * does is phrased "vocês entregam …" / "fazem entrega", never "está a caminho?".
- * Verified in BOTH directions by the must-fire / must-not-fire lists in
- * required-claim-decomposer.test.ts.
+ * The whole net — the flat strong-token literal, the BKL-221 arrival pair
+ * (`ORDER_ON_THE_WAY_RE` / `ORDER_DELIVERED_RE`, previously spelled as separate literals here
+ * for Sonar S5843's regex-complexity budget of 20) and the composed arrival-ETA sequence
+ * (`ORDER_ETA_RE` and its four named parts) — now lives in
+ * `./claimdefs/order-fulfillment-stage.claim.ts` as the generated `markers` array, together
+ * with every rationale that used to sit beside these constants: the both-sides anchoring on
+ * `a caminho`, the question frame on `entregue`, the four ETA parts and why the sequence is
+ * composed rather than distributed, and the four REJECTED arms with their measured reasons.
+ * `markers.some((m) => m.test(t))` at the use site is character-for-character the
+ * `||`-disjunction these constants used to feed.
  *
- * Over-firing is bounded, not merely "fail-safe": the #8 ownership gate DROPS the
- * ORDER_FULFILLMENT_STAGE companion for a customer who provably owns no order, so
- * a stray match on a guest cannot degrade an otherwise-answerable turn.
- *
- * ── THE THREE STEMS, AND THE FRAMES THAT ARE LOAD-BEARING ──────────────────────
- *
- *   · `a caminho` — "meu lanche está a caminho?", "já está a caminho?". Anchored on
- *     BOTH sides so it is the standalone preposition+noun, never a substring.
- *     Swept: ZERO occurrences in the 201-row live catalog vocabulary and ZERO in
- *     the 1039-row in-repo utterance corpus.
- *   · `(?:falta|demora|tempo)…(?:para|pra)\s+chegar`, MINUS a second-person
- *     destination — the arrival frame. BOTH halves of that shape are measured, not
- *     guessed, and this is the BKL-271 embedded-match lesson arriving twice:
- *       – A BARE `cheg` stem was tried FIRST and is WRONG: `como chegar` is the
- *         STORE_INFO_Q directions vocabulary (`/como (chego|chegar)/`, the span
- *         below). In-repo the DIRECTIONS frame outnumbers the arrival frame 4:2,
- *         so a bare stem would have fired an owner-scoped ORDER read on a customer
- *         asking for the ADDRESS — a wrong-FAMILY answer, which is NOT demote-only.
- *       – The head anchor alone still leaked, and the sweep caught it: "quanto
- *         tempo para chegar AÍ de carro?" satisfies `tempo … para chegar` while
- *         asking how long the CUSTOMER takes to travel. The destination is what
- *         separates the two senses — "chegar aí"/"chegar até vocês" is the
- *         customer moving, bare "chegar" is the food arriving — so the trailing
- *         lookahead drops exactly that. Both directions are pinned by test.
- *   · `(?:foi|est[áa]|j[áa])\s+entregue` — the STATUS PARTICIPLE IN ITS QUESTION
- *     FRAME ("já foi entregue?"). The frame is load-bearing and, again, measured: a
- *     bare `entregue` fires on "quero uma picanha ENTREGUE agora", which is a
- *     customer PLACING an order (and `quero` is deliberately not a mutation root,
- *     so nothing upstream suppresses it), and on the ops-plane status VALUE "já
- *     entregou, marca como ENTREGUE" — the dominant sense of this word in this
- *     repo is the fulfillment enum, not a customer question. Requiring foi/está/já
- *     immediately before it keeps the question and drops both.
- *     Note `entregue` does NOT contain the substring `entrega`, so it is invisible
- *     to `notOrderScoped` / `notResourceScoped` and to the dual-use `entrega`
- *     branch below: a genuinely new token, not a widening of an existing one.
- *
- * REJECTED, with the measured reason, so nobody re-proposes them:
- *
- *   · a bare `cheg` stem — see above; collides with the STORE_INFO directions net.
- *   · a bare `entregue` — see above; fires on an order-PLACING utterance.
- *   · `pronto` ("já está pronto?") — the adjective is not order-specific: a
- *     RESERVATION ("minha mesa já está pronta?") and a generic readiness ask carry
- *     it too, so it would force an ORDER companion onto a reservation turn.
- *   · `demorar` alone ("vai demorar muito?") — genuinely subject-free. It is also
- *     the exact wording of the delivery-ETA CAPABILITY ask the BKL-204 boundary
- *     keeps OUT of the owner-scoped read ("quanto tempo demora a entrega?"), so a
- *     bare stem would fire the customer's own order read on a store-policy
- *     question. Left to the model path, which is the fail-SAFE direction.
+ * This constant is the ARM BOUNDARY between the first provenance and the other two. It exists
+ * only so the byte pins in {@link __SPAN_NET_SOURCES_FOR_TEST} can address the three groups
+ * separately — the pre-migration values they assert against are three different strings, so a
+ * single whole-array join could not carry the proof. The test asserts the total arm count
+ * against this bound, so an arm added to the source cannot silently fall inside the wrong pin.
  */
-// Spelled as SEPARATE literals for the same reason MUTATION_EDIT_ROOTS /
-// MUTATION_LIFECYCLE_ROOTS are (Sonar S5843's regex-complexity budget of 20).
-// The split is at the fused literal's TOP-LEVEL alternation, so the union of
-// matched strings is exactly what one fused literal matched: `A|B` tested with
-// `.test` is true iff `A` matches or `B` matches, which is what the `||` at the
-// use site now spells out. Each half is also independently meaningful and
-// independently testable, which the fused version was not.
-const ORDER_ON_THE_WAY_RE = /(?<![a-z])a\s+caminho(?![a-z])/;
-const ORDER_DELIVERED_RE = /(?<![a-z])(?:foi|est[áa]|j[áa])\s+entregue(?![a-z])/;
-
-/**
- * The arrival-ETA net, COMPOSED from named parts rather than written as one
- * literal — same budget, different remedy, because this pattern is a SEQUENCE
- * and not an alternation, so there is no top-level split point to cut at.
- *
- * The alternative was to distribute the head over the tail
- * (`falta…` / `demora…` / `tempo…` as three literals), and that is exactly the
- * "second, drifting regex" this module refuses everywhere else (see the BKL-184 /
- * LE2-002 one-net idiom in `isDeliveryCoverageAsk` and `classifyPairingAsk`): it
- * would have copied the destination lookahead three times, so a future edit to
- * the travel-sense exclusion could silently be applied to one copy and not the
- * others. Naming the four parts costs nothing at runtime and says what each one
- * is for, which is what the rule is actually about.
- *
- * The composed source is asserted BYTE-IDENTICAL to the original literal in
- * required-claim-decomposer.test.ts, so this restructure cannot have changed the
- * pattern — only how it is spelled here.
- */
-/** A time-pressure head: "quanto TEMPO", "FALTA muito", "DEMORA". */
-const ETA_HEAD = "(?:falta|demora|tempo)";
-/** …within a short window, clause-bounded so it cannot reach across sentences. */
-const ETA_WINDOW = "[^.!?]{0,20}";
-/** …of the arrival phrase itself. */
-const ETA_ARRIVAL_PHRASE = "(?:para|pra)\\s+chegar";
-/**
- * …NOT followed by a second-person destination. "chegar aí" / "chegar até
- * vocês" / "chegar no restaurante" is the CUSTOMER travelling; bare "chegar" is
- * the food arriving. Measured: without this the net fires on "quanto tempo para
- * chegar aí de carro?".
- */
-const ETA_NOT_TRAVEL = "(?!\\s+(?:a[íi]|at[ée]|no\\s+restaurante|na\\s+loja))";
-const ORDER_ETA_RE = new RegExp(
-  ETA_HEAD + ETA_WINDOW + ETA_ARRIVAL_PHRASE + ETA_NOT_TRAVEL,
-);
+const ORDER_STATUS_STRONG_ARMS = 5;
 
 // ── The MENU_OVERVIEW net, split at its TOP-LEVEL alternation (Sonar S5843) ───
 // Three independent ways to ask for the whole menu, one constant each. `A|B|C`
@@ -976,10 +919,65 @@ const MENU_LIST_ASK_RE = /quais (os |as )?(pratos|op[çc][õo]es)/;
  * Pure data; no runtime consumer.
  */
 export const __SPAN_NET_SOURCES_FOR_TEST = {
-  /** `ORDER_ON_THE_WAY_RE | ORDER_DELIVERED_RE` */
-  orderArrival: `${ORDER_ON_THE_WAY_RE.source}|${ORDER_DELIVERED_RE.source}`,
-  /** the four ETA parts, concatenated */
-  orderEta: ORDER_ETA_RE.source,
+  /**
+   * inv.18 v2 / R2-S7 — the ORDER_STATUS_Q strong-token net, now GENERATED as FIVE arms from
+   * `order-fulfillment-stage.claim.ts`, rejoined in declaration order. Same statement as its
+   * predecessors: if this reassembly is byte-identical to the pre-migration literal, it is not
+   * an equivalent regex, it is THE SAME regex.
+   *
+   * Byte-identity here holds the ACCENT CHARACTER CLASSES `sa[ií]u` and `cad[êe]` — the
+   * BKL-205/BKL-270/BKL-271 lesson, where an ASCII-only stem has an EMPTY true-positive set on
+   * the real phrasing ("cadê meu pedido?" is how customers actually spell it) and no
+   * false-positive sweep reveals it.
+   *
+   * These are the arms of ONE flat literal; the net's other three arms have a DIFFERENT
+   * provenance and are pinned separately below, which is why this entry is a SLICE of the
+   * markers array rather than the whole of it. The slice bounds are asserted against
+   * `markers.length` so a future arm cannot silently land inside the wrong pin.
+   */
+  orderStatusStrong: ORDER_FULFILLMENT_STAGE_CLOSURE.markers
+    .slice(0, ORDER_STATUS_STRONG_ARMS)
+    .map((m) => m.source)
+    .join("|"),
+  /**
+   * `ORDER_ON_THE_WAY_RE | ORDER_DELIVERED_RE` — the BKL-221 arrival pair, now arms 6-7 of the
+   * GENERATED ORDER_STATUS_Q net (R2-S7). Unlike the five above, these two were never one
+   * literal: they were ALREADY separate regex literals `||`-ed at the use site (the Sonar
+   * S5843 split), so this migration is the R2-S4 relocation-with-no-splitting case and the
+   * pin's VALUE is unchanged from before the migration — which is the whole claim. Byte-
+   * identity holds the BOTH-SIDES anchoring on `a caminho` (standalone preposition+noun,
+   * never a substring) and the `(?:foi|est[áa]|j[áa])` QUESTION FRAME on `entregue`, without
+   * which a bare participle fires on an order-PLACING utterance and on the ops-plane status
+   * value. Each arm is ALSO pinned individually by the test, since a joined two-arm string
+   * cannot witness where the boundary is.
+   */
+  orderArrival: ORDER_FULFILLMENT_STAGE_CLOSURE.markers
+    .slice(ORDER_STATUS_STRONG_ARMS, ORDER_STATUS_STRONG_ARMS + 2)
+    .map((m) => m.source)
+    .join("|"),
+  /**
+   * the four ETA parts, concatenated — now arm 8 of the GENERATED ORDER_STATUS_Q net (R2-S7),
+   * still composed from its four named parts inside the source (a SEQUENCE has no top-level
+   * split point, and distributing the head would copy the destination lookahead three times).
+   * The pin's value is unchanged by the relocation. Byte-identity holds the trailing
+   * `ETA_NOT_TRAVEL` lookahead, which is the only thing separating "quanto tempo para chegar?"
+   * (the food arriving — an ORDER question) from "quanto tempo para chegar aí de carro?" (the
+   * customer travelling — not one).
+   */
+  orderEta:
+    ORDER_FULFILLMENT_STAGE_CLOSURE.markers[ORDER_STATUS_STRONG_ARMS + 2]?.source ?? "",
+  /**
+   * inv.18 v2 / R2-S7 — the PAYMENT_STATUS_Q strong-token net, now GENERATED as FIVE arms from
+   * `payment-status.claim.ts`, rejoined in declaration order. The accent-class point above
+   * applies identically (`cobran[çc]a`).
+   *
+   * This net is the WHOLE of the type's generated markers, so unlike its order sibling the
+   * join is over the entire array. What it deliberately does NOT contain is the pair of
+   * DUAL-USE tokens (`pagamento`, `pix`): each classifies only in conjunction with the ABSENCE
+   * of a capability/payment-methods frame, so both stay GUARD-conjoined at the classifier. A
+   * pin that swept them in would be asserting a net the runtime does not use.
+   */
+  paymentStatusStrong: PAYMENT_STATUS_CLOSURE.markers.map((m) => m.source).join("|"),
   /** `MENU_WORD_RE | MENU_BARE_ASK_RE | MENU_LIST_ASK_RE` */
   menuOverview: `${MENU_WORD_RE.source}|${MENU_BARE_ASK_RE.source}|${MENU_LIST_ASK_RE.source}`,
   /**
@@ -1429,13 +1427,32 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // opções de pagamento" (a payment-METHODS acceptance question — a capability),
   // where it names the concept, not the customer's payment.
   const paymentMethodsQuestion = /(formas?|op[çc][õo]es)\s+de\s+pagamento/.test(t);
-  const orderStatusStrong =
-    /pedido|preparo|sa[ií]u|chegou|cad[êe]/.test(t) ||
-    ORDER_ON_THE_WAY_RE.test(t) ||
-    ORDER_DELIVERED_RE.test(t) ||
-    ORDER_ETA_RE.test(t);
+  // inv.18 v2 / R2-S7 — the STRONG-token nets for both status spans are now GENERATED from
+  // the def sources. `markers.some((m) => m.test(t))` is character-for-character the
+  // disjunction each of these lines used to spell:
+  //
+  //   - ORDER: EIGHT arms, three provenances. Arms 1-5 are the flat
+  //     `/pedido|preparo|sa[ií]u|chegou|cad[êe]/` literal SPLIT at its top-level alternation;
+  //     arms 6-7 are the BKL-221 arrival pair, which were ALREADY separate literals `||`-ed
+  //     here (the R2-S4 relocation-with-no-split case); arm 8 is the composed arrival-ETA net,
+  //     still composed from its four named parts inside the source. Pinned by
+  //     `__SPAN_NET_SOURCES_FOR_TEST.orderStatusStrong` (the 5-arm rejoin), `.orderArrival`
+  //     (arms 6-7 rejoined) and `.orderEta` (arm 8), each against the pre-migration value.
+  //   - PAYMENT: FIVE arms, the flat `/pago|cobran[çc]a|pagar|paguei|aprovad/` literal split
+  //     at its top-level alternation. Pinned by
+  //     `__SPAN_NET_SOURCES_FOR_TEST.paymentStatusStrong`.
+  //
+  // WHAT DID NOT MOVE, and why: everything on these spans that is a GUARD rather than a
+  // marker. The two DUAL-USE tokens below (`entrega`, `pix`) and the `pagamento` token each
+  // classify only in CONJUNCTION with the ABSENCE of a capability/payment-methods frame, and a
+  // `markers` arm cannot express an absence — folding any of them in as a bare arm would fire
+  // an owner-scoped read on a store-policy question (the BKL-204 defect, and BKL-238/SCN-049
+  // from the other side). `!mutationImperative`, the bare-"status" fallback and the history
+  // splices are likewise guards/sequencing. The compiler models which markers classify INTO a
+  // span, never which contexts must suppress it.
+  const orderStatusStrong = ORDER_FULFILLMENT_STAGE_CLOSURE.markers.some((m) => m.test(t));
   const paymentStatusStrong =
-    /pago|cobran[çc]a|pagar|paguei|aprovad/.test(t) ||
+    PAYMENT_STATUS_CLOSURE.markers.some((m) => m.test(t)) ||
     (/pagamento/.test(t) && !paymentMethodsQuestion);
   // DUAL-USE tokens (also capability vocabulary) fire status ONLY when this is NOT
   // a capability question.
@@ -1447,8 +1464,12 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // spans (the read-span-captures-mutation class #349 closed for cart/menu,
   // applied here to the status spans via the same shared `mutationImperative`
   // net). Genuine status asks carry no mutation verb, so they fire unchanged.
-  if (orderPhrasing && !mutationImperative) classes.push("ORDER_STATUS_Q");
-  if (paymentPhrasing && !mutationImperative) classes.push("PAYMENT_STATUS_Q");
+  if (orderPhrasing && !mutationImperative) {
+    classes.push(ORDER_FULFILLMENT_STAGE_CLOSURE.spanClass);
+  }
+  if (paymentPhrasing && !mutationImperative) {
+    classes.push(PAYMENT_STATUS_CLOSURE.spanClass);
+  }
 
   // FE-T17 — reservation-bearing phrasing. An explicit marker set (not folded into the
   // bare-"status" polysemy resolution below — reservation questions name "reserva"
@@ -1522,8 +1543,15 @@ export function classifyRequestSpans(text: string): SpanClass[] {
     !orderPhrasing &&
     !reservationRef
   ) {
-    if (!classes.includes("ORDER_STATUS_Q")) classes.push("ORDER_STATUS_Q");
-    if (!classes.includes("PAYMENT_STATUS_Q")) classes.push("PAYMENT_STATUS_Q");
+    // inv.18 v2 / R2-S7 — the two class KEYS are now the generated `spanClass` values, but
+    // this whole branch stays HAND-WRITTEN: it fires on the ABSENCE of all three
+    // discriminators, so it reads three OTHER spans' predicates and pushes a class from
+    // outside either type's own marker net. That is a sequencing fact about this function, not
+    // a per-type facet a source can project.
+    const orderSpan = ORDER_FULFILLMENT_STAGE_CLOSURE.spanClass;
+    const paymentSpan = PAYMENT_STATUS_CLOSURE.spanClass;
+    if (!classes.includes(orderSpan)) classes.push(orderSpan);
+    if (!classes.includes(paymentSpan)) classes.push(paymentSpan);
   }
 
   // FE-D03 slice C — history/LIST phrasing ("meu histórico de pedidos", "meus últimos
@@ -1543,7 +1571,8 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   //
   // THE SPLICE IS NOT GENERATED and stays here. It is a SEQUENCING fact about this
   // function — it mutates the accumulated `classes` array and names the OTHER span's
-  // class key (`ORDER_STATUS_Q` / `PAYMENT_STATUS_Q`, both hand-written rows) — whereas a
+  // class key (`ORDER_STATUS_Q` / `PAYMENT_STATUS_Q`, both GENERATED rows since R2-S7, read
+  // here off their own closures rather than as string literals) — whereas a
   // def source contributes only its OWN span class, required set and markers. Same
   // division as every span GUARD conjunction since R2-S1: the compiler models which
   // markers classify INTO a span, never which classes a span must remove from the set.
@@ -1555,12 +1584,12 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   const paymentHistoryRef = PAYMENT_HISTORY_CLOSURE.markers.some((m) => m.test(t));
   if (orderHistoryRef) {
     classes.push(ORDER_HISTORY_CLOSURE.spanClass);
-    const i = classes.indexOf("ORDER_STATUS_Q");
+    const i = classes.indexOf(ORDER_FULFILLMENT_STAGE_CLOSURE.spanClass);
     if (i !== -1) classes.splice(i, 1);
   }
   if (paymentHistoryRef) {
     classes.push(PAYMENT_HISTORY_CLOSURE.spanClass);
-    const i = classes.indexOf("PAYMENT_STATUS_Q");
+    const i = classes.indexOf(PAYMENT_STATUS_CLOSURE.spanClass);
     if (i !== -1) classes.splice(i, 1);
   }
 
