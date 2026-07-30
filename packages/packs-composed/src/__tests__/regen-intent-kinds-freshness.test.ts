@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   buildGeneratedRegion,
+  extractGeneratedRegion,
   GENERATED_BEGIN,
   GENERATED_END,
 } from "../codegen/build-generated-region.js"
@@ -28,20 +29,17 @@ import {
 // packs-composed → sibling packages/intent-kinds/src/index.ts.
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const INTENT_KINDS_INDEX_PATH = path.join(HERE, "../../../intent-kinds/src/index.ts")
+const LABEL = "intent-kinds/src/index.ts"
 
-function extractGeneratedRegion(fileText: string): string {
-  const beginIdx = fileText.indexOf(GENERATED_BEGIN)
-  const endIdx = fileText.indexOf(GENERATED_END)
-  if (beginIdx === -1 || endIdx === -1) {
-    throw new Error("GENERATED_BEGIN/GENERATED_END markers not found in intent-kinds/src/index.ts")
-  }
-  return fileText.slice(beginIdx, endIdx + GENERATED_END.length)
-}
+// R6 leg 1a moved this file's private extractor into build-generated-region.ts
+// so this gate, the six pack `intents[]` gates
+// (regen-pack-intents-freshness.test.ts) and the write-side script all agree on
+// what "the region" is.
 
 describe("packages/intent-kinds/src/index.ts — codegen-freshness gate (FE-4.3 / FE-T26)", () => {
   it("the committed GENERATED region is byte-identical to a fresh regeneration", () => {
     const committed = fs.readFileSync(INTENT_KINDS_INDEX_PATH, "utf8")
-    const committedRegion = extractGeneratedRegion(committed)
+    const committedRegion = extractGeneratedRegion(committed, LABEL)
     const fresh = buildGeneratedRegion()
     expect(committedRegion).toBe(fresh)
   })
@@ -60,7 +58,7 @@ describe("packages/intent-kinds/src/index.ts — codegen-freshness gate (FE-4.3 
     const beforeRegion = committed.slice(0, beginIdx)
     expect(beforeRegion).toContain("export const PIX_INTENT_KINDS")
     expect(beforeRegion).toContain("export const LOYALTY_INTENT_KINDS")
-    const region = extractGeneratedRegion(committed)
+    const region = extractGeneratedRegion(committed, LABEL)
     expect(region).not.toContain("export const PIX_INTENT_KINDS")
     expect(region).not.toContain("export const LOYALTY_INTENT_KINDS")
   })

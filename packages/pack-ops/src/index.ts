@@ -143,6 +143,7 @@ export const opsPack = {
   version: "1.4.0",
   contract: "v0",
   intents: [
+    // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
     "product.availability.set",
     // NEW-004 — the OWNED price-change verb (confirm-gated on UNTRUSTED taint;
     // executor re-prices via the same medusaAdjudicated admin egress).
@@ -159,6 +160,7 @@ export const opsPack = {
     // its executor drives the SAME scheduleService.upsertOverride the admin
     // schedule route uses (a domain-service verb; NO Medusa egress).
     "schedule.override.set",
+    // ═══ END GENERATED REGION ═══
   ],
   policy: opsPolicyBundle,
   planner: opsCapabilityPlanner,

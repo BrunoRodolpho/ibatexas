@@ -180,9 +180,11 @@ export const whatsappPack = {
   version: "1.1.0",
   contract: "v0",
   intents: [
+    // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
     "whatsapp.session.handover",
     "conversation.message.append",
     "whatsapp.handoff.request",
+    // ═══ END GENERATED REGION ═══
   ],
   policy: whatsappPolicyBundle,
   planner: whatsappCapabilityPlanner,
