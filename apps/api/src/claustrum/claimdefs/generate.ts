@@ -28,6 +28,7 @@ import {
   compilePerResourceClaimDefinition,
   type RepoCompiledArtifacts,
 } from "./per-resource-claim.js";
+import { RESERVATION_STATUS_SOURCE } from "./reservation-status.claim.js";
 import { STORE_HOURS_SOURCE } from "./store-hours.claim.js";
 import { STORE_INFO_SOURCE } from "./store-info.claim.js";
 import { STORE_OPEN_NOW_SOURCE } from "./store-open-now.claim.js";
@@ -89,6 +90,17 @@ const UNITS: readonly GenUnit[] = [
     slug: "menu-dietary",
     sourceFile: "menu-dietary.claim.ts",
     artifacts: compilePerResourceClaimDefinition(MENU_DIETARY_SOURCE),
+  },
+  // R2-S4 — the FIRST OWNER-SCOPED unit. Same widening as the public per-item three (the
+  // `perResourceKey` facet is the only thing the published compiler cannot express), but
+  // its required-evidence row carries `ownershipPolicy: "required"`, which is what makes
+  // `ownerScopedBaseKey` resolve a base key for it instead of `publicPerItemBaseKey`.
+  // That row is projected VERBATIM by the published `toRegistrySpec`, so the ownership
+  // axis needed no second widening.
+  {
+    slug: "reservation-status",
+    sourceFile: "reservation-status.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(RESERVATION_STATUS_SOURCE),
   },
 ];
 

@@ -64,6 +64,7 @@ import type {
 import { MENU_DIETARY_REGISTRY_SPEC } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_REGISTRY_SPEC } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_REGISTRY_SPEC } from "./claimdefs/menu-item-price.generated.js";
+import { RESERVATION_STATUS_REGISTRY_SPEC } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_REGISTRY_SPEC } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_REGISTRY_SPEC } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generated.js";
@@ -756,59 +757,32 @@ export const REGISTRY_SPECS = {
     // C6 — bind the rendered status to the read's `status` field (ledger-sourced).
     valueBinding: { key: "payment_status", path: ["status"] },
   },
-  // FE-T17 — the reservation-status read. Owner-scoped + per-resource, mirroring
-  // ORDER_FULFILLMENT_STAGE exactly: the base key `reservation_status` matches the
-  // investigator's `RESERVATION_KEY` (ibatexas-investigator.ts) and the owner-scope
-  // wiring already declared for it in `OWNER_SCOPED_KEY_PREFIXES` / FIX 2's
-  // `ownerScopedBaseKey` (ibatexas-claims-kernel-deps.ts / ibatexas-planner.ts) — both
-  // pre-date this row and needed no change to pick it up.
+  // inv.18 v2 / R2-S4 — RESERVATION_STATUS is now GENERATED from its ClaimDefinition
+  // source (`./claimdefs/reservation-status.generated.ts`, compiled from
+  // `reservation-status.claim.ts`). The FIRST OWNER-SCOPED type to compile from source:
+  // its required-evidence row carries `ownershipPolicy: "required"`, and that row is
+  // projected VERBATIM by the published `toRegistrySpec`, so `ownerScopedBaseKey` below
+  // still resolves `reservation_status` off the GENERATED spec exactly as it did off this
+  // stanza — no second schema widening was needed for the ownership axis (only R2-S2's
+  // `perResourceKey`, via `./claimdefs/per-resource-claim.ts`). The generated row carries
+  // the UNSUFFIXED base keys plus `perResourceKey: true`, and `selectCandidateClaim`
+  // suffixes them by `:{subject}` at select time as before. This one line REPLACES the
+  // ~48-line handwritten stanza (evidence + the deliberately-unread W6 falsifier + the
+  // BKL-185 C6 binding, whose rationales moved verbatim into the source) and can never
+  // drift from the template or the closure row, which are generated too.
+  // BKL-270 — the posture is SPLICED here for the same reason as on its siblings:
+  // `compileClaimDefinition` has no concept of `dietaryPosture`, so it cannot emit the
+  // field, and splicing keeps the generated file byte-pure under its source-checksum
+  // drift guard. `answer-anyway`: renders a status enum plus date/time/party integers.
+  // No food.
+  // CAVEAT (borderline B5): a diet-qualified reservation ask is often TWO spans
+  // ("a minha reserva esta confirmada? preciso de menu sem lactose"). This
+  // posture answers the RESERVATION span only; the dietary span still needs its
+  // own disposition under SO15 completeness — answer-anyway must never mean
+  // "silently drop the diet span".
   RESERVATION_STATUS: {
-    kind: "read_claim",
-    // BKL-270 — renders a status enum plus date/time/party integers. No food.
-    // CAVEAT (borderline B5): a diet-qualified reservation ask is often TWO spans
-    // ("a minha reserva esta confirmada? preciso de menu sem lactose"). This
-    // posture answers the RESERVATION span only; the dietary span still needs its
-    // own disposition under SO15 completeness — answer-anyway must never mean
-    // "silently drop the diet span".
+    ...RESERVATION_STATUS_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "reservation_status",
-        // Ownership required via the reservation service's owner-scoped getById.
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: true,
-    // Parameterize by subject — matches the investigator's `reservation_status:{id}`.
-    perResourceKey: true,
-    // W6 — a present reservation CANCELLATION falsifies an in-progress reservation
-    // status read. DELIBERATELY UNREAD (review ruling 2026-07-17, post-#277) —
-    // same-row tautology as ORDER_FULFILLMENT_STAGE's `order_cancelled` (see that
-    // type's note): the only available read shares the base read's per-turn
-    // reservation memo, so firing it would demote every truthful "cancelada"
-    // render while catching nothing. Declaration retained for a future
-    // INDEPENDENT signal; render-vs-demote decision = BKL-160.
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "reservation_cancelled",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered scalar to the read's pre-composed `statusLine`
-    // (BKL-185, the ORDER_HISTORY serialized-scalar idiom): status + optional
-    // "— DD/MM às HH:MM, para N pessoa(s)" detail, composed DETERMINISTICALLY in
-    // the read (turn-reads.ts composeReservationStatusLine — no clock, no model).
-    // Detail-absent → the scalar IS the bare status → the render is byte-identical
-    // to the pre-BKL-185 status-only form. Ledger-sourced, never model-authored.
-    valueBinding: { key: "reservation_status", path: ["statusLine"] },
   },
   // BKL-139 / FE-D03 — the owner-scoped IN-PROGRESS CART read. Structurally the
   // RESERVATION_STATUS idiom (owner-scoped, per-resource, must_read_this_turn,
