@@ -53,10 +53,10 @@ import {
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
 import { getConductor } from "../claustrum-bootstrap.js";
 import {
-  WEB_NEGATIVE_DECLINE_ACK_PTBR,
-  webNegativeDeclineTarget,
-  webSoftAffirmativeRestateNotice,
-} from "../claustrum/web-confirm-channel.js";
+  triageParkReply,
+  unparkParks,
+  webCustomerParkTriagePolicy,
+} from "../claustrum/park-reply-triage.js";
 // LE2-007 — the funnel's per-turn context (the confirm-window fact only the ingress
 // can see). See funnel-tier.ts.
 import { closeFunnelTurn, openFunnelTurn } from "../claustrum/funnel-tier.js";
@@ -435,78 +435,90 @@ async function runConductorTurn(params: {
     });
 
     try {
-      // ── BKL-212: confirm-resume niceties, resolved BEFORE handleTurn ───────
-      // The WEB mirror of the OPS ingresses (ops-whatsapp-ingress.ts:314-390 /
-      // admin/ops-chat.ts:203-285): while a confirmation is parked, two reply
-      // shapes are answered by the ingress itself instead of burning a model turn
-      // that re-plans them. EVERYTHING else — an explicit "sim", a mixed reply,
-      // any ordinary text, or no park at all — falls through to the unchanged path
-      // below. There is no freshness partition (customer parks carry no TTL — see
-      // web-confirm-channel.ts), so these engage on exactly the parks the
-      // WebConfirmChannel matcher itself can still resume.
+      // ── PARK-REPLY TRIAGE (BKL-212, seam extracted in R4-S1) ───────────────
+      // While a confirmation is parked, two reply shapes are answered by the
+      // ingress itself instead of burning a model turn that re-plans them: a bare
+      // soft affirmative RESTATES the park (nothing unparked, nothing executed — a
+      // follow-up "sim" still resumes it through the normal adjudicated path), and
+      // a PURE negative DECLINES it (unpark + acknowledge, so the negative text
+      // never reaches the planner — claustrum's own deny path unparks and THEN
+      // re-plans the "no" as a fresh command, the BKL-191 re-prompt). EVERYTHING
+      // else — an explicit "sim", a mixed reply, a soft yes that also carries
+      // CONTENT ("ok mas muda para 19h"), any ordinary text, or no park at all —
+      // falls through to the unchanged path below.
+      //
+      // The DECISION is owned by ../claustrum/park-reply-triage.ts; this ingress
+      // declares the WEB-CUSTOMER policy and keeps only its own delivery. That
+      // policy has no freshness partition (customer parks carry no TTL — see
+      // web-confirm-channel.ts), so the branches engage on exactly the parks the
+      // WebConfirmChannel matcher itself can still resume, and no stale-resume
+      // branch exists here by design. The soft-affirmative admission is also
+      // deliberately NARROWER than the ops plane's: the WhatsApp customer channel
+      // confirms on a bare "ok" by design, and restating at a customer who added a
+      // new request reads as not having listened.
       const parked = capsule.loadedSession?.pendingConfirmations;
-
-      // A BARE soft affirmative ("ok"/"pode"/"beleza") is too weak to execute on
-      // web — the matcher deliberately resolves it to null (unlike the WhatsApp
-      // customer channel, which confirms on a bare "ok" by design), so today it
-      // falls through to a full model turn. Restate the parked prompt and ask for
-      // an explicit confirm. NOTHING is unparked and nothing executes: a follow-up
-      // "sim" still resumes the park through the normal adjudicated path. A soft
-      // affirmative that also carries CONTENT ("ok mas muda para 19h") is a new
-      // request, not a bare yes — it stays on the normal loop.
-      const softRestate = webSoftAffirmativeRestateNotice(message, parked);
-      if (softRestate !== undefined) {
-        turnHandled = true;
-        server.log.warn(
-          { event: "chat.soft_affirm_restate", sessionId, pending: parked?.length ?? 0 },
-          "[chat] soft affirmative on a parked confirmation — restating, awaiting an explicit confirm, skipping the turn",
-        );
-        await deliverIngressReply({
-          server,
-          sessionId,
-          text: softRestate,
-          customerId,
-          isAuthenticated,
-          aborted: turnAbort.signal.aborted,
-        });
-        return;
-      }
-
-      // A PURE negative declines the park at the ingress: unpark + acknowledge and
-      // SKIP the turn, so the negative text never reaches the planner (claustrum's
-      // own deny path unparks and THEN re-plans the "no" as a fresh command — the
-      // BKL-191 re-prompt). Unparking BEFORE handleTurn is the ops precedent.
-      // Fail-honest: an unpark failure falls through to the normal loop rather
-      // than acknowledging a cancellation that did not stick.
-      const declineTarget = webNegativeDeclineTarget(message, parked);
-      if (declineTarget !== undefined) {
-        let unparked = false;
-        try {
-          await capsule.session.unpark(
-            capsule.loadedSession.id,
-            declineTarget.envelope.intentHash,
-          );
-          unparked = true;
-        } catch (err) {
-          server.log.warn(
-            err,
-            "[chat] negative-decline unpark failed — falling through to the normal loop (BKL-212)",
-          );
+      const triage = triageParkReply({
+        text: message,
+        pendingConfirmations: parked,
+        nowIso: inbound.receivedAt,
+        policy: webCustomerParkTriagePolicy(),
+      });
+      if (triage.kind === "skip-with-reply") {
+        // The verdict's `unpark` is LOAD-BEARING: the decline acknowledgment
+        // asserts nothing was changed, so it may only be sent once the unpark
+        // STUCK. Fail-honest — an unpark failure falls through to the normal loop
+        // rather than acknowledging a cancellation that did not stick. Unparking
+        // BEFORE handleTurn is the ops precedent.
+        let deliverNotice = true;
+        if (triage.unpark.length > 0) {
+          deliverNotice = false;
+          try {
+            await unparkParks({
+              session: capsule.session,
+              sessionId: capsule.loadedSession.id,
+              parks: triage.unpark,
+            });
+            deliverNotice = true;
+          } catch (err) {
+            server.log.warn(
+              err,
+              "[chat] negative-decline unpark failed — falling through to the normal loop (BKL-212)",
+            );
+          }
         }
-        if (unparked) {
+        if (deliverNotice) {
           turnHandled = true;
-          server.log.warn(
-            {
-              event: "chat.negative_declined_park",
-              sessionId,
-              kind: String(declineTarget.envelope.kind),
-            },
-            "[chat] negative reply on a parked confirmation — declined + unparked, skipping the turn (BKL-212)",
-          );
+          switch (triage.branch) {
+            case "soft-affirmative-restate":
+              server.log.warn(
+                { event: triage.event, sessionId, pending: parked?.length ?? 0 },
+                "[chat] soft affirmative on a parked confirmation — restating, awaiting an explicit confirm, skipping the turn",
+              );
+              break;
+            case "negative-decline":
+              server.log.warn(
+                {
+                  event: triage.event,
+                  sessionId,
+                  kind: String(triage.unpark[0]!.envelope.kind),
+                },
+                "[chat] negative reply on a parked confirmation — declined + unparked, skipping the turn (BKL-212)",
+              );
+              break;
+            default:
+              // Unreachable under the web-customer policy (no TTL ⇒ no
+              // stale-resume branch). Still reported with the verdict's own event
+              // tag, so a future policy change can never skip a turn silently.
+              server.log.warn(
+                { event: triage.event, sessionId },
+                "[chat] park-reply triage skipped the turn",
+              );
+              break;
+          }
           await deliverIngressReply({
             server,
             sessionId,
-            text: WEB_NEGATIVE_DECLINE_ACK_PTBR,
+            text: triage.notice,
             customerId,
             isAuthenticated,
             aborted: turnAbort.signal.aborted,
