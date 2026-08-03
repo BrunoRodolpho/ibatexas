@@ -124,6 +124,35 @@ export function __triadBackendBuilderTypeCoverage(): void {
     }),
   });
 
+  // R5-S4 FIND (ops-hours-read.e2e.test.ts:326) — the PARTIALLY-correct override,
+  // a distinct mis-shape from the one above and the sharper trap of the two. Here
+  // `id`/`date` are right and the POLARITY is right (`isOpen: false`), so the
+  // shape reads as careful work; what is wrong is that `reason` is not a field
+  // (the real one is `note`) and the required `blocks` is absent. It shipped green
+  // because the override falsifier is recorded PRESENT-vs-ABSENT — the investigator
+  // reads presence, never the fields — so NO runtime assertion could separate it
+  // from a correct entry. Reshaped to `{ …, blocks: [], note: "manutenção" }`;
+  // suite count 12→12 proves the reshape was behaviour-neutral.
+  buildTriadReadBackend({
+    readScheduleOverride: async () => ({
+      id: "ovr-1",
+      date: "2026-07-26",
+      isOpen: false,
+      blocks: [],
+      note: "manutenção",
+    }),
+  });
+  buildTriadReadBackend({
+    // @ts-expect-error — `reason` is not a ScheduleOverrideEntry field (it is
+    // `note`), and the required `blocks` is missing.
+    readScheduleOverride: async () => ({
+      id: "ovr-1",
+      date: "2026-07-26",
+      isOpen: false,
+      reason: "manutenção",
+    }),
+  });
+
   // POSITIVE: `ScheduleSignal { isClosed, mealPeriod }` with `mealPeriod` a closed
   // union.
   buildTriadReadBackend({

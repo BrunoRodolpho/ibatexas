@@ -36,44 +36,42 @@ import {
   renderL0Reply,
 } from "../claustrum/funnel-tier.js";
 import { createCapabilityRetriever } from "../claustrum/capability-retrieval.js";
+import type {
+  HolidayRead,
+  ScheduleRead,
+  StoreHoursRead,
+} from "../claustrum/turn-reads.js";
 
 const { scheduleBackend } = vi.hoisted(() => ({
   scheduleBackend: {
-    signal: { isClosed: false, mealPeriod: "dinner" } as unknown,
-    hours: { hoursText: "11h–15h / 18h–23h" } as unknown,
-    holiday: null as unknown,
+    signal: { isClosed: false, mealPeriod: "dinner" } as ScheduleRead,
+    hours: { hoursText: "11h–15h / 18h–23h" } as StoreHoursRead,
+    holiday: null as HolidayRead | null,
   },
 }));
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  const { buildTriadReadBackend } = await import(
+    "./helpers/triad-backend-builder.js"
+  );
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => scheduleBackend.signal,
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => scheduleBackend.hours,
-      readHoliday: async () => scheduleBackend.holiday,
-      readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readReservation: notUsed("readReservation"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      // A guest asking about hours owns nothing; present-with-0 keeps §O#15 from
-      // force-requiring an order companion.
-      listActiveOrderIds: async () => [],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => scheduleBackend.signal,
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => scheduleBackend.hours,
+        readHoliday: async () => scheduleBackend.holiday,
+        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        // A guest asking about hours owns nothing; present-with-0 keeps §O#15 from
+        // force-requiring an order companion.
+        listActiveOrderIds: async () => [],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 
