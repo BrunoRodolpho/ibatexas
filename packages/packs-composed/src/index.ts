@@ -134,7 +134,7 @@ export function composedIntentKinds(): ReadonlyArray<string> {
 // ── Chat-drivable registered tool roster (T1a-2) ─────────────────────────────
 
 /**
- * The 20 chat-drivable, LLM-callable mutating tool capability ids
+ * The 19 chat-drivable, LLM-callable mutating tool capability ids
  * (`capability := intentKind`) registered by apps/api's
  * `listIbatexasToolPacks()` (`apps/api/src/tools/register-ibatexas-tool-packs.ts`).
  *
