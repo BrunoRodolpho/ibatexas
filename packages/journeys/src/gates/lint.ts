@@ -4,8 +4,11 @@
 // at a higher altitude than the Zod schema:
 //
 //   1. every `expects[].intentKind` ∈ `KNOWN_INTENT_KINDS` — journeys may
-//      expect system-kind envelopes, so the full 66-kind union (incl.
-//      pix.* / loyalty.*) is the domain, not just the chat surface;
+//      expect system-kind envelopes, so the FULL union (the catalog registry
+//      plus the external pix.* / loyalty.* kinds) is the domain, not just the
+//      chat surface. Its size is pinned once, at `EXPECTED_CAPABILITY_COUNT`
+//      beside `CAPABILITY_DEFINITIONS` (R6-S4) — deliberately not restated
+//      here, where a number nothing gates on would rot;
 //   2. chat-act expectations ⊆ planner-advertised ∪ registered for the
 //      journey's persona context (DR-5) — the planners are probed live from
 //      `@ibatexas/packs-composed`, the registered side is the

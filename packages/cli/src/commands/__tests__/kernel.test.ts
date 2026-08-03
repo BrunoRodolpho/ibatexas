@@ -13,7 +13,16 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { Command } from "commander"
+import { EXPECTED_CAPABILITY_COUNT } from "@ibatexas/catalog"
+import { LOYALTY_INTENT_KINDS, PIX_INTENT_KINDS } from "@ibatexas/intent-kinds"
 import { registerKernelCommands, __setDeferResumeDepsForTest } from "../kernel.js"
+
+// R6-S4 — what `ibx kernel status` reports is the COMPOSED union, so its pin is
+// the one hand-written capability count plus the two external inputs. See
+// `EXPECTED_CAPABILITY_COUNT`'s doc (beside `CAPABILITY_DEFINITIONS`) for why
+// the left term must stay a literal and the right term may be measured.
+const EXPECTED_KNOWN_INTENT_KIND_COUNT =
+  EXPECTED_CAPABILITY_COUNT + PIX_INTENT_KINDS.length + LOYALTY_INTENT_KINDS.size
 
 // ── Stdout capture ────────────────────────────────────────────────────────
 
@@ -94,8 +103,10 @@ describe("ibx kernel status", () => {
     // identity-tier anchor): 62 → 63. LE2-023 added order.coupon.swap.request
     // (the swap-for-coupon anchor, identity-tier) and order.coupon.adjust (that
     // workflow's CLOSED coupon_on_placed_order branch target, workflow-scoped):
-    // 63 → 65.
-    expect(parsed.knownIntentKinds.count).toBe(66)
+    // 63 → 65. LE2-024 added order.cancel.request (the paid-cancel anchor):
+    // 65 → 66 — a step this comment had NOT recorded before R6-S4, while the
+    // literal below said 66; consolidating the pin is what surfaced the drift.
+    expect(parsed.knownIntentKinds.count).toBe(EXPECTED_KNOWN_INTENT_KIND_COUNT)
   })
 
   it("renders human-readable text when --json is absent", async () => {
@@ -174,7 +185,11 @@ describe("ibx kernel status", () => {
     expect(out).toMatch(/em\s+7\s+packs/)
   })
 
-  it("includes all 65 KNOWN_INTENT_KINDS in the JSON list", async () => {
+  // R6-S4: this title read "all 65 KNOWN_INTENT_KINDS" while the union has been
+  // 66 since LE2-024 — and the case asserts MEMBERSHIP, never a count, so
+  // nothing was ever going to catch the stale number. The count lives in the
+  // `--json` case above, against the one pin; this one names kinds.
+  it("includes a representative kind from every pack in the JSON list", async () => {
     await cmd.parseAsync(["status", "--json"], { from: "user" })
     const out = stdout.getOutput()
     const parsed = JSON.parse(out)

@@ -43,7 +43,7 @@ import {
   WHATSAPP_INTENT_KINDS,
 } from "@ibatexas/intent-kinds"
 
-import { CAPABILITY_DEFINITIONS } from "@ibatexas/catalog"
+import { CAPABILITY_DEFINITIONS, EXPECTED_CAPABILITY_COUNT } from "@ibatexas/catalog"
 import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 
 import {
@@ -193,7 +193,7 @@ describe("kind-union regions — the generated text is a real projection, not a 
     }
   })
 
-  it("no union member is UNDECLARED — every committed member is a CAPABILITY_DEFINITIONS kind of that same pack, all 62 of them", () => {
+  it("no union member is UNDECLARED — every committed member is a CAPABILITY_DEFINITIONS kind of that same pack, all of them", () => {
     // The derivability pre-check of R6 leg 1b, kept executable. A union may not
     // legitimately outlive the definitions: pack-payments' own BKL-176 note
     // documents 5 RETIRED `payment.charge.*` kinds, so a union carrying history
@@ -212,8 +212,12 @@ describe("kind-union regions — the generated text is a real projection, not a 
       expect(members, `${target.packageDir}/src/types.ts`).toEqual(declared)
       total += members.length
     }
+    // Both legs, and they are different assertions: the first says the six
+    // unions partition the registry with nothing left over, the second says the
+    // registry is the size a human last intended (R6-S4's single count pin —
+    // `CAPABILITY_DEFINITIONS.length` alone would go green for any registry).
     expect(total).toBe(CAPABILITY_DEFINITIONS.length)
-    expect(total).toBe(62)
+    expect(total).toBe(EXPECTED_CAPABILITY_COUNT)
   })
 })
 

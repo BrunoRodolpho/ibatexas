@@ -27,7 +27,11 @@
 
 import { describe, expect, it } from "vitest"
 
-import { KNOWN_INTENT_KINDS } from "@ibatexas/intent-kinds"
+import {
+  KNOWN_INTENT_KINDS,
+  LOYALTY_INTENT_KINDS,
+  PIX_INTENT_KINDS,
+} from "@ibatexas/intent-kinds"
 import { CUSTOMER_ONBOARDING_TOOL_TO_INTENT, CUSTOMER_ONBOARDING_TOOLS } from "@ibatexas/pack-customer-onboarding"
 import { ORDER_TOOL_TO_INTENT, ORDER_TOOLS } from "@ibatexas/pack-orders"
 import { PAYMENT_TOOL_TO_INTENT, PAYMENT_TOOLS } from "@ibatexas/pack-payments"
@@ -37,6 +41,7 @@ import { WHATSAPP_TOOL_TO_INTENT, WHATSAPP_TOOLS } from "@ibatexas/pack-whatsapp
 import { CHAT_DRIVABLE_TOOL_KINDS } from "../index.js"
 import {
   CAPABILITY_DEFINITIONS,
+  EXPECTED_CAPABILITY_COUNT,
   generateCapabilityDescriptions,
   generateChatDrivableToolKinds,
   generateConversationTriggers,
@@ -62,14 +67,32 @@ import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 // and the second is WORKFLOW-SCOPED, so NEITHER is planner-advertised and
 // CHAT_DRIVABLE stays 20 again) ──
 
-describe("count assertions — 66 KNOWN / 19 CHAT_DRIVABLE pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014 + LE2-021 + LE2-023 + LE2-024)", () => {
-  it("KNOWN_INTENT_KINDS has exactly 66 kinds", () => {
-    // 70 → 65 (BKL-176: 5 dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds)
-    // → 61 (BKL-177 PR-B: whatsapp.message.send + template.send) → 62
-    // (NEW-014: +order.fiscal.emit) → 63 (LE2-021: +order.reorder.request) → 65
-    // (LE2-023: +order.coupon.swap.request, +order.coupon.adjust).
-    // → 66 (LE2-024: +order.cancel.request, the paid-cancel workflow's anchor)
-    expect(KNOWN_INTENT_KINDS.size).toBe(66)
+// R6-S4 — the composed union's size, stated as the arithmetic it actually is
+// rather than as a second magic number. The left term is the ONE hand-written
+// count pin (`EXPECTED_CAPABILITY_COUNT`, beside `CAPABILITY_DEFINITIONS`); the
+// right term is measured off the two genuinely EXTERNAL inputs, which are
+// hand-authored in `@ibatexas/intent-kinds` and deliberately not modelled by
+// the catalog (`PIX_INTENT_KINDS` mirrors the frozen adopter pack;
+// `LOYALTY_INTENT_KINDS` is a kernel-gated kind with no pack at all).
+//
+// Deriving the right term is NOT the self-reference trap the left term avoids:
+// these are a different, independently authored authority, so the assertion
+// still compares the generated union against something a human wrote. Spelling
+// `4` here instead would have been a second literal to hunt down — exactly what
+// this slice consolidates.
+const EXTERNAL_INTENT_KIND_COUNT = PIX_INTENT_KINDS.length + LOYALTY_INTENT_KINDS.size
+
+describe("count assertions — the registry + its external inputs, pinned against the projections (FE-T21 AC, FE-T09 D-a update; BKL-176 + BKL-177 + NEW-014 + LE2-021 + LE2-023 + LE2-024; R6-S4 consolidation)", () => {
+  it("KNOWN_INTENT_KINDS is exactly the registry plus its external inputs", () => {
+    // The history, kept as the record of WHICH kinds moved: 70 → 65 (BKL-176: 5
+    // dead payment.charge.*) → 63 (BKL-177 PR-A: 2 kinds) → 61 (BKL-177 PR-B:
+    // whatsapp.message.send + template.send) → 62 (NEW-014: +order.fiscal.emit)
+    // → 63 (LE2-021: +order.reorder.request) → 65 (LE2-023:
+    // +order.coupon.swap.request, +order.coupon.adjust) → 66 (LE2-024:
+    // +order.cancel.request, the paid-cancel workflow's anchor).
+    expect(KNOWN_INTENT_KINDS.size).toBe(
+      EXPECTED_CAPABILITY_COUNT + EXTERNAL_INTENT_KIND_COUNT,
+    )
   })
 
   it("CHAT_DRIVABLE_TOOL_KINDS has exactly 19 kinds, and generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS) reproduces it byte-for-byte", () => {
@@ -94,14 +117,17 @@ describe("count assertions — 66 KNOWN / 19 CHAT_DRIVABLE pinned against the pr
     expect(source).not.toMatch(/The 18 chat-drivable/)
   })
 
-  it("the 62-kind CapabilityDefinition registry + KNOWN_INTENT_KINDS' 4 external kinds (3 pix + 1 loyalty) account for all 66", () => {
+  it("the CapabilityDefinition registry + KNOWN_INTENT_KINDS' external kinds (3 pix + 1 loyalty) account for the whole union", () => {
     // 66 → 61 (BKL-176: 5 dead payment.charge.*) → 59 (BKL-177 PR-A: 2 kinds)
     // → 57 (BKL-177 PR-B: 2 whatsapp kinds) → 58 (NEW-014: +order.fiscal.emit)
     // → 59 (LE2-021: +order.reorder.request) → 61 (LE2-023:
     // +order.coupon.swap.request, the swap-for-coupon anchor, and
     // +order.coupon.adjust, its closed branch's workflow-scoped target).
     // → 62 (LE2-024: +order.cancel.request)
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(62)
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(EXPECTED_CAPABILITY_COUNT)
+    // The split itself, so this case still says something the one above does
+    // not: the external term is the 3 pix + 1 loyalty kinds, not a fudge.
+    expect(EXTERNAL_INTENT_KIND_COUNT).toBe(4)
   })
 })
 

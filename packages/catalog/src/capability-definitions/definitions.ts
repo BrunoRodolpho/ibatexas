@@ -272,6 +272,49 @@ const WHATSAPP_GUARD_REFS: readonly CapabilityGuardRef[] = [
 // disclosure. See `types.ts`'s `conversationTriggers` doc for why
 // (BKL-143 / BKL-123 / BKL-171).
 
+// ── The size tripwire ────────────────────────────────────────────────────
+
+/**
+ * The registry's size, as a HAND-WRITTEN literal — the single count pin for
+ * `CAPABILITY_DEFINITIONS`, and R6-S4's consolidation of the six literals that
+ * used to state it independently (two in
+ * `capability-definitions.intent-identity-family.test.ts`, two in
+ * `capability-definitions.tool-driving-family.test.ts`, one in
+ * `regen-pack-unions-freshness.test.ts`, one in the CLI's `kernel.test.ts`).
+ * Every one of them now reads this constant, so adding a capability is ONE
+ * bump here rather than a hunt through four files in three packages for the
+ * spellings of `62` — and a hunt is what it was: the six sites disagreed on
+ * whether they pinned the registry (62) or the composed union (62 + the 4
+ * external kinds), and two of them carried a stale `65` in prose.
+ *
+ * # This is deliberately a literal, and must stay one
+ *
+ * `EXPECTED_CAPABILITY_COUNT = CAPABILITY_DEFINITIONS.length` would type-check,
+ * read better, and never need bumping again — and would be worthless. A control
+ * derived from the thing it controls asserts `x === x`: every gate reading it
+ * would go green for any registry, including one a bad merge halved. The number
+ * has to be written by a human who intended it, so that changing the registry
+ * WITHOUT intending to change its size is what goes red.
+ *
+ * So: bumping this is part of adding or removing a capability, not a chore the
+ * addition creates. If a diff bumps this line and nothing else explains why,
+ * that is the review signal it exists to produce.
+ *
+ * # Scope
+ *
+ * This counts THIS registry — the first-party capabilities. The composed
+ * `KNOWN_INTENT_KINDS` union is larger by the genuinely external inputs
+ * (`PIX_INTENT_KINDS` + `LOYALTY_INTENT_KINDS`, hand-authored in
+ * `@ibatexas/intent-kinds` and deliberately not modelled here). Sites that pin
+ * the union spell that arithmetic out against those sets rather than hiding a
+ * second magic number: today `62 + 3 + 1 = 66`.
+ *
+ * No generator, projection or runtime path reads this constant — it is a
+ * test-facing pin only, which is why adding it is not a `CATALOG_VERSION`
+ * trigger (see `../version.ts`; the registry array is byte-identical).
+ */
+export const EXPECTED_CAPABILITY_COUNT = 62
+
 // ── Capability instances ─────────────────────────────────────────────────
 
 export const CAPABILITY_DEFINITIONS: readonly CapabilityDefinition[] = [

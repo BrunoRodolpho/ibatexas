@@ -387,6 +387,119 @@ type-checks fine because `satisfies` only requires the array to be a SUBSET of
 the union — a hand-widened union is invisible to `tsc` and caught only by the
 source gate. Both directions are asserted in that file's last describe block.
 
+## R6 leg 2 — the six capability-count literals become one pin
+
+Six independently-written spellings of the registry's size, in four files across
+three packages, none of them referring to the others:
+
+| Site | Was | Now |
+|---|---|---|
+| `capability-definitions.intent-identity-family.test.ts` (×2) | `62`, `62` | `EXPECTED_CAPABILITY_COUNT` |
+| `capability-definitions.tool-driving-family.test.ts` (×2) | `66`, `62` | `EXPECTED_CAPABILITY_COUNT (+ externals)` |
+| `regen-pack-unions-freshness.test.ts` | `62` | `EXPECTED_CAPABILITY_COUNT` |
+| `packages/cli/.../kernel.test.ts` | `66` | `EXPECTED_CAPABILITY_COUNT + externals` |
+| `packages/journeys/src/gates/lint.ts` (comment) | "the full 66-kind union" | pointer, no number |
+| `capability-definitions/index.ts` (doc) | "62 — 20 chat-tier, 42 identity-tier" | pointer, no number |
+
+`EXPECTED_CAPABILITY_COUNT` lives in `definitions.ts`, immediately above
+`CAPABILITY_DEFINITIONS`, and stays a **hand-written literal**. Writing
+`= CAPABILITY_DEFINITIONS.length` would assert `x === x`: every gate reading it
+would go green for any registry, including one a bad merge halved. The number
+must be written by a human who intended it, so that changing the registry
+*without* intending to change its size is what goes red.
+
+Three things the consolidation surfaced, each of which is the argument for doing
+it — every one had been sitting green:
+
+1. **The six sites disagreed about what they pinned.** Four pinned the registry
+   (62); two pinned the composed union (66 = 62 + the 4 external pix/loyalty
+   kinds). Nothing said so, and the two families were being maintained as if
+   they were the same number.
+2. **Two carried stale prose.** `kernel.test.ts`'s history comment stopped at
+   "63 → 65" while its literal said `66`, and its sibling case was *titled*
+   "includes all 65 KNOWN_INTENT_KINDS" — a case that asserts membership and
+   never a count, so nothing was ever going to catch it.
+3. **`capability-definitions/index.ts` documented a tier split of "20 chat-tier,
+   42 identity-tier"; the real split is 19/43.** That doc line has now gone
+   stale three times (FE-T19/T20's "18 + 48", then the LE2 spec's ratified
+   "59/20/39"). It is replaced by a pointer rather than a fourth number: a count
+   nothing gates on rots.
+
+The union's size is spelled as the arithmetic it is —
+`EXPECTED_CAPABILITY_COUNT + PIX_INTENT_KINDS.length + LOYALTY_INTENT_KINDS.size`
+— rather than as a second magic `66`. Deriving the *external* term is not the
+self-reference trap the registry term avoids: those two sets are hand-authored in
+`@ibatexas/intent-kinds` and are deliberately outside the catalog, so the
+assertion still compares a generated union against something a human wrote.
+
+**Measured tripwire behaviour** (add a 63rd capability, run
+`regen:intent-kinds`, do not bump the pin): 4 count assertions go red across 3
+files, every one of them reporting `63 to be 62` / `67 to be 66` against
+`EXPECTED_CAPABILITY_COUNT`, and **one bump to that single line clears all four**
+(packs-composed back to 187/187). Three further reds in the same simulation are
+*not* count-pin failures and are correct to fire: `kernel.test.ts`'s
+per-domain-prefix pins (`order (26)` → 27) and the `pack-bom` committed
+governance baseline. Those per-domain counts are a genuinely separate pin family
+— being per-prefix, they cannot read one registry-wide constant — and are left
+hand-authored.
+
+## R6 leg 3 — the audit-redactor PII classification is NOT projected (decided by measurement)
+
+The review proposed a declared per-kind judgment slot so the redactor's PII
+classification becomes a catalog projection. **It is not built, and must not be**,
+for a reason that is measurable rather than stylistic.
+
+`packages/audit-sink/src/audit-redactor.ts` classifies every kind into
+`INTENT_KIND_FIELD_RULES` (40 keys) or `PII_FREE_KIND_ALLOWLIST` (46 entries).
+Only the catalog-kind subset could ever be projected: **24 of those 86 entries
+are non-catalog** and stay hand-declared regardless — 4 HTTP-plane `staff.*`
+kinds, 13 `medusa.*` / 3 `stripe.*` / 1 `twilio.*` egress-wrapper kinds, 2
+`validation.*` synthesised events, 3 `pix.*` and 1 `loyalty.*` external kinds.
+
+**Why the projection is worse than the status quo.** The F-5 sentinel's whole
+value is that it compares **two independently-authored artifacts**: the kind
+union and the classification. `KNOWN_INTENT_KINDS` is *already* regenerated from
+`CAPABILITY_DEFINITIONS`. Projecting the allowlist from the same source makes
+both sides of that comparison projections of one input, and the gate becomes
+analytically incapable of failing on a catalog kind. Simulated over the real
+corpus — add a capability, run the regen, classify nothing:
+
+| | conformance verdict |
+|---|---|
+| today (hand-declared allowlist) | **RED**, naming the unclassified kind |
+| with the proposed projection | **GREEN** — the projection absorbed it |
+
+A new capability would ship auto-declared "PII-free" with no human ever having
+named its payload's PII surface. That is precisely the regression class F-5 is,
+re-created at the root.
+
+Two independent reasons point the same way. `CapabilityDefinition` models **no
+payload shape at all** — the rule *values* are payload field paths (`body`,
+`comment`, `lastMessage`, `note`, `otpToken`, `reason`, `specialRequests`,
+`text`), so projecting them means inventing a payload-shape axis the codebase
+does not otherwise model, which is the fabrication FE-4.1 forbids and which
+`opsForbiddenDestructive`'s own doc cites as the reason `WA_EXCLUDED_OPS_KINDS`
+was traced but not generated. And the allowlist's code-review-enforced "1-line
+WHY comment naming the payload's PII surface" would follow the R6-S1/S2 pattern
+into a generator-side annotations table — moving a security control's
+justification *away* from both the control and the definition.
+
+**The agreement gate the review offered as the fallback already exists and is
+strictly stronger than a catalog-scoped one.**
+`apps/api/src/__tests__/audit-2026-05-24/per-intent-redactor-conformance.test.ts`
+already iterates `KNOWN_INTENT_KINDS ∪ HTTP_PLANE_GOVERNED_KINDS` (70 kinds, vs
+the 62 a catalog-scoped gate would cover) and requires each to be classified.
+Measured: deleting one catalog kind (`order.item.add`) from the allowlist turns
+2 cases red, naming the kind, with a file:line pointer. All 62 catalog kinds are
+classified today (21 ruled, 41 PII-free), and `catalog kinds ⊄ KNOWN_INTENT_KINDS`
+is itself gated by the intent-identity family's set-equality test. No new gate was
+added: a second assertion green-by-entailment would fail this doc's own standard
+(leg 1a/1b kept two legs only because each catches a drift the other cannot).
+
+`audit-sink` therefore gains **no dependency on `@ibatexas/catalog`** — which
+matters independently: `audit-sink` is on the kernel path, consumed by `apps/api`
+and by `@ibatexas/tools` (the widest-blast-radius package in the workspace).
+
 ## Tautological-gate retirements (FE-4.3's own named risk)
 
 Two pre-existing freshness tests became vacuous once their target constant was
