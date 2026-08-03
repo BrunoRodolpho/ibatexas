@@ -2,6 +2,7 @@
 // assertion + the proactive refund circuit breaker.
 
 import { describe, it, expect, vi } from "vitest";
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
 import type { AgentDefinition } from "@ibatexas/agents";
 import {
   REAL_MONEY_KINDS,
@@ -63,18 +64,19 @@ describe("assertRealMoneyConfirmGuards (fail-closed boot assertion)", () => {
 });
 
 describe("createRefundCircuitBreaker", () => {
-  function fakeRedis(): BreakerRedis & { counts: Map<string, number> } {
-    const counts = new Map<string, number>();
+  // R5-S7 — the counter is the canonical in-memory adapter, not a Map. The
+  // double it replaces answered `expire` with a constant 1 while storing no TTL
+  // at all, so the window this breaker depends on existed only in the argument.
+  //
+  // The commands stay plain `vi.fn()` DELEGATES over the adapter's client: each
+  // call runs the real implementation, and because this is an ordinary object
+  // (not the client Proxy, which exposes no own properties) `vi.spyOn` below
+  // still has something to replace.
+  function fakeRedis(): BreakerRedis {
+    const mem = createInMemoryRedis();
     return {
-      counts,
-      async incr(key) {
-        const n = (counts.get(key) ?? 0) + 1;
-        counts.set(key, n);
-        return n;
-      },
-      async expire() {
-        return 1;
-      },
+      incr: vi.fn((key: string) => mem.client.incr(key)),
+      expire: vi.fn((key: string, seconds: number) => mem.client.expire(key, seconds)),
     };
   }
 

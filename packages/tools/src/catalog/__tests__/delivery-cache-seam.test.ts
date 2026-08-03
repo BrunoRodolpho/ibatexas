@@ -383,3 +383,111 @@ describe("R5-S6 — estimateDelivery reads and writes the INJECTED client", () =
     expect(redis.calls).toHaveLength(0)
   })
 })
+
+// ── R5-S7 — the commands the first apps/api consumers issue ──────────────────
+
+describe("in-memory-redis — scanIterator", () => {
+  it("VALIDATES AT CALL TIME, not at first iteration", () => {
+    const redis = createInMemoryRedis({ seed: { "a:1": "x" } })
+    // The trap this pins: written as an `async function*`, the body would not
+    // run until the first `next()`, so this call would return a perfectly happy
+    // generator and the malformed MATCH would never surface for a caller that
+    // builds the iterator and abandons it. NOTHING is iterated here.
+    expect(() => loose(redis.client).scanIterator({ MATCH: 5 })).toThrow(UnroutedRedisCall)
+    expect(() => loose(redis.client).scanIterator({ MATCH: 5 })).toThrow(/MATCH must be a string/)
+    expect(() => loose(redis.client).scanIterator({ COUNT: 0 })).toThrow(
+      /COUNT must be a positive integer/,
+    )
+    expect(() => loose(redis.client).scanIterator({ NOPE: 1 })).toThrow(/unsupported option "NOPE"/)
+  })
+
+  it("validates on an EMPTY store (the check is not vacuous where tests start)", () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    expect(() => loose(redis.client).scanIterator({ MATCH: 5 })).toThrow(UnroutedRedisCall)
+  })
+
+  it("yields only MATCH-passing keys", async () => {
+    const redis = createInMemoryRedis({
+      seed: { "test:dlq:a": "1", "test:dlq:b": "2", "test:outbox:c": "3" },
+    })
+    const seen: string[] = []
+    for await (const key of redis.client.scanIterator({ MATCH: "test:dlq:*", COUNT: 10 })) {
+      seen.push(key)
+    }
+    expect(seen.sort()).toEqual(["test:dlq:a", "test:dlq:b"])
+  })
+
+  it("never hands back a key deleted mid-iteration (the scan-then-DELETE guarantee)", async () => {
+    const redis = createInMemoryRedis({
+      seed: { "k:1": "a", "k:2": "b", "k:3": "c", "k:4": "d" },
+    })
+    const seen: string[] = []
+    for await (const key of redis.client.scanIterator({ MATCH: "k:*", COUNT: 2 })) {
+      seen.push(key)
+      // Delete a key the iterator has not reached yet — the caller pattern that
+      // makes an offset cursor silently skip entries.
+      if (seen.length === 1) await redis.client.del("k:4")
+    }
+    expect(seen).not.toContain("k:4")
+    expect(seen.sort()).toEqual(["k:1", "k:2", "k:3"])
+  })
+
+  it("an expired key is not yielded", async () => {
+    let now = 1_000
+    const redis = createInMemoryRedis({ now: () => now })
+    await redis.client.set("t:live", "a")
+    await redis.client.set("t:doomed", "b", { EX: 5 })
+    now += 6_000
+    const seen: string[] = []
+    for await (const key of redis.client.scanIterator({ MATCH: "t:*" })) seen.push(key)
+    expect(seen).toEqual(["t:live"])
+  })
+})
+
+describe("in-memory-redis — lists (lPush / lLen)", () => {
+  it("lLen is 0 for an absent list and counts what lPush added", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.lLen("dlq:x")).toBe(0)
+    expect(await redis.client.lPush("dlq:x", "one")).toBe(1)
+    expect(await redis.client.lPush("dlq:x", "two")).toBe(2)
+    expect(await redis.client.lLen("dlq:x")).toBe(2)
+  })
+
+  it("lPush prepends, and a multi-value push lands reversed (real LPUSH)", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.lPush("l", ["a", "b", "c"])).toBe(3)
+    // LPUSH a b c pushes each in turn onto the head → head is "c".
+    expect(await redis.client.lLen("l")).toBe(3)
+    await redis.client.lPush("l", "d")
+    expect(await redis.client.lLen("l")).toBe(4)
+  })
+
+  it("mirrors WRONGTYPE across the string/list boundary in both directions", async () => {
+    const redis = createInMemoryRedis({ seed: { str: "plain" } })
+    await expect(redis.client.lLen("str")).rejects.toThrow(WrongTypeError)
+    await expect(redis.client.lPush("str", "x")).rejects.toThrow(WrongTypeError)
+    await redis.client.lPush("list", "x")
+    await expect(redis.client.get("list")).rejects.toThrow(WrongTypeError)
+  })
+
+  it("a list honours TTL like any other key", async () => {
+    let now = 1_000
+    const redis = createInMemoryRedis({ now: () => now })
+    await redis.client.lPush("l", "a")
+    expect(await redis.client.expire("l", 5)).toBe(true)
+    expect(await redis.client.lLen("l")).toBe(1)
+    now += 6_000
+    expect(await redis.client.lLen("l")).toBe(0)
+    expect(redis.keys()).toEqual([])
+  })
+
+  it("validates arguments on an EMPTY store", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    await expect(loose(redis.client).lLen(5)).rejects.toThrow(/key must be a string/)
+    await expect(loose(redis.client).lPush("", "v")).rejects.toThrow(/key must not be empty/)
+    await expect(loose(redis.client).lPush("k", [])).rejects.toThrow(/at least one value/)
+    await expect(loose(redis.client).lPush("k", {})).rejects.toThrow(/value must be a string/)
+  })
+})
