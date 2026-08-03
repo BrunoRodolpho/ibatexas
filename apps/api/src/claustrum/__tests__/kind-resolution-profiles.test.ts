@@ -28,6 +28,7 @@ import {
   AUTORESOLVE_CONFIRM_KINDS,
   COUPON_SWAP_CTX_KINDS,
   DOMAIN_DEFAULT_CTX_LOADERS,
+  DOMAIN_DEFAULT_THREADING_STEPS,
   KIND_RESOLUTION_PROFILES,
   ORDER_AUTORESOLVE_KINDS,
   ORDER_BY_ID_KINDS,
@@ -43,6 +44,7 @@ import {
   kindMayStamp,
   resolutionProfileFor,
   stampProfiledSignal,
+  threadingStepsFor,
   type CtxLoaderSelection,
   type KindResolutionProfile,
 } from "../kind-resolution-profiles.js";
@@ -132,6 +134,12 @@ const CENSUS_PROFILED_KINDS = [
   "order.cancel.request",
   "order.checkout.create",
   "order.coupon.swap.request",
+  // R3-S4 — the three kinds that gained rows when id-threading became an axis.
+  // They were listed as UNROWED_PROBES below until this slice, and moving them is
+  // the whole visible consequence of the row-existence rule meeting a new axis.
+  "order.item.add",
+  "order.item.remove",
+  "order.item.update",
   "order.note.add",
   "order.reorder.request",
   "order.review.submit",
@@ -143,6 +151,28 @@ const CENSUS_PROFILED_KINDS = [
   "reservation.create",
   "reservation.modify",
   "reservation.waitlist.join",
+];
+
+/**
+ * R3-S4 — which kinds declare which id-threading step IN A ROW. Hand-transcribed
+ * from the fourteen kind gates inside `threadResolvedIdsIntoPayload` at commit
+ * 1f61fcc8 (resolve-and-assemble.ts lines 2149-2392), same discipline as every
+ * census above: typed out, never derived from the table.
+ *
+ * The two PREFIX threads are deliberately absent. They were
+ * `kind.startsWith("order.")` / `kind.startsWith("reservation.")` tests over an
+ * OPEN kind space, so they are declared as a domain baseline rather than per-kind
+ * — a row list for them would be a completeness claim the table cannot make. They
+ * are pinned separately, against the ladder and against un-rowed probes.
+ */
+const CENSUS_THREADING_STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["stamp-cancel-actor", ["order.cancel"]],
+  ["hydrate-product-with-allergens", ["order.amend.add_item", "order.item.add"]],
+  ["resolve-order-line-item", ["order.amend.remove_item", "order.amend.update_qty"]],
+  ["resolve-cart-line-item", ["order.item.remove", "order.item.update"]],
+  ["coerce-line-item-quantity", ["order.amend.update_qty", "order.item.update"]],
+  ["resolve-review-product", ["order.review.submit"]],
+  ["refill-allergen-exclusions", ["customer.preferences.update"]],
 ];
 
 /** AUTORESOLVE_CONFIRM_KINDS — the twelve, hand-written in compose-policy-packs.ts. */
@@ -222,14 +252,14 @@ describe("R3-S3 profile table — ctxLoaderFor reproduces the pre-migration disp
   // Every rowed kind, plus un-rowed kinds exercising each ladder branch and the
   // base fallthrough — the un-rowed half is what proves the domain ladder still
   // serves the open kind space rather than everything collapsing to "base".
+  // R3-S4 — order.item.add/update/remove left this list for CENSUS_PROFILED_KINDS
+  // when they gained rows. The `order.` ladder branch is still probed by two
+  // genuinely un-rowed cart ops below, which is what keeps that branch honest.
   const UNROWED_PROBES = [
     "payment.pix.create",
     "payment.method.change",
     "reservation.waitlist.leave",
     "customer.profile.update",
-    "order.item.add",
-    "order.item.update",
-    "order.item.remove",
     "order.coupon.apply",
     "order.cart.ensure",
     "whatsapp.session.start",
@@ -301,6 +331,17 @@ describe("R3-S3 profile table — every row is well-formed", () => {
   ]);
   const PROJECTIONS = new Set(["previous-order", "coupon-swap"]);
   const CTX_LOADERS = new Set(["payment", "order-by-id", "reservation", "customer", "cart", "base"]);
+  const THREADING_STEPS = new Set([
+    "thread-cart-id",
+    "thread-reservation-customer-id",
+    "stamp-cancel-actor",
+    "hydrate-product-with-allergens",
+    "resolve-order-line-item",
+    "resolve-cart-line-item",
+    "coerce-line-item-quantity",
+    "resolve-review-product",
+    "refill-allergen-exclusions",
+  ]);
 
   const rows = Object.entries(KIND_RESOLUTION_PROFILES);
 
@@ -316,6 +357,7 @@ describe("R3-S3 profile table — every row is well-formed", () => {
     for (const n of p.payloadNormalizers) expect(NORMALIZERS.has(n)).toBe(true);
     for (const c of p.ctxProjections) expect(PROJECTIONS.has(c)).toBe(true);
     for (const s of p.signals) expect(RESOLUTION_SIGNAL_NAMES).toContain(s);
+    for (const t of p.threadingSteps) expect(THREADING_STEPS.has(t)).toBe(true);
   });
 
   it.each(rows)("%s has no duplicate entries in its list fields", (_kind, profile) => {
@@ -323,12 +365,29 @@ describe("R3-S3 profile table — every row is well-formed", () => {
     expect(new Set(p.payloadNormalizers).size).toBe(p.payloadNormalizers.length);
     expect(new Set(p.ctxProjections).size).toBe(p.ctxProjections.length);
     expect(new Set(p.signals).size).toBe(p.signals.length);
+    expect(new Set(p.threadingSteps).size).toBe(p.threadingSteps.length);
   });
 
   // The table's own membership rule: a row exists IFF the kind has non-default
   // behaviour somewhere. An all-default row would be a claim of coverage the
   // table has not earned, and would silently join every "kinds with a profile"
   // count.
+  //
+  // R3-S4 FIXED A VACUITY HERE. The loader clause used to read
+  // `p.ctxLoader === ctxLoaderFor(\`__unrowed__${_kind}\`)`, intending "the row
+  // declares the loader its domain would have given it anyway". But prefixing the
+  // kind DESTROYS the prefix match — "__unrowed__order.cancel" does not start with
+  // "order." — so that call returned "base" for every kind, no row declares
+  // "base", and the clause was permanently false. Every row therefore passed this
+  // rule for free, whatever it declared. The ladder is now consulted directly with
+  // the REAL kind, which is the claim that was meant all along.
+  const domainLadderLoaderFor = (kind: string): CtxLoaderSelection => {
+    for (const [prefix, loader] of DOMAIN_DEFAULT_CTX_LOADERS) {
+      if (kind.startsWith(prefix)) return loader;
+    }
+    return "base";
+  };
+
   it.each(rows)("%s is non-default in at least one axis (rows must mean something)", (_kind, profile) => {
     const p = profile as KindResolutionProfile;
     const isDefault =
@@ -339,8 +398,25 @@ describe("R3-S3 profile table — every row is well-formed", () => {
       p.payloadNormalizers.length === 0 &&
       p.ctxProjections.length === 0 &&
       p.signals.length === 0 &&
-      p.ctxLoader === ctxLoaderFor(`__unrowed__${_kind}`);
+      p.threadingSteps.length === 0 &&
+      p.ctxLoader === domainLadderLoaderFor(_kind);
     expect(isDefault).toBe(false);
+  });
+
+  it("the repaired default probe is not vacuous (it agrees with the ladder for real kinds)", () => {
+    // Directional: the old probe answered "base" for all three of these. If this
+    // regressed to it, the rule above would silently stop being a rule.
+    expect(domainLadderLoaderFor("order.cancel")).toBe("cart");
+    expect(domainLadderLoaderFor("reservation.modify")).toBe("reservation");
+    expect(domainLadderLoaderFor("customer.preferences.update")).toBe("customer");
+    expect(domainLadderLoaderFor("whatsapp.session.start")).toBe("base");
+    // And it is genuinely the loader some rows declare, so the clause can be TRUE:
+    // order.item.add's "cart" IS its domain default, which is exactly why that row
+    // has to earn its existence on the threading axis instead.
+    expect(resolutionProfileFor("order.item.add").ctxLoader).toBe(
+      domainLadderLoaderFor("order.item.add"),
+    );
+    expect(resolutionProfileFor("order.item.add").threadingSteps.length).toBeGreaterThan(0);
   });
 
   it("the table's rows are exactly the hand-written roll call, by name", () => {
@@ -351,8 +427,8 @@ describe("R3-S3 profile table — every row is well-formed", () => {
     // this assertion nothing would pin their presence.
     expect(Object.keys(KIND_RESOLUTION_PROFILES).sort()).toEqual([...CENSUS_PROFILED_KINDS].sort());
     // 9 order-by-id + 3 payment + 4 reservation + 3 workflow anchors + checkout
-    // + preferences.
-    expect(rows.length).toBe(21);
+    // + preferences + R3-S4's 3 cart line-item kinds.
+    expect(rows.length).toBe(24);
   });
 });
 
@@ -370,7 +446,7 @@ describe("R3-S3 profile table — an absent kind gets none of it", () => {
     expect(UNPROFILED_KIND).toEqual({
       targetResolution: "none",
       confirmOnAutoResolve: false,
-      // The one axis where "absent" cannot mean "nothing" — every kind gets some
+      // The first axis where "absent" cannot mean "nothing" — every kind gets some
       // loader, so the default defers to the domain ladder instead of forcing
       // "base" and stripping cart/reservation/customer ctx from unlisted kinds.
       ctxLoader: "domain-default",
@@ -379,6 +455,11 @@ describe("R3-S3 profile table — an absent kind gets none of it", () => {
       payloadNormalizers: [],
       ctxProjections: [],
       signals: [],
+      // The SECOND such axis (R3-S4), and the empty array is only half its
+      // answer: the domain baseline still applies on top. See the
+      // `threadingStepsFor` block for the pin that an un-rowed order kind still
+      // threads its cartId.
+      threadingSteps: [],
     });
   });
 
@@ -485,6 +566,142 @@ describe("R3-S3 profile table — signals are declared per kind and enforced", (
       stampProfiledSignal(ctx, "definitely.not.a.kind", "reviewProductUnresolved", true),
     ).toThrow();
     expect(ctx.reviewProductUnresolved).toBeUndefined();
+  });
+});
+
+// ── THE ID-THREADING AXIS (R3-S4) ────────────────────────────────────────────
+
+describe("R3-S4 threading steps — declared per kind, with a domain baseline", () => {
+  it.each(CENSUS_THREADING_STEPS)(
+    "%s is declared by exactly the kinds that ran it before the migration",
+    (step, kinds) => {
+      const declared = Object.entries(KIND_RESOLUTION_PROFILES)
+        .filter(([, p]) => p.threadingSteps.includes(step as never))
+        .map(([kind]) => kind)
+        .sort();
+
+      expect(declared).toEqual([...kinds].sort());
+    },
+  );
+
+  it("every census list is non-empty and every step is declared or a domain baseline", () => {
+    for (const [, kinds] of CENSUS_THREADING_STEPS) expect(kinds.length).toBeGreaterThan(0);
+    // The whole vocabulary is accounted for: a step declared in the type but on no
+    // row and in no ladder would be dead code wearing a name — the threading
+    // equivalent of R3-S1's orphan confirm.
+    const rowDeclared = new Set(
+      Object.values(KIND_RESOLUTION_PROFILES).flatMap((p) => [...p.threadingSteps]),
+    );
+    const domainDeclared = new Set(DOMAIN_DEFAULT_THREADING_STEPS.flatMap(([, s]) => [...s]));
+    expect([...rowDeclared].sort()).toEqual(
+      [...CENSUS_THREADING_STEPS.map(([step]) => step)].sort(),
+    );
+    expect([...domainDeclared].sort()).toEqual([
+      "thread-cart-id",
+      "thread-reservation-customer-id",
+    ]);
+  });
+
+  it("the domain baseline is the two prefix threads, in the pre-migration order", () => {
+    expect(DOMAIN_DEFAULT_THREADING_STEPS.map(([prefix]) => prefix)).toEqual([
+      "order.",
+      "reservation.",
+    ]);
+  });
+
+  // The reason the two prefix threads are NOT rows: the kind space is open, and a
+  // row list would silently drop the thread for the next cart op anyone adds.
+  it.each([
+    ["order.cart.ensure", ["thread-cart-id"]],
+    ["order.coupon.apply", ["thread-cart-id"]],
+    ["reservation.waitlist.leave", ["thread-reservation-customer-id"]],
+    ["ops.order.refund", []],
+    ["whatsapp.session.start", []],
+    ["totally.unknown.kind", []],
+  ])("an UN-ROWED %s still gets its domain baseline and nothing else", (kind, expected) => {
+    expect(KIND_RESOLUTION_PROFILES[kind as string]).toBeUndefined();
+    expect([...threadingStepsFor(kind as string)].sort()).toEqual([...(expected as string[])].sort());
+  });
+
+  it("a rowed kind gets its domain baseline UNIONED with its own steps", () => {
+    // The additive semantics, stated as behaviour: order.cancel declares only the
+    // proposer stamp, and still threads the cartId every order kind threads.
+    expect(resolutionProfileFor("order.cancel").threadingSteps).toEqual(["stamp-cancel-actor"]);
+    expect([...threadingStepsFor("order.cancel")].sort()).toEqual([
+      "stamp-cancel-actor",
+      "thread-cart-id",
+    ]);
+    // …and a reservation kind gets the OTHER prefix, never the cart one.
+    expect([...threadingStepsFor("reservation.cancel")]).toEqual([
+      "thread-reservation-customer-id",
+    ]);
+    // A payment kind is in neither domain.
+    expect([...threadingStepsFor("payment.refund.issue")]).toEqual([]);
+  });
+
+  it("the row field alone is NOT the answer (reading it directly loses the baseline)", () => {
+    // Named as a test because the bug it prevents is silent: a future reader who
+    // reaches for `.threadingSteps` instead of `threadingStepsFor` drops the
+    // prefix threads for every kind, and nothing else in the table would notice.
+    const rowOnly = resolutionProfileFor("order.item.update").threadingSteps;
+    expect(rowOnly).not.toContain("thread-cart-id");
+    expect(threadingStepsFor("order.item.update").has("thread-cart-id")).toBe(true);
+  });
+
+  // ── The two invariants the interpreter's shape depends on ──────────────────
+
+  it("no kind declares BOTH line-item resolutions (they resolve against different stores)", () => {
+    // The interpreter runs them as two independent blocks, each with its own
+    // guard. A kind declaring both would resolve against a placed order AND a
+    // cart in the same turn — and would coerce its quantity twice.
+    for (const [kind, p] of Object.entries(KIND_RESOLUTION_PROFILES)) {
+      const both =
+        p.threadingSteps.includes("resolve-order-line-item") &&
+        p.threadingSteps.includes("resolve-cart-line-item");
+      expect(both, `${kind} declares both line-item resolutions`).toBe(false);
+    }
+  });
+
+  it("coerce-line-item-quantity never appears without a line-item resolution to nest in", () => {
+    // It runs INSIDE a resolution's runtime guard, so a row declaring it alone
+    // would declare a step that can never execute — inert, and invisible.
+    for (const [kind, p] of Object.entries(KIND_RESOLUTION_PROFILES)) {
+      if (!p.threadingSteps.includes("coerce-line-item-quantity")) continue;
+      const hasHost =
+        p.threadingSteps.includes("resolve-order-line-item") ||
+        p.threadingSteps.includes("resolve-cart-line-item");
+      expect(hasHost, `${kind} declares the coercion with no resolution to nest in`).toBe(true);
+    }
+  });
+
+  it("the amend honesty floor is what separates the two kinds sharing the hydration step", () => {
+    // order.item.add and order.amend.add_item run the SAME step; only the amend
+    // kind may stamp amendItemUnresolved. That asymmetry is why the interpreter
+    // gates that stamp on the DECLARATION rather than on the step.
+    expect(resolutionProfileFor("order.item.add").threadingSteps).toEqual(
+      resolutionProfileFor("order.amend.add_item").threadingSteps,
+    );
+    expect(kindMayStamp("order.amend.add_item", "amendItemUnresolved")).toBe(true);
+    expect(kindMayStamp("order.item.add", "amendItemUnresolved")).toBe(false);
+  });
+
+  it("HARD RULE #1 — every step that touches allergens is declared, and by whom", () => {
+    // Allergens are always an explicit array, never inferred. Two steps in this
+    // vocabulary touch an allergen field; this pins WHICH kinds run them, so a
+    // row that quietly acquired or lost one is named here. The BEHAVIOUR (the
+    // array arriving byte-identical from the catalog / the saved profile) is
+    // pinned against the real resolver in threading-steps-hard-rule-1.test.ts.
+    const kindsRunning = (step: string): string[] =>
+      Object.entries(KIND_RESOLUTION_PROFILES)
+        .filter(([, p]) => p.threadingSteps.includes(step as never))
+        .map(([kind]) => kind)
+        .sort();
+
+    expect(kindsRunning("hydrate-product-with-allergens")).toEqual([
+      "order.amend.add_item",
+      "order.item.add",
+    ]);
+    expect(kindsRunning("refill-allergen-exclusions")).toEqual(["customer.preferences.update"]);
   });
 });
 
