@@ -132,65 +132,62 @@ const backend = vi.hoisted(() => ({
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  // Dynamic import: a `vi.mock` factory is hoisted above this file's static imports,
+  // so it cannot close over one. The builder is type-only against turn-reads.js, so
+  // this drags no infrastructure into the factory (see the helper's header).
+  const { buildTriadReadBackend } = await import("./helpers/triad-backend-builder.js");
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHolidayForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      readScheduleOverrideForDate: async () => null,
+    // Every read NOT declared below defaults to a `notUsed` thrower naming itself, so
+    // an unexpected read fails loudly instead of returning a fabricated value.
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
 
-      // THE OWNER-SCOPED READ. `null` on a cross-owner / absent id is the production
-      // contract (turn-reads.ts `readReservation`: owner-scoped `getById` throws on a
-      // cross-owner id, caught → null), and the investigator turns that into
-      // `OwnerScopedReadUnavailable` → `recordError` → ledger state `error`. Inv 7:
-      // error ≠ absence, and an errored read NEVER attributes ownership.
-      readReservation: async (reservationId: string, customerId: string) => {
-        const r = RESERVATIONS[reservationId];
-        const owned = r !== undefined && r.ownerId === customerId;
-        backend.reservationReads.push({ id: reservationId, customerId, owned });
-        if (!owned) return null;
-        return {
-          reservationId,
-          status: r.status,
-          partySize: r.partySize,
-          // The REAL composer — the C6-bound scalar is production's, not the test's.
-          statusLine: actual.composeReservationStatusLine({
+        // THE OWNER-SCOPED READ. `null` on a cross-owner / absent id is the production
+        // contract (turn-reads.ts `readReservation`: owner-scoped `getById` throws on a
+        // cross-owner id, caught → null), and the investigator turns that into
+        // `OwnerScopedReadUnavailable` → `recordError` → ledger state `error`. Inv 7:
+        // error ≠ absence, and an errored read NEVER attributes ownership.
+        readReservation: async (reservationId, customerId) => {
+          const r = RESERVATIONS[reservationId];
+          const owned = r !== undefined && r.ownerId === customerId;
+          backend.reservationReads.push({ id: reservationId, customerId, owned });
+          if (!owned) return null;
+          return {
+            reservationId,
             status: r.status,
             partySize: r.partySize,
-            isoDate: r.date,
-            startTime: r.startTime,
-          }),
-        };
-      },
+            // The REAL composer — the C6-bound scalar is production's, not the test's.
+            statusLine: actual.composeReservationStatusLine({
+              status: r.status,
+              partySize: r.partySize,
+              isoDate: r.date,
+              startTime: r.startTime,
+            }),
+          };
+        },
 
-      // FE-T17b — the owner-scoped enumeration the investigator unions in (a
-      // `get_my_reservations` LIST call carries no id, so the model's extraction is
-      // structurally empty). Keyed ONLY by customerId, so it is the wall that decides
-      // which subjects can ever be admissible.
-      listActiveReservationIds: async (customerId: string) =>
-        Object.entries(RESERVATIONS)
-          .filter(([, r]) => r.ownerId === customerId)
-          .map(([id]) => id),
+        // FE-T17b — the owner-scoped enumeration the investigator unions in (a
+        // `get_my_reservations` LIST call carries no id, so the model's extraction is
+        // structurally empty). Keyed ONLY by customerId, so it is the wall that decides
+        // which subjects can ever be admissible.
+        listActiveReservationIds: async (customerId) =>
+          Object.entries(RESERVATIONS)
+            .filter(([, r]) => r.ownerId === customerId)
+            .map(([id]) => id),
 
-      // A reservation question owns no order/payment; present-with-0 keeps §O#15 from
-      // force-requiring an order companion.
-      listActiveOrderIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+        // A reservation question owns no order/payment; present-with-0 keeps §O#15 from
+        // force-requiring an order companion.
+        listActiveOrderIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 

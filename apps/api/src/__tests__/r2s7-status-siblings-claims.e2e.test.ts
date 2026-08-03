@@ -127,9 +127,10 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  // Dynamic import: a `vi.mock` factory is hoisted above this file's static imports,
+  // so it cannot close over one. The builder is type-only against turn-reads.js, so
+  // this drags no infrastructure into the factory (see the helper's header).
+  const { buildTriadReadBackend } = await import("./helpers/triad-backend-builder.js");
   // The two orders, keyed for the per-order lookups. A read for an id NOT in this map is
   // a cross-owner / bogus id: it must return null (the owner-scoped `getById` miss), never
   // a fabricated row — that null is what the victim-subject cases below measure.
@@ -150,65 +151,68 @@ vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   };
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "12h–16h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: async (orderId: string) => {
-        st.reads.push(`order_fulfillment_stage:${orderId}`);
-        const row = OWNED[orderId];
-        return row === undefined
-          ? null
-          : { orderId, displayId: row.displayId, fulfillmentStatus: row.fulfillmentStatus };
-      },
-      readPaymentStatus: async (orderId: string) => {
-        st.reads.push(`payment_status:${orderId}`);
-        const row = OWNED[orderId];
-        return row === undefined
-          ? null
-          : {
-              orderId,
-              displayId: row.displayId,
-              status: row.paymentStatus,
-              method: "pix",
-            };
-      },
-      // The TWO W6 falsifiers — genuinely read for this type (unlike every predecessor's
-      // single deliberately-unread one), which is why the two-row set had to be proven
-      // expressible. Both default to "no falsifying fact", so the base read can VALIDATE.
-      readPaymentRefund: async (orderId: string) => ({
-        orderId,
-        refunded: st.refundedOrders.includes(orderId),
-        refundedAmountCentavos: st.refundedOrders.includes(orderId) ? 1000 : 0,
-        status: st.refundedOrders.includes(orderId) ? "refunded" : "",
+    // Every read NOT declared below defaults to a `notUsed` thrower naming itself, so
+    // an unexpected read fails loudly instead of returning a fabricated value.
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "12h–16h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        readOrderFulfillment: async (orderId) => {
+          st.reads.push(`order_fulfillment_stage:${orderId}`);
+          const row = OWNED[orderId];
+          return row === undefined
+            ? null
+            : { orderId, displayId: row.displayId, fulfillmentStatus: row.fulfillmentStatus };
+        },
+        readPaymentStatus: async (orderId) => {
+          st.reads.push(`payment_status:${orderId}`);
+          const row = OWNED[orderId];
+          return row === undefined
+            ? null
+            : {
+                orderId,
+                displayId: row.displayId,
+                status: row.paymentStatus,
+                method: "pix",
+              };
+        },
+        // The TWO W6 falsifiers — genuinely read for this type (unlike every predecessor's
+        // single deliberately-unread one), which is why the two-row set had to be proven
+        // expressible. Both default to "no falsifying fact", so the base read can VALIDATE.
+        readPaymentRefund: async (orderId) => ({
+          orderId,
+          refunded: st.refundedOrders.includes(orderId),
+          refundedAmountCentavos: st.refundedOrders.includes(orderId) ? 1000 : 0,
+          status: st.refundedOrders.includes(orderId) ? "refunded" : "",
+        }),
+        // THE FIELD NAME IS `disputed`, AND THE TWO ARE NOT INTERCHANGEABLE. The investigator
+        // reads `v.disputed ? v : ABSENT_READ` (ibatexas-investigator.ts) against the published
+        // `PaymentChargebackRead { orderId, disputed, status }` shape (turn-reads.ts). A double
+        // returning some other spelling — this one said `hasChargeback` until the review caught
+        // it — leaves `v.disputed` UNDEFINED, which is falsy, so the arm reads exactly like "no
+        // dispute" and every positive case stays green while the falsifier is unprovable.
+        //
+        // R5-S3: that spelling is now a COMPILE error rather than a review catch. This literal
+        // is typed against the real `PaymentChargebackRead` by `buildTriadReadBackend`, so
+        // `hasChargeback` fails tsc ("Property 'disputed' is missing … but required in type
+        // 'PaymentChargebackRead'"); the counterfactual is pinned under `@ts-expect-error` in
+        // helpers/triad-backend-builder.type-coverage.test-d.ts. The switch below still makes
+        // the arm load-bearing at RUNTIME — the type only guarantees the shape is USABLE, not
+        // that a case exercises it.
+        readPaymentChargeback: async (orderId) => ({
+          orderId,
+          disputed: st.disputedOrders.includes(orderId),
+          status: st.disputedOrders.includes(orderId) ? "disputed" : "",
+        }),
+        listActiveOrderIds: async () => [...st.orderIds],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => st.orderIds.length,
       }),
-      // THE FIELD NAME IS `disputed`, AND THE TWO ARE NOT INTERCHANGEABLE. The investigator
-      // reads `v.disputed ? v : ABSENT_READ` (ibatexas-investigator.ts) against the published
-      // `PaymentChargebackRead { orderId, disputed, status }` shape (turn-reads.ts). A double
-      // returning some other spelling — this one said `hasChargeback` until the review caught
-      // it — leaves `v.disputed` UNDEFINED, which is falsy, so the arm reads exactly like "no
-      // dispute" and every positive case stays green while the falsifier is unprovable. tsc
-      // cannot catch it either: a `vi.mock` factory's return is loosely typed, so neither
-      // excess- nor missing-property checking applies. That is the class where a double proves
-      // a port was CALLED but never that its output is USABLE — so the switch below is what
-      // makes this arm load-bearing rather than merely correctly spelled.
-      readPaymentChargeback: async (orderId: string) => ({
-        orderId,
-        disputed: st.disputedOrders.includes(orderId),
-        status: st.disputedOrders.includes(orderId) ? "disputed" : "",
-      }),
-      readReservation: notUsed("readReservation"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      listActiveOrderIds: async () => [...st.orderIds],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => st.orderIds.length,
-    }),
   };
 });
 

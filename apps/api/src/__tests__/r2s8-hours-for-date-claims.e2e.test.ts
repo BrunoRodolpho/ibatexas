@@ -127,48 +127,82 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  // Dynamic import: a `vi.mock` factory is hoisted above this file's static imports,
+  // so it cannot close over one. The builder is type-only against turn-reads.js, so
+  // this drags no infrastructure into the factory (see the helper's header).
+  const { buildTriadReadBackend } = await import("./helpers/triad-backend-builder.js");
+  // R5-S3 — the holiday / override doubles below were RESHAPED when this suite moved
+  // onto the typed builder. They previously returned ad-hoc literals (`{ name, isoDate }`
+  // and `{ isoDate, isClosed, reason }`) that match NEITHER published type: `HolidayRead`
+  // IS `HolidayEntry { id, date, label, allDay, startTime, endTime }` and
+  // `ScheduleOverrideRead` IS `ScheduleOverrideEntry { id, date, isOpen, blocks, note }`
+  // (@ibatexas/types · schedule.types.ts). Note the POLARITY on the override: the real
+  // field is `isOpen`, so "closed that day" is `isOpen: false` — the old `isClosed: true`
+  // read as `isOpen === undefined`, falsy, i.e. closed only by coincidence. Both were
+  // BEHAVIOURALLY INERT and therefore invisible to every runtime assertion: the
+  // investigator records these falsifiers PRESENT-vs-ABSENT (`(await b.readHoliday()) ??
+  // ABSENT_READ`) and reads no field off them, so a wrong spelling could never fail a
+  // case. That is the R2-S7 class exactly, and the typed builder is what surfaced it.
+  // The counts below are unchanged by the reshape — presence is all that was ever read.
+  const TODAY_ISO = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+  }).format(new Date());
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      // TODAY's hours. Deliberately a shape `hoursFor` can NEVER emit (no day-of-month
-      // prefix), so an assertion on a date-specific string can never be satisfied by the
-      // today read — "the DATE claim rendered" stays distinguishable from "some hours
-      // claim rendered".
-      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      // TODAY's holiday, under the BARE key. The SCN-003 separation lives here: this must
-      // never demote a future-date answer, because that answer's falsifier is the
-      // DATE-SUFFIXED key below.
-      readHoliday: async () =>
-        st.todayIsHoliday ? { name: "feriado de hoje", isoDate: "today" } : null,
-      readHoursForDate: async (isoDate: string) => {
-        st.dateReads.push(isoDate);
-        return { hoursText: hoursFor(isoDate) };
-      },
-      readHolidayForDate: async (isoDate: string) =>
-        st.holidayDates.includes(isoDate)
-          ? { name: "feriado municipal", isoDate }
-          : null,
-      readScheduleOverrideForDate: async (isoDate: string) =>
-        st.overrideDates.includes(isoDate)
-          ? { isoDate, isClosed: true, reason: "manutenção" }
-          : null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readReservation: notUsed("readReservation"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      listActiveOrderIds: async () => [],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+    // Every read NOT declared below defaults to a `notUsed` thrower naming itself, so
+    // an unexpected read fails loudly instead of returning a fabricated value.
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        // TODAY's hours. Deliberately a shape `hoursFor` can NEVER emit (no day-of-month
+        // prefix), so an assertion on a date-specific string can never be satisfied by the
+        // today read — "the DATE claim rendered" stays distinguishable from "some hours
+        // claim rendered".
+        readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        // TODAY's holiday, under the BARE key. The SCN-003 separation lives here: this must
+        // never demote a future-date answer, because that answer's falsifier is the
+        // DATE-SUFFIXED key below.
+        readHoliday: async () =>
+          st.todayIsHoliday
+            ? {
+                id: "holiday-today",
+                date: TODAY_ISO,
+                label: "feriado de hoje",
+                allDay: true,
+                startTime: null,
+                endTime: null,
+              }
+            : null,
+        readHoursForDate: async (isoDate) => {
+          st.dateReads.push(isoDate);
+          return { hoursText: hoursFor(isoDate) };
+        },
+        readHolidayForDate: async (isoDate) =>
+          st.holidayDates.includes(isoDate)
+            ? {
+                id: `holiday-${isoDate}`,
+                date: isoDate,
+                label: "feriado municipal",
+                allDay: true,
+                startTime: null,
+                endTime: null,
+              }
+            : null,
+        readScheduleOverrideForDate: async (isoDate) =>
+          st.overrideDates.includes(isoDate)
+            ? {
+                id: `override-${isoDate}`,
+                date: isoDate,
+                isOpen: false,
+                blocks: [],
+                note: "manutenção",
+              }
+            : null,
+        listActiveOrderIds: async () => [],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 
