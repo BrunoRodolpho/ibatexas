@@ -77,6 +77,12 @@ import {
   RESERVATION_STATUS_ID,
   RESERVATION_STATUS_REGISTRY_SPEC,
 } from "../reservation-status.generated.js";
+import { STORE_HOURS_SOURCE } from "../store-hours.claim.js";
+import { STORE_HOURS_FOR_DATE_SOURCE } from "../store-hours-for-date.claim.js";
+import {
+  STORE_HOURS_FOR_DATE_ID,
+  STORE_HOURS_FOR_DATE_REGISTRY_SPEC,
+} from "../store-hours-for-date.generated.js";
 // R2-S7 — STORE_OPEN_NOW is the OTHER member of the hand-written PICKUP_Q row, so the two-row
 // INV-4 measurements need a real second definition to build a well-formed world with.
 import { STORE_OPEN_NOW_SOURCE } from "../store-open-now.claim.js";
@@ -1474,4 +1480,126 @@ it("R2-S7 — the money floor and the two-row situation are registry-wide facts"
     "STORE_OPEN_NOW",
   ]);
   expect(rowCount("PAYMENT_STATUS")).toBe(1);
+});
+
+// ── R2-S8 — STORE_HOURS_FOR_DATE: the LAST parameterized type. ──────────────────────
+//
+// Structurally it is MENU_ITEM_PRICE's class (PUBLIC per-item, `not_applicable` ownership),
+// so the widening it exercises is already proven. What is NEW and worth measuring is that
+// its "resource" is a CALENDAR DATE and its falsifier keys are SHARED WORD-FOR-WORD with two
+// FIXED-SUBJECT siblings — a combination no earlier adoption had.
+const DATE_BASE_EVIDENCE_KEY = "schedule:store_hours";
+const QUERIED_DATE = "2026-08-09";
+
+describe("R2-S8 — the date-subjected public per-item type", () => {
+  it("wire fact 1: the generated spec declares BARE bases on all THREE key-bearing fields", () => {
+    expect(STORE_HOURS_FOR_DATE_REGISTRY_SPEC.requiredEvidence.map((e) => e.key)).toEqual([
+      DATE_BASE_EVIDENCE_KEY,
+    ]);
+    expect(STORE_HOURS_FOR_DATE_REGISTRY_SPEC.falsifiers.map((f) => f.key)).toEqual([
+      "schedule:schedule_override",
+      "schedule:holiday",
+    ]);
+    expect(STORE_HOURS_FOR_DATE_REGISTRY_SPEC.valueBinding.key).toBe(
+      DATE_BASE_EVIDENCE_KEY,
+    );
+    expect(STORE_HOURS_FOR_DATE_REGISTRY_SPEC.perResourceKey).toBe(true);
+    expect(STORE_HOURS_FOR_DATE_ID).toBe("STORE_HOURS_FOR_DATE@1");
+  });
+
+  it("wire fact 2: selectCandidateClaim date-suffixes evidence + BOTH falsifiers + binding", () => {
+    const candidate = selectCandidateClaim({
+      type: "STORE_HOURS_FOR_DATE",
+      subject: QUERIED_DATE,
+      actor: { principal: "customer" },
+      value: undefined,
+    });
+    expect(candidate).toBeDefined();
+    const s = candidate!.soundness;
+    // Byte-equal to the investigator's date-keyed reads (ibatexas-investigator.ts).
+    expect(s.requiredEvidence.map((e) => e.key)).toEqual([
+      `schedule:store_hours:${QUERIED_DATE}`,
+    ]);
+    // BOTH falsifiers suffixed — this is the SCN-003 soundness pin. If either stayed BARE
+    // it would resolve TODAY's holiday/override and demote a clean future-date answer.
+    expect(s.falsifiers?.map((f) => f.key)).toEqual([
+      `schedule:schedule_override:${QUERIED_DATE}`,
+      `schedule:holiday:${QUERIED_DATE}`,
+    ]);
+    expect(s.valueBinding?.key).toBe(`schedule:store_hours:${QUERIED_DATE}`);
+    // C6 structural guard: the suffixed binding key is still a member of the suffixed
+    // requiredEvidence set.
+    expect(s.requiredEvidence.map((e) => e.key)).toContain(s.valueBinding?.key);
+  });
+
+  it("wire fact 3: base-key readers classify it PUBLIC PER-ITEM off the generated spec", () => {
+    // This is what BKL-289's `deriveUnionSubject` branches on, and the derivation that
+    // must survive adoption: `publicPerItemBaseKey` reads `requiredEvidence[0].key` off
+    // the SPEC. If it returned undefined, the union would treat this type as
+    // FIXED-SUBJECT and bind the PRINCIPAL as its subject — an always-absent key, an
+    // UNKNOWN claim, a degraded turn, and nothing red.
+    expect(publicPerItemBaseKey("STORE_HOURS_FOR_DATE")).toBe(DATE_BASE_EVIDENCE_KEY);
+    expect(ownerScopedBaseKey("STORE_HOURS_FOR_DATE")).toBeUndefined();
+    expect(
+      STORE_HOURS_FOR_DATE_REGISTRY_SPEC.requiredEvidence.every(
+        (e) => e.ownershipPolicy === "not_applicable",
+      ),
+    ).toBe(true);
+    // …and its `schedule:*` namespace matches NO owner-scoped prefix, which is the second,
+    // independent reason the subject can never be read as an owned resource id.
+    expect(
+      OWNER_SCOPED_KEY_PREFIXES.some((p) => DATE_BASE_EVIDENCE_KEY.startsWith(p)),
+    ).toBe(false);
+  });
+
+  it("the REGISTRY_SPECS row is the generated spec + the spliced owner posture, nothing else", () => {
+    expect(REGISTRY_SPECS.STORE_HOURS_FOR_DATE).toEqual({
+      ...STORE_HOURS_FOR_DATE_REGISTRY_SPEC,
+      dietaryPosture: "answer-anyway",
+    });
+  });
+
+  it("FALSIFIER SHARING: the override key is WORD-FOR-WORD the one both siblings declare", () => {
+    // R2-S1's evidence, re-asserted now that all three types compile from sources that
+    // could each drift independently. The investigator serves ONE `schedule_override` read
+    // for the whole cluster, so the sharing is a live wire fact and not a tidiness
+    // preference: a source that renamed its own key would silently stop being falsified.
+    //
+    // The comparison is on the DECLARED key. This type's runtime key is date-suffixed and
+    // its siblings' are not — that divergence happens at select time and is exactly what
+    // keeps a future-date answer immune to today's override (asserted in wire fact 2).
+    const overrideKeyOf = (
+      spec: { readonly falsifiers?: readonly { readonly key: string }[] } | undefined,
+    ) => spec?.falsifiers?.map((f) => f.key).filter((k) => k.includes("override"));
+    expect(overrideKeyOf(STORE_HOURS_FOR_DATE_SOURCE)).toEqual([
+      "schedule:schedule_override",
+    ]);
+    expect(overrideKeyOf(STORE_HOURS_SOURCE)).toEqual(["schedule:schedule_override"]);
+    expect(overrideKeyOf(STORE_OPEN_NOW_SOURCE)).toEqual(["schedule:schedule_override"]);
+    // The generated images agree with their sources (the projection passes falsifiers by
+    // reference, so this would only break if the compiler started transforming keys).
+    expect(overrideKeyOf(STORE_HOURS_FOR_DATE_REGISTRY_SPEC)).toEqual([
+      "schedule:schedule_override",
+    ]);
+    // And the HOLIDAY key is shared with STORE_HOURS the same way (the pair STORE_OPEN_NOW
+    // deliberately does NOT have — it declares one falsifier, not two).
+    expect(STORE_HOURS_FOR_DATE_SOURCE.falsifiers.map((f) => f.key)).toEqual(
+      STORE_HOURS_SOURCE.falsifiers.map((f) => f.key),
+    );
+  });
+
+  it("the date twin and the TODAY twin differ ONLY by the parameterization facet", () => {
+    // The strongest statement available about "same shape, different subject": strip the
+    // one facet that distinguishes them and the two specs are deep-equal. Without this,
+    // a divergence in ttl, integrity floor or provenance could creep into either source
+    // and no case above would see it.
+    const { perResourceKey, ...dateSpecWithoutFacet } =
+      STORE_HOURS_FOR_DATE_REGISTRY_SPEC;
+    expect(perResourceKey).toBe(true);
+    expect(dateSpecWithoutFacet).toEqual({
+      ...REGISTRY_SPECS.STORE_HOURS,
+      // STORE_HOURS carries its own spliced posture; the generated halves are what compare.
+      dietaryPosture: undefined,
+    });
+  });
 });

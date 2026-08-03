@@ -57,10 +57,17 @@ import type {
 // `perResourceKey: true` beside UNSUFFIXED base keys, which is what `selectCandidateClaim`
 // below requires (it does the suffixing). R2-S3 adopted the price type's two PUBLIC
 // per-item siblings — MENU_ITEM_CONTENTS and MENU_DIETARY — through that same widening,
-// with no further schema change. The remaining parameterized types (the eight OWNER-scoped
-// ones, whose `ownershipPolicy: "required"` rows add a C1 axis this batch does not touch,
-// plus STORE_HOURS_FOR_DATE, whose span class is a COMPOSED predicate rather than a flat
-// marker alternation) stay hand-written here until each is adopted in turn.
+// with no further schema change. R2-S4 through R2-S7 then adopted the seven OWNER-scoped
+// parameterized types, whose `ownershipPolicy: "required"` rows survive the published
+// projection BY REFERENCE (no second widening). R2-S8 closes the set with
+// STORE_HOURS_FOR_DATE, the one whose span class is a COMPOSED predicate rather than a flat
+// marker alternation: the `scheduleContext` conjunct became the generated marker net and
+// the `dateAnchor` conjunct stayed a hand-written GUARD, so no span-net restructure was
+// needed after all. EVERY `perResourceKey` type in this object now compiles from a source;
+// what remains hand-written here is the NINE non-parameterized types (MENU_ITEM_ALLERGENS,
+// MENU_OVERVIEW, DELIVERY_COVERAGE, DELIVERY_NO_COVERAGE, COUPON_VALID, COUPON_INVALID,
+// MENU_PAIRINGS, MENU_SUBSTITUTIONS, PURCHASE_COMPLETED — the last being the only
+// action_claim, a posture the compiler has no `render.validated` shape for).
 import { CART_CONTENTS_REGISTRY_SPEC } from "./claimdefs/cart-contents.generated.js";
 import { CART_EMPTY_REGISTRY_SPEC } from "./claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_REGISTRY_SPEC } from "./claimdefs/menu-dietary.generated.js";
@@ -71,6 +78,7 @@ import { ORDER_HISTORY_REGISTRY_SPEC } from "./claimdefs/order-history.generated
 import { PAYMENT_HISTORY_REGISTRY_SPEC } from "./claimdefs/payment-history.generated.js";
 import { PAYMENT_STATUS_REGISTRY_SPEC } from "./claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_REGISTRY_SPEC } from "./claimdefs/reservation-status.generated.js";
+import { STORE_HOURS_FOR_DATE_REGISTRY_SPEC } from "./claimdefs/store-hours-for-date.generated.js";
 import { STORE_HOURS_REGISTRY_SPEC } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_REGISTRY_SPEC } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generated.js";
@@ -587,66 +595,29 @@ export const REGISTRY_SPECS = {
     ...STORE_HOURS_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
   },
-  // BKL-138 — the DAY-SPECIFIC hours claim (SCN-002/003). The per-date twin of
-  // STORE_HOURS: identical evidence/falsifier/value-binding SHAPE, but `perResourceKey`
-  // so `selectCandidateClaim` suffixes EVERY key with `:{subject}` (the QUERIED ISO
-  // date) → the runtime keys are `schedule:store_hours:{date}` /
-  // `schedule:schedule_override:{date}` / `schedule:holiday:{date}`, matching the
-  // investigator's DATE-KEYED reads. This is the SCN-003 soundness pin: the falsifiers
-  // re-read the QUERIED date, so a holiday/override ON that date demotes to UNKNOWN
-  // while TODAY's holiday (recorded under the BARE `schedule:holiday` key STORE_HOURS
-  // uses) can NEVER poison a future-date answer — the two never collide. PUBLIC
-  // (owned by nobody): all evidence is `not_applicable` ownership, so
-  // `ownerScopedBaseKey` is undefined and the subject is the resolved date, never an
-  // owner id (its `schedule:*` key matches NO OWNER_SCOPED_KEY_PREFIXES → never an
-  // owned resource). Do NOT overload the live-proven TODAY STORE_HOURS (BKL-121 D3):
-  // an independent type keeps the two degrade paths decoupled.
+  // inv.18 v2 / R2-S8 — the DAY-SPECIFIC hours claim (BKL-138, SCN-002/003) is now
+  // GENERATED from its ClaimDefinition source (`./claimdefs/store-hours-for-date.generated.ts`,
+  // compiled from `store-hours-for-date.claim.ts`). The EIGHTH parameterized type and the
+  // LAST one — every `perResourceKey` row in this object now compiles from a source. Its
+  // ~57-line handwritten stanza collapses into this spread, and the SCN-003 rationale (the
+  // falsifiers re-read the QUERIED date, so today's holiday can never poison a future-date
+  // answer — the keys are date-suffixed in lockstep by `parameterizeKeysBySubject`) moved
+  // verbatim into that source's header.
+  //
+  // PUBLIC per-date, so `ownerScopedBaseKey` stays undefined and `publicPerItemBaseKey`
+  // still resolves `schedule:store_hours` off the GENERATED spec exactly as it did off this
+  // stanza — which is what keeps BKL-289's `deriveUnionSubject` classifying this type into
+  // its PUBLIC PER-ITEM branch and reading the `{date}` subject off the ledger.
+  //
+  // BKL-270 — the posture is SPLICED here rather than declared in the source, for the
+  // STORE_OPEN_NOW reason: the generated spec is @generated under a source-checksum drift
+  // guard and `compileClaimDefinition` (published @adjudicate/core) has no concept of
+  // `dietaryPosture`. `answer-anyway`: the date-keyed twin of STORE_HOURS — same schedule
+  // source, same clock-window content, same argument. (Never driven by the audit; reasoned
+  // from the render fact.)
   STORE_HOURS_FOR_DATE: {
-    kind: "read_claim",
-    // BKL-270 — the date-keyed twin of STORE_HOURS: same schedule source, same
-    // clock-window content, same argument. (Never driven by the audit; reasoned
-    // from the render fact.)
+    ...STORE_HOURS_FOR_DATE_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "trusted_service",
-    requiredEvidence: [
-      {
-        // SAME base key as STORE_HOURS — but `perResourceKey` suffixes it `:{date}`
-        // at select time, so the ledger keys never collide with today's bare entry.
-        key: "schedule:store_hours",
-        ownershipPolicy: "not_applicable",
-        // UNITS (BKL-121 / BKL-125 pin): the kernel enforces `cacheable` ttl in epoch-
-        // MILLISECONDS (a bare `3600` = a 3.6s window that demotes every real turn).
-        // 3_600_000 ms = the intended 1-hour bound (vacuous within a per-turn ledger).
-        freshnessPolicy: { kind: "cacheable", ttl: 3_600_000 },
-        sourceIntegrity: "trusted_service",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    // Suffix every key by the candidate `subject` (the QUERIED ISO date).
-    perResourceKey: true,
-    // W6 — a per-date override OR a holiday ON THE QUERIED DATE falsifies that date's
-    // weekly-schedule hours (BOTH enumerated → honest completeness). The keys are
-    // date-suffixed in lockstep with requiredEvidence (`parameterizeKeysBySubject`).
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "schedule:schedule_override",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "trusted_service",
-        provenancePolicy: "preserve",
-      },
-      {
-        key: "schedule:holiday",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "trusted_service",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered value to the QUERIED date's `hoursText` (ledger-sourced).
-    valueBinding: { key: "schedule:store_hours", path: ["hoursText"] },
   },
   // Triad slice — STORE_OPEN_NOW is now GENERATED from its ClaimDefinition source
   // (inv.18 v2). The override-aware evidence + W6 falsifier + C6 value-binding all

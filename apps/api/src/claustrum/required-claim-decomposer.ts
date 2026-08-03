@@ -51,6 +51,7 @@ import { ORDER_HISTORY_CLOSURE } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_CLOSURE } from "./claimdefs/payment-history.generated.js";
 import { PAYMENT_STATUS_CLOSURE } from "./claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_CLOSURE } from "./claimdefs/reservation-status.generated.js";
+import { STORE_HOURS_FOR_DATE_CLOSURE } from "./claimdefs/store-hours-for-date.generated.js";
 import { STORE_INFO_CLOSURE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
 // LE2-019 — the PURE coupon-code extractor (no IO; see promotion-validity.ts's
@@ -132,12 +133,18 @@ export type SpanClass =
 export const REQUIRED_CLAIM_CLOSURE = {
   // inv.18 v2 — STORE_OPEN_NOW_Q's row is GENERATED (span class + required set).
   [STORE_OPEN_NOW_CLOSURE.spanClass]: STORE_OPEN_NOW_CLOSURE.requires,
-  // BKL-138 — a day-specific hours question requires the date-hours claim. This row
-  // ALSO auto-enrols STORE_HOURS_FOR_DATE into the claim-planner's
-  // RELEVANCE_GOVERNED_TYPES (ibatexas-claim-planner.ts) via the closure-value union,
-  // so an over-proposed date-hours claim is DEMOTED on a turn whose date-hours span did
-  // not fire (the smalltalk-hijack guard) yet KEPT when it did.
-  STORE_HOURS_FOR_DATE_Q: ["STORE_HOURS_FOR_DATE"],
+  // inv.18 v2 / R2-S8 — STORE_HOURS_FOR_DATE_Q's row is GENERATED (span class + required
+  // set); the BKL-138 rationale (a day-specific hours question requires only the date-hours
+  // claim, and this row is what auto-enrols STORE_HOURS_FOR_DATE into the claim-planner's
+  // RELEVANCE_GOVERNED_TYPES via the closure-value union) moved verbatim into
+  // `./claimdefs/store-hours-for-date.claim.ts`.
+  //
+  // WHAT STAYS HAND-WRITTEN, and where to look for it: the `dateAnchor` CONJUNCT that gates
+  // this span in `classifyRequestSpans` (the generated markers are the `scheduleContext`
+  // half only — see below and the source's header), and the BKL-152 STORE_OPEN_NOW_Q
+  // SUPPRESSION SEAM in `decomposeRequiredClaims`, which is sequencing over the assembled
+  // required set rather than any one type's contribution.
+  [STORE_HOURS_FOR_DATE_CLOSURE.spanClass]: STORE_HOURS_FOR_DATE_CLOSURE.requires,
   // inv.18 v2 / R2-S7 — both STATUS rows are GENERATED (span class + required set); the
   // rationale for each requiring ONLY its own claim, and for the row being what auto-enrols
   // the type into the claim-planner's RELEVANCE_GOVERNED_TYPES, moved verbatim into
@@ -1086,6 +1093,32 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
    * comment claiming otherwise would be a safety property the measurement denies.
    */
   cartContents: CART_CONTENTS_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S8 — the SCHEDULE-CONTEXT half of the STORE_HOURS_FOR_DATE_Q predicate,
+   * now GENERATED as NINE arms from `store-hours-for-date.claim.ts`, rejoined in declaration
+   * order. Same statement as its predecessors: if this reassembly is byte-identical to the
+   * pre-migration literal, it is not an equivalent regex, it is THE SAME regex.
+   *
+   * WHAT THIS PIN DOES NOT SAY, and why the distinction is the whole slice. Every earlier
+   * entry here pins a WHOLE span net. This one pins ONE CONJUNCT of a two-conjunct
+   * predicate: the runtime span is `dateAnchor && scheduleContext`, and only the second half
+   * is generated. So this value staying byte-identical is consistent with the span being
+   * COMPLETELY BROKEN — delete the `dateAnchor` conjunct at `classifyRequestSpans` and this
+   * pin is still green while every bare hours question starts classifying as day-specific.
+   * That is not a hypothetical: it is RTR-2 of this slice, and it is why the guard half
+   * carries BEHAVIOURAL must-fire / must-not-fire cases in
+   * `__tests__/required-claim-decomposer.test.ts` rather than trusting a byte pin that
+   * cannot see it. A byte pin is guard-blind BY CONSTRUCTION.
+   *
+   * Byte-identity here holds the ACCENT CHARACTER CLASS `hor[áa]rio` — the
+   * BKL-205/BKL-270/BKL-271 lesson, where an ASCII-only stem has an EMPTY true-positive set
+   * on the real phrasing ("qual o horário de domingo?" is the attested SCN-002 utterance)
+   * and no false-positive sweep reveals it — and the `abre|abrem|abert` TRIPLE, whose middle
+   * arm is redundant under prefix matching but is part of the literal the runtime has always
+   * run. A "tidy the redundant arm away" rewrite would be a behaviour-preserving edit that
+   * this pin correctly refuses, because the next such edit might not be.
+   */
+  storeHoursForDate: STORE_HOURS_FOR_DATE_CLOSURE.markers.map((m) => m.source).join("|"),
 } as const;
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -1195,11 +1228,25 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // that merely names a day ("bom domingo!") is NOT swept in. DEMOTE-ONLY safe:
   // over-inclusion only forces the STORE_HOURS_FOR_DATE companion; the resolver then
   // degrades honestly if no date is truly resolvable (a bare "feriado" with no anchor).
+  //
+  // inv.18 v2 / R2-S8 — the SCHEDULE-CONTEXT conjunct is now the GENERATED marker net from
+  // `store-hours-for-date.claim.ts` (a `.some()` over its nine arms is exactly the `.test()`
+  // on the flat alternation it replaces — pinned byte-identical by
+  // `__SPAN_NET_SOURCES_FOR_TEST.storeHoursForDate`). The DATE-ANCHOR conjunct stays
+  // HAND-WRITTEN here, verbatim and in place, because a `markers` array is DISJUNCTIVE and
+  // this span is a CONJUNCTION: only one conjunct can be the generated net. `dateAnchor` is
+  // the one that cannot be it — its `|`s sit INSIDE a group under a shared `\b`, so no
+  // per-arm split rejoins to the same bytes, and it is also the half that DISCRIMINATES this
+  // span from its STORE_OPEN_NOW sibling, which is the half a reviewer most needs in front
+  // of them. Deleting it leaves the generated net byte-identical while every bare hours
+  // question in the corpus starts firing this span — so it carries BEHAVIOURAL pins
+  // (__tests__/required-claim-decomposer.test.ts), not only a source-byte one.
   const dateAnchor =
     /\b(domingo|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|amanh[ãa]|feriado)/.test(t);
-  const scheduleContext =
-    /hor[áa]rio|que horas|abre|abrem|abert|fecha|funciona|expediente|atend/.test(t);
-  if (dateAnchor && scheduleContext) classes.push("STORE_HOURS_FOR_DATE_Q");
+  const scheduleContext = STORE_HOURS_FOR_DATE_CLOSURE.markers.some((m) => m.test(t));
+  if (dateAnchor && scheduleContext) {
+    classes.push(STORE_HOURS_FOR_DATE_CLOSURE.spanClass);
+  }
 
   // BKL-142 — PUBLIC menu-catalog questions. DISJOINT from the BKL-152 date-anchor
   // suppression above (which only touches the schedule spans). Guarded away from the
