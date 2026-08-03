@@ -280,6 +280,170 @@ describe("admin reads round-trip through the adapter", () => {
   })
 })
 
+// ── Addresses: normalization + ownership scoping ────────────────────────────
+
+/**
+ * A stored address. `seed` runs the same create-defaults pass as `create`, so
+ * every column without a schema default has to be supplied here.
+ */
+function seededAddress(
+  id: string,
+  customerId: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    customerId,
+    street: "Rua Antiga",
+    number: "10",
+    district: "Centro",
+    city: "São Paulo",
+    state: "SP",
+    cep: "01310100",
+    ...overrides,
+  }
+}
+
+describe("addAddress normalizes before it stores", () => {
+  // Every assertion below reads the STORED row back. A service that normalized
+  // only the value it returns would satisfy a return-value check and still
+  // persist the caller's raw input.
+
+  it("trims number/district, uppercases state and strips cep to digits", async () => {
+    const created = await service().addAddress("cus_01", {
+      street: "Rua das Flores",
+      number: "  1024  ",
+      district: "  Centro  ",
+      city: "São Paulo",
+      state: "sp",
+      cep: "01.310-100",
+    })
+
+    const [stored] = db.rows("address")
+    expect(stored).toMatchObject({
+      customerId: "cus_01",
+      street: "Rua das Flores",
+      number: "1024",
+      district: "Centro",
+      city: "São Paulo",
+      state: "SP",
+      cep: "01310100",
+      complement: null,
+      isDefault: false,
+    })
+    expect(created.id).toBe(stored!["id"])
+  })
+
+  it('defaults a whitespace-only number to "S/N" and a missing district to ""', async () => {
+    await service().addAddress("cus_01", {
+      street: "Estrada do Sítio",
+      number: "   ",
+      city: "Atibaia",
+      state: "SP",
+      cep: "12940000",
+    })
+
+    expect(db.rows("address")[0]).toMatchObject({ number: "S/N", district: "" })
+  })
+
+  it("truncates an over-long state and cep rather than storing them raw", async () => {
+    await service().addAddress("cus_01", {
+      street: "Rua X",
+      city: "Santos",
+      state: "sped",
+      cep: "11015-000 ramal 42",
+    })
+
+    expect(db.rows("address")[0]).toMatchObject({ state: "SP", cep: "11015000" })
+  })
+
+  it("keeps an explicit complement and isDefault", async () => {
+    await service().addAddress("cus_01", {
+      street: "Av. Paulista",
+      number: "1578",
+      complement: "Apto 121",
+      district: "Bela Vista",
+      city: "São Paulo",
+      state: "SP",
+      cep: "01310200",
+      isDefault: true,
+    })
+
+    expect(db.rows("address")[0]).toMatchObject({
+      complement: "Apto 121",
+      isDefault: true,
+    })
+  })
+})
+
+describe("removeAddress binds id AND customerId", () => {
+  // Both customers and both addresses exist in EVERY case below. The only
+  // variable between the two tests is who owns the targeted row, so the
+  // conjunction in the WHERE is the single thing that can explain the
+  // difference in outcome.
+  beforeEach(() => {
+    db.seed("customer", [
+      { id: "cus_01", phone: "+5511999990001" },
+      { id: "cus_02", phone: "+5511888880002" },
+    ])
+    db.seed("address", [
+      seededAddress("addr_own", "cus_01"),
+      seededAddress("addr_foreign", "cus_02"),
+    ])
+  })
+
+  it("deletes the row when the caller owns it", async () => {
+    const out = await service().removeAddress("cus_01", "addr_own")
+
+    expect(out).toEqual({ count: 1 })
+    expect(db.rows("address").map((row) => row["id"])).toEqual(["addr_foreign"])
+  })
+
+  it("deletes NOTHING when the addressId belongs to another customer", async () => {
+    const out = await service().removeAddress("cus_01", "addr_foreign")
+
+    // count 0 is what the route turns into a 404 — and the foreign row has to
+    // still be there, or "no rows matched" would be indistinguishable from a
+    // delete that hit the wrong customer.
+    expect(out).toEqual({ count: 0 })
+    expect(db.rows("address").map((row) => row["id"])).toEqual([
+      "addr_own",
+      "addr_foreign",
+    ])
+  })
+})
+
+describe("listAddresses is owner-scoped and default-first", () => {
+  beforeEach(() => {
+    db.seed("address", [
+      seededAddress("addr_b", "cus_01"),
+      seededAddress("addr_a", "cus_01", { isDefault: true }),
+      seededAddress("addr_foreign", "cus_02"),
+    ])
+  })
+
+  it("returns the caller's addresses and never another customer's", async () => {
+    const out = await service().listAddresses("cus_01")
+
+    // The second customer is what makes this a scoping claim: seeded with
+    // cus_01 alone, a `where` that dropped customerId would pass unchanged.
+    expect(out.map((address) => address.id)).toEqual(["addr_a", "addr_b"])
+    expect(out.map((address) => address.customerId)).toEqual(["cus_01", "cus_01"])
+  })
+
+  it("orders the default addresses first, then by id", async () => {
+    db.seed("address", [seededAddress("addr_c", "cus_01", { isDefault: true })])
+
+    const out = await service().listAddresses("cus_01")
+
+    expect(out.map((address) => address.id)).toEqual([
+      "addr_a",
+      "addr_c",
+      "addr_b",
+    ])
+  })
+})
+
 // ── Kernel branches, executed ───────────────────────────────────────────────
 
 describe("updatePixDetailsFromEnvelope over a live client", () => {
