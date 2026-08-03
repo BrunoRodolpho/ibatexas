@@ -87,6 +87,28 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
   };
 });
 
+// ── R5-S10 / F-18 — this backend is AMBIENT here, by declared design ──────────
+// Every assertion in this file is read-INDEPENDENT of the triad backend. The
+// subjects are the authored `PAIRING_GRAPH` edges and the product titles those
+// edges resolve to through the catalog mock — never a read below. Even the
+// "§O#15 gate did NOT degrade the turn" case asserts the ABSENCE of a degrade,
+// which holds whether the companion signals resolve or fail closed.
+//
+// Wholesale-neutering this backend (every read throws) leaves all 12 tests
+// green. That is MEASURED and EXPECTED, not a coverage gap: the seed's only role
+// is keeping turns on the RESOLVE path, so the ambient hours reads and the three
+// §O#15 companion signals cannot degrade a turn out from under the pairing
+// render this file exists to measure. Deleting the seed is NOT free — it would
+// move every turn onto the fail-closed path — so it stays.
+//
+// The read-DERIVED coverage of this double lives in the suites whose subject IS
+// its content — customer-hours-claims / r2s8-hours-for-date-claims /
+// ops-hours-read / ops-store-open-claims — which fail hard under the same
+// neutering. A read-driven assertion belongs there, not bolted onto a pairings
+// suite whose subject is an authored graph.
+//
+// The declared set is exactly the reads these turns actually reach (measured):
+// the `*ForDate` trio is never invoked here, so it is not declared.
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
   const { buildTriadReadBackend } = await import(
@@ -100,9 +122,6 @@ vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
         readScheduleOverride: async () => null,
         readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
         readHoliday: async () => null,
-        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-        readHolidayForDate: async () => null,
-        readScheduleOverrideForDate: async () => null,
         // Someone asking what goes with the brisket owns nothing relevant;
         // present-with-0 keeps §O#15 from force-requiring an order companion.
         listActiveOrderIds: async () => [],

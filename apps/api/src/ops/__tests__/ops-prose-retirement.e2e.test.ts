@@ -52,6 +52,30 @@ import type { DeliveryCoverageResolution } from "../../claustrum/delivery-covera
 import type { ScheduleRead } from "../../claustrum/turn-reads.js";
 
 // ── Mock 1: the claims pipeline's read backend (no DB/network) ─────────────────
+//
+// ── R5-S10 / F-18 — this backend is AMBIENT here, by declared design ──────────
+// Every assertion in this file is read-INDEPENDENT of the triad backend. The
+// subjects are: whether the empty-plan factual path can ship model prose (a
+// render-path property), the SAFE-UNKNOWN copy, the Ibaté coverage answer — which
+// resolves from the DELIVERY-COVERAGE projection, a different double mocked
+// below and genuinely load-bearing — the digit clamp, the staff-actor envelope
+// stamping, and the flag posture. None of those is a read below.
+//
+// Wholesale-neutering this backend (every read throws) leaves all 21 tests green.
+// That is MEASURED and EXPECTED, not a coverage gap: the seed's only role is
+// keeping turns on the RESOLVE path. That role is load-bearing in BOTH
+// directions here — the retirement cases need the turn to reach the factual
+// path rather than be degraded there by an ambient read, and the small-talk and
+// FLAG-OFF cases need it not to degrade either.
+//
+// `scheduleBackend.signal` is a box so a test COULD vary the schedule; today
+// none asserts on it, and the beforeEach restores the open-store value. Left in
+// place: it is the seam a future closed-store case would use, and it costs one
+// indirection.
+//
+// The read-DERIVED coverage of this double lives where its content IS the
+// subject — ops-hours-read / ops-store-open-claims / customer-hours-claims /
+// r2s8-hours-for-date-claims — which fail hard under the same neutering.
 const { scheduleBackend } = vi.hoisted(() => ({
   scheduleBackend: { signal: { isClosed: false, mealPeriod: "dinner" } as ScheduleRead },
 }));
