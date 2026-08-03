@@ -209,4 +209,35 @@
 // and limonada suíça. Re-running a v14 turn against this catalog does not
 // reproduce it; it produces a better answer to the same question, which is
 // exactly the distinction the stamp exists to preserve.
-export const CATALOG_VERSION: number = 15
+// v16 (R6-S3) — the workflow definition contract gains
+// `WorkflowSelection.anchorDescription`: the pt-BR description of the ANCHOR
+// HANDLER the host mints for a selection capability its main tool roster does not
+// carry. The three sentences that were hand-written next to three hand-written
+// tool constants in `apps/api/src/tools/register-workflow-anchor-tools.ts` move
+// here, next to the workflows that mean them, and the host's factory refuses to
+// mint an anchor whose workflow declares none.
+//
+// The README's `src/workflows/types.ts` trigger fires at its LETTER — the
+// workflow definition contract changed, and this is not a comment, doc or
+// test-only edit. It is worth recording that this is the WEAKEST of that
+// trigger's bumps so far, and saying so plainly is more useful to a future
+// reviewer than letting the serial imply more than it should:
+//
+//   - NOTHING about a RUN differs across the boundary. The three minted tools are
+//     byte-identical to the constants they replace — same ids, capabilities,
+//     intent kinds, descriptions, risk levels, schemas and no-op executor
+//     semantics — so a v15 instance and a v16 instance dispatch the same anchor
+//     and execute the same activities.
+//   - Nothing about the parser's SURFACE differs either. `anchorDescription`
+//     describes a tool that is deliberately off the LLM-callable roster; the
+//     `start_workflow` enum reads `WorkflowDefinition.description`, which is
+//     untouched. No L1 parse becomes unreachable.
+//
+// What genuinely differs is the CONTRACT, which is the trigger's own stated
+// concern: a v15 catalog cannot express this field, so a workflow authored
+// against v16 and compiled against v15 loses the only authored field of its
+// anchor handler and the host refuses to mint it. That is exactly "two catalogs
+// sharing a version but not a contract", and the README's "when in doubt, bump"
+// resolves the rest. It is bumped from 15 rather than folded into it because v15
+// is already pushed and "never reuse a value" is unconditional.
+export const CATALOG_VERSION: number = 16

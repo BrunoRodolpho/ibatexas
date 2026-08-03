@@ -80,12 +80,14 @@ import {
   workflowActivityKinds,
   workflowOutcomeText,
   workflowRoute,
+  workflowSelectionAnchors,
   workflowSelectionKinds,
   workflowSlotNames,
   workflowTemplateText,
   workflowTriggerPhrasings,
   type WorkflowActivity,
   type WorkflowDefinition,
+  type WorkflowSelectionAnchor,
 } from "@ibatexas/catalog";
 import { logger } from "../../lib/logger.js";
 import { sortedByCodeUnits } from "./workflow-ordering.js";
@@ -394,6 +396,17 @@ export interface WorkflowRuntime {
   }): Promise<WorkflowTrace | undefined>;
   /** The capability kinds that ANCHOR a loaded workflow. */
   selectionCapabilities(): ReadonlySet<string>;
+  /**
+   * The same anchors, carrying what MINTING one needs: the authored pt-BR
+   * handler description and the workflow that declared it.
+   *
+   * Two seams rather than one because they answer different questions.
+   * `installWorkflowRuntime` asks WHICH KINDS to wrap and a bare set is exactly
+   * right for it; `registerWorkflowAnchorTools` asks WHAT TO MINT, and a bare
+   * kind cannot say — the sentence is authored and the workflow id is what a
+   * missing-sentence failure has to name.
+   */
+  selectionAnchors(): readonly WorkflowSelectionAnchor[];
   /** Every capability kind a loaded workflow's ACTIVITIES invoke. */
   activityCapabilities(): ReadonlySet<string>;
   /** INGRESS SEAM — drop this turn's instance. */
@@ -1602,6 +1615,8 @@ export function createWorkflowRuntime(deps: WorkflowRuntimeDeps): WorkflowRuntim
     },
 
     selectionCapabilities: () => workflowSelectionKinds(deps.workflows),
+
+    selectionAnchors: () => workflowSelectionAnchors(deps.workflows),
 
     activityCapabilities: () => workflowActivityKinds(deps.workflows),
 

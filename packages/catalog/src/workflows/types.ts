@@ -97,6 +97,47 @@ export interface WorkflowMatcher {
  */
 export interface WorkflowSelection {
   readonly capability: string
+  /**
+   * The pt-BR description of the ANCHOR HANDLER the host mints for this
+   * capability — the one authored sentence in a tool that is otherwise entirely
+   * mechanical.
+   *
+   * ── WHAT THE HOST DOES WITH IT ───────────────────────────────────────────────
+   *
+   * An anchor is dispatched like any other capability once the kernel EXECUTEs
+   * it, so it needs a registered tool. Most anchors get one from the main roster
+   * and this field is never read. An anchor the roster does NOT cover — the
+   * ASK half of an ASK/ACT split, deliberately kept off the LLM-callable roster
+   * (see `apps/api/src/tools/register-workflow-anchor-tools.ts`) — has its tool
+   * MINTED by the host: a no-op executor whose whole content is the customer's
+   * approval, with an id derived from the capability kind. Every other field of
+   * that tool is mechanical. This one is not, so this one is authored here.
+   *
+   * ── WHY IT LIVES IN THE CATALOG AND NOT IN THE FACTORY ───────────────────────
+   *
+   * Because it is pt-BR prose about a business act (Hard Rule #4), and prose
+   * about a business act is catalog data in the same sense every template and
+   * every trigger phrasing in this file is. A factory that generated it from the
+   * kind would be authoring customer-domain language from a code path — the exact
+   * inversion this package exists to prevent — and a factory with a FIXED default
+   * would mint every future anchor under a sentence nobody chose.
+   *
+   * So the host reads it, and a missing one is a LOUD failure at mint time naming
+   * this workflow and this field. Declaring it is the conscious act that says
+   * "this anchor is an ASK whose approval is the whole of it, and here is how it
+   * reads"; there is no way to get an anchor tool without performing it.
+   *
+   * ── WHY IT IS OPTIONAL IN THE TYPE ───────────────────────────────────────────
+   *
+   * Same reason {@link WorkflowActivity.compensation} is: the rule is conditional
+   * on a fact THIS TYPE CANNOT SEE. Whether an anchor needs a minted tool depends
+   * on whether the host's main roster already carries one, and the roster is two
+   * packages away. Requiring the field would force every workflow anchored on an
+   * ordinary chat capability — which both LE2-020 fixtures are, on
+   * `order.checkout.create` — to author a sentence that is read by nothing, and a
+   * field reviewers learn is inert is a field reviewers stop reading.
+   */
+  readonly anchorDescription?: string
 }
 
 /**

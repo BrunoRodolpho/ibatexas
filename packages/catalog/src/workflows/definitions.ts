@@ -156,7 +156,13 @@ export const REORDER_LAST_WORKFLOW: WorkflowDefinition = {
   // advertise a route whose anchor must REFUSE at `requireAuthenticated`, which
   // teaches a customer that the system offers things it will not do.
   matchers: [{ capability: "order.cart.ensure" }, { capability: "order.checkout.create" }],
-  selection: { capability: "order.reorder.request" },
+  selection: {
+    capability: "order.reorder.request",
+    // The ASK half of the reorder ASK/ACT split, so the host mints its handler
+    // and reads this sentence off it. What the customer is approving is the
+    // REPETITION; the cart rebuild is `order.reorder`, adjudicated on its own.
+    anchorDescription: "Confirmar a repetição do último pedido do cliente.",
+  },
   params: [],
   activities: [
     {
@@ -338,7 +344,13 @@ export const SWAP_FOR_COUPON_WORKFLOW: WorkflowDefinition = {
     { capability: "order.checkout.create" },
     { capability: "order.coupon.apply" },
   ],
-  selection: { capability: "order.coupon.swap.request" },
+  selection: {
+    capability: "order.coupon.swap.request",
+    // The ASK half again, and the sentence names BOTH ends of the swap — the
+    // customer is approving a cancel-and-rebuild, not a discount applied in
+    // place, and the route's first activity really does cancel the order.
+    anchorDescription: "Confirmar a troca de um pedido por um novo com cupom aplicado.",
+  },
   // THE ONE PARAM, and it is a SLOT rather than a claim because the coupon code
   // is a value the CUSTOMER AUTHORED in the selecting utterance. No registry
   // claim carries a coupon code (`COUPON_VALID`'s validated value is a composed
@@ -690,7 +702,14 @@ export const PAID_CANCEL_WORKFLOW: WorkflowDefinition = {
     { capability: "order.cart.ensure" },
     { capability: "order.checkout.create" },
   ],
-  selection: { capability: "order.cancel.request" },
+  selection: {
+    capability: "order.cancel.request",
+    // "já pago" is load-bearing: this ASK exists because a PAID cancel owes the
+    // customer a question a free one does not. The unpaid case reaches the same
+    // anchor with `gatePaidCancel` deliberately silent, which is why the
+    // sentence describes the act rather than promising the question.
+    anchorDescription: "Confirmar o cancelamento de um pedido já pago do cliente.",
+  },
   // NONE, and for the reason reorder-last has none: the one value this route
   // needs — WHICH order — is an IDENTIFIER, and neither admissible
   // `WorkflowParamSource` may carry one. No registry claim exposes an order id,

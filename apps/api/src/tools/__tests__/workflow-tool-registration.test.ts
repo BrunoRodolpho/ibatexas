@@ -73,11 +73,17 @@ beforeEach(() => {
 });
 
 describe("registerWorkflowAnchorTools", () => {
-  it("registers the reorder anchor when the roster does not already own it", () => {
+  it("mints the reorder anchor when the roster does not already own it", () => {
     const tools = createToolRegistry();
     expect(tools.hasCapability("order.reorder.request")).toBe(false);
 
-    registerWorkflowAnchorTools(tools, ["order.reorder.request"]);
+    registerWorkflowAnchorTools(tools, [
+      {
+        workflowId: "workflow.orders.reorder-last",
+        capability: "order.reorder.request",
+        description: "Confirmar a repetição do último pedido do cliente.",
+      },
+    ]);
 
     expect(tools.hasCapability("order.reorder.request")).toBe(true);
     const registered = tools
@@ -91,13 +97,15 @@ describe("registerWorkflowAnchorTools", () => {
 
   it("SKIPS an anchor the main roster already owns — never shadows a real handler", () => {
     // The registry is last-write-wins, so registering over a live capability
-    // would silently replace the anchor ACT with this module's stub. The LE2-020
+    // would silently replace the anchor ACT with a no-op stub. The LE2-020
     // fixture anchors on `order.checkout.create`, a real roster tool, and this
     // is the branch that leaves it alone.
     const tools = createToolRegistry();
     tools.register(stubTool("order.checkout.create"));
 
-    registerWorkflowAnchorTools(tools, ["order.checkout.create"]);
+    registerWorkflowAnchorTools(tools, [
+      { workflowId: "workflow.fixture.linear", capability: "order.checkout.create" },
+    ]);
 
     const registered = tools
       .list()
@@ -106,20 +114,28 @@ describe("registerWorkflowAnchorTools", () => {
     expect(registered[0]?.id).toBe("stub.order.checkout.create");
   });
 
-  it("THROWS for an anchor with no handler on either side", () => {
-    // A workflow anchored on a kind nothing can dispatch would confirm with the
-    // customer and then fail. Composition time is the only cheap place to catch
-    // it, so this must be a throw and not a warn.
+  it("THROWS for a mintable anchor whose workflow authored no description", () => {
+    // R6-S3 moved the refusal. LE2-021's wall fired when a kind was missing from
+    // a hand-written map in this package; the factory mints any corpus anchor, so
+    // the forgettable step is now the pt-BR sentence next to the workflow — and
+    // that is where the throw is. Composition time is still the only cheap place
+    // to catch it, so it must be a throw and not a warn.
     const tools = createToolRegistry();
-    expect(() => registerWorkflowAnchorTools(tools, ["order.nope"])).toThrow(
-      /anchored on "order\.nope"/,
-    );
+    expect(() =>
+      registerWorkflowAnchorTools(tools, [
+        { workflowId: "workflow.orders.nope", capability: "order.nope" },
+      ]),
+    ).toThrow(/anchored on "order\.nope"/);
   });
 
   it("names the remedy in the throw, not just the fault", () => {
     const tools = createToolRegistry();
-    expect(() => registerWorkflowAnchorTools(tools, ["order.nope"])).toThrow(
-      /Register the tool, add its anchor handler here, or anchor the workflow on a kind that has one/,
+    expect(() =>
+      registerWorkflowAnchorTools(tools, [
+        { workflowId: "workflow.orders.nope", capability: "order.nope" },
+      ]),
+    ).toThrow(
+      /Add `selection\.anchorDescription` \(pt-BR\) to the workflow in @ibatexas\/catalog, or anchor it on a capability the roster already owns/,
     );
   });
 

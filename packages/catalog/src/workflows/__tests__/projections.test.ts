@@ -14,7 +14,12 @@
 import { describe, expect, it } from "vitest"
 
 import { CAPABILITY_DEFINITIONS } from "../../capability-definitions/definitions.js"
-import { REORDER_LAST_WORKFLOW, WORKFLOW_DEFINITIONS } from "../definitions.js"
+import {
+  PAID_CANCEL_WORKFLOW_ID,
+  REORDER_LAST_WORKFLOW,
+  SWAP_FOR_COUPON_WORKFLOW_ID,
+  WORKFLOW_DEFINITIONS,
+} from "../definitions.js"
 import { FIXTURE_LINEAR_WORKFLOW, FIXTURE_WORKFLOWS } from "../fixtures.js"
 import {
   findWorkflow,
@@ -22,6 +27,7 @@ import {
   workflowOutcomeText,
   workflowRoutedActivityCount,
   workflowScopedKinds,
+  workflowSelectionAnchors,
   workflowSelectionKinds,
   workflowSlotNames,
   workflowTemplateText,
@@ -110,6 +116,86 @@ describe("workflowActivityKinds / workflowSelectionKinds", () => {
     // workflow, and what will keep a composition that loads none byte-identical.
     expect([...workflowActivityKinds([])]).toEqual([])
     expect([...workflowSelectionKinds([])]).toEqual([])
+  })
+})
+
+describe("workflowSelectionAnchors — the MINTABLE half of the anchor surface (R6-S3)", () => {
+  it("carries every anchor's AUTHORED pt-BR description, and the workflow that authored it", () => {
+    // The host mints a handler for any anchor its main roster does not carry, and
+    // `selection.anchorDescription` is the ONE field of that handler a human
+    // wrote. It lives here — with the workflow that means it — rather than in the
+    // factory, because a factory-side default would describe a customer-facing
+    // approval in a sentence nobody chose. This case is what keeps the three
+    // shipped sentences from being edited into the void.
+    expect(workflowSelectionAnchors(WORKFLOW_DEFINITIONS)).toEqual([
+      {
+        workflowId: REORDER_LAST_WORKFLOW.id,
+        capability: "order.reorder.request",
+        description: "Confirmar a repetição do último pedido do cliente.",
+      },
+      {
+        workflowId: SWAP_FOR_COUPON_WORKFLOW_ID,
+        capability: "order.coupon.swap.request",
+        description: "Confirmar a troca de um pedido por um novo com cupom aplicado.",
+      },
+      {
+        workflowId: PAID_CANCEL_WORKFLOW_ID,
+        capability: "order.cancel.request",
+        description: "Confirmar o cancelamento de um pedido já pago do cliente.",
+      },
+    ])
+  })
+
+  it("projects the SAME capabilities as workflowSelectionKinds, in the same order", () => {
+    // Two projections over one declaration, and the host consumes both — the
+    // install seam takes the kinds, the registration seam takes these. They are
+    // pinned against each other here so a future edit cannot teach one about an
+    // anchor the other has never heard of.
+    expect(workflowSelectionAnchors(WORKFLOW_DEFINITIONS).map((a) => a.capability)).toEqual(
+      [...workflowSelectionKinds(WORKFLOW_DEFINITIONS)],
+    )
+  })
+
+  it("OMITS the description for a workflow that declares none", () => {
+    // Both LE2-020 fixtures anchor on `order.checkout.create`, which the shipped
+    // roster already owns, so neither needs a minted handler and neither authors
+    // a sentence. The field is absent rather than empty: the host's mint-time
+    // check reads "declared or not", and an empty string would be a third state
+    // that reads as authored.
+    const anchors = workflowSelectionAnchors(FIXTURE_WORKFLOWS)
+    expect(anchors).toEqual([
+      { workflowId: FIXTURE_LINEAR_WORKFLOW.id, capability: "order.checkout.create" },
+    ])
+    expect("description" in anchors[0]!).toBe(false)
+  })
+
+  it("DEDUPES by capability, first declaration winning", () => {
+    // Same reason the kinds projection returns a Set: these records drive
+    // REGISTRATION, and one kind needs one handler. A list with both would
+    // register twice and, under last-write-wins, make the second silently
+    // authoritative over the first.
+    const twice: readonly WorkflowDefinition[] = [
+      REORDER_LAST_WORKFLOW,
+      {
+        ...REORDER_LAST_WORKFLOW,
+        id: "workflow.orders.reorder-last.copy",
+        selection: {
+          ...REORDER_LAST_WORKFLOW.selection,
+          anchorDescription: "Uma segunda frase, para o mesmo handler.",
+        },
+      },
+    ]
+    expect(workflowSelectionAnchors(twice)).toEqual([
+      {
+        workflowId: REORDER_LAST_WORKFLOW.id,
+        capability: "order.reorder.request",
+        description: "Confirmar a repetição do último pedido do cliente.",
+      },
+    ])
+  })
+
+  it("is empty for an empty corpus — the inert-composition property", () => {
+    expect(workflowSelectionAnchors([])).toEqual([])
   })
 })
 

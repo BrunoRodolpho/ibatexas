@@ -823,7 +823,7 @@ function buildHarnessTools(
     // on a kind the LLM-callable roster deliberately does not carry (see
     // `register-workflow-anchor-tools.ts`). A no-op for an anchor the roster
     // already owns, which is why LE2-020's fixture corpus is unaffected.
-    registerWorkflowAnchorTools(tools, workflowRuntime.selectionCapabilities());
+    registerWorkflowAnchorTools(tools, workflowRuntime.selectionAnchors());
     installWorkflowRuntime(tools, workflowRuntime);
   }
   return tools;

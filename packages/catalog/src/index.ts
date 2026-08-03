@@ -172,10 +172,12 @@ export {
   workflowRoutedActivityCount,
   workflowRoutedActivityIds,
   workflowScopedKinds,
+  workflowSelectionAnchors,
   workflowSelectionKinds,
   workflowSlotNames,
   workflowTemplateText,
   workflowTriggerPhrasings,
+  type WorkflowSelectionAnchor,
 } from "./workflows/projections.js"
 
 export {
