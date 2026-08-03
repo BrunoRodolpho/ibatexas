@@ -5,9 +5,66 @@
 // Returns fee, estimated minutes and zone name, or an out-of-area message.
 
 import { createDeliveryZoneService } from "@ibatexas/domain";
-import { getRedisClient } from "../redis/client.js";
+import { getRedisClient, type RedisClientType } from "../redis/client.js";
 import { rk } from "../redis/key.js";
 import { reverseGeocode } from "./reverse-geocode.js";
+
+// ── The Redis client seam (R5-S6) ────────────────────────────────────────────
+
+/**
+ * The Redis-shaped client this module reads and writes through.
+ *
+ * The command set is EXHAUSTIVE and deliberately narrow: `get` + `set` are the
+ * per-CEP read-through cache, `scan` + `del` are {@link invalidateDeliveryCache}.
+ * Nothing else in this file touches Redis. Widen it only by adding a command the
+ * module genuinely issues — the narrowness is what lets a test double cover the
+ * whole surface instead of guessing, and what makes a client that cannot serve
+ * this module a compile error rather than a runtime `TypeError`.
+ *
+ * Typed as `Pick<RedisClientType, …>` on purpose: the call sites keep node-redis'
+ * exact argument types, so a wrong `set` option or a mis-shaped `scan` still
+ * fails `tsc`. A test double casts to this type at its own boundary (see
+ * `src/testing/in-memory-redis.ts`) rather than this module loosening its types
+ * to accommodate one.
+ */
+export type DeliveryCacheClient = Pick<RedisClientType, "get" | "set" | "scan" | "del">;
+
+/**
+ * Options accepted by this module's two exported entry points.
+ *
+ * NARROWING (the R5-S1 rule): only the code paths that actually reach Redis take
+ * this bag. `estimateDeliveryByCoords` — the Haversine fallback arm — reads the
+ * zone rows and caches NOTHING, so it takes no options at all; a client handed to
+ * it could only be silently dropped, and the way to prevent a silent drop is to
+ * make it unrepresentable. Likewise the Prisma-side dependency
+ * (`createDeliveryZoneService`) is NOT reachable through this bag: that is
+ * R5-S1's seam on `@ibatexas/domain`, and conflating the two would let a caller
+ * think it had substituted a store it had not.
+ */
+export interface DeliveryCacheOptions {
+  /**
+   * Redis-shaped client the per-CEP cache runs on. Defaults to the package
+   * singleton (`getRedisClient()`), resolved lazily at the SAME point in the
+   * SAME try/catch it always was — so every production call site stays a bare
+   * `estimateDelivery({ cep })` / `invalidateDeliveryCache()`, and a Redis
+   * outage still degrades exactly as before instead of throwing earlier.
+   */
+  readonly client?: DeliveryCacheClient;
+}
+
+/**
+ * Resolve the client for one Redis touch: the injected one, or the singleton.
+ *
+ * Deliberately NOT hoisted to the entry points. Resolving eagerly would call
+ * `getRedisClient()` on the coords arm and on the zone-listing arm, which reach
+ * Redis never — turning a Redis outage into a throw on paths that today answer
+ * fine. Each call site below keeps its own resolution inside its own try/catch.
+ */
+async function resolveCacheClient(
+  options?: DeliveryCacheOptions,
+): Promise<DeliveryCacheClient> {
+  return options?.client ?? (await getRedisClient());
+}
 
 export interface EstimateDeliveryInput {
   cep?: string;
@@ -32,9 +89,12 @@ const CEP_RE = /^\d{8}$/;
 
 const DELIVERY_CACHE_TTL = Number.parseInt(process.env.DELIVERY_CACHE_TTL || "3600", 10); // 1 hour
 
-async function getCachedDeliveryResult(cep: string): Promise<EstimateDeliveryOutput | null> {
+async function getCachedDeliveryResult(
+  cep: string,
+  options?: DeliveryCacheOptions,
+): Promise<EstimateDeliveryOutput | null> {
   try {
-    const redis = await getRedisClient();
+    const redis = await resolveCacheClient(options);
     const cached = await redis.get(rk(`delivery:cep:${cep}`));
     return cached ? JSON.parse(cached) as EstimateDeliveryOutput : null;
   } catch {
@@ -42,9 +102,13 @@ async function getCachedDeliveryResult(cep: string): Promise<EstimateDeliveryOut
   }
 }
 
-async function cacheDeliveryResult(cep: string, result: EstimateDeliveryOutput): Promise<void> {
+async function cacheDeliveryResult(
+  cep: string,
+  result: EstimateDeliveryOutput,
+  options?: DeliveryCacheOptions,
+): Promise<void> {
   try {
-    const redis = await getRedisClient();
+    const redis = await resolveCacheClient(options);
     await redis.set(rk(`delivery:cep:${cep}`), JSON.stringify(result), { EX: DELIVERY_CACHE_TTL });
   } catch {
     // Non-critical — next call will just miss cache
@@ -52,9 +116,9 @@ async function cacheDeliveryResult(cep: string, result: EstimateDeliveryOutput):
 }
 
 /** Invalidate all delivery zone caches (call from admin zone update). */
-export async function invalidateDeliveryCache(): Promise<void> {
+export async function invalidateDeliveryCache(options?: DeliveryCacheOptions): Promise<void> {
   try {
-    const redis = await getRedisClient();
+    const redis = await resolveCacheClient(options);
     // Scan for delivery:cep:* keys and delete them
     const pattern = rk("delivery:cep:*");
     let cursor = 0;
@@ -84,7 +148,10 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 
 // ── CEP-based estimation ──────────────────────────────────────────────────────
 
-async function estimateDeliveryByCep(cep: string): Promise<EstimateDeliveryOutput> {
+async function estimateDeliveryByCep(
+  cep: string,
+  options?: DeliveryCacheOptions,
+): Promise<EstimateDeliveryOutput> {
   const cleanCep = cep.replaceAll(/\D/g, "");
 
   if (!CEP_RE.test(cleanCep)) {
@@ -92,7 +159,7 @@ async function estimateDeliveryByCep(cep: string): Promise<EstimateDeliveryOutpu
   }
 
   // Check cache first — skip ViaCEP + DB for known CEPs
-  const cached = await getCachedDeliveryResult(cleanCep);
+  const cached = await getCachedDeliveryResult(cleanCep, options);
   if (cached) return cached;
 
   // Confirm CEP exists via ViaCEP
@@ -127,7 +194,7 @@ async function estimateDeliveryByCep(cep: string): Promise<EstimateDeliveryOutpu
       cep: cleanCep,
       message: `Infelizmente não entregamos no CEP ${cleanCep} ainda. Você pode retirar no restaurante${phoneHint} ou tentar outro endereço.`,
     };
-    void cacheDeliveryResult(cleanCep, outOfZone);
+    void cacheDeliveryResult(cleanCep, outOfZone, options);
     return outOfZone;
   }
 
@@ -140,12 +207,17 @@ async function estimateDeliveryByCep(cep: string): Promise<EstimateDeliveryOutpu
     estimatedMinutes: match.estimatedMinutes,
     message: `Entregamos em ${match.name}! Taxa: R$${feeReais}. Prazo estimado: ${match.estimatedMinutes} minutos.`,
   };
-  void cacheDeliveryResult(cleanCep, result);
+  void cacheDeliveryResult(cleanCep, result, options);
   return result;
 }
 
 // ── Haversine-based fallback ──────────────────────────────────────────────────
 
+/**
+ * The NARROWED arm: reads the zone rows and caches nothing, so it takes no
+ * {@link DeliveryCacheOptions}. Keeping the bag off this signature is what stops
+ * a future caller from passing a client here and believing it took effect.
+ */
 async function estimateDeliveryByCoords(
   latitude: number,
   longitude: number,
@@ -192,7 +264,10 @@ async function estimateDeliveryByCoords(
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 
-export async function estimateDelivery(input: EstimateDeliveryInput): Promise<EstimateDeliveryOutput> {
+export async function estimateDelivery(
+  input: EstimateDeliveryInput,
+  options?: DeliveryCacheOptions,
+): Promise<EstimateDeliveryOutput> {
   const hasCep = typeof input.cep === "string" && input.cep.trim().length > 0;
   const hasCoords =
     typeof input.latitude === "number" && typeof input.longitude === "number";
@@ -217,14 +292,14 @@ export async function estimateDelivery(input: EstimateDeliveryInput): Promise<Es
 
   // CEP path: direct
   if (hasCep) {
-    return estimateDeliveryByCep(input.cep!);
+    return estimateDeliveryByCep(input.cep!, options);
   }
 
   // Coords path: reverse geocode → CEP matching → Haversine fallback
   const { cep: geocodedCep } = await reverseGeocode(input.latitude!, input.longitude!);
 
   if (geocodedCep && CEP_RE.test(geocodedCep)) {
-    const result = await estimateDeliveryByCep(geocodedCep);
+    const result = await estimateDeliveryByCep(geocodedCep, options);
     if (result.success) return result;
   }
 

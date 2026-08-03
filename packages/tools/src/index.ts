@@ -7,7 +7,16 @@ export { searchProducts, SearchProductsTool } from "./search/search-products.js"
 
 // ── Catalog tools ──────────────────────────────────────────────────────────────
 export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-details.js"
-export { estimateDelivery, EstimateDeliveryTool, invalidateDeliveryCache } from "./catalog/estimate-delivery.js"
+export {
+  estimateDelivery,
+  EstimateDeliveryTool,
+  invalidateDeliveryCache,
+  // R5-S6 — the injectable Redis-shaped client seam. `DeliveryCacheClient` is
+  // the NARROW command slice this module issues; the canonical double lives at
+  // the `@ibatexas/tools/testing` subpath.
+  type DeliveryCacheClient,
+  type DeliveryCacheOptions,
+} from "./catalog/estimate-delivery.js"
 export { reverseGeocode } from "./catalog/reverse-geocode.js"
 export type { ReverseGeocodeResult } from "./catalog/reverse-geocode.js"
 // BKL-179 — checkInventory / getNutritionalInfo were dead ToolDefinitions

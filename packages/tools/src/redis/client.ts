@@ -3,7 +3,16 @@
 
 import { createClient } from "redis"
 
-type RedisClientType = ReturnType<typeof createClient>
+/**
+ * The concrete node-redis client type this module hands out.
+ *
+ * Exported (R5-S6) so a consumer can declare the NARROW slice of it that its
+ * own code paths issue — `Pick<RedisClientType, "get" | "set">` and friends —
+ * rather than demanding a whole client. Narrow slices are what let a test
+ * double cover a module's entire Redis surface instead of guessing at it, and
+ * what make a client that cannot serve the module a compile error.
+ */
+export type RedisClientType = ReturnType<typeof createClient>
 
 // Promise-based mutex prevents TOCTOU race on concurrent getRedisClient() calls
 let redis: RedisClientType | null = null
