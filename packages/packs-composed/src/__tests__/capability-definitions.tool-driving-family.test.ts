@@ -65,7 +65,11 @@ import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 // order.coupon.swap.request, the swap-for-coupon anchor, and
 // order.coupon.adjust, its closed branch's target — the first is IDENTITY-tier
 // and the second is WORKFLOW-SCOPED, so NEITHER is planner-advertised and
-// CHAT_DRIVABLE stays 20 again) ──
+// CHAT_DRIVABLE stays 20 again) → 66 (LE2-024 added order.cancel.request, the
+// paid-cancel workflow's anchor, AND retired the ad-hoc paid-cancel ROUTE:
+// order.cancel moved to the identity tier and lost its conversationTriggers +
+// plannerAdvertisedBy, so CHAT_DRIVABLE finally moved — 20 → 19. The
+// capability is NOT retired, one route to it is) ──
 
 // R6-S4 — the composed union's size, stated as the arithmetic it actually is
 // rather than as a second magic number. The left term is the ONE hand-written
