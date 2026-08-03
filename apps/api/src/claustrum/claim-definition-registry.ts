@@ -58,9 +58,17 @@ import {
 // types.
 import { CART_CONTENTS_DEFINITION } from "./claimdefs/cart-contents.generated.js";
 import { CART_EMPTY_DEFINITION } from "./claimdefs/cart-empty.generated.js";
+import { COUPON_INVALID_DEFINITION } from "./claimdefs/coupon-invalid.generated.js";
+import { COUPON_VALID_DEFINITION } from "./claimdefs/coupon-valid.generated.js";
+import { DELIVERY_COVERAGE_DEFINITION } from "./claimdefs/delivery-coverage.generated.js";
+import { DELIVERY_NO_COVERAGE_DEFINITION } from "./claimdefs/delivery-no-coverage.generated.js";
 import { MENU_DIETARY_DEFINITION } from "./claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_ALLERGENS_DEFINITION } from "./claimdefs/menu-item-allergens.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "./claimdefs/menu-item-price.generated.js";
+import { MENU_OVERVIEW_DEFINITION } from "./claimdefs/menu-overview.generated.js";
+import { MENU_PAIRINGS_DEFINITION } from "./claimdefs/menu-pairings.generated.js";
+import { MENU_SUBSTITUTIONS_DEFINITION } from "./claimdefs/menu-substitutions.generated.js";
 import { ORDER_FULFILLMENT_STAGE_DEFINITION } from "./claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_DEFINITION } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_DEFINITION } from "./claimdefs/payment-history.generated.js";
@@ -82,6 +90,13 @@ import { VALIDATED_TEMPLATES } from "./slot-grammar.js";
  * the P4 required-set completeness check). The non-Triad public/action types
  * (MENU_ITEM_ALLERGENS, STORE_HOURS, PURCHASE_COMPLETED) are deliberately NOT
  * marked, so INV-4 imposes no closure obligation on them.
+ *
+ * R2-S9 — the SAME property has a second consequence that only became load-bearing with
+ * this batch, and it is the one to hold in mind when reading an INV-4 failure: because the
+ * three PUBLIC presence-complement pairs adopted here are all non-Triad, INV-4's forward
+ * direction cannot police their SHARED-closure-row agreement the way it does the cart
+ * pair's. See the R2-S9 block in {@link GENERATED_DEFINITIONS} for the measurement and for
+ * where the replacement pin lives.
  *
  * This set drives `triadScoped` only for the HAND-ASSEMBLED types (see
  * {@link buildClaimDefinition}). STORE_OPEN_NOW and (R2-S4) RESERVATION_STATUS are still
@@ -138,6 +153,17 @@ const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaim
  * `Partial` because only types with a `.claim.ts` source appear; the remaining
  * registry types fall back to {@link buildClaimDefinition} until they too are
  * compiled from source.
+ *
+ * R2-S9 — that remainder is now exactly ONE type, and it is a RULING rather than a
+ * backlog: PURCHASE_COMPLETED is EXCLUDED BY DESIGN (the registry's only `action_claim`;
+ * it renders through the responder's SUCCESS_CLAIM_CLASSES path, for which the compiler's
+ * `render` block has no shape, so a compiled source would be silent about the only
+ * mechanism that reaches a customer and would publish a doc card asserting the opposite).
+ * The census is pinned as 22 GENERATED + 1 DOCUMENTED EXCLUSION = 23 in
+ * `./claimdefs/__tests__/generated-drift.test.ts`. {@link buildClaimDefinition} is
+ * therefore reached by exactly one type today; it stays because deleting a fallback that
+ * a NEW type would need before its own source lands is not this slice's business, and
+ * because `assembleClaimDefinition` is shared with the ops plane.
  */
 const GENERATED_DEFINITIONS: Readonly<
   Partial<Record<RegistryClaimType, ClaimDefinition>>
@@ -243,6 +269,45 @@ const GENERATED_DEFINITIONS: Readonly<
   // here is shape-for-shape what it hand-assembled before.
   ORDER_FULFILLMENT_STAGE: ORDER_FULFILLMENT_STAGE_DEFINITION,
   PAYMENT_STATUS: PAYMENT_STATUS_DEFINITION,
+  // R2-S9 — the FIXED-SUBJECT BATCH: the three PRESENCE-COMPLEMENT PAIRS plus MENU_OVERVIEW
+  // and MENU_ITEM_ALLERGENS. All eight are PUBLIC, `triadScoped: false` is DECLARED in each
+  // source, and none is `perResourceKey` — they reach the compiler through the PUBLISHED
+  // `compileClaimDefinition` (the R2-S1 path), so what boot consumes here is the published
+  // projection unchanged, shape-for-shape what `assembleClaimDefinition` built before.
+  //
+  // WHAT READING AN INV-4 FAILURE HERE NOW REQUIRES KNOWING, and it is the asymmetry this
+  // batch introduces. R2-S6's cart pair could lean on INV-4 to enforce the shared row's
+  // AGREEMENT fail-closed, because both cart types are Triad-scoped and the FORWARD
+  // direction ("every Triad-scoped type appears in some closure value") had something to
+  // fail on. The six pair members added here are PUBLIC, so that direction obliges NONE of
+  // them, and INV-4 is consequently VACUOUS as a pair-agreement check for all three new
+  // pairs. MEASURED against this module's own `validateClaimDefinitions` over the real
+  // registry: dropping CART_EMPTY from `CART_CONTENTS_Q` is DECOMPOSITION_UNREACHABLE,
+  // while dropping DELIVERY_NO_COVERAGE / COUPON_INVALID / MENU_SUBSTITUTIONS from their
+  // rows each returns `{ ok: true }`.
+  //
+  // (The REVERSE direction does fire if a twin is de-REGISTERED, but with code
+  // `TEMPLATE_UNREGISTERED` — INV-3 catching a dangling template before INV-4 sees the row —
+  // which is a statement about REGISTRATION, not about the row's content. It cannot detect
+  // a de-synced `requires`.)
+  //
+  // The explicit structural pin that stands in for the boot-time refusal lives in
+  // `./claimdefs/__tests__/generated-drift.test.ts`, quantified over
+  // PRESENCE_COMPLEMENT_PAIRS so a future pair inherits it. The full derivation is in
+  // `./claimdefs/delivery-coverage.claim.ts`'s header.
+  //
+  // MENU_ITEM_ALLERGENS is the corpus's DEGENERATE unit — no falsifiers, no valueBinding,
+  // no render, no closure. Its definition is what proves the compiler's folds are TOTAL
+  // over that case, and `triadScoped: false` is what makes the absent closure sound rather
+  // than an unreachable-type defect.
+  DELIVERY_COVERAGE: DELIVERY_COVERAGE_DEFINITION,
+  DELIVERY_NO_COVERAGE: DELIVERY_NO_COVERAGE_DEFINITION,
+  COUPON_VALID: COUPON_VALID_DEFINITION,
+  COUPON_INVALID: COUPON_INVALID_DEFINITION,
+  MENU_PAIRINGS: MENU_PAIRINGS_DEFINITION,
+  MENU_SUBSTITUTIONS: MENU_SUBSTITUTIONS_DEFINITION,
+  MENU_OVERVIEW: MENU_OVERVIEW_DEFINITION,
+  MENU_ITEM_ALLERGENS: MENU_ITEM_ALLERGENS_DEFINITION,
 };
 
 /**

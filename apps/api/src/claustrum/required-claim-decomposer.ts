@@ -43,9 +43,13 @@ import {
 // !isMenuOverview`), whose third term is what keeps a whole-menu ask disjoint from the
 // per-item contents span.
 import { CART_CONTENTS_CLOSURE } from "./claimdefs/cart-contents.generated.js";
+import { COUPON_VALID_CLOSURE } from "./claimdefs/coupon-valid.generated.js";
+import { DELIVERY_COVERAGE_CLOSURE } from "./claimdefs/delivery-coverage.generated.js";
 import { MENU_DIETARY_CLOSURE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_CLOSURE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_CLOSURE } from "./claimdefs/menu-item-price.generated.js";
+import { MENU_OVERVIEW_CLOSURE } from "./claimdefs/menu-overview.generated.js";
+import { MENU_PAIRINGS_CLOSURE } from "./claimdefs/menu-pairings.generated.js";
 import { ORDER_FULFILLMENT_STAGE_CLOSURE } from "./claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_CLOSURE } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_CLOSURE } from "./claimdefs/payment-history.generated.js";
@@ -201,10 +205,19 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // `./claimdefs/menu-item-contents.claim.ts`.
   [MENU_ITEM_PRICE_CLOSURE.spanClass]: MENU_ITEM_PRICE_CLOSURE.requires,
   [MENU_ITEM_CONTENTS_CLOSURE.spanClass]: MENU_ITEM_CONTENTS_CLOSURE.requires,
-  // BKL-142 — a menu-WIDE overview question requires ONLY its own PUBLIC claim (like the
-  // per-item menu spans). Empty catalog → ABSENT evidence → honest UNKNOWN; never demotes
-  // a co-occurring answer. Public (`not_applicable`) → never Triad-scoped.
-  MENU_OVERVIEW_Q: ["MENU_OVERVIEW"],
+  // inv.18 v2 / R2-S9 — MENU_OVERVIEW_Q's row is GENERATED (span class + required set); the
+  // BKL-142 rationale for requiring ONLY its own PUBLIC claim moved verbatim into
+  // `./claimdefs/menu-overview.claim.ts`, along with the BKL-205 marker/ordering
+  // decomposition.
+  //
+  // WHAT STAYS HAND-WRITTEN, and where to look for it: the GUARD conjunction
+  // (`notOrderScoped && !mutationImperative`) in `classifyRequestSpans`, and — the one that
+  // no per-type source could ever express — the BKL-205 SPECIFICITY ORDERING, where this
+  // span's verdict is consumed as `!isMenuOverview` by the per-ITEM contents span BELOW it.
+  // That is sequencing between two DIFFERENT types, and it is BYTE-PIN-BLIND: delete it and
+  // the generated marker net is unchanged while "o que tem no brisket?" confidently renders
+  // the whole catalogue.
+  [MENU_OVERVIEW_CLOSURE.spanClass]: MENU_OVERVIEW_CLOSURE.requires,
   // inv.18 v2 / R2-S3 — MENU_DIETARY_Q's row is GENERATED (span class + required set);
   // the BKL-214 rationale, and the BKL-273 correction about WHY keeping this span mapped
   // is what holds an allergen-adjacent diet ask inside §O#15 completeness, moved verbatim
@@ -214,41 +227,44 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // BKL-136 rationale for requiring ONLY its own PUBLIC claim moved verbatim into
   // `./claimdefs/store-info.claim.ts`.
   [STORE_INFO_CLOSURE.spanClass]: STORE_INFO_CLOSURE.requires,
-  // LE2-002 / NEW-007 — a delivery-COVERAGE question requires the complementary
-  // PAIR, exactly like CART_CONTENTS_Q requires CART_CONTENTS + CART_EMPTY. The two
-  // read COMPLEMENTARY keys (`delivery:coverage` vs `delivery:no_coverage` — at most
-  // one is ever PRESENT), so exactly one can validate and the other resolves honest
-  // UNKNOWN and is dropped by the kernel's §D filter — never a rendered
-  // contradiction. Requiring both here is also what auto-enrols the pair into the
-  // classify-only candidate set and into the claim-planner's RELEVANCE_GOVERNED_TYPES
-  // (an over-proposed coverage claim is DEMOTED on a turn whose coverage span did not
-  // fire, KEPT when it did). PUBLIC (`not_applicable`) → never Triad-scoped, and no
-  // unrelated span force-requires either type.
-  DELIVERY_COVERAGE_Q: ["DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"],
-  // LE2-019 — a coupon-VALIDITY question requires the complementary PAIR, exactly
-  // like DELIVERY_COVERAGE_Q. The two read COMPLEMENTARY keys (`coupon:valid` vs
-  // `coupon:invalid` — at most one is ever PRESENT after a SUCCESSFUL lookup), so
-  // exactly one can validate and the other resolves honest UNKNOWN and is dropped
-  // by the kernel's §D filter — never a rendered contradiction. Requiring both
-  // here is also what auto-enrols the pair into the classify-only candidate set
-  // and into the claim-planner's RELEVANCE_GOVERNED_TYPES (an over-proposed coupon
-  // claim is DEMOTED on a turn whose coupon span did not fire, KEPT when it did).
-  // The pair is ALSO registered in PRESENCE_COMPLEMENT_PAIRS below — without that
-  // registration this very row would make §O#15 completeness STRUCTURALLY
-  // unsatisfiable (the LE2-002 defect; see the pair table's comment). PUBLIC
-  // (`not_applicable`) → never Triad-scoped, and no unrelated span force-requires
-  // either type.
-  COUPON_VALIDITY_Q: ["COUPON_VALID", "COUPON_INVALID"],
-  // LE2-029 — a pairing/substitution question requires the complementary PAIR, on
-  // the COUPON_VALIDITY_Q shape. The resolver classifies the utterance as ONE ask
-  // or the other and records at most one key, so exactly one can validate and the
-  // other resolves honest UNKNOWN and is dropped by the kernel's §D filter — never
-  // a rendered contradiction. Requiring both here is also what auto-enrols the
-  // pair into the classify-only candidate set and into RELEVANCE_GOVERNED_TYPES.
-  // The pair is ALSO registered in PRESENCE_COMPLEMENT_PAIRS below — without that
-  // registration this row would make §O#15 completeness STRUCTURALLY unsatisfiable
-  // (the LE2-002 defect). PUBLIC (`not_applicable`) → never Triad-scoped.
-  PAIRING_Q: ["MENU_PAIRINGS", "MENU_SUBSTITUTIONS"],
+  // inv.18 v2 / R2-S9 — the THREE PRESENCE-COMPLEMENT PAIR rows are GENERATED (span class +
+  // required set), each declared by its SPAN-OWNING source under R2-S6's shared-row rule:
+  // `delivery-coverage.claim.ts`, `coupon-valid.claim.ts`, `menu-pairings.claim.ts`. Each
+  // twin declares NO `decomposition` and so emits no closure export. The LE2-002 / LE2-019 /
+  // LE2-029 rationales — why each row requires BOTH members, and why requiring both is what
+  // auto-enrols the pair into the classify-only candidate set and into the claim-planner's
+  // RELEVANCE_GOVERNED_TYPES — moved verbatim into those three sources.
+  //
+  // THE ONE THING THAT DID *NOT* CARRY OVER FROM R2-S6, and it is worth knowing before
+  // reading an INV-4 failure here. For the CART pair, INV-4 enforces the two halves'
+  // agreement fail-closed, because both members are `triadScoped: true` and INV-4's forward
+  // direction ("every Triad-scoped type appears in some closure value") has something to
+  // fail on. All SIX members of the three pairs below are PUBLIC and `triadScoped: false`,
+  // so that direction obliges none of them. MEASURED against the real validator over the
+  // real registry:
+  //
+  //     CART_CONTENTS_Q     loses CART_EMPTY           -> DECOMPOSITION_UNREACHABLE
+  //     DELIVERY_COVERAGE_Q loses DELIVERY_NO_COVERAGE -> { ok: true }
+  //     COUPON_VALIDITY_Q   loses COUPON_INVALID       -> { ok: true }
+  //     PAIRING_Q           loses MENU_SUBSTITUTIONS   -> { ok: true }
+  //
+  // So INV-4 is VACUOUS as a pair-agreement check for these three, and the state it leaves
+  // unguarded is not hypothetical: `classifyOnlyRequiredTypes` IS this closure-derived
+  // required set, so a row that stopped naming its twin would silently stop producing the
+  // honest-NO / substitution branch on the deterministic path — the LE2-002 shape one seam
+  // over. What stands in for the boot-time refusal is an EXPLICIT structural pin over
+  // PRESENCE_COMPLEMENT_PAIRS x this table, in
+  // `./claimdefs/__tests__/generated-drift.test.ts`. It is weaker than a fail-closed
+  // invariant and is described as such.
+  //
+  // WHAT ELSE STAYS HERE: each pair's PRESENCE_COMPLEMENT_PAIRS registration (below) — a
+  // SET-level relation between two types, not a per-type facet a source can project — and
+  // every span GUARD (`!mutationImperative`, the delivery SELF-REFERENCE exclusion, the
+  // coupon apply-imperative/modal discrimination, the pairing relation PRECEDENCE and
+  // both-ask degrade).
+  [DELIVERY_COVERAGE_CLOSURE.spanClass]: DELIVERY_COVERAGE_CLOSURE.requires,
+  [COUPON_VALID_CLOSURE.spanClass]: COUPON_VALID_CLOSURE.requires,
+  [MENU_PAIRINGS_CLOSURE.spanClass]: MENU_PAIRINGS_CLOSURE.requires,
   // §O#15 worked example — a pickup question requires BOTH companions.
   //
   // inv.18 v2 / R2-S7 — this row STAYS HAND-WRITTEN, and it is the first row to stay so for
@@ -491,8 +507,19 @@ function isSelfResourceReference(lowerText: string): boolean {
  * lands on the CLARIFY-for-CEP ask (or an honest UNKNOWN), never a wrong coverage
  * answer. Pure; applies the classifier's own lowercase normalization.
  */
-const DELIVERY_COVERAGE_ASK_RE =
-  /voc[êe]s\s+entregam|(?:faz|fazem)\s+entrega|entregam?\s+(?:em|no|na|nos|nas|pra|para|at[ée])(?![a-z])|(?:onde|at[ée]\s+onde)\s+(?:voc[êe]s\s+)?entregam|(?:[áa]rea|regi[õo]es?|regi[ãa]o|zona)\s+de\s+entrega|atende[m]?\s+(?:em|no|na|nos|nas)(?![a-z])|taxa\s+de\s+(?:entrega|frete)|(?:valor|pre[çc]o)\s+d[oa]\s+(?:entrega|frete)|quanto\s+(?:custa|fica|sai|[ée])\s+(?:a\s+entrega|o\s+frete)|quanto\s+tempo\s+(?:demora|leva)\s+(?:a\s+)?(?:entrega|pra\s+entregar)/;
+// inv.18 v2 / R2-S9 — the MARKERS are now GENERATED from `./claimdefs/delivery-coverage.claim.ts`
+// (TEN arms — the pre-migration `DELIVERY_COVERAGE_ASK_RE` was ONE flat top-level
+// alternation, so the arms REJOIN to that literal character-for-character; pinned by
+// `__SPAN_NET_SOURCES_FOR_TEST.deliveryCoverage`, and `markers.some((m) => m.test(t))` is
+// the same predicate as `.test()` on the alternation, ∃ position ∃ arm).
+//
+// The GUARD is NOT generated and stays right here: `isSelfResourceReference` is what keeps
+// "cadê MINHA entrega?" an owner-scoped ORDER question, and a `markers` array is
+// DISJUNCTIVE — it cannot express an absence. That makes this net's byte pin GUARD-BLIND by
+// construction: delete the guard line below and the pin stays green while every
+// self-referential delivery question starts firing the coverage span. The guard therefore
+// carries BEHAVIOURAL must-not-fire cases (`../__tests__/required-claim-decomposer.test.ts`,
+// `../__tests__/delivery-coverage-claim.test.ts`).
 
 /** LE2-002 — does this request text ask about DELIVERY COVERAGE (not the
  *  customer's own delivery)? Pure. Exported so the render seam can select the
@@ -500,7 +527,7 @@ const DELIVERY_COVERAGE_ASK_RE =
 export function isDeliveryCoverageAsk(text: string): boolean {
   const t = text.toLowerCase();
   if (isSelfResourceReference(t)) return false;
-  return DELIVERY_COVERAGE_ASK_RE.test(t);
+  return DELIVERY_COVERAGE_CLOSURE.markers.some((m) => m.test(t));
 }
 
 /**
@@ -532,8 +559,18 @@ export function isDeliveryCoverageAsk(text: string): boolean {
 // The extractor lives in the PURE `promotion-validity.ts` (no IO) precisely so
 // this module — which the render adapter and most of the claims layer import —
 // never gains a network client just to classify a span. See that module's header.
-const COUPON_NOUN_RE =
-  /(?<![a-z])(?:cupom|cupons|cup[ãa]o|vouchers?|c[óo]digos?\s+(?:de\s+)?(?:desconto|promo[çc][ãa]o|promocional))/;
+// inv.18 v2 / R2-S9 — the coupon NOUN is now the GENERATED marker net from
+// `./claimdefs/coupon-valid.claim.ts` (ONE arm — a relocation, since the pre-migration
+// `COUPON_NOUN_RE` was a single lookbehind-anchored literal whose `|`s all sit inside one
+// group, so no split rejoins; `markers.some((m) => m.test(t))` is literally the `.test(t)`
+// it ran, and the arm is pinned byte-for-byte by
+// `__SPAN_NET_SOURCES_FOR_TEST.couponNoun`).
+//
+// The THREE regexes below did NOT move, and that is the R2-S8 split applied to a
+// conjunction whose conjuncts are all single literals: `markers` are the tokens that
+// classify a request INTO a span (the coupon TOPIC), while these three are READ-VS-MUTATION
+// DISCRIMINATION — an absence check a disjunctive array cannot express. So the byte pin
+// above is guard-blind, and the guard carries BEHAVIOURAL pins instead.
 
 /** Validity/usability phrasing — "vale?", "é válido?", "ainda funciona?", "tá valendo?" */
 const COUPON_VALIDITY_PHRASE_RE =
@@ -548,27 +585,45 @@ const COUPON_MODAL_QUESTION_RE =
   /(?<![a-z])(?:posso|consigo|d[áa]\s+(?:pra|para)|ser[áa]\s+que|quero\s+saber|gostaria\s+de\s+saber|como\s+(?:fa[çc]o|uso|usar))/;
 
 // ── LE2-029: the PAIRING / SUBSTITUTION ask ──────────────────────────────────
-// Pure regexes, defined HERE beside the other span nets and imported by
-// `pairing-resolver.ts`, so the SPAN and the READ are the same judgement.
+// The two nets are GENERATED (R2-S9) from `./claimdefs/menu-pairings.claim.ts` and read
+// back here, so the SPAN and the READ (`pairing-resolver.ts`, which calls these exported
+// predicates) stay the same judgement — the property the pre-migration co-location bought,
+// preserved by a single source instead of a single file.
+//
+// ════════════════════════════════════════════════════════════════════════════
+//  THE ONE GENERATED MARKER ARRAY WHOSE ORDER A RUNTIME BRANCH READS
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Every other adopted net is consumed ONLY as `markers.some(...)`, where order is
+// irrelevant. This one is different: the same two arms are also the RELATION
+// DISCRIMINATOR — `classifyPairingAsk` tests substitution FIRST and falls through to
+// pairing (a PRECEDENCE, not a disjunction), and `isBothPairingAsk` needs each arm
+// individually. So the source declares them in the classifier's own test order and the two
+// index constants below NAME that contract instead of leaving bare `[0]`/`[1]` at the read
+// sites (the `ORDER_STATUS_STRONG_ARMS` idiom, applied to a RUNTIME dependency rather than
+// a test pin).
+//
+// The positional contract is a fact the `markers` schema does not carry, so it is guarded
+// the only way it can be: each arm's source is pinned BYTE-FOR-BYTE and INDIVIDUALLY in
+// `../__tests__/required-claim-decomposer.test.ts`, and the precedence carries BEHAVIOURAL
+// pins ("o que vai bem no lugar da costela" must resolve `substitutes-for` — the ticket's
+// own primary use case, and the case a swapped array would silently invert).
+//
+// Arm 0 — SUBSTITUTION phrasing ("no lugar", "em vez de", "substitui", "troco por",
+// "acabou o X, e agora"). Tested FIRST: "o que vai bem no lugar da costela" carries both
+// vocabularies but asks ONE question, and the customer's operative word is the one saying
+// they cannot have the thing they asked for. A genuine TWO-question utterance is a
+// different case and is NOT resolved by this precedence — see {@link isBothPairingAsk}.
+const PAIRING_SPAN_SUBSTITUTION_ARM = 0;
+// Arm 1 — PAIRING phrasing ("combina", "vai bem", "acompanha", "harmoniza", "pedir
+// junto", "o que peço com").
+const PAIRING_SPAN_PAIRING_ARM = 1;
 
-/**
- * SUBSTITUTION phrasing — "no lugar", "em vez de", "substitui", "troco por",
- * "acabou o X, e agora". Tested FIRST: "o que vai bem no lugar da costela"
- * carries both vocabularies but asks ONE question, and the customer's operative
- * word is the one saying they cannot have the thing they asked for. Pure.
- *
- * A genuine TWO-question utterance is a different case and is NOT resolved by
- * this precedence — see {@link isBothPairingAsk}.
- */
-const SUBSTITUTION_PHRASE_RE =
-  /(?<![a-z])(?:no\s+lugar|em\s+vez|ao\s+inv[ée]s|substitui(?:r|ção|cao)?|substitut[oa]s?|troc(?:o|ar|a)\s+por|parecid[oa]\s+com|similar\s+a|acabou|esgotad[oa]|sem\s+estoque|n[ãa]o\s+tem\s+mais)/;
+/** The generated SUBSTITUTION arm (see the ordered-arm contract above). */
+const SUBSTITUTION_PHRASE_RE = MENU_PAIRINGS_CLOSURE.markers[PAIRING_SPAN_SUBSTITUTION_ARM]!;
 
-/**
- * PAIRING phrasing — "combina", "vai bem", "acompanha", "harmoniza", "pedir
- * junto", "o que peço com". Pure.
- */
-const PAIRING_PHRASE_RE =
-  /(?<![a-z])(?:combina(?:m|ç[ãa]o|coes|ções)?|vai\s+bem|v[ãa]o\s+bem|acompanha(?:m|mento)?s?|harmoniza(?:m)?|junto\s+com|pedir\s+junto|pra\s+acompanhar|para\s+acompanhar|sugest[ãa]o|sugere|recomenda)/;
+/** The generated PAIRING arm (see the ordered-arm contract above). */
+const PAIRING_PHRASE_RE = MENU_PAIRINGS_CLOSURE.markers[PAIRING_SPAN_PAIRING_ARM]!;
 
 /**
  * The interrogative clause heads this family is asked with. Counted, not
@@ -655,7 +710,7 @@ export function isPairingAsk(text: string): boolean {
  */
 export function isCouponValidityAsk(text: string): boolean {
   const t = text.toLowerCase();
-  if (!COUPON_NOUN_RE.test(t)) return false;
+  if (!COUPON_VALID_CLOSURE.markers.some((m) => m.test(t))) return false;
   const applyShaped = COUPON_APPLY_IMPERATIVE_RE.test(t);
   const modal = COUPON_MODAL_QUESTION_RE.test(t);
   // An apply-shaped verb with NO modal frame is an IMPERATIVE — a mutation the
@@ -888,25 +943,35 @@ const RESERVATION_BOOK_WANT_RE =
 const ORDER_STATUS_STRONG_ARMS = 5;
 
 // ── The MENU_OVERVIEW net, split at its TOP-LEVEL alternation (Sonar S5843) ───
-// Three independent ways to ask for the whole menu, one constant each. `A|B|C`
+// Three independent ways to ask for the whole menu, one arm each. `A|B|C`
 // under `.test` is true iff some alternative matches, which is what the `||` at
 // the use site spells out — so the split is behaviour-preserving by
 // construction, and each arm is now individually named and testable.
 //
 // The SPLIT IS ALSO WHAT MAKES THE BKL-205 ORDERING LEGIBLE: the locative
-// lookahead belongs to the BARE-interrogative arm ALONE. `MENU_WORD_RE` is a
-// separate constant precisely because "o que tem no cardápio?" must keep firing
+// lookahead belongs to the BARE-interrogative arm ALONE. The menu-WORD arm is
+// separate precisely because "o que tem no cardápio?" must keep firing
 // the overview through the menu WORD even though it carries a locative — the
 // property the fused literal expressed only by the accident of alternation
 // order, and which a future edit could have destroyed without any test noticing
 // that the two arms had been conflated.
-/** The menu named outright — wins regardless of any locative complement. */
-const MENU_WORD_RE = /\bcard[áa]pio\b|\bmenu\b/;
-/** The bare interrogative, NOT carrying a locative complement (BKL-205). */
-const MENU_BARE_ASK_RE =
-  /o que (voc[êe]s )?(t[êe]m|servem)(?!\s+n[oa]s?\b|\s+em\b)( (pra|para) comer)?/;
-/** "quais os pratos?" / "quais as opções?" */
-const MENU_LIST_ASK_RE = /quais (os |as )?(pratos|op[çc][õo]es)/;
+//
+// inv.18 v2 / R2-S9 — the three arms are now GENERATED from
+// `./claimdefs/menu-overview.claim.ts`, IN THIS ORDER, and read back through
+// `MENU_OVERVIEW_CLOSURE.markers`. They were ALREADY three separate literals `||`-ed at
+// the use site, so this is the R2-S4 relocation-with-no-splitting case and
+// `markers.some((m) => m.test(t))` is the same predicate; the byte pin they rejoin to
+// (`__SPAN_NET_SOURCES_FOR_TEST.menuOverview`) PRE-DATES the migration with its expected
+// value unchanged, which is the strongest form the "not an equivalent regex, THE SAME
+// regex" claim can take. THREE arms and not four: the menu-WORD arm splits further at a
+// top-level `|` (measured, and it would rejoin), but it is kept whole because BKL-205 made
+// it one unit ON PURPOSE — see the source's header.
+//
+// The BKL-205 NEGATIVE LOOKAHEAD lives INSIDE arm 1 and travelled into the source with it,
+// so the byte pin sees it. What the byte pin CANNOT see is the SPECIFICITY ORDERING below
+// (`isMenuOverview` consumed as `!isMenuOverview` by the per-ITEM contents span) — that is
+// sequencing between two DIFFERENT types, it stays hand-written, and it carries behavioural
+// pins instead.
 
 /**
  * The REASSEMBLED sources of the three nets that were split or composed to fit
@@ -985,8 +1050,80 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
    * pin that swept them in would be asserting a net the runtime does not use.
    */
   paymentStatusStrong: PAYMENT_STATUS_CLOSURE.markers.map((m) => m.source).join("|"),
-  /** `MENU_WORD_RE | MENU_BARE_ASK_RE | MENU_LIST_ASK_RE` */
-  menuOverview: `${MENU_WORD_RE.source}|${MENU_BARE_ASK_RE.source}|${MENU_LIST_ASK_RE.source}`,
+  /**
+   * `MENU_WORD_RE | MENU_BARE_ASK_RE | MENU_LIST_ASK_RE` — now the THREE GENERATED arms of
+   * `menu-overview.claim.ts` (R2-S9), rejoined in declaration order.
+   *
+   * THE ONE PIN IN THIS TABLE WHOSE EXPECTED VALUE PRE-DATES ITS OWN MIGRATION. Every
+   * other entry was written when its net moved into a source, freezing the literal as it
+   * stood; this one was already here, asserting the same string against three hand-written
+   * constants, and the adoption did not touch it. So for this net the "if the reassembly is
+   * byte-identical it is not an equivalent regex, it is THE SAME regex" claim is made
+   * against a value no one could have adjusted to fit.
+   *
+   * Byte-identity here holds the BKL-205 NEGATIVE LOOKAHEAD `(?!\s+n[oa]s?\b|\s+em\b)`
+   * INSIDE arm 2 — the entire fix for a measured WRONG-FAMILY render ("o que tem no
+   * brisket?" answered with the whole catalogue), and the one direction the demote-only
+   * argument does not cover. What it does NOT hold is the SPECIFICITY ORDERING that
+   * lookahead works with (`!isMenuOverview` on the per-item contents span): that is outside
+   * every arm, so this pin is blind to it and it carries behavioural pins instead.
+   */
+  menuOverview: MENU_OVERVIEW_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S9 — the DELIVERY_COVERAGE_Q markers, now GENERATED as TEN arms from
+   * `delivery-coverage.claim.ts`, rejoined in declaration order. Same statement as its
+   * predecessors: if this reassembly is byte-identical to the pre-migration literal, it is
+   * not an equivalent regex, it is THE SAME regex. It is also the LARGEST net adopted in
+   * the arc, and the depth-0 split was MEASURED to rejoin before a byte of it moved.
+   *
+   * Byte-identity here holds the trailing `(?![a-z])` on arms 3 and 6 (without which
+   * "entregam em" fires inside a longer word) and the accent CHARACTER CLASSES
+   * (`voc[êe]s`, `at[ée]`, `regi[õo]es`, `pre[çc]o`) — the BKL-205/BKL-270/BKL-271 lesson.
+   *
+   * WHAT THIS PIN DOES NOT SAY: the runtime span is `¬selfReference && ¬mutationImperative
+   * && <this net>`, and only the net is generated. Delete the SELF-REFERENCE guard inside
+   * `isDeliveryCoverageAsk` and this value is still byte-identical while "cadê minha
+   * entrega?" starts classifying as a store-policy coverage question. A byte pin is
+   * guard-blind BY CONSTRUCTION; the guard carries behavioural must-not-fire cases.
+   */
+  deliveryCoverage: DELIVERY_COVERAGE_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S9 — the coupon NOUN, the ONE generated arm of `coupon-valid.claim.ts`.
+   * The DEGENERATE reassembly (the R2-S6 `cartContents` shape): with a single arm the
+   * `join("|")` is the arm's own source and `markers.some((m) => m.test(t))` is literally
+   * the `.test(t)` the pre-migration `COUPON_NOUN_RE` ran — a relocation, not a split, and
+   * measured as such (no conjunct of this span's predicate decomposes; every one is a
+   * single lookbehind-anchored literal).
+   *
+   * Byte-identity holds the LEFT anchor `(?<![a-z])` and — the load-bearing part — the
+   * QUALIFICATION of `código`: a bare "código" is deliberately NOT a coupon noun, because
+   * "qual o código do meu pedido?" is an order question. Dropping the
+   * `(?:desconto|promo…)` tail would widen the span onto a whole unrelated family while
+   * every coupon true-positive still passed.
+   *
+   * This net is the TOPIC conjunct only. The three DISCRIMINATOR regexes and the
+   * code-extraction FUNCTION stay hand-written, so this pin cannot see the read-vs-mutation
+   * split at all: delete the apply-imperative guard and "aplica o cupom X" rides the read
+   * with this value unchanged.
+   */
+  couponNoun: COUPON_VALID_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S9 — the PAIRING_Q markers, now GENERATED as TWO arms from
+   * `menu-pairings.claim.ts`, rejoined in declaration order. Like RESERVATION_STATUS this
+   * is NOT a split of a pre-existing alternation: the two arms were ALREADY separate regex
+   * literals, `||`-ed inside `classifyPairingAsk`, so the migration relocated them verbatim
+   * and `markers.some((m) => m.test(t))` is the SAME predicate `isPairingAsk` ran.
+   *
+   * THE ORDER IS PART OF WHAT IS PINNED, and for this net alone that matters at RUNTIME:
+   * arm 0 is the SUBSTITUTION vocabulary and arm 1 the PAIRING vocabulary, in the order
+   * `classifyPairingAsk` tests them, and swapping them would invert every borrowed-
+   * vocabulary utterance's relation ("o que vai bem no lugar da costela" → `pairs-with`)
+   * with no other assertion in this file noticing. Both arms contain top-level-looking `|`s
+   * INSIDE their groups, so the joined value alone cannot witness where the boundary is —
+   * the test therefore pins each arm's source INDIVIDUALLY as well, and this entry carries
+   * the shared non-empty / well-formed backstop.
+   */
+  pairing: MENU_PAIRINGS_CLOSURE.markers.map((m) => m.source).join("|"),
   /**
    * inv.18 v2 / R2-S1 — the STORE_INFO_Q markers, now GENERATED as SEVEN arms from
    * `store-info.claim.ts`, rejoined in declaration order. Same statement as the three
@@ -1294,11 +1431,19 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // them puts a locative right after the verb: "o que vocês têm?", "o que tem pra
   // comer?", "o que vocês servem?", "o que tem de sobremesa?" (a `de` complement is
   // deliberately NOT excluded — a category ask is an overview, not an item).
+  //
+  // inv.18 v2 / R2-S9 — the MARKERS are now GENERATED from the def source (three arms
+  // rejoining to the pinned literal character-for-character —
+  // `__SPAN_NET_SOURCES_FOR_TEST.menuOverview`, whose expected value is unchanged by the
+  // migration). The GUARD conjunction is NOT generated and stays here, and so does the
+  // `isMenuOverview` BINDING ITSELF: it is read below as `!isMenuOverview` by the per-ITEM
+  // contents span, which is sequencing between two DIFFERENT types and is the half no
+  // source can express — nor any byte pin catch.
   const isMenuOverview =
     notOrderScoped &&
     !mutationImperative &&
-    (MENU_WORD_RE.test(t) || MENU_BARE_ASK_RE.test(t) || MENU_LIST_ASK_RE.test(t));
-  if (isMenuOverview) classes.push("MENU_OVERVIEW_Q");
+    MENU_OVERVIEW_CLOSURE.markers.some((m) => m.test(t));
+  if (isMenuOverview) classes.push(MENU_OVERVIEW_CLOSURE.spanClass);
 
   // inv.18 v2 / R2-S2 — the MARKERS are now GENERATED from the def source (they were one
   // flat top-level alternation, so the four generated arms REJOIN to that literal
@@ -1415,8 +1560,13 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // entrega?" stays an owner-scoped order question and never fires this span.
   // Over-inclusion is DEMOTE-ONLY safe: an unmatched place resolves to the
   // CLARIFY-for-CEP ask, never a guessed coverage answer.
+  //
+  // inv.18 v2 / R2-S9 — the MARKERS live in `./claimdefs/delivery-coverage.claim.ts` and are
+  // consumed inside `isDeliveryCoverageAsk`, which is where the SELF-REFERENCE guard is too
+  // (one exported predicate, so the span and the render seam ask the same question). The
+  // class key is the generated `spanClass`.
   if (!mutationImperative && isDeliveryCoverageAsk(t)) {
-    classes.push("DELIVERY_COVERAGE_Q");
+    classes.push(DELIVERY_COVERAGE_CLOSURE.spanClass);
   }
 
   // LE2-019 / spec Decision 18 — a coupon-VALIDITY question ("o cupom X1234
@@ -1428,8 +1578,12 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // the coupon net catches the coupon-specific apply verbs it does not list.
   // Over-inclusion is DEMOTE-ONLY safe: an unextractable code resolves to the
   // CLARIFY-for-code ask, never a guessed validity answer.
+  //
+  // inv.18 v2 / R2-S9 — the coupon NOUN marker is generated; the apply/modal/validity
+  // discrimination stays inside `isCouponValidityAsk`. The class key is the generated
+  // `spanClass`.
   if (!mutationImperative && isCouponValidityAsk(t)) {
-    classes.push("COUPON_VALIDITY_Q");
+    classes.push(COUPON_VALID_CLOSURE.spanClass);
   }
 
   // LE2-029 — a PAIRING / SUBSTITUTION question. Gated on `!mutationImperative`
@@ -1440,8 +1594,12 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // BKL-184 / LE2-002 one-net idiom). Over-inclusion is DEMOTE-ONLY safe: an
   // utterance naming no item the graph knows resolves to the honest UNKNOWN,
   // never a guessed suggestion.
+  //
+  // inv.18 v2 / R2-S9 — both relation MARKERS are generated (and ORDERED: see the
+  // ordered-arm contract above `PAIRING_SPAN_SUBSTITUTION_ARM`). The class key is the
+  // generated `spanClass`.
   if (!mutationImperative && isPairingAsk(t)) {
-    classes.push("PAIRING_Q");
+    classes.push(MENU_PAIRINGS_CLOSURE.spanClass);
   }
 
   // Precise discriminators that DISAMBIGUATE the polysemous "status" (A's F2 fix —
@@ -1852,8 +2010,18 @@ export interface RequiredCompletenessResult {
  * validated member omits nothing — the §O#15 "render the easy half" hole needs an
  * INDEPENDENT companion fact, which a presence-complement partner is not. Types
  * outside this list keep the strict every-type-VALIDATED rule unchanged.
+ *
+ * R2-S9 — EXPORTED (additive; no runtime consumer outside this module) so the
+ * shared-closure-row AGREEMENT can be pinned structurally in
+ * `./claimdefs/__tests__/generated-drift.test.ts`. That pin exists because the generic
+ * INV-4 cannot supply it for three of these four pairs: INV-4's forward direction obliges
+ * TRIAD-SCOPED types only, and only the CART pair is Triad-scoped. MEASURED against the
+ * real validator — a `requires` that drops CART_EMPTY is `DECOMPOSITION_UNREACHABLE`,
+ * while dropping DELIVERY_NO_COVERAGE / COUPON_INVALID / MENU_SUBSTITUTIONS from their rows
+ * is `{ ok: true }`. Quantifying over THIS table rather than a hand-listed pair list is
+ * what makes a future pair inherit the check by registering here.
  */
-const PRESENCE_COMPLEMENT_PAIRS: ReadonlyArray<
+export const PRESENCE_COMPLEMENT_PAIRS: ReadonlyArray<
   readonly [RegistryClaimType, RegistryClaimType]
 > = [
   ["CART_CONTENTS", "CART_EMPTY"],

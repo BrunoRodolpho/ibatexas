@@ -21,7 +21,16 @@ import { isRegistryClaimType, type RegistryClaimType } from "../claim-registry.j
 // PAYMENT net is only PART of its span's runtime predicate (two dual-use tokens stay
 // guard-conjoined at the classifier), so a whole-net pin would assert a net nothing runs.
 // STORE_OPEN_NOW's closure comes along to prove no source claims the hand-written PICKUP_Q.
+// inv.18 v2 / R2-S9 — the GENERATED fixed-subject closures. The three SHARED rows are
+// pinned through their span-OWNING source, and the PAIRING net needs the per-arm form more
+// than any predecessor: its two arms are also the RELATION DISCRIMINATOR read positionally
+// at runtime, so a swapped array would invert every borrowed-vocabulary utterance's relation
+// with the joined pin still byte-identical.
 import { CART_CONTENTS_CLOSURE } from "../claimdefs/cart-contents.generated.js";
+import { COUPON_VALID_CLOSURE } from "../claimdefs/coupon-valid.generated.js";
+import { DELIVERY_COVERAGE_CLOSURE } from "../claimdefs/delivery-coverage.generated.js";
+import { MENU_OVERVIEW_CLOSURE } from "../claimdefs/menu-overview.generated.js";
+import { MENU_PAIRINGS_CLOSURE } from "../claimdefs/menu-pairings.generated.js";
 import { ORDER_FULFILLMENT_STAGE_CLOSURE } from "../claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_CLOSURE } from "../claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_CLOSURE } from "../claimdefs/payment-history.generated.js";
@@ -42,8 +51,14 @@ import {
   hasMutationImperative,
   hasReservationCreateImperative,
   isAllergenFamilyAsk,
+  isBothPairingAsk,
+  isCouponValidityAsk,
+  isDeliveryCoverageAsk,
   isMedicalEmergencyAsk,
+  isPairingAsk,
   isSpanClass,
+  classifyPairingAsk,
+  PRESENCE_COMPLEMENT_PAIRS,
   REQUIRED_CLAIM_CLOSURE,
   __SPAN_NET_SOURCES_FOR_TEST,
 } from "../required-claim-decomposer.js";
@@ -832,9 +847,81 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     );
   });
 
+  // inv.18 v2 / R2-S9 — this net moved into `menu-overview.claim.ts` as THREE generated
+  // arms, and the ASSERTION BELOW WAS NOT TOUCHED. That is the point worth stating: every
+  // other pin in this describe was written when its net migrated, freezing the literal as
+  // it stood at that moment, so the expected value and the migration have the same author.
+  // This one predates its own migration by six slices, and the adoption changed neither the
+  // string nor a character of this case. It is the only net in the corpus for which "the
+  // reassembly is byte-identical" is asserted against a value nobody could have adjusted to
+  // fit.
   it("MENU_OVERVIEW: the three split arms rejoin to the original literal", () => {
     expect(__SPAN_NET_SOURCES_FOR_TEST.menuOverview).toBe(
       String.raw`\bcard[áa]pio\b|\bmenu\b|o que (voc[êe]s )?(t[êe]m|servem)(?!\s+n[oa]s?\b|\s+em\b)( (pra|para) comer)?|quais (os |as )?(pratos|op[çc][õo]es)`,
+    );
+    // …and the three arms really are three, in the order the classifier `||`-ed them.
+    expect(MENU_OVERVIEW_CLOSURE.markers).toHaveLength(3);
+    expect(MENU_OVERVIEW_CLOSURE.markers[0]!.source).toBe(String.raw`\bcard[áa]pio\b|\bmenu\b`);
+    // The BKL-205 NEGATIVE LOOKAHEAD lives INSIDE arm 2 and travelled with it — the entire
+    // fix for a measured WRONG-FAMILY render, and invisible to any false-positive sweep.
+    expect(MENU_OVERVIEW_CLOSURE.markers[1]!.source).toBe(
+      String.raw`o que (voc[êe]s )?(t[êe]m|servem)(?!\s+n[oa]s?\b|\s+em\b)( (pra|para) comer)?`,
+    );
+    expect(MENU_OVERVIEW_CLOSURE.markers[2]!.source).toBe(
+      String.raw`quais (os |as )?(pratos|op[çc][õo]es)`,
+    );
+  });
+
+  // inv.18 v2 / R2-S9 — the DELIVERY_COVERAGE_Q net moved into
+  // `delivery-coverage.claim.ts` as TEN marker regexes: the largest net in the arc, and the
+  // one whose depth-0 split was MEASURED to rejoin before a byte of it moved. Same
+  // statement as its predecessors, made about the biggest alternation: if this reassembly
+  // is byte-identical to the pre-migration literal, it is not an equivalent regex, it is
+  // THE SAME regex.
+  it("DELIVERY_COVERAGE: the ten generated marker arms rejoin to the original literal", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.deliveryCoverage).toBe(
+      String.raw`voc[êe]s\s+entregam|(?:faz|fazem)\s+entrega|entregam?\s+(?:em|no|na|nos|nas|pra|para|at[ée])(?![a-z])|(?:onde|at[ée]\s+onde)\s+(?:voc[êe]s\s+)?entregam|(?:[áa]rea|regi[õo]es?|regi[ãa]o|zona)\s+de\s+entrega|atende[m]?\s+(?:em|no|na|nos|nas)(?![a-z])|taxa\s+de\s+(?:entrega|frete)|(?:valor|pre[çc]o)\s+d[oa]\s+(?:entrega|frete)|quanto\s+(?:custa|fica|sai|[ée])\s+(?:a\s+entrega|o\s+frete)|quanto\s+tempo\s+(?:demora|leva)\s+(?:a\s+)?(?:entrega|pra\s+entregar)`,
+    );
+    // Exactly ten — an eleventh would be new net surface smuggled in as a "move".
+    expect(DELIVERY_COVERAGE_CLOSURE.markers).toHaveLength(10);
+  });
+
+  // inv.18 v2 / R2-S9 — the coupon NOUN moved into `coupon-valid.claim.ts` as ONE arm. The
+  // DEGENERATE reassembly (the R2-S6 `cartContents` shape): with a single arm the join is
+  // the arm's own source, so this is a relocation and byte-identity says so. It was
+  // MEASURED to be the only available shape — no conjunct of this span's predicate splits
+  // into rejoinable arms, since every one is a single lookbehind-anchored literal.
+  it("COUPON_VALID: the one generated marker arm is the coupon NOUN, verbatim", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.couponNoun).toBe(
+      String.raw`(?<![a-z])(?:cupom|cupons|cup[ãa]o|vouchers?|c[óo]digos?\s+(?:de\s+)?(?:desconto|promo[çc][ãa]o|promocional))`,
+    );
+    expect(COUPON_VALID_CLOSURE.markers).toHaveLength(1);
+    // The load-bearing half of byte-identity here is the QUALIFICATION of `código`: a bare
+    // "código" is deliberately NOT a coupon noun. Asserted behaviourally too, since the
+    // string alone does not make the consequence visible.
+    expect(isCouponValidityAsk("qual o código do meu pedido?")).toBe(false);
+    expect(isCouponValidityAsk("o código de desconto BEMVINDO15 vale?")).toBe(true);
+  });
+
+  // inv.18 v2 / R2-S9 — the PAIRING_Q net moved into `menu-pairings.claim.ts` as TWO arms.
+  // Like RESERVATION_STATUS this is NOT a split of a pre-existing alternation: the two arms
+  // were ALREADY separate literals `||`-ed inside `classifyPairingAsk`, so the migration
+  // relocated them verbatim. Pinned PER ARM, and here that is not merely "strictly tighter"
+  // — it is the ONLY thing standing behind a RUNTIME positional contract (arm 0 is the
+  // substitution vocabulary, and `classifyPairingAsk` tests it first).
+  it("PAIRING: each generated marker arm is byte-identical, IN THE ORDER the classifier tests", () => {
+    // Arm 0 — SUBSTITUTION. Tested FIRST; it wins a tie.
+    expect(MENU_PAIRINGS_CLOSURE.markers[0]!.source).toBe(
+      String.raw`(?<![a-z])(?:no\s+lugar|em\s+vez|ao\s+inv[ée]s|substitui(?:r|ção|cao)?|substitut[oa]s?|troc(?:o|ar|a)\s+por|parecid[oa]\s+com|similar\s+a|acabou|esgotad[oa]|sem\s+estoque|n[ãa]o\s+tem\s+mais)`,
+    );
+    // Arm 1 — PAIRING.
+    expect(MENU_PAIRINGS_CLOSURE.markers[1]!.source).toBe(
+      String.raw`(?<![a-z])(?:combina(?:m|ç[ãa]o|coes|ções)?|vai\s+bem|v[ãa]o\s+bem|acompanha(?:m|mento)?s?|harmoniza(?:m)?|junto\s+com|pedir\s+junto|pra\s+acompanhar|para\s+acompanhar|sugest[ãa]o|sugere|recomenda)`,
+    );
+    expect(MENU_PAIRINGS_CLOSURE.markers).toHaveLength(2);
+    // …and the joined form, so the shared non-empty/well-formed backstop covers this net.
+    expect(__SPAN_NET_SOURCES_FOR_TEST.pairing).toBe(
+      `${MENU_PAIRINGS_CLOSURE.markers[0]!.source}|${MENU_PAIRINGS_CLOSURE.markers[1]!.source}`,
     );
   });
 
@@ -1483,6 +1570,278 @@ describe("STORE_HOURS_FOR_DATE — the generated marker half of a CONJUNCTIVE sp
       const text = `${word} ${anchor}?`;
       expect(classifyRequestSpans(text), text).toContain("STORE_HOURS_FOR_DATE_Q");
     }
+  });
+});
+
+// ── R2-S9 — THE FIXED-SUBJECT BATCH: generated rows, and the guards a byte pin CANNOT
+//    see ─────────────────────────────────────────────────────────────────────────────
+//
+// Every net adopted in this batch is only PART of its span's runtime predicate; the rest is
+// a hand-written GUARD, and R2-S8's central lesson is that a marker byte pin is GUARD-BLIND
+// BY CONSTRUCTION — delete the guard and the pin stays green while the span misfires
+// wholesale. So each family gets must-fire / must-not-fire cases here, chosen so that
+// deleting its specific guard turns THIS block red and nothing else.
+describe("R2-S9 — the generated closure rows ARE the pre-migration rows", () => {
+  it.each([
+    ["DELIVERY_COVERAGE_Q", DELIVERY_COVERAGE_CLOSURE, ["DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"]],
+    ["COUPON_VALIDITY_Q", COUPON_VALID_CLOSURE, ["COUPON_VALID", "COUPON_INVALID"]],
+    ["PAIRING_Q", MENU_PAIRINGS_CLOSURE, ["MENU_PAIRINGS", "MENU_SUBSTITUTIONS"]],
+    ["MENU_OVERVIEW_Q", MENU_OVERVIEW_CLOSURE, ["MENU_OVERVIEW"]],
+  ] as const)("%s: span class + required set survive the migration", (span, closure, requires) => {
+    expect(closure.spanClass).toBe(span);
+    expect(closure.requires).toEqual(requires);
+    expect(REQUIRED_CLAIM_CLOSURE[span]).toEqual(requires);
+    // The live table row IS the generated array, not a copy — so the row cannot be edited
+    // at the table without editing its source.
+    expect(REQUIRED_CLAIM_CLOSURE[span]).toBe(closure.requires);
+  });
+
+  // The shared-row rule's other half, at the table: for each pair exactly ONE span class
+  // exists and it names both members. Derived from PRESENCE_COMPLEMENT_PAIRS so a future
+  // pair inherits the case.
+  it("each presence-complement pair has exactly ONE row, naming both members", () => {
+    for (const [a, b] of PRESENCE_COMPLEMENT_PAIRS) {
+      const rows = Object.entries(REQUIRED_CLAIM_CLOSURE).filter(
+        ([, types]) => (types as readonly string[]).includes(a) || (types as readonly string[]).includes(b),
+      );
+      expect(rows, `${a}/${b}`).toHaveLength(1);
+      expect(rows[0]![1]).toEqual([a, b]);
+    }
+    expect(PRESENCE_COMPLEMENT_PAIRS).toHaveLength(4);
+  });
+});
+
+describe("R2-S9 — DELIVERY: the generated net fires, the HAND-WRITTEN guard suppresses", () => {
+  // MUST-FIRE — one probe per generated arm, so the "ten arms" pin is not satisfiable by a
+  // net that classifies nothing.
+  it.each([
+    "vocês entregam em Ibaté?",
+    "fazem entrega para São Carlos?",
+    "entregam no CEP 14815000?",
+    "onde vocês entregam?",
+    "qual a área de entrega?",
+    "atendem no centro?",
+    "qual a taxa de entrega?",
+    "qual o valor da entrega?",
+    "quanto custa a entrega?",
+    "quanto tempo demora a entrega?",
+  ])("MUST-FIRE: %s", (text) => {
+    expect(classifyRequestSpans(text)).toContain("DELIVERY_COVERAGE_Q");
+    expect(isDeliveryCoverageAsk(text)).toBe(true);
+  });
+
+  // MUST-NOT-FIRE — the SELF-REFERENCE guard, which lives in `isDeliveryCoverageAsk` and is
+  // NOT part of the generated contribution. Delete it and every one of these becomes a
+  // store-policy coverage question while the ten-arm byte pin stays green: the customer's
+  // own in-flight delivery would be answered with the delivery ZONE.
+  it.each([
+    "cadê minha entrega?",
+    "meu pedido saiu para entrega?",
+    "minha entrega está atrasada",
+    "o pedido nº 1234 já saiu para entrega?",
+  ])("MUST-NOT-FIRE (self-reference): %s", (text) => {
+    expect(isDeliveryCoverageAsk(text)).toBe(false);
+    expect(classifyRequestSpans(text)).not.toContain("DELIVERY_COVERAGE_Q");
+  });
+
+  it("MUST-NOT-FIRE (mutation imperative): a delivery-address change stays a mutation", () => {
+    expect(classifyRequestSpans("muda o endereço de entrega")).not.toContain(
+      "DELIVERY_COVERAGE_Q",
+    );
+  });
+});
+
+describe("R2-S9 — COUPON: the generated NOUN fires, the HAND-WRITTEN guards discriminate", () => {
+  it.each([
+    "o cupom X1234 vale?",
+    "esse cupom BEMVINDO15 ainda funciona?",
+    "os cupons ainda estão valendo?",
+    "o voucher expirou?",
+    "código promocional ainda ativo?",
+    "código de desconto BEMVINDO15 funciona?",
+  ])("MUST-FIRE: %s", (text) => {
+    expect(classifyRequestSpans(text)).toContain("COUPON_VALIDITY_Q");
+  });
+
+  // The APPLY-IMPERATIVE guard. It is a hand-written conjunct, so the noun byte pin is
+  // blind to it: delete it and "aplica o cupom X" rides the READ span, classify-only
+  // answers a validity question, and the customer's MUTATION is silently dropped — the
+  // SCN-046 failure shape.
+  it.each([
+    "aplica o cupom BEMVINDO15",
+    "usa esse código no meu carrinho",
+    "coloca o cupom X1234",
+  ])("MUST-NOT-FIRE (apply imperative): %s", (text) => {
+    expect(isCouponValidityAsk(text)).toBe(false);
+    expect(classifyRequestSpans(text)).not.toContain("COUPON_VALIDITY_Q");
+  });
+
+  // …and the MODAL frame that RE-ENABLES the read. This is the pair the two guards form:
+  // dropping the modal disabler would exclude the most natural phrasing of the very
+  // question the family exists to answer, which is the opposite failure and equally
+  // invisible to the byte pin.
+  it.each(["posso usar o cupom BEMVINDO15?", "dá pra usar esse cupom ainda?"])(
+    "MUST-FIRE (modal frame beats the apply guard): %s",
+    (text) => {
+      expect(isCouponValidityAsk(text)).toBe(true);
+      expect(classifyRequestSpans(text)).toContain("COUPON_VALIDITY_Q");
+    },
+  );
+
+  it("MUST-NOT-FIRE: coupon-adjacent chatter with no validity word and no code", () => {
+    expect(isCouponValidityAsk("ganhei um cupom, que legal")).toBe(false);
+  });
+
+  // ── F-13 — a PRE-EXISTING defect, found while writing the must-fire list, PINNED
+  //    DIRECTIONALLY rather than fixed here ─────────────────────────────────────────
+  //
+  // BYTE-IDENTICAL BEFORE AND AFTER THIS SLICE (verified by the runtime dump: the whole
+  // span/predicate/required-set section is unchanged for every probe below). R2-S9 is an
+  // ADOPTION — it may not widen a span net — so this records the defect where the next
+  // author will meet it instead of quietly freezing it as intended behaviour.
+  //
+  // (a) LE2-019's OWN documented example utterance has an EMPTY true-positive set.
+  //     `claim-registry.ts`'s SpanClass comment advertises the family as fired by
+  //     `"o cupom X1234 vale?"` AND `"esse código BEMVINDO15 ainda funciona?"`. The second
+  //     one never fires: the coupon NOUN deliberately requires `código` to be QUALIFIED
+  //     ("código DE DESCONTO/promoção/promocional"), because a bare "código" would swallow
+  //     "qual o código do meu pedido?" — an ORDER question, and the exclusion is correct.
+  //     But nothing bridges the gap for a bare `código` FOLLOWED BY AN EXTRACTABLE CODE,
+  //     which is the phrasing the doc itself uses. This is the BKL-205/BKL-270/BKL-271
+  //     lesson recurring in a new dress: a stem whose documented true positive is
+  //     unreachable, invisible to every false-positive sweep.
+  //
+  // (b) The SHARPER half, and it bites a phrasing that DOES fire. `funciona` is a
+  //     STORE_OPEN_NOW marker ("vocês funcionam?"), so a coupon question phrased with the
+  //     most natural pt-BR validity verb ALSO fires STORE_OPEN_NOW_Q and force-requires
+  //     STORE_OPEN_NOW as a §O#15 companion. The coupon answer is then hostage to a
+  //     schedule read it has nothing to do with: if that read fails, an otherwise-VALIDATED
+  //     coupon answer is completeness-degraded to UNKNOWN. Same cross-family coupling shape
+  //     as BKL-152's date-anchor suppression, on a pair with no suppression rule.
+  //
+  // A FIX belongs in its own change and must decide both halves together — widening the
+  // noun to `código\s+<CODE>` without touching (b) would make the doc's example fire AND
+  // immediately inherit the spurious STORE_OPEN_NOW companion.
+  it("F-13 (pre-existing): the doc's own 'código <CODE>' example does NOT fire the coupon span", () => {
+    expect(isCouponValidityAsk("esse código BEMVINDO15 ainda funciona?")).toBe(false);
+    // …and the qualification rule this is a consequence of is CORRECT on its own terms.
+    expect(isCouponValidityAsk("qual o código do meu pedido?")).toBe(false);
+    expect(isCouponValidityAsk("código de desconto BEMVINDO15 funciona?")).toBe(true);
+  });
+
+  it("F-13 (pre-existing): 'funciona' drags STORE_OPEN_NOW into a coupon turn's required set", () => {
+    const spans = classifyRequestSpans("esse cupom BEMVINDO15 ainda funciona?");
+    expect(spans).toContain("COUPON_VALIDITY_Q");
+    // The spurious companion. Nothing about a coupon's validity depends on the store being
+    // open, and no suppression rule removes it (contrast BKL-152, which removes
+    // STORE_OPEN_NOW from a date-anchored hours turn).
+    expect(spans).toContain("STORE_OPEN_NOW_Q");
+    expect([...decomposeRequiredClaims(spans)]).toEqual([
+      "STORE_OPEN_NOW",
+      "COUPON_VALID",
+      "COUPON_INVALID",
+    ]);
+    // THE CONTROL that makes this a statement about `funciona` and not about coupons: the
+    // same question with a different validity verb requires only the pair.
+    expect([...decomposeRequiredClaims(classifyRequestSpans("o cupom X1234 vale?"))]).toEqual([
+      "COUPON_VALID",
+      "COUPON_INVALID",
+    ]);
+  });
+});
+
+describe("R2-S9 — PAIRING: the ORDERED arms, and what a swap would silently do", () => {
+  it.each(["o que combina com brisket?", "o que acompanha o brisket?", "o que você sugere?"])(
+    "MUST-FIRE (pairing arm): %s",
+    (text) => {
+      expect(classifyRequestSpans(text)).toContain("PAIRING_Q");
+      expect(classifyPairingAsk(text)).toBe("pairs-with");
+    },
+  );
+
+  it.each([
+    "não tem costela, o que peço no lugar?",
+    "o que substitui a costela?",
+    "acabou o brisket, e agora?",
+  ])("MUST-FIRE (substitution arm): %s", (text) => {
+    expect(classifyRequestSpans(text)).toContain("PAIRING_Q");
+    expect(classifyPairingAsk(text)).toBe("substitutes-for");
+  });
+
+  // THE POSITIONAL CONTRACT, asserted behaviourally. `classifyPairingAsk` reads
+  // `markers[0]` as the substitution net; swap the two arms in the source and this
+  // utterance — which carries BOTH vocabularies and is ONE question — starts resolving
+  // `pairs-with`, answering a customer who has just been told they cannot have what they
+  // asked for with a suggestion to have it alongside something. The joined byte pin cannot
+  // see that; only the per-arm pins and this case can.
+  it("the BORROWED-VOCABULARY single ask resolves by PRECEDENCE, not by luck", () => {
+    expect(classifyPairingAsk("o que vai bem no lugar da costela")).toBe("substitutes-for");
+    expect(isBothPairingAsk("o que vai bem no lugar da costela")).toBe(false);
+    expect(isPairingAsk("o que vai bem no lugar da costela")).toBe(true);
+  });
+
+  // The both-ask DEGRADE — a hand-written CLAUSE COUNT, which no `markers` array can hold.
+  it("a genuine TWO-question utterance is recognized (the degrade, not a half-answer)", () => {
+    expect(
+      isBothPairingAsk("o que combina com a costela bovina e o que posso pôr no lugar?"),
+    ).toBe(true);
+    // …and the span still FIRES, so the question stays accounted for by §O#15 rather than
+    // falling through to a prose path.
+    expect(
+      classifyRequestSpans("o que combina com a costela bovina e o que posso pôr no lugar?"),
+    ).toContain("PAIRING_Q");
+  });
+
+  it("MUST-NOT-FIRE (mutation imperative): an ADD is not a question about what goes with what", () => {
+    expect(classifyRequestSpans("põe uma farofa junto do brisket")).not.toContain("PAIRING_Q");
+  });
+});
+
+describe("R2-S9 — MENU_OVERVIEW: the generated arms, and the BKL-205 ORDERING they cannot pin", () => {
+  it.each([
+    "o que tem no cardápio?",
+    "o que tem no menu de hoje?",
+    "me mostra o cardápio",
+    "o que vocês têm?",
+    "o que tem pra comer?",
+    "quais os pratos?",
+    "quais as opções?",
+  ])("MUST-FIRE: %s", (text) => {
+    expect(classifyRequestSpans(text)).toContain("MENU_OVERVIEW_Q");
+  });
+
+  // ARM 1 vs ARM 2, the contrast BKL-205 installed: the menu WORD wins even under a
+  // locative, while the bare interrogative does not. Both halves matter — an "equivalent"
+  // rewrite that moved the lookahead onto the whole net would break the first.
+  it("the menu WORD fires under a locative; the BARE ask does NOT", () => {
+    expect(classifyRequestSpans("o que tem no cardápio?")).toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("o que tem no brisket?")).not.toContain("MENU_OVERVIEW_Q");
+  });
+
+  // THE SPECIFICITY ORDERING — sequencing between two DIFFERENT types, hand-written, and
+  // the half no byte pin can reach. Delete `!isMenuOverview` from the per-ITEM contents
+  // span and the generated marker net is unchanged while these go red: a per-item question
+  // gets the whole catalogue as a CONFIDENT answer (a wrong-FAMILY render, the one
+  // direction the demote-only argument does not cover).
+  it.each([
+    ["o que tem no brisket?", "MENU_ITEM_CONTENTS_Q"],
+    ["o que têm no combo família?", "MENU_ITEM_CONTENTS_Q"],
+    ["o que vem no combo?", "MENU_ITEM_CONTENTS_Q"],
+  ] as const)("%s routes to %s, NOT the overview", (text, expected) => {
+    const classes = classifyRequestSpans(text);
+    expect(classes).toContain(expected);
+    expect(classes).not.toContain("MENU_OVERVIEW_Q");
+  });
+
+  it("…and the reverse: a whole-menu ask is DISJOINT from the per-item contents span", () => {
+    const classes = classifyRequestSpans("o que tem no cardápio?");
+    expect(classes).toContain("MENU_OVERVIEW_Q");
+    expect(classes).not.toContain("MENU_ITEM_CONTENTS_Q");
+  });
+
+  it("MUST-NOT-FIRE (order-scoped / mutation guards, both hand-written)", () => {
+    expect(classifyRequestSpans("o que tem no meu carrinho?")).not.toContain("MENU_OVERVIEW_Q");
+    expect(classifyRequestSpans("tira o brisket do cardápio")).not.toContain("MENU_OVERVIEW_Q");
   });
 });
 
