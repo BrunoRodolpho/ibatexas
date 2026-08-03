@@ -33,6 +33,10 @@ import {
   createPaymentQueryService,
   prisma,
   InvalidTransitionError,
+  type OrderCommandService,
+  type OrderQueryService,
+  type PaymentCommandService,
+  type PaymentQueryService,
   type OrderStatusTransitionPayload,
   type PaymentCreatePayload,
   type PaymentRefundIssuePayload,
@@ -813,12 +817,84 @@ async function applyAmendChanges(
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 
-export async function orderActionRoutes(server: FastifyInstance): Promise<void> {
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Four of the five members replace plugin-body constructions and keep that
+// REGISTRATION-time timing exactly (the plugin invokes them once, where the
+// inline `create*Service()` calls used to sit). The fifth,
+// `noteOrderCommandService`, replaces a PER-REQUEST construction inside the
+// note handler and stays per-request: it closes over `getAuditSink()`, and
+// keeping it a factory is what preserves the sink resolving on the request
+// rather than at registration (the R5-S2 factories-not-instances rule).
+
+/** The domain services `order-actions.ts` resolves through the seam. */
+export interface OrderActionRouteDeps {
+  /** Builds the OrderCommandService behind the customer-facing order actions. */
+  readonly orderCommandService: () => OrderCommandService;
+  /** Builds the OrderQueryService behind the ownership + projection reads. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the PaymentCommandService behind the payment-method/retry actions. */
+  readonly paymentCommandService: () => PaymentCommandService;
+  /** Builds the PaymentQueryService behind the active-payment reads. */
+  readonly paymentQueryService: () => PaymentQueryService;
+  /**
+   * Builds the AUDIT-WIRED OrderCommandService for the W7-P4
+   * `order.note.add` path. A SEPARATE member from `orderCommandService`
+   * above: that one is constructed bare (`createOrderCommandService()`) at
+   * registration, whereas this one binds `server.log` AND a per-request
+   * `getAuditSink()`. Collapsing them would either add an audit sink to the
+   * action paths or drop it from the note path — both behavior changes.
+   */
+  readonly noteOrderCommandService: () => OrderCommandService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface OrderActionRoutesOptions {
+  readonly deps?: Partial<OrderActionRouteDeps>;
+}
+
+/**
+ * The production set — byte-for-byte the construction this file did inline.
+ * Takes `server` because two of the five constructions bind `server.log`.
+ */
+function defaultOrderActionRouteDeps(
+  server: FastifyInstance,
+): OrderActionRouteDeps {
+  return {
+    orderCommandService: () => createOrderCommandService(),
+    orderQueryService: () => createOrderQueryService(),
+    paymentCommandService: () => createPaymentCommandService(server.log),
+    paymentQueryService: () => createPaymentQueryService(),
+    noteOrderCommandService: () =>
+      createOrderCommandService(server.log, { auditSink: getAuditSink() }),
+  };
+}
+
+function resolveOrderActionRouteDeps(
+  server: FastifyInstance,
+  options?: OrderActionRoutesOptions,
+): OrderActionRouteDeps {
+  return { ...defaultOrderActionRouteDeps(server), ...(options?.deps ?? {}) };
+}
+
+export async function orderActionRoutes(
+  server: FastifyInstance,
+  options?: OrderActionRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
-  const orderCmdSvc = createOrderCommandService();
-  const orderQuerySvc = createOrderQueryService();
-  const paymentCmdSvc = createPaymentCommandService(server.log);
-  const paymentQuerySvc = createPaymentQueryService();
+  // Resolved ONCE per registration. The members are factories, so the four
+  // below construct here exactly as before, and the note-path member stays
+  // unconstructed until its handler runs.
+  const deps = resolveOrderActionRouteDeps(server, options);
+  const orderCmdSvc = deps.orderCommandService();
+  const orderQuerySvc = deps.orderQueryService();
+  const paymentCmdSvc = deps.paymentCommandService();
+  const paymentQuerySvc = deps.paymentQueryService();
   // BKL-146 — single-use store for parked PAID cancels (REQUEST_CONFIRMATION).
   const cancelConfirmationStore = createOrderCancelConfirmationStore();
 
@@ -1615,9 +1691,7 @@ export async function orderActionRoutes(server: FastifyInstance): Promise<void> 
           projection as unknown as OrderProjectionLite,
         ),
       } as unknown as OrderState;
-      const noteAddSvc = createOrderCommandService(server.log, {
-        auditSink: getAuditSink(),
-      });
+      const noteAddSvc = deps.noteOrderCommandService();
       const outcome = await noteAddSvc.addNoteFromEnvelope(
         noteEnvelope,
         noteOrderState,

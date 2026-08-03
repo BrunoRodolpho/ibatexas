@@ -131,6 +131,23 @@ let deps: CartRouteDeps;
 let envelopeSpy: MockInstance;
 let bareArgSpy: MockInstance;
 
+/**
+ * A `CartRouteDeps` member this test's subject must never reach for.
+ *
+ * R5-S5 widened `CartRouteDeps` from one member to five (the rest of cart.ts's
+ * service factories joined the seam). `cachePixDetailsForCustomer` still uses
+ * ONLY `customerService`, so the four newcomers are filled with throwers rather
+ * than real constructions: that keeps the widening from silently handing this
+ * test's subject four new reachable services, and turns any future reach into a
+ * loud failure instead of a live connection. `() => never` is assignable to
+ * every member's factory type, so no cast is needed.
+ */
+function unreachableDep(name: keyof CartRouteDeps): () => never {
+  return () => {
+    throw new Error(`cachePixDetailsForCustomer reached for deps.${name}()`);
+  };
+}
+
 /** Build the dep set the route registration would resolve, over `client`. */
 function depsOver(client: CustomerServiceClient): CartRouteDeps {
   // Same construction options cart.ts's own default uses — only `client` is
@@ -140,7 +157,13 @@ function depsOver(client: CustomerServiceClient): CartRouteDeps {
   envelopeSpy = vi.spyOn(svc, "updatePixDetailsFromEnvelope");
   bareArgSpy = vi.spyOn(svc, "updatePixDetails");
   serviceFactory = vi.fn(() => svc);
-  return { customerService: serviceFactory as unknown as () => CustomerService };
+  return {
+    customerService: serviceFactory as unknown as () => CustomerService,
+    customerLookupService: unreachableDep("customerLookupService"),
+    orderCommandService: unreachableDep("orderCommandService"),
+    orderQueryService: unreachableDep("orderQueryService"),
+    paymentQueryService: unreachableDep("paymentQueryService"),
+  };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
