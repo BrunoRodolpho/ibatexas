@@ -99,6 +99,27 @@ const ROLL_CALL = [
     minExecuted: 3,
     realRedis: 3,
   },
+  // F-21 CLASS ROLLOUT — the three sites the #514 census named and deferred.
+  // Each drives PRODUCTION code against a container and carries an in-test
+  // CONTROL running the pre-fix release verbatim in the same end state.
+  //
+  // Site 1 (checkout/money): the `checkout:idem:<token>` single-flight gate.
+  // 8 cases — the F-21 sequence, self-release, key+TTL, the 409 condition, the
+  // UUID token, distinct tokens, a 25-way storm, and the unconditional-DEL control.
+  { file: "src/__tests__/checkout-idem-gate-ownership.test.ts", minExecuted: 8, realRedis: 8 },
+  // Site 2: the agent trigger redelivery + cooldown claims. 8 cases — owned
+  // release, lapsed+foreign left alone, the tokens, the promote window, the
+  // pre-F-21 control, and three on `compareAndDelete` itself (incl. a 40-way
+  // atomicity race).
+  { file: "src/__tests__/agent-trigger-dedup-ownership.test.ts", minExecuted: 8, realRedis: 8 },
+  // Site 3: `releaseWebAgentLock`'s no-tracked-state fallback. 6 cases — the
+  // key survives, the warn is emitted, the owned path is unchanged (two ways),
+  // the second-release shape, and the pre-F-21 control.
+  {
+    file: "src/streaming/__tests__/execution-queue-release-fallback.test.ts",
+    minExecuted: 6,
+    realRedis: 6,
+  },
   // 3 cases, of which 1 is inside the RUN_REAL_REDIS describe.
   { file: "src/__tests__/ledger-replay-suppression.test.ts", minExecuted: 3, realRedis: 1 },
   { file: "src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts", minExecuted: 3, realRedis: 3 },

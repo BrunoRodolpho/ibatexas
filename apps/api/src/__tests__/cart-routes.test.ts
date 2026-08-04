@@ -143,6 +143,12 @@ vi.mock("@ibatexas/tools", async () => {
     // `stringContaining` on the suffix — so de-faking changes no claim, it
     // only stops the doubles from being keyed on fiction.
     rk: actual.rk,
+    // F-21 — the REAL lock helper. It is pure over the client handed to it
+    // (that is the whole point of the injected-client form), so the doubles
+    // below still see every `set`/`eval` land on their own store, and the
+    // checkout gate's ownership semantics are genuinely exercised here rather
+    // than stubbed into always-acquiring.
+    acquireLockAtKeyOn: actual.acquireLockAtKeyOn,
     estimateDelivery: vi.fn(async () => ({ success: true })),
     createCheckout: vi.fn(async () => ({ success: true })),
     reaisToCentavos: (amount: number) => Math.round(amount * 100),

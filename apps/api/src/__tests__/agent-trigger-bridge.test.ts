@@ -16,7 +16,7 @@
 //     claims so a retry reprocesses); createModelCallCap bounds model calls.
 
 import { describe, expect, it } from "vitest";
-import { createInMemoryRedis } from "@ibatexas/tools/testing";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
 import {
   AGENT_REGISTRY,
   agentSessionId,
@@ -28,6 +28,7 @@ import { rk } from "@ibatexas/tools";
 import {
   createModelCallCap,
   processTriggerJob,
+  type TriggerDedupRedis,
   type TriggerJournalEntry,
   type TriggerTurnRunner,
 } from "../claustrum/agent-trigger-bridge.js";
@@ -42,7 +43,33 @@ const PIX_AGENT = AGENT_REGISTRY.find(
 // R5-S7 — the canonical in-memory adapter. The hand-rolled TriggerDedupRedis it
 // replaces re-implemented SET NX by hand and ignored EX entirely, so the dedup
 // window's expiry was never modelled.
-const fakeRedis = () => createInMemoryRedis();
+//
+// F-21 — plus `compareAndDelete`, the ownership-conditional release the catch
+// path now issues. `createInMemoryRedis` REFUSES `eval` on purpose (W4 RULE 3:
+// a Map-stub of Lua decides the comparison in OUR process and hands back green
+// on a path with no real coverage), so the CAD is written out here over the
+// adapter's own get/del rather than smuggled in as a fake `eval`.
+//
+// That is honest for THIS layer and only this layer. These cases prove the
+// SHAPE — a release compares against the token it claimed with, and a
+// non-matching token deletes nothing — which is enough for the outcome-level
+// assertions in this file. The ATOMICITY of that compare, which is the entire
+// reason the production code uses Lua, is proven against a real Redis server in
+// `agent-trigger-dedup-ownership.test.ts`.
+function fakeRedis(): Omit<InMemoryRedis, "client"> & {
+  readonly client: TriggerDedupRedis;
+} {
+  const mem = createInMemoryRedis();
+  const client: TriggerDedupRedis = {
+    set: (key, value, opts) => mem.client.set(key, value, opts),
+    async compareAndDelete(key, expectedValue) {
+      const current = await mem.client.get(key);
+      if (current !== expectedValue) return 0;
+      return mem.client.del(key);
+    },
+  };
+  return { ...mem, client };
+}
 
 function failedPixEvent(eventId: string, orderId = "ord_456"): TriggerEvent {
   return {

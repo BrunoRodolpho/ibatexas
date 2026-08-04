@@ -118,8 +118,10 @@ export { safeRedis } from "./redis/safe-redis.js"
 export {
   acquireLock,
   acquireLockAtKey,
+  acquireLockAtKeyOn,
   withLock,
   type LockHandle,
+  type LockRedisClient,
 } from "./redis/distributed-lock.js"
 
 // ── Tracing ──────────────────────────────────────────────────────────────────
