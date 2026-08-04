@@ -285,6 +285,73 @@ describe("R2-S9 e2e — COUPON_INVALID is a VALIDATED negative, not an abstain",
   });
 });
 
+// ── (1b) F-13 — the coupon span-net's two halves, AT THE TURN SEAM ────────────
+//
+// R2-S9 recorded two defects in this family and was not allowed to fix them (an ADOPTION
+// may not widen a span net). Both are fixed together, and this is where the fix has to be
+// proved, because BOTH failures are invisible one layer down: `renderer-from-claims`
+// `render(...)` is handed the claims it is asked to render, so a turn that never
+// CLASSIFIED as a coupon question — and a turn whose §O#15 required set demanded a
+// companion nobody proposed — both look identical to a renderer-level test.
+//
+// The scripted planner proposes the COUPON PAIR and NOTHING ELSE, which is what makes the
+// hostage assertion real: a required `STORE_OPEN_NOW` is ABSENT this turn, so if the span
+// net still forced it as a companion the completeness gate degrades the reply to
+// SAFE_UNKNOWN — the whole coupon answer lost to a schedule read the customer never asked
+// for. That degrade is exactly what these cases would have measured before the fix.
+describe("F-13 e2e — a 'funciona' coupon ask is not hostage to a schedule read", () => {
+  it("(b) the ALREADY-FIRING phrasing now renders instead of degrading on an absent STORE_OPEN_NOW", async () => {
+    vi.mocked(resolveCouponValidity).mockResolvedValue(VALID_COUPON);
+    const response = await runTurn("esse cupom BEMVINDO15 ainda funciona?", [...COUPON_PAIR]);
+
+    expect(response).toBe(COUPON_VALID_RENDER);
+    expect(response).not.toBe(SAFE_UNKNOWN_RENDER);
+  });
+
+  it("(a+b) the family's OWN ADVERTISED phrasing reaches the coupon read — VALID fixture", async () => {
+    // `claim-registry.ts` advertises COUPON_VALIDITY_Q as fired by this exact utterance.
+    // Before F-13 it classified as [STORE_OPEN_NOW_Q] and required STORE_OPEN_NOW — a
+    // coupon question answered as a question about opening hours.
+    vi.mocked(resolveCouponValidity).mockResolvedValue(VALID_COUPON);
+    const response = await runTurn("esse código BEMVINDO15 ainda funciona?", [...COUPON_PAIR]);
+
+    expect(response).toBe(COUPON_VALID_RENDER);
+    expect(response).not.toBe(SAFE_UNKNOWN_RENDER);
+  });
+
+  it("(a+b) the advertised phrasing reaches the coupon read — INVALID fixture", async () => {
+    // The negative branch matters on its own: half (a) shipping only the positive would
+    // leave the honest "no" reachable by "vale?" and not by "funciona?".
+    vi.mocked(resolveCouponValidity).mockResolvedValue(INVALID_COUPON);
+    const response = await runTurn("esse código XPTO123 ainda funciona?", [...COUPON_PAIR]);
+
+    expect(response).toBe(COUPON_INVALID_RENDER);
+    expect(response).not.toBe(SAFE_UNKNOWN_RENDER);
+  });
+
+  it("THE GATE IS NOT DISABLED: the newly-reachable phrasing still degrades on an unreadable lookup", async () => {
+    // Without this, every case above is satisfiable by a completeness gate that stopped
+    // demanding anything at all — which is one of the two ways half (b) could be wrong.
+    vi.mocked(resolveCouponValidity).mockResolvedValue({ kind: "unknown" });
+    const response = await runTurn("esse código XPTO123 ainda funciona?", [...COUPON_PAIR]);
+
+    expect(response).toBe(SAFE_UNKNOWN_RENDER);
+    expect(response).not.toBe(COUPON_INVALID_RENDER);
+  });
+
+  it("THE DIRECTIONAL CONTROL: a bare 'funciona' is still a SCHEDULE ask, and still requires the schedule", async () => {
+    // The suppression is conditioned on the coupon reading, so this utterance never enters
+    // it: STORE_OPEN_NOW stays required, is ABSENT (the planner proposed only the coupon
+    // pair), and the turn degrades. If the coupon topic gate ever widened far enough to
+    // read a bare "funciona" as a coupon ask, the suppression would fire here and the
+    // coupon answer would render on a question about opening hours — this case says so.
+    vi.mocked(resolveCouponValidity).mockResolvedValue(VALID_COUPON);
+    const response = await runTurn("vocês funcionam?", [...COUPON_PAIR]);
+
+    expect(response).not.toBe(COUPON_VALID_RENDER);
+  });
+});
+
 // ── (2) DELIVERY — the NEGATIVE twin, which no real-seam suite drove ──────────
 
 describe("R2-S9 e2e — DELIVERY_NO_COVERAGE reaches the customer through the real turn", () => {

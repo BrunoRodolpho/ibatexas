@@ -191,6 +191,20 @@ export const COUPON_VALID_SOURCE = defineClaim({
   // `COUPON_NOUN_RE`. Byte-identity holds the LEFT anchor `(?<![a-z])` (without it the
   // noun matches mid-word) and the QUALIFICATION of `código` — a bare "código" is
   // deliberately NOT enough, because "qual o código do meu pedido?" is an order question.
+  //
+  // F-13(a) — THIS ARM IS NO LONGER THE WHOLE TOPIC GATE, and it was left byte-identical
+  // on purpose. The advertised example "esse código BEMVINDO15 ainda funciona?" had an
+  // EMPTY true-positive set (MEASURED: it classified as `[STORE_OPEN_NOW_Q]` and required
+  // STORE_OPEN_NOW — a coupon question answered as one about opening hours), and the
+  // missing piece is a bare `código` IMMEDIATELY FOLLOWED BY the extracted code. That is a
+  // CONJUNCTION whose second half is `detectCouponCodeInText` — a FUNCTION, which no
+  // `markers` array can hold (see the "NOT COVERED BY THE COMPILER" note in the header) —
+  // and a `markers` array is DISJUNCTIVE, so adding a bare `código` arm here would make
+  // this DECLARED net assert that "qual o código do meu pedido?" is coupon-topical and
+  // push the whole discrimination into the guards. The bridge therefore lives beside the
+  // three discriminators, in `required-claim-decomposer.ts`
+  // (`hasBareCodeNounNamingACode`), and carries BEHAVIOURAL pins. READING THIS ARRAY
+  // ALONE NOW UNDER-STATES WHAT FIRES THE SPAN.
   decomposition: {
     spanClass: "COUPON_VALIDITY_Q",
     markers: [

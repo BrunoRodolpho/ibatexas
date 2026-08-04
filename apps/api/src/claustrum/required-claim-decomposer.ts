@@ -111,6 +111,10 @@ export type SpanClass =
   // cupom X"), which is a mutation and must never ride a read span (the
   // BKL-201/206 discipline, and Decision 14's negative space: no apply path
   // exists for a read to be mistaken for).
+  // F-13 — the SECOND example above is advertised here and, until F-13, did not
+  // fire; both examples are now pinned as true positives
+  // (`__tests__/required-claim-decomposer.test.ts`, the F-13 describe), so this
+  // comment is a claim the suite checks rather than one it merely repeats.
   | "COUPON_VALIDITY_Q"
   // LE2-029 — a PAIRING / SUBSTITUTION question ("o que combina com brisket?",
   // "não tem costela, o que peço no lugar?"). A READ over the house's OWN
@@ -542,7 +546,11 @@ export function isDeliveryCoverageAsk(text: string): boolean {
  *
  * COUPON NOUN: "cupom/cupons/cupão", "voucher", or "código/codigo" QUALIFIED as a
  * discount code ("código de desconto", "código promocional"). A bare "código" is
- * deliberately NOT enough — "qual o código do meu pedido?" is an order question.
+ * deliberately NOT enough IN THE GENERATED NET — "qual o código do meu pedido?" is
+ * an order question. F-13(a) adds the one bridge that qualification was missing: a
+ * bare "código" IMMEDIATELY followed by the extracted code ("esse código BEMVINDO15
+ * ainda funciona?" — the family's own advertised example, which had an empty
+ * true-positive set). See {@link hasBareCodeNounNamingACode}.
  *
  * DOES NOT FIRE on an APPLY/USE IMPERATIVE ("aplica o cupom X", "usa esse código
  * no meu carrinho"): that is a MUTATION request, and answering it with a validity
@@ -583,6 +591,69 @@ const COUPON_APPLY_IMPERATIVE_RE =
 /** A MODAL/interrogative frame that makes an apply-shaped verb a QUESTION. */
 const COUPON_MODAL_QUESTION_RE =
   /(?<![a-z])(?:posso|consigo|d[áa]\s+(?:pra|para)|ser[áa]\s+que|quero\s+saber|gostaria\s+de\s+saber|como\s+(?:fa[çc]o|uso|usar))/;
+
+/**
+ * F-13(a) — a BARE `código`/`códigos`, the noun the generated marker net
+ * deliberately does NOT accept. Case-insensitive because this arm is read against
+ * the RAW text (see {@link hasBareCodeNounNamingACode}), not the lowercased copy.
+ */
+const COUPON_BARE_CODE_NOUN_RE = /(?<![a-z])c[óo]digos?(?![a-z])/i;
+
+/** The first alphanumeric TOKEN in a string — the "next word" reader for the bridge. */
+const NEXT_ALNUM_TOKEN_RE = /[A-Za-z0-9]+/;
+
+/**
+ * F-13(a) — THE BRIDGE. Does this text name a bare `código` IMMEDIATELY FOLLOWED
+ * by the one extractable coupon CODE ("esse código BEMVINDO15 ainda funciona?")?
+ * Pure.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ *
+ * `claim-registry.ts`'s `COUPON_VALIDITY_Q` doc advertises the family as fired by
+ * "o cupom X1234 vale?" AND "esse código BEMVINDO15 ainda funciona?". The second
+ * one had an EMPTY true-positive set: the generated coupon NOUN requires `código`
+ * to be QUALIFIED ("código DE DESCONTO/promoção/promocional") because a bare
+ * "código" would swallow "qual o código do meu pedido?" — an ORDER question, and
+ * that exclusion is correct. Nothing bridged the gap for the phrasing the doc
+ * itself uses, so the advertised utterance did not merely miss the coupon family:
+ * measured on dev it classified as `[STORE_OPEN_NOW_Q]` and required
+ * `STORE_OPEN_NOW` — a coupon question answered as a question about opening hours.
+ *
+ * ── WHY IT IS A HAND-WRITTEN GUARD AND NOT A MARKER ARM ─────────────────────
+ *
+ * The R2-S8/S9 split: `markers` are the tokens that classify a request INTO a span
+ * and a `markers` array is DISJUNCTIVE, so adding a bare `código` arm would make
+ * the DECLARED net say "qual o código do meu pedido?" is coupon-topical and leave
+ * the whole discrimination to the guards. This predicate is a CONJUNCTION whose
+ * second half is `detectCouponCodeInText` — a FUNCTION, which no `markers` array
+ * can hold (the constraint `coupon-valid.claim.ts`'s header already records). So
+ * the generated net stays BYTE-IDENTICAL (`__SPAN_NET_SOURCES_FOR_TEST.couponNoun`
+ * is untouched by this change) and the bridge carries BEHAVIOURAL pins instead.
+ *
+ * ── THE DISCRIMINATOR IS ADJACENCY, NOT A BLACKLIST ─────────────────────────
+ *
+ * A `código` that belongs to something ELSE always says so BETWEEN the noun and
+ * the identifier — "código DO MEU PEDIDO ABC123", "código DE RASTREIO BR123456",
+ * "código DA MINHA RESERVA R1234". A coupon code is named directly: "código
+ * BEMVINDO15". So the bridge requires the next alphanumeric token after the noun
+ * to BE the extracted code, which needs no enumeration of foreign resource nouns
+ * and cannot go stale as new ones appear. The strictness is deliberate: a false
+ * NEGATIVE here leaves the pre-F-13 behaviour (the customer is asked for their
+ * code), a false POSITIVE would force the coupon pair onto an ORDER turn and
+ * completeness-degrade an answerable question.
+ *
+ * NOTE the extractor is given the RAW text: `isCodeShapedToken` accepts an
+ * ALL-CAPS token with no digit ("FRETEGRATIS"), a rule that is destroyed by
+ * lowercasing. See {@link isCouponValidityAsk}'s caller note.
+ */
+function hasBareCodeNounNamingACode(text: string): boolean {
+  const code = detectCouponCodeInText(text);
+  if (code === undefined) return false;
+  const noun = COUPON_BARE_CODE_NOUN_RE.exec(text);
+  if (noun === null) return false;
+  const nextToken = NEXT_ALNUM_TOKEN_RE.exec(text.slice(noun.index + noun[0].length))?.[0];
+  return nextToken !== undefined && nextToken.toUpperCase() === code.toUpperCase();
+}
 
 // ── LE2-029: the PAIRING / SUBSTITUTION ask ──────────────────────────────────
 // The two nets are GENERATED (R2-S9) from `./claimdefs/menu-pairings.claim.ts` and read
@@ -704,13 +775,79 @@ export function isPairingAsk(text: string): boolean {
 }
 
 /**
+ * F-13(b) — does this text carry INDEPENDENT evidence of an open-now question?
+ * Pure. The `STORE_OPEN_NOW_Q` gate in {@link classifyRequestSpans}.
+ *
+ * ── THE DEFECT ──────────────────────────────────────────────────────────────
+ *
+ * `funciona` is a STORE_OPEN_NOW marker ("vocês funcionam?") AND the most natural
+ * pt-BR coupon-validity verb ("esse cupom BEMVINDO15 ainda funciona?"). A coupon
+ * question phrased that way therefore ALSO fired `STORE_OPEN_NOW_Q` and
+ * force-required `STORE_OPEN_NOW` as a §O#15 companion, so an otherwise-VALIDATED
+ * coupon answer was completeness-degraded to a proposition-free UNKNOWN whenever
+ * the unrelated schedule read did not land. Same cross-family coupling BKL-152
+ * removed for the date-anchored hours pair; this one had no suppression rule.
+ *
+ * ── THE RULE, AND WHY IT IS NOT "COUPON ⇒ DROP THE SCHEDULE SPAN" ───────────
+ *
+ * The coarse rule would silently drop the schedule half of a GENUINE two-question
+ * utterance ("o cupom BEMVINDO15 vale e vocês estão abertos?") — the P4 silent-drop
+ * direction, which is a worse failure than the one being fixed. What actually makes
+ * the schedule reading spurious is that its ONLY evidence is a token the coupon
+ * VALIDITY vocabulary also owns. So: under a coupon reading, keep the span iff some
+ * matching store-open marker's own matched text is NOT itself a coupon validity
+ * phrase. "abert"/"fechad"/"que horas"/"horário" never are, so every genuinely
+ * schedule-bearing utterance keeps its span; "funciona" alone is.
+ *
+ * The overlap is DERIVED from the two nets rather than spelled as a literal
+ * `funciona` here, so a future shared verb (adding "aberto" to the coupon phrases,
+ * or "vale" to the store-open markers) is handled by construction instead of
+ * re-opening this defect under a new token.
+ *
+ * ── DEMOTE-ONLY ─────────────────────────────────────────────────────────────
+ *
+ * This only ever REMOVES a span class, and a removed span can only REMOVE required
+ * companions and classify-only eligibility. It proposes nothing, sets no verdict
+ * and grants no prose authority — the third demote-only shrink in this module,
+ * alongside the #8 ownership gate and the BKL-152 date-anchor suppression. And it
+ * is applied where the TEXT is, so all three consumers of the decomposition (the
+ * claim planner, classify-only, the renderer's completeness gate) read ONE
+ * classification and cannot disagree about it (the F-12 property).
+ */
+function hasIndependentStoreOpenNowMarker(t: string, couponValidityAsk: boolean): boolean {
+  const hits = STORE_OPEN_NOW_CLOSURE.markers.filter((m) => m.test(t));
+  if (hits.length === 0) return false;
+  if (!couponValidityAsk) return true;
+  return hits.some((m) => !COUPON_VALIDITY_PHRASE_RE.test(m.exec(t)?.[0] ?? ""));
+}
+
+/**
  * LE2-019 — does this request text ask whether a COUPON is valid? Pure. Exported
  * so the render seam can select the CLARIFY-for-code ask without a second,
  * drifting regex (the BKL-184 / LE2-002 idiom).
+ *
+ * PASS THE RAW TEXT, NOT A LOWERCASED COPY. This function does its own
+ * normalization for the regex conjuncts and hands the UNTOUCHED string to
+ * `detectCouponCodeInText`, whose "an ALL-CAPS token is code-shaped even without a
+ * digit" rule ("FRETEGRATIS") a pre-lowercased argument silently deletes. F-13
+ * MEASURED that divergence live: `claims-renderer-adapter.ts` passed the raw
+ * `requestText` and got `true` for "cupom FRETEGRATIS?" while
+ * `classifyRequestSpans` passed its lowercased `t` and produced `spans=[]` — one
+ * predicate, two answers, selected by the CALLER. The F-12 lesson applied to a
+ * string argument: the two call sites now agree because there is nothing left for
+ * them to disagree about.
  */
 export function isCouponValidityAsk(text: string): boolean {
   const t = text.toLowerCase();
-  if (!COUPON_VALID_CLOSURE.markers.some((m) => m.test(t))) return false;
+  // The TOPIC gate: the generated coupon NOUN, or — F-13(a) — the bare-`código`
+  // BRIDGE that makes the family's own advertised phrasing reachable. See
+  // {@link hasBareCodeNounNamingACode} for why the bridge is not a marker arm.
+  if (
+    !COUPON_VALID_CLOSURE.markers.some((m) => m.test(t)) &&
+    !hasBareCodeNounNamingACode(text)
+  ) {
+    return false;
+  }
   const applyShaped = COUPON_APPLY_IMPERATIVE_RE.test(t);
   const modal = COUPON_MODAL_QUESTION_RE.test(t);
   // An apply-shaped verb with NO modal frame is an IMPERATIVE — a mutation the
@@ -1394,11 +1531,22 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // the `reserv` stem (it IS the read anchor) and for the four-part shape net.
   const mutationImperative = hasMutationImperative(t) || hasReservationCreateImperative(t);
 
+  // F-13(b) — the COUPON reading is resolved HERE, ahead of the schedule span,
+  // because it is what tells a spurious `funciona` from a real one. It is the same
+  // boolean the coupon span below pushes on, evaluated ONCE: the two questions "is
+  // this a coupon ask?" and "does the schedule marker mean anything?" must be
+  // answered from one classification or they can disagree. The RAW `text` is
+  // passed, never `t` — see {@link isCouponValidityAsk}'s caller note.
+  const couponValidityAsk = !mutationImperative && isCouponValidityAsk(text);
+
   if (/retir|buscar|pegar/.test(t)) classes.push("PICKUP_Q");
   // inv.18 v2 — the STORE_OPEN_NOW_Q markers are GENERATED from the def source
   // (replaces the previously-handwritten /abert|fechad|.../ regex — the runtime
   // image can no longer drift from the ClaimDefinition closure).
-  if (STORE_OPEN_NOW_CLOSURE.markers.some((m) => m.test(t))) {
+  // F-13(b) — and they are read through {@link hasIndependentStoreOpenNowMarker},
+  // which DROPS this span when its only evidence is a marker the coupon validity
+  // vocabulary also owns ("funciona"). DEMOTE-ONLY; see that predicate's header.
+  if (hasIndependentStoreOpenNowMarker(t, couponValidityAsk)) {
     classes.push(STORE_OPEN_NOW_CLOSURE.spanClass);
   }
 
@@ -1625,7 +1773,13 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // inv.18 v2 / R2-S9 — the coupon NOUN marker is generated; the apply/modal/validity
   // discrimination stays inside `isCouponValidityAsk`. The class key is the generated
   // `spanClass`.
-  if (!mutationImperative && isCouponValidityAsk(t)) {
+  //
+  // F-13 — the boolean is computed ABOVE (it gates the schedule span too) and from
+  // the RAW `text`, which is also what fixed the measured span/render divergence on
+  // ALL-CAPS codes: this call used to pass the lowercased `t`, so "cupom
+  // FRETEGRATIS?" produced NO span here while the render seam's raw-text call to the
+  // same predicate said `true`.
+  if (couponValidityAsk) {
     classes.push(COUPON_VALID_CLOSURE.spanClass);
   }
 
