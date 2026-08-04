@@ -14,12 +14,15 @@
 //
 // External dependencies mocked at the module boundary:
 //   - @ibatexas/nats-client (subscribe)
-//   - @ibatexas/tools (getRedisClient + rk → in-memory Redis stub)
+//   - @ibatexas/tools (getRedisClient → the canonical in-memory adapter; `rk`
+//     is the REAL one)
 //   - @ibatexas/domain (prisma → no-op)
 //   - @ibatexas/llm-provider (createPostgresAuditWriter → injected stub)
 //   - @sentry/node (DLQ telemetry)
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { createInMemoryRedis } from "@ibatexas/tools/testing"
+import { rk } from "@ibatexas/tools"
 import { buildEnvelope, buildAuditRecord } from "@adjudicate/core"
 import type { AuditRecord } from "@adjudicate/core"
 import type {
@@ -33,40 +36,39 @@ const mockSubscribeNatsEvent = vi.hoisted(() => vi.fn())
 const mockSentryWithScope = vi.hoisted(() => vi.fn())
 const mockSentryCaptureMessage = vi.hoisted(() => vi.fn())
 
-// In-memory Redis stub — same shape as the defer-resolver test stub but
-// trimmed to the subset audit-consumer's dedup + DLQ helpers need.
-interface StubEntry {
-  value: string
-  ttl: number
-}
-const store = new Map<string, StubEntry>()
+let redis: ReturnType<typeof createInMemoryRedis>
 
+// R5-S8 — the canonical in-memory adapter replaces a hand-rolled stub whose
+// `lPush` was a fiction: it APPENDED to a newline-joined STRING under the DLQ
+// key. Production writes those keys as real Redis lists (`dlq.ts:29` LPUSH), so
+// the DLQ assertions below were satisfied by a string the stub invented, and a
+// WRONGTYPE — writing a string where production writes a list — could never
+// surface. The adapter models the list kind, so `pushToDlq` now writes what it
+// writes in production.
+//
+// The delegate (rather than handing `redis.client` over directly) exists for
+// ONE reason: the dedup-failure case swaps in a `set` that throws, via an object
+// spread. Delegating keeps that override byte-identical while every command
+// still runs the adapter's real semantics. It carries exactly the four commands
+// the consumer's path reaches (`dedup.ts` set, `dlq.ts` lPush/expire, plus get);
+// do not widen it into a general spy hole.
 function makeRedisStub() {
   return {
     async get(key: string) {
-      return store.get(key)?.value ?? null
+      return redis.client.get(key)
     },
     async set(
       key: string,
       value: string,
       opts?: { NX?: boolean; EX?: number },
     ): Promise<string | null> {
-      const exists = store.has(key)
-      if (opts?.NX && exists) return null
-      store.set(key, { value, ttl: opts?.EX ?? -1 })
-      return "OK"
+      return redis.client.set(key, value, opts as never)
     },
     async lPush(key: string, value: string) {
-      const e = store.get(key)
-      const next = e ? `${e.value}\n${value}` : value
-      store.set(key, { value: next, ttl: e?.ttl ?? -1 })
-      return 1
+      return redis.client.lPush(key, value)
     },
     async expire(key: string, seconds: number) {
-      const e = store.get(key)
-      if (!e) return 0
-      store.set(key, { value: e.value, ttl: seconds })
-      return 1
+      return redis.client.expire(key, seconds)
     },
   }
 }
@@ -77,10 +79,15 @@ vi.mock("@ibatexas/nats-client", () => ({
   subscribeNatsEvent: mockSubscribeNatsEvent,
 }))
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => redisStub),
-  rk: (key: string) => `test:${key}`,
-}))
+vi.mock("@ibatexas/tools", async () => {
+  // `rk` was faked as `test:${key}`. That prefix happened to AGREE with the real
+  // one (the suite stubs APP_ENV=test below), so this was never a wrong-prefix
+  // fiction — but it made the agreement a coincidence rather than a fact. It is
+  // spread from the real module now, so the keys the consumer writes and the
+  // keys asserted below cannot drift apart.
+  const actual = await vi.importActual<typeof import("@ibatexas/tools")>("@ibatexas/tools")
+  return { ...actual, getRedisClient: vi.fn(async () => redisStub) }
+})
 
 vi.mock("@ibatexas/domain", () => ({
   prisma: { $executeRawUnsafe: vi.fn(async () => 0) },
@@ -148,10 +155,10 @@ async function getRegisteredCallback(
 
 describe("audit-consumer subscriber", () => {
   beforeEach(() => {
-    store.clear()
     vi.clearAllMocks()
     vi.unstubAllEnvs()
     vi.stubEnv("APP_ENV", "test")
+    redis = createInMemoryRedis()
     redisStub = makeRedisStub()
     mockSentryWithScope.mockImplementation((cb: (s: unknown) => void) =>
       cb({ setTag: vi.fn(), setLevel: vi.fn() }),
@@ -194,8 +201,10 @@ describe("audit-consumer subscriber", () => {
     expect(row.kind).toBe("customer.profile.update")
 
     // Dedup ledger key was set.
-    const dedupKey = `test:nats:processed:audit.intent.decision.v1:${record.intentHash}:${record.at}`
-    expect(store.has(dedupKey)).toBe(true)
+    const dedupKey = rk(
+      `nats:processed:audit.intent.decision.v1:${record.intentHash}:${record.at}`,
+    )
+    expect(await redis.client.exists(dedupKey)).toBe(1)
 
     _setAuditConsumerWriter(null)
   })
@@ -244,7 +253,7 @@ describe("audit-consumer subscriber", () => {
 
     expect(insertAudit).not.toHaveBeenCalled()
     // DLQ list got an entry.
-    const dlqKeys = [...store.keys()].filter((k) => k.includes("dlq:"))
+    const dlqKeys = redis.keys().filter((k) => k.includes("dlq:"))
     expect(dlqKeys.length).toBeGreaterThanOrEqual(1)
 
     _setAuditConsumerWriter(null)
@@ -272,7 +281,7 @@ describe("audit-consumer subscriber", () => {
 
     // Writer was attempted, threw, then DLQ.
     expect(insertAudit).toHaveBeenCalledOnce()
-    const dlqKeys = [...store.keys()].filter((k) => k.includes("dlq:"))
+    const dlqKeys = redis.keys().filter((k) => k.includes("dlq:"))
     expect(dlqKeys.length).toBeGreaterThanOrEqual(1)
 
     _setAuditConsumerWriter(null)
