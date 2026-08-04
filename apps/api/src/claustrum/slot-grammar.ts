@@ -52,6 +52,7 @@ import { ORDER_HISTORY_TEMPLATE } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_TEMPLATE } from "./claimdefs/payment-history.generated.js";
 import { PAYMENT_STATUS_TEMPLATE } from "./claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_TEMPLATE } from "./claimdefs/reservation-status.generated.js";
+import { STORE_HOURS_FOR_DATE_TEMPLATE } from "./claimdefs/store-hours-for-date.generated.js";
 import { STORE_HOURS_TEMPLATE } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_TEMPLATE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_TEMPLATE } from "./claimdefs/store-open-now.generated.js";
@@ -222,24 +223,18 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // entry collapsed into this single spliced import.
   [STORE_HOURS]: STORE_HOURS_TEMPLATE,
   // BKL-138 — the DAY-SPECIFIC hours template (SCN-002/003). A SINGLE ledger-bound
-  // proposition prop(STORE_HOURS_FOR_DATE, "hoursText"), bound 1:1 to the C6
-  // value-binding FIELD (claim-registry.ts `valueBinding.path = ["hoursText"]`) — the
-  // per-date twin of STORE_HOURS. Deliberately DAY-GENERIC static text ("nesse dia" —
-  // the day the customer asked about): the single-proposition shape mirrors the proven
-  // STORE_HOURS chain and its ONE `buildClaimDefinition` value projection exactly, so
-  // it stays sound-by-construction (a second, differently-projected day-name
-  // proposition would fight the auto-assembled ClaimDefinition — see claim-definition-
-  // registry.ts). Renders the QUERIED date's REAL weekly hours; a holiday/override on
-  // that date already demoted the claim to UNKNOWN upstream (never reaches here).
-  [STORE_HOURS_FOR_DATE]: {
-    claimType: STORE_HOURS_FOR_DATE,
-    posture: "validated",
-    slots: [
-      lit("Nesse dia, nosso horário de funcionamento é: "),
-      prop(STORE_HOURS_FOR_DATE, "hoursText"),
-      lit("."),
-    ],
-  },
+  // proposition prop(STORE_HOURS_FOR_DATE, "hoursText") — the per-date twin of STORE_HOURS.
+  //
+  // inv.18 v2 / R2-S8 — the template is now GENERATED from its ClaimDefinition source
+  // (./claimdefs/store-hours-for-date.generated.ts — DO NOT EDIT). The slot is derived from
+  // the source's `render.prop("hoursText")` with claimType filled = self, and the compiler
+  // binds it to the SAME source's C6 `valueBinding.path = ["hoursText"]` — so the 1:1
+  // slot↔field alignment (Inv 6) is now true BY CONSTRUCTION rather than by two files
+  // agreeing, and the DAY-GENERIC static text ("nesse dia" — the day the customer asked
+  // about) travels with it. The ~13-line handwritten entry collapsed into this spliced
+  // import. Renders the QUERIED date's REAL weekly hours; a holiday/override on that date
+  // already demoted the claim to UNKNOWN upstream (never reaches here).
+  [STORE_HOURS_FOR_DATE]: STORE_HOURS_FOR_DATE_TEMPLATE,
   // inv.18 v2 / R2-S7 — the STATUS SIBLINGS' validated templates are GENERATED from their
   // ClaimDefinition sources (./claimdefs/order-fulfillment-stage.generated.ts /
   // ./claimdefs/payment-status.generated.ts — DO NOT EDIT). Each single proposition slot is

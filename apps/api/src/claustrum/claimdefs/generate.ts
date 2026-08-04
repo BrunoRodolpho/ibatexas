@@ -35,6 +35,7 @@ import {
   type RepoCompiledArtifacts,
 } from "./per-resource-claim.js";
 import { RESERVATION_STATUS_SOURCE } from "./reservation-status.claim.js";
+import { STORE_HOURS_FOR_DATE_SOURCE } from "./store-hours-for-date.claim.js";
 import { STORE_HOURS_SOURCE } from "./store-hours.claim.js";
 import { STORE_INFO_SOURCE } from "./store-info.claim.js";
 import { STORE_OPEN_NOW_SOURCE } from "./store-open-now.claim.js";
@@ -173,6 +174,22 @@ const UNITS: readonly GenUnit[] = [
     slug: "payment-status",
     sourceFile: "payment-status.claim.ts",
     artifacts: compilePerResourceClaimDefinition(PAYMENT_STATUS_SOURCE),
+  },
+  // R2-S8 — the LAST parameterized type, and the first whose span predicate is a
+  // CONJUNCTION. It reaches the compiler through the SAME R2-S2 widening as the public
+  // per-item three (PUBLIC `not_applicable` evidence, subject = the QUERIED ISO date), so
+  // per-resource-claim.ts is UNCHANGED by this slice. What is new is only the marker/guard
+  // split: `markers` carries the `scheduleContext` conjunct (a flat nine-arm alternation
+  // that rejoins byte-identically), while the `dateAnchor` conjunct — whose `|`s sit inside
+  // a group under a shared `\b`, so no per-arm split rejoins to the same bytes — stays a
+  // hand-written GUARD at `classifyRequestSpans`, as does the BKL-152 STORE_OPEN_NOW_Q
+  // suppression seam in `decomposeRequiredClaims` (sequencing over the assembled required
+  // set, which no single closure row can express). See store-hours-for-date.claim.ts's
+  // header for the measurement that chose the split.
+  {
+    slug: "store-hours-for-date",
+    sourceFile: "store-hours-for-date.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(STORE_HOURS_FOR_DATE_SOURCE),
   },
 ];
 

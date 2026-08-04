@@ -66,6 +66,7 @@ import { ORDER_HISTORY_DEFINITION } from "./claimdefs/order-history.generated.js
 import { PAYMENT_HISTORY_DEFINITION } from "./claimdefs/payment-history.generated.js";
 import { PAYMENT_STATUS_DEFINITION } from "./claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_DEFINITION } from "./claimdefs/reservation-status.generated.js";
+import { STORE_HOURS_FOR_DATE_DEFINITION } from "./claimdefs/store-hours-for-date.generated.js";
 import { STORE_HOURS_DEFINITION } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_DEFINITION } from "./claimdefs/store-open-now.generated.js";
@@ -163,6 +164,15 @@ const GENERATED_DEFINITIONS: Readonly<
   // sources.
   MENU_ITEM_CONTENTS: MENU_ITEM_CONTENTS_DEFINITION,
   MENU_DIETARY: MENU_DIETARY_DEFINITION,
+  // R2-S8 — the LAST parameterized type, and the fourth PUBLIC per-item one. Same footing
+  // as the three above: `perResourceKey` is a REGISTRY-SPEC facet, not a field of the
+  // generic `ClaimDefinition` the inv.18 validator quantifies over, so what boot consumes
+  // here is shape-for-shape what `assembleClaimDefinition` built before (verified
+  // byte-identical against the pre-migration runtime dump). `triadScoped: false` is
+  // DECLARED in the source — this type carries no INV-4 closure obligation, and its
+  // generated STORE_HOURS_FOR_DATE_Q row exists because it OWNS that span, not because it
+  // owes one.
+  STORE_HOURS_FOR_DATE: STORE_HOURS_FOR_DATE_DEFINITION,
   // R2-S4 — the FIRST OWNER-SCOPED type to compile from source, and the first generated
   // definition with `triadScoped: TRUE`. That flag is DECLARED in the source, so this
   // type's INV-4 closure obligation is now discharged by the generated

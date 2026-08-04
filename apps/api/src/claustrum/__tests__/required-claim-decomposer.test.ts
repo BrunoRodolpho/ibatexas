@@ -27,6 +27,7 @@ import { ORDER_HISTORY_CLOSURE } from "../claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_CLOSURE } from "../claimdefs/payment-history.generated.js";
 import { PAYMENT_STATUS_CLOSURE } from "../claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_CLOSURE } from "../claimdefs/reservation-status.generated.js";
+import { STORE_HOURS_FOR_DATE_CLOSURE } from "../claimdefs/store-hours-for-date.generated.js";
 import { STORE_OPEN_NOW_CLOSURE } from "../claimdefs/store-open-now.generated.js";
 // BKL-285 — the classify-only ROUTE gate. Imported here so the reservation
 // create/read split can be asserted on the decision that actually costs the
@@ -1381,6 +1382,107 @@ describe("span nets — the S5843 restructure is source-identical to the literal
         expect(classes, text).not.toContain("PAYMENT_STATUS_Q");
       }
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// inv.18 v2 / R2-S8 — STORE_HOURS_FOR_DATE_Q, the first span whose predicate is a
+// CONJUNCTION rather than a flat net. `scheduleContext` became the generated marker
+// array; `dateAnchor` stayed a hand-written guard at `classifyRequestSpans`. These
+// cases pin the generated half byte-exactly AND pin the fact that doing so proves
+// almost nothing about the span — which is the point of the block.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("STORE_HOURS_FOR_DATE — the generated marker half of a CONJUNCTIVE span (R2-S8)", () => {
+  it("the nine generated marker arms rejoin to the pre-migration scheduleContext literal", () => {
+    // The same statement its seven predecessors make: if the reassembly is byte-identical
+    // to the literal it replaced, it is not an equivalent regex, it is THE SAME regex.
+    expect(__SPAN_NET_SOURCES_FOR_TEST.storeHoursForDate).toBe(
+      String.raw`hor[áa]rio|que horas|abre|abrem|abert|fecha|funciona|expediente|atend`,
+    );
+    // Exactly nine arms — a tenth would be new net surface smuggled in as a "move".
+    expect(STORE_HOURS_FOR_DATE_CLOSURE.markers).toHaveLength(9);
+    // The accent CLASS, called out on its own: `horário` is how the attested SCN-002
+    // utterance is actually spelled, so an ASCII-only stem would empty the true-positive
+    // set on real phrasing while passing every false-positive sweep (the
+    // BKL-205/BKL-270/BKL-271 lesson, now on its fifth recurrence).
+    expect(STORE_HOURS_FOR_DATE_CLOSURE.markers[0]!.source).toBe(String.raw`hor[áa]rio`);
+    // Every arm is a bare, flagless literal — no arm acquired an anchor or a flag in the
+    // move (a `g` flag in particular would make `.test` stateful across calls).
+    for (const m of STORE_HOURS_FOR_DATE_CLOSURE.markers) expect(m.flags).toBe("");
+  });
+
+  it("the generated closure row is the pre-migration row", () => {
+    expect(STORE_HOURS_FOR_DATE_CLOSURE.spanClass).toBe("STORE_HOURS_FOR_DATE_Q");
+    expect(STORE_HOURS_FOR_DATE_CLOSURE.requires).toEqual(["STORE_HOURS_FOR_DATE"]);
+    expect(REQUIRED_CLAIM_CLOSURE.STORE_HOURS_FOR_DATE_Q).toEqual(["STORE_HOURS_FOR_DATE"]);
+  });
+
+  it("THE BYTE PIN IS GUARD-BLIND: the net alone matches every bare hours question", () => {
+    // ── WHY THIS CASE EXISTS ────────────────────────────────────────────────────
+    // Every earlier slice's byte pin covers a WHOLE span net, so byte-identity there is
+    // close to a behavioural statement. Here it covers ONE CONJUNCT. This case measures
+    // the gap directly: the generated net MATCHES utterances that must NEVER reach this
+    // span, and the only thing keeping them off it is the hand-written `dateAnchor`
+    // conjunct. So the pin above staying green is consistent with the span being wholly
+    // broken — and the must-not-fire cases in the BKL-138 block above (plus the turn-seam
+    // control in `../../__tests__/r2s8-hours-for-date-claims.e2e.test.ts`) are what
+    // actually guard it. Stated as an assertion rather than a comment because a comment
+    // claiming a safety property is worth nothing once someone edits the net.
+    for (const text of [
+      "qual o horário de funcionamento?",
+      "que horas fecham?",
+      "vocês funcionam?",
+      "vocês atendem por telefone?",
+      "o expediente é longo?",
+    ]) {
+      expect(
+        STORE_HOURS_FOR_DATE_CLOSURE.markers.some((m) => m.test(text)),
+        `the generated net must MATCH ${text}, or this case proves nothing`,
+      ).toBe(true);
+      // …and yet the SPAN does not fire, because the guard conjunct is absent.
+      expect(classifyRequestSpans(text), text).not.toContain("STORE_HOURS_FOR_DATE_Q");
+    }
+  });
+
+  it("the guard conjunct is the DATE half, and it is not reachable through the net", () => {
+    // The mirror mechanism assertion (the R2-S7 dual-use-token idiom): if a future edit
+    // ever added a weekday arm to the generated markers, the guard would become
+    // unreachable and every must-not-fire case above would still pass on the OTHER
+    // conjunct. Assert the net cannot match a bare date anchor.
+    for (const token of [
+      "domingo",
+      "segunda",
+      "terça",
+      "quarta",
+      "quinta",
+      "sexta",
+      "sábado",
+      "amanhã",
+      "feriado",
+    ]) {
+      expect(
+        STORE_HOURS_FOR_DATE_CLOSURE.markers.some((m) => m.test(token)),
+        `the generated net must not match the bare date anchor "${token}"`,
+      ).toBe(false);
+    }
+  });
+
+  it("both conjuncts together are what fire the span (the positive direction)", () => {
+    // The non-vacuity partner of the two cases above: each pairing is a date anchor the
+    // net cannot match, plus a schedule word the guard cannot match, and only together do
+    // they classify. Without this the block would be satisfiable by a span that never
+    // fires at all.
+    for (const [anchor, word] of [
+      ["domingo", "horário"],
+      ["amanhã", "que horas"],
+      ["sábado", "funciona"],
+      ["feriado", "abert"],
+      ["terça", "expediente"],
+      ["quinta", "atende"],
+    ] as const) {
+      const text = `${word} ${anchor}?`;
+      expect(classifyRequestSpans(text), text).toContain("STORE_HOURS_FOR_DATE_Q");
+    }
   });
 });
 
