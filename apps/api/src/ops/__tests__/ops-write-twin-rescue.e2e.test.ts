@@ -39,12 +39,13 @@ import type { Completion, CompletionRequest, ModelProvider } from "@claustrum/co
 import { PROPOSE_CLAIM_TOOL } from "../../claustrum/ibatexas-planner.js";
 import { CLAIMS_PIPELINE_ENABLED_ENV } from "../../claustrum/claims-pipeline.js";
 import type { DeliveryCoverageResolution } from "../../claustrum/delivery-coverage-resolver.js";
+import type { ScheduleRead, StoreHoursRead } from "../../claustrum/turn-reads.js";
 
 // ── Mock 1: the claims pipeline's read backend (no DB/network) ─────────────────
 const { scheduleBackend } = vi.hoisted(() => ({
   scheduleBackend: {
-    signal: { isClosed: false, mealPeriod: "dinner" } as unknown,
-    hours: { hoursText: "11h–15h / 18h–23h" } as unknown,
+    signal: { isClosed: false, mealPeriod: "dinner" } as ScheduleRead,
+    hours: { hoursText: "11h–15h / 18h–23h" } as StoreHoursRead,
     hoursThrows: false,
     scheduleThrows: false,
   },
@@ -53,38 +54,31 @@ const { scheduleBackend } = vi.hoisted(() => ({
 vi.mock("../../claustrum/turn-reads.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  const { buildTriadReadBackend } = await import(
+    "../../__tests__/helpers/triad-backend-builder.js"
+  );
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => {
-        if (scheduleBackend.scheduleThrows) throw new Error("schedule store unavailable");
-        return scheduleBackend.signal;
-      },
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => {
-        if (scheduleBackend.hoursThrows) throw new Error("schedule store unavailable");
-        return scheduleBackend.hours;
-      },
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readReservation: notUsed("readReservation"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      // A staff principal owns no customer orders/payments/reservations.
-      listActiveOrderIds: async () => [],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => {
+          if (scheduleBackend.scheduleThrows) throw new Error("schedule store unavailable");
+          return scheduleBackend.signal;
+        },
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => {
+          if (scheduleBackend.hoursThrows) throw new Error("schedule store unavailable");
+          return scheduleBackend.hours;
+        },
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        // A staff principal owns no customer orders/payments/reservations.
+        listActiveOrderIds: async () => [],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 

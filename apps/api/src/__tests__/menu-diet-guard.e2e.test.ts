@@ -74,33 +74,26 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  const { buildTriadReadBackend } = await import(
+    "./helpers/triad-backend-builder.js"
+  );
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readReservation: notUsed("readReservation"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      // Someone asking a menu question owns nothing relevant; present-with-0 keeps
-      // §O#15 from force-requiring an order companion.
-      listActiveOrderIds: async () => [],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        // Someone asking a menu question owns nothing relevant; present-with-0 keeps
+        // §O#15 from force-requiring an order companion.
+        listActiveOrderIds: async () => [],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 

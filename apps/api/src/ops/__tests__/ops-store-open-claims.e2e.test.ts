@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Completion, CompletionRequest, ModelProvider } from "@claustrum/core";
 import { PROPOSE_CLAIM_TOOL } from "../../claustrum/ibatexas-planner.js";
 import { CLAIMS_PIPELINE_ENABLED_ENV } from "../../claustrum/claims-pipeline.js";
+import type { ScheduleRead } from "../../claustrum/turn-reads.js";
 
 // ── The ONE mocked external: the claims pipeline's read backend ────────────────
 // `buildClaimsSeams` constructs `createIbatexasInvestigator()`, whose default
@@ -32,7 +33,7 @@ import { CLAIMS_PIPELINE_ENABLED_ENV } from "../../claustrum/claims-pipeline.js"
 // real) so the turn runs with no DB/network while every claims stage stays genuine.
 const { scheduleBackend } = vi.hoisted(() => ({
   scheduleBackend: {
-    signal: { isClosed: false, mealPeriod: "dinner" } as unknown,
+    signal: { isClosed: false, mealPeriod: "dinner" } as ScheduleRead,
     scheduleThrows: false,
   },
 }));
@@ -40,41 +41,34 @@ const { scheduleBackend } = vi.hoisted(() => ({
 vi.mock("../../claustrum/turn-reads.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  const { buildTriadReadBackend } = await import(
+    "../../__tests__/helpers/triad-backend-builder.js"
+  );
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => {
-        if (scheduleBackend.scheduleThrows) {
-          throw new Error("schedule store unavailable");
-        }
-        return scheduleBackend.signal;
-      },
-      // No per-date override today ⇒ null ⇒ the investigator records ABSENT_READ ⇒
-      // the STORE_OPEN_NOW cross-key falsifier does NOT fire.
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "18h às 23h" }),
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "18h às 23h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readReservation: notUsed("readReservation"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      // The provable-empty enumerations: a staff principal owns no customer orders,
-      // payments or reservations. Present-with-count-0 is the honest answer and keeps
-      // the §O#15 completeness gate from force-requiring an order companion.
-      listActiveOrderIds: async () => [],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => {
+          if (scheduleBackend.scheduleThrows) {
+            throw new Error("schedule store unavailable");
+          }
+          return scheduleBackend.signal;
+        },
+        // No per-date override today ⇒ null ⇒ the investigator records ABSENT_READ ⇒
+        // the STORE_OPEN_NOW cross-key falsifier does NOT fire.
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "18h às 23h" }),
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "18h às 23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        // The provable-empty enumerations: a staff principal owns no customer orders,
+        // payments or reservations. Present-with-count-0 is the honest answer and keeps
+        // the §O#15 completeness gate from force-requiring an order companion.
+        listActiveOrderIds: async () => [],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 

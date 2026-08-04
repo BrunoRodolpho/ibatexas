@@ -33,58 +33,57 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Completion, CompletionRequest, ModelProvider } from "@claustrum/core";
 import { PROPOSE_CLAIM_TOOL } from "../../claustrum/ibatexas-planner.js";
 import { CLAIMS_PIPELINE_ENABLED_ENV } from "../../claustrum/claims-pipeline.js";
+import type {
+  HolidayRead,
+  ScheduleOverrideRead,
+  ScheduleRead,
+  StoreHoursRead,
+} from "../../claustrum/turn-reads.js";
 
 // ── The ONE mocked external: the claims pipeline's read backend ───────────────
 const { scheduleBackend } = vi.hoisted(() => ({
   scheduleBackend: {
-    signal: { isClosed: false, mealPeriod: "dinner" } as unknown,
+    signal: { isClosed: false, mealPeriod: "dinner" } as ScheduleRead,
     scheduleThrows: false,
-    hours: { hoursText: "11h–15h / 18h–23h" } as unknown,
+    hours: { hoursText: "11h–15h / 18h–23h" } as StoreHoursRead,
     hoursThrows: false,
-    holiday: null as unknown,
-    override: null as unknown,
+    holiday: null as HolidayRead | null,
+    override: null as ScheduleOverrideRead | null,
   },
 }));
 
 vi.mock("../../claustrum/turn-reads.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  const { buildTriadReadBackend } = await import(
+    "../../__tests__/helpers/triad-backend-builder.js"
+  );
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => {
-        if (scheduleBackend.scheduleThrows) {
-          throw new Error("schedule store unavailable");
-        }
-        return scheduleBackend.signal;
-      },
-      readScheduleOverride: async () => scheduleBackend.override,
-      // BKL-121 — THROWS on an unavailable schedule so the investigator records a
-      // fail-closed read ERROR (Inv 7), never a fabricated hours string.
-      readStoreHours: async () => {
-        if (scheduleBackend.hoursThrows) throw new Error("schedule store unavailable");
-        return scheduleBackend.hours;
-      },
-      readHoliday: async () => scheduleBackend.holiday,
-      readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readReservation: notUsed("readReservation"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      // A staff principal owns no customer orders/payments/reservations.
-      listActiveOrderIds: async () => [],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => {
+          if (scheduleBackend.scheduleThrows) {
+            throw new Error("schedule store unavailable");
+          }
+          return scheduleBackend.signal;
+        },
+        readScheduleOverride: async () => scheduleBackend.override,
+        // BKL-121 — THROWS on an unavailable schedule so the investigator records a
+        // fail-closed read ERROR (Inv 7), never a fabricated hours string.
+        readStoreHours: async () => {
+          if (scheduleBackend.hoursThrows) throw new Error("schedule store unavailable");
+          return scheduleBackend.hours;
+        },
+        readHoliday: async () => scheduleBackend.holiday,
+        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        // A staff principal owns no customer orders/payments/reservations.
+        listActiveOrderIds: async () => [],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 
@@ -327,7 +326,8 @@ describe("BKL-234 — the honesty rules still hold on the hours read", () => {
       id: "ovr-1",
       date: "2026-07-26",
       isOpen: false,
-      reason: "manutenção",
+      blocks: [],
+      note: "manutenção",
     };
 
     const response = await runHoursTurn("Qual horário de funcionamento?");

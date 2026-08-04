@@ -45,33 +45,26 @@ import type { SalesAnalytics } from "../sales-analytics-compose.js";
 vi.mock("../../claustrum/turn-reads.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  const { buildTriadReadBackend } = await import(
+    "../../__tests__/helpers/triad-backend-builder.js"
+  );
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "18h às 23h" }),
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "18h às 23h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readReservation: notUsed("readReservation"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      // A staff principal owns no customer orders / payments / reservations —
-      // present-with-count-0 is the honest answer.
-      listActiveOrderIds: async () => [],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "18h às 23h" }),
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "18h às 23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        // A staff principal owns no customer orders / payments / reservations —
+        // present-with-count-0 is the honest answer.
+        listActiveOrderIds: async () => [],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 
