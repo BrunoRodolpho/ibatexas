@@ -56,6 +56,7 @@ import {
 // "sound-by-convention" (the EGRESS-finding failure shape). The generated definitions
 // are no longer dead: they are the objects the validator actually runs over for these
 // types.
+import { MENU_ITEM_PRICE_DEFINITION } from "./claimdefs/menu-item-price.generated.js";
 import { STORE_HOURS_DEFINITION } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_DEFINITION } from "./claimdefs/store-open-now.generated.js";
@@ -118,12 +119,18 @@ const GENERATED_DEFINITIONS: Readonly<
   STORE_OPEN_NOW: STORE_OPEN_NOW_DEFINITION,
   // R2-S1 — both are PUBLIC, FIXED-SUBJECT reads (`triadScoped: false` is declared in
   // their sources, so neither carries an INV-4 closure obligation and neither depends on
-  // TRIAD_SCOPED_TYPES). `perResourceKey` is the facet that keeps the remaining
-  // registry types hand-assembled: the published compiler's source schema has no field
-  // for it, so a `:{subject}`-parameterized type cannot be compiled without widening
-  // that schema.
+  // TRIAD_SCOPED_TYPES).
   STORE_HOURS: STORE_HOURS_DEFINITION,
   STORE_INFO: STORE_INFO_DEFINITION,
+  // R2-S2 — the first PARAMETERIZED type to compile from source, reached by the
+  // repo-local `perResourceKey` widening (claimdefs/per-resource-claim.ts). The facet is
+  // deliberately ABSENT from this object: `perResourceKey` is a REGISTRY-SPEC field that
+  // `selectCandidateClaim` reads, and the generic `ClaimDefinition` the inv.18 validator
+  // quantifies over has no such field — `assembleClaimDefinition` never propagated one
+  // either, so consuming the generated definition here is shape-for-shape what boot
+  // hand-assembled before. `triadScoped: false` is DECLARED in the source (public
+  // per-item reads carry no INV-4 closure obligation).
+  MENU_ITEM_PRICE: MENU_ITEM_PRICE_DEFINITION,
 };
 
 /**

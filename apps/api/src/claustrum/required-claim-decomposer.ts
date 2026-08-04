@@ -39,6 +39,7 @@ import {
 // + marker regexes collapse into these splices. What the compiler does NOT model is a
 // span GUARD: STORE_INFO_Q's `notResourceScoped && !mutationImperative` conjunction
 // stays hand-written below, wrapping the generated markers.
+import { MENU_ITEM_PRICE_CLOSURE } from "./claimdefs/menu-item-price.generated.js";
 import { STORE_INFO_CLOSURE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
 // LE2-019 — the PURE coupon-code extractor (no IO; see promotion-validity.ts's
@@ -155,11 +156,15 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // via the closure-value union (over-proposed history claim demoted on a non-history turn).
   ORDER_HISTORY_Q: ["ORDER_HISTORY"],
   PAYMENT_HISTORY_Q: ["PAYMENT_HISTORY"],
+  // inv.18 v2 / R2-S2 — MENU_ITEM_PRICE_Q's row is GENERATED (span class + required set);
+  // the BKL-142 rationale for requiring ONLY its own PUBLIC claim moved verbatim into
+  // `./claimdefs/menu-item-price.claim.ts`. Its CONTENTS sibling stays hand-written below
+  // until it is adopted in turn.
+  [MENU_ITEM_PRICE_CLOSURE.spanClass]: MENU_ITEM_PRICE_CLOSURE.requires,
   // BKL-142 — a menu question requires ONLY its own PUBLIC claim (no unrelated span
   // force-requires it; like CART_CONTENTS_Q / RESERVATION_STATUS_Q). An unresolvable
   // item → ABSENT evidence → honest UNKNOWN; it never demotes a co-occurring answer
   // beyond its own span. Public (`not_applicable`) → never Triad-scoped.
-  MENU_ITEM_PRICE_Q: ["MENU_ITEM_PRICE"],
   MENU_ITEM_CONTENTS_Q: ["MENU_ITEM_CONTENTS"],
   // BKL-142 — a menu-WIDE overview question requires ONLY its own PUBLIC claim (like the
   // per-item menu spans). Empty catalog → ABSENT evidence → honest UNKNOWN; never demotes
@@ -980,6 +985,13 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
    * equivalent regex, it is THE SAME regex.
    */
   storeInfo: STORE_INFO_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S2 — the MENU_ITEM_PRICE_Q markers, now GENERATED as FOUR arms from
+   * `menu-item-price.claim.ts`, rejoined in declaration order. Same statement as
+   * `storeInfo` above: if this reassembly is byte-identical to the pre-migration literal,
+   * it is not an equivalent regex, it is THE SAME regex.
+   */
+  menuItemPrice: MENU_ITEM_PRICE_CLOSURE.markers.map((m) => m.source).join("|"),
 } as const;
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -1147,8 +1159,19 @@ export function classifyRequestSpans(text: string): SpanClass[] {
     (MENU_WORD_RE.test(t) || MENU_BARE_ASK_RE.test(t) || MENU_LIST_ASK_RE.test(t));
   if (isMenuOverview) classes.push("MENU_OVERVIEW_Q");
 
-  if (notOrderScoped && !mutationImperative && /quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]/.test(t)) {
-    classes.push("MENU_ITEM_PRICE_Q");
+  // inv.18 v2 / R2-S2 — the MARKERS are now GENERATED from the def source (they were one
+  // flat top-level alternation, so the four generated arms REJOIN to that literal
+  // character-for-character — pinned by `__SPAN_NET_SOURCES_FOR_TEST.menuItemPrice`). The
+  // GUARD conjunction is NOT generated and stays here: the compiler models which markers
+  // classify INTO a span, not which contexts must suppress it — `notOrderScoped` is what
+  // keeps "quanto custa a ENTREGA/o FRETE/o PEDIDO" off the per-item price span, and
+  // `!mutationImperative` keeps "muda o preço do brisket" on the mutation path.
+  if (
+    notOrderScoped &&
+    !mutationImperative &&
+    MENU_ITEM_PRICE_CLOSURE.markers.some((m) => m.test(t))
+  ) {
+    classes.push(MENU_ITEM_PRICE_CLOSURE.spanClass);
   }
   // BKL-273 — allergen-family phrasing ("ingredientes", "contém glúten/lactose") NO
   // LONGER suppresses this span. It still never produces a rendered CONTENTS answer,

@@ -51,9 +51,13 @@ import type {
 // stanza (~30 / ~57 / ~32 lines) collapsed into one import; the runtime got SMALLER for
 // these types and can no longer drift from the slot grammar / closure.
 // R2-S1 adopted STORE_HOURS + STORE_INFO on the STORE_OPEN_NOW precedent: all three are
-// PUBLIC and FIXED-SUBJECT, which is what makes them compilable — `perResourceKey` has
-// no representation in the published compiler's source schema, so every
-// `:{subject}`-parameterized type stays hand-written here until that facet exists.
+// PUBLIC and FIXED-SUBJECT. R2-S2 then WIDENED the schema repo-locally
+// (`./claimdefs/per-resource-claim.ts`) so a `:{subject}`-parameterized type can compile
+// too, and adopted MENU_ITEM_PRICE as the proof — its generated row carries
+// `perResourceKey: true` beside UNSUFFIXED base keys, which is what `selectCandidateClaim`
+// below requires (it does the suffixing). The remaining parameterized types stay
+// hand-written here until each is adopted in turn.
+import { MENU_ITEM_PRICE_REGISTRY_SPEC } from "./claimdefs/menu-item-price.generated.js";
 import { STORE_HOURS_REGISTRY_SPEC } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_REGISTRY_SPEC } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_REGISTRY_SPEC } from "./claimdefs/store-open-now.generated.js";
@@ -999,59 +1003,29 @@ export const REGISTRY_SPECS = {
     ],
     valueBinding: { key: "payment_history", path: ["historySummaryText"] },
   },
-  // BKL-142 — MENU_ITEM_PRICE: a PUBLIC per-item catalog read. Clones
-  // STORE_HOURS_FOR_DATE's public (`not_applicable`, `perResourceKey`) shape + the
-  // CART_CONTENTS pre-composed-scalar `valueBinding` (`priceText`, "R$ 89,00" composed
-  // in code from integer centavos — Hard Rule 2, NEVER model-authored). The subject is
-  // the RESOLVED product id (the shared menu-item-resolver.ts drives BOTH the claim
-  // planner's candidate subject AND the investigator's `menu:item_price:{id}` key, so
-  // they match by construction); an unresolvable item → no candidate/absent evidence →
-  // honest UNKNOWN, never an arbitrary product.
+  // inv.18 v2 / R2-S2 — MENU_ITEM_PRICE is now GENERATED from its ClaimDefinition source
+  // (`./claimdefs/menu-item-price.generated.ts`, compiled from `menu-item-price.claim.ts`).
+  // The FIRST `perResourceKey` type to compile from source: the flag has no field in the
+  // published `compileClaimDefinition`, so it is projected by the REPO-LOCAL widening
+  // (`./claimdefs/per-resource-claim.ts`) — the generated row carries the UNSUFFIXED base
+  // keys plus `perResourceKey: true`, exactly as this stanza spelled them, and
+  // `selectCandidateClaim` below suffixes them by `:{subject}` at select time as before.
+  // This one line REPLACES the ~46-line handwritten stanza (evidence + the
+  // deliberately-unread W6 falsifier + the C6 binding, whose rationales moved verbatim
+  // into the source) and can never drift from the template or the closure row, which are
+  // generated too.
+  // BKL-270 — the posture is SPLICED here for the same reason as on its three siblings:
+  // `compileClaimDefinition` has no concept of `dietaryPosture`, so it cannot emit the
+  // field, and splicing keeps the generated file byte-pure under its source-checksum
+  // drift guard. `abstain`: price is not food content, but the failure here is WORSE than
+  // implication — it is SUBJECT MISRESOLUTION. Asked "quanto custa o brownie sem
+  // lactose?" the resolver resolves the ORDINARY brownie and prices that, so the answer
+  // both asserts a sem-lactose variant exists and attaches a real price to a product that
+  // is not the one asked about. Highest helpfulness cost of any abstain (price is the
+  // most-asked read) — accepted by the owner as drafted.
   MENU_ITEM_PRICE: {
-    kind: "read_claim",
-    // BKL-270 — price is not food content, but the failure here is WORSE than
-    // implication: it is SUBJECT MISRESOLUTION. Asked "quanto custa o brownie sem
-    // lactose?" the resolver resolves the ORDINARY brownie and prices that, so the
-    // answer both asserts a sem-lactose variant exists and attaches a real price to
-    // a product that is not the one asked about. Highest helpfulness cost of any
-    // abstain (price is the most-asked read) — accepted by the owner as drafted.
+    ...MENU_ITEM_PRICE_REGISTRY_SPEC,
     dietaryPosture: "abstain",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "menu:item_price",
-        ownershipPolicy: "not_applicable",
-        // UNITS (BKL-121/BKL-125 pin): `cacheable` ttl is enforced in epoch-MILLISECONDS.
-        // 300_000 ms = the ratified 5-minute catalog-freshness bound (vacuous within a
-        // per-turn ledger, honest if an entry ever outlives a turn).
-        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    perResourceKey: true,
-    // W6 — `menu:item_unpublished` is DECLARED (so this type escapes the W6 UNKNOWN-only
-    // cap and can VALIDATE) but DELIBERATELY UNREAD by the investigator — the SAME
-    // disposition CART_CONTENTS's `cart_cleared` / ORDER_FULFILLMENT_STAGE's
-    // `order_cancelled` took after the #290/#291 review: a "this product row is
-    // unpublished" signal derived from the SAME product row the price came from is a
-    // TAUTOLOGY (an unpublished item already reads ABSENT ⇒ no present base to demote)
-    // AND would re-introduce the exact same-row-tautology class those PRs removed.
-    // Declaring-without-reading is sound: the runtime arm resolves an always-absent key
-    // ⇒ never fires ⇒ demote-only safety is preserved. A future INDEPENDENT signal (a
-    // catalog `product.unpublished` event, not this row) could wire the read.
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "menu:item_unpublished",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "menu:item_price", path: ["priceText"] },
   },
   // BKL-142 — MENU_ITEM_CONTENTS: same PUBLIC per-item shape, C6-bound to the
   // first-party `contentsText` (the product description). Same deliberately-unread

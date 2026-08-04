@@ -20,23 +20,35 @@ import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compileClaimDefinition } from "@adjudicate/core";
+import { MENU_ITEM_PRICE_SOURCE } from "./menu-item-price.claim.js";
 import {
-  type CompiledArtifacts,
-  compileClaimDefinition,
-} from "@adjudicate/core";
+  compilePerResourceClaimDefinition,
+  type RepoCompiledArtifacts,
+} from "./per-resource-claim.js";
 import { STORE_HOURS_SOURCE } from "./store-hours.claim.js";
 import { STORE_INFO_SOURCE } from "./store-info.claim.js";
 import { STORE_OPEN_NOW_SOURCE } from "./store-open-now.claim.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** A single claim type's codegen unit: its source file + compiled artifacts. */
+/**
+ * A single claim type's codegen unit: its source file + compiled artifacts.
+ *
+ * `artifacts` is the REPO-widened bundle ({@link RepoCompiledArtifacts}) rather than the
+ * published `CompiledArtifacts`: both a FIXED-SUBJECT unit (plain
+ * `compileClaimDefinition`) and a PARAMETERIZED one (R2-S2's
+ * `compilePerResourceClaimDefinition`) are assignable to it, so ONE emitter serves both
+ * and its static view of `registrySpec` includes the `perResourceKey` facet it actually
+ * serializes. Typing this as the published bundle would statically DENY that field while
+ * the runtime object carried it — the shape in which a widening quietly stops emitting.
+ */
 interface GenUnit {
   /** The slug used for the generated file names (kebab-case). */
   readonly slug: string;
   /** The source `.claim.ts` file name (for the checksum + the header). */
   readonly sourceFile: string;
-  readonly artifacts: CompiledArtifacts;
+  readonly artifacts: RepoCompiledArtifacts;
 }
 
 const UNITS: readonly GenUnit[] = [
@@ -54,6 +66,14 @@ const UNITS: readonly GenUnit[] = [
     slug: "store-info",
     sourceFile: "store-info.claim.ts",
     artifacts: compileClaimDefinition(STORE_INFO_SOURCE),
+  },
+  // R2-S2 — the first PARAMETERIZED unit. Compiled through the repo-local widening so
+  // the emitted registry spec carries `perResourceKey: true`; the published
+  // `compileClaimDefinition` would drop it silently (see ./per-resource-claim.ts).
+  {
+    slug: "menu-item-price",
+    sourceFile: "menu-item-price.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(MENU_ITEM_PRICE_SOURCE),
   },
 ];
 

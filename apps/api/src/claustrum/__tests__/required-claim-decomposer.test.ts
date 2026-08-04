@@ -830,6 +830,19 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     );
   });
 
+  // inv.18 v2 / R2-S2 — the MENU_ITEM_PRICE_Q net moved into `menu-item-price.claim.ts`
+  // as FOUR marker regexes, consumed the same `markers.some((m) => m.test(t))` way. Same
+  // statement as STORE_INFO above; the pre-migration literal is frozen here exactly as it
+  // stood in `classifyRequestSpans`. What did NOT move is the GUARD conjunction
+  // (`notOrderScoped && !mutationImperative`) — the compiler models markers, not
+  // suppression contexts — so the "quanto custa a entrega/o pedido" and "muda o preço"
+  // negatives keep being asserted by the span cases elsewhere in this file.
+  it("MENU_ITEM_PRICE: the four generated marker arms rejoin to the original literal", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.menuItemPrice).toBe(
+      String.raw`quanto custa|quanto (custam|é|fica|sai|tá|ta)|qual (o |é o )?pre[çc]o|pre[çc]o d[aoe]`,
+    );
+  });
+
   // Guards the guard: a typo that emptied a part would make the assertions above
   // compare two wrong-but-equal strings only if the expectation were derived from
   // the code, which it is not — but an accidentally EMPTY reassembly is still worth
