@@ -55,6 +55,10 @@ maintained (and drift-guarded by tests) next to the code they govern:
   auth level, inputs/outputs (realizes ADR #9 at the tool layer).
 - [`design/order-billing-decision-matrix.md`](design/order-billing-decision-matrix.md) —
   order/billing state decisions.
+- [`convergence-2026-07-28-review.md`](convergence-2026-07-28-review.md) — status
+  record for the 2026-07-28 Architecture Review program (R1–R7): per-recommendation
+  terminal disposition, evidence pointers, and the explicit prerequisites gating the
+  blocked remainders (merge cascade, owner rulings).
 
 The **claims-runtime** decisions (claims-not-prose topology, the SDD invariants)
 are governed by [`CLAUDE.SDD.md`](../../CLAUDE.SDD.md) — the compilation authority
