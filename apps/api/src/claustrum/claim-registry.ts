@@ -55,8 +55,14 @@ import type {
 // (`./claimdefs/per-resource-claim.ts`) so a `:{subject}`-parameterized type can compile
 // too, and adopted MENU_ITEM_PRICE as the proof — its generated row carries
 // `perResourceKey: true` beside UNSUFFIXED base keys, which is what `selectCandidateClaim`
-// below requires (it does the suffixing). The remaining parameterized types stay
-// hand-written here until each is adopted in turn.
+// below requires (it does the suffixing). R2-S3 adopted the price type's two PUBLIC
+// per-item siblings — MENU_ITEM_CONTENTS and MENU_DIETARY — through that same widening,
+// with no further schema change. The remaining parameterized types (the eight OWNER-scoped
+// ones, whose `ownershipPolicy: "required"` rows add a C1 axis this batch does not touch,
+// plus STORE_HOURS_FOR_DATE, whose span class is a COMPOSED predicate rather than a flat
+// marker alternation) stay hand-written here until each is adopted in turn.
+import { MENU_DIETARY_REGISTRY_SPEC } from "./claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_CONTENTS_REGISTRY_SPEC } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_REGISTRY_SPEC } from "./claimdefs/menu-item-price.generated.js";
 import { STORE_HOURS_REGISTRY_SPEC } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_REGISTRY_SPEC } from "./claimdefs/store-info.generated.js";
@@ -1027,81 +1033,50 @@ export const REGISTRY_SPECS = {
     ...MENU_ITEM_PRICE_REGISTRY_SPEC,
     dietaryPosture: "abstain",
   },
-  // BKL-142 — MENU_ITEM_CONTENTS: same PUBLIC per-item shape, C6-bound to the
-  // first-party `contentsText` (the product description). Same deliberately-unread
-  // `menu:item_unpublished` falsifier disposition as MENU_ITEM_PRICE.
+  // inv.18 v2 / R2-S3 — MENU_ITEM_CONTENTS is now GENERATED from its ClaimDefinition
+  // source (`./claimdefs/menu-item-contents.generated.ts`, compiled from
+  // `menu-item-contents.claim.ts`). MENU_ITEM_PRICE's structural twin: the same PUBLIC
+  // per-item facet inventory reached through the same repo-local `perResourceKey` widening
+  // (`./claimdefs/per-resource-claim.ts`), so the generated row carries the UNSUFFIXED
+  // base keys plus `perResourceKey: true` exactly as this stanza spelled them, and
+  // `selectCandidateClaim` below suffixes them by `:{subject}` at select time as before.
+  // This one line REPLACES the ~32-line handwritten stanza (evidence + the
+  // deliberately-unread W6 falsifier + the C6 binding, whose rationales moved verbatim
+  // into the source) and can never drift from the template or the closure row, which are
+  // generated too.
+  // BKL-270 — the posture is SPLICED here for the same reason as on its siblings:
+  // `compileClaimDefinition` has no concept of `dietaryPosture`, so it cannot emit the
+  // field, and splicing keeps the generated file byte-pure under its source-checksum
+  // drift guard. `abstain`: contentsText is the owner-authored free-text product blurb,
+  // the ONLY scalar in the registry that can name ingredients verbatim. Under a dietary
+  // qualifier it reads as an ingredient assurance — and a blurb is WEAKER evidence than
+  // the attested allergens array BKL-143 already ruled insufficient. Gate shipped by
+  // BKL-273/#441; this declaration makes it registry-driven.
   MENU_ITEM_CONTENTS: {
-    kind: "read_claim",
-    // BKL-270 — contentsText is the owner-authored free-text product blurb, the
-    // ONLY scalar in the registry that can name ingredients verbatim. Under a
-    // dietary qualifier it reads as an ingredient assurance — and a blurb is WEAKER
-    // evidence than the attested allergens array BKL-143 already ruled insufficient.
-    // Gate shipped by BKL-273/#441; this declaration makes it registry-driven.
+    ...MENU_ITEM_CONTENTS_REGISTRY_SPEC,
     dietaryPosture: "abstain",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "menu:item_contents",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    perResourceKey: true,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "menu:item_unpublished",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "menu:item_contents", path: ["contentsText"] },
   },
-  // BKL-214 — MENU_DIETARY: the PUBLIC dietary-preference read. Same PUBLIC per-item
-  // shape as MENU_ITEM_PRICE/CONTENTS (perResourceKey, ownershipPolicy not_applicable),
-  // but the "resource id" is the dietary TAG (vegetariano/vegano). C6-bound to the
-  // pre-composed `dietaryText` (first-party tagged-product titles, menu-item-resolver.ts).
-  // Same deliberately-unread `menu:item_unpublished` falsifier disposition. Empty tag →
-  // ABSENT evidence → honest UNKNOWN (never a fabricated "we have vegetarian options").
+  // inv.18 v2 / R2-S3 — MENU_DIETARY is now GENERATED from its ClaimDefinition source
+  // (`./claimdefs/menu-dietary.generated.ts`, compiled from `menu-dietary.claim.ts`).
+  // Same PUBLIC per-item facet inventory as MENU_ITEM_PRICE/CONTENTS (perResourceKey,
+  // every row `not_applicable`) — the one difference is that the "resource id" is the
+  // dietary TAG (vegetariano/vegano) rather than a product id, which is a fact about what
+  // the ledger key DENOTES and not a facet the compiler models. This one line REPLACES
+  // the ~35-line handwritten stanza; the rationales (the C6 `dietaryText` binding, the
+  // deliberately-unread W6 falsifier, the empty-tag → honest-UNKNOWN disposition) moved
+  // verbatim into the source.
+  // BKL-270 — the posture is SPLICED here for the same reason as on its siblings.
+  // `abstain`: the sentence is ALREADY a composition statement about food ("estas opcoes
+  // veganas"), so a second dietary qualifier compounds two attribute claims the catalog
+  // can attest to only one of. Gate shipped by BKL-273/#441.
+  // POLICY NOTE (BKL-270 borderline B6, owner-ruled 2026-07-27): BKL-171 ratified
+  // that vegano/vegetariano-only renders stay OUT; BKL-214 (PR #358) then shipped
+  // exactly those renders. The owner has recorded BKL-214 as the WRITTEN REVERSAL
+  // of BKL-171 — the shipped behaviour stands, and the reversal is now documented
+  // rather than an undocumented divergence. This posture is correct either way.
   MENU_DIETARY: {
-    kind: "read_claim",
-    // BKL-270 — the sentence is ALREADY a composition statement about food ("estas
-    // opcoes veganas"), so a second dietary qualifier compounds two attribute
-    // claims the catalog can attest to only one of. Gate shipped by BKL-273/#441.
-    // POLICY NOTE (BKL-270 borderline B6, owner-ruled 2026-07-27): BKL-171 ratified
-    // that vegano/vegetariano-only renders stay OUT; BKL-214 (PR #358) then shipped
-    // exactly those renders. The owner has recorded BKL-214 as the WRITTEN REVERSAL
-    // of BKL-171 — the shipped behaviour stands, and the reversal is now documented
-    // rather than an undocumented divergence. This posture is correct either way.
+    ...MENU_DIETARY_REGISTRY_SPEC,
     dietaryPosture: "abstain",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "menu:dietary",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    perResourceKey: true,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "menu:item_unpublished",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "menu:dietary", path: ["dietaryText"] },
   },
   // BKL-142 — MENU_OVERVIEW: the menu-WIDE overview ("o que tem no cardápio?"). PUBLIC
   // and FIXED-SUBJECT like STORE_HOURS (single key, NOT perResourceKey) — the evidence

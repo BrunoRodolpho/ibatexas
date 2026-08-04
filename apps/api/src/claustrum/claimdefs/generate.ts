@@ -21,6 +21,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compileClaimDefinition } from "@adjudicate/core";
+import { MENU_DIETARY_SOURCE } from "./menu-dietary.claim.js";
+import { MENU_ITEM_CONTENTS_SOURCE } from "./menu-item-contents.claim.js";
 import { MENU_ITEM_PRICE_SOURCE } from "./menu-item-price.claim.js";
 import {
   compilePerResourceClaimDefinition,
@@ -74,6 +76,19 @@ const UNITS: readonly GenUnit[] = [
     slug: "menu-item-price",
     sourceFile: "menu-item-price.claim.ts",
     artifacts: compilePerResourceClaimDefinition(MENU_ITEM_PRICE_SOURCE),
+  },
+  // R2-S3 — the price type's two PUBLIC per-item siblings, compiled through the same
+  // widening (their generated specs carry `perResourceKey: true` beside UNSUFFIXED base
+  // keys, which is what `selectCandidateClaim` requires — it does the suffixing).
+  {
+    slug: "menu-item-contents",
+    sourceFile: "menu-item-contents.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(MENU_ITEM_CONTENTS_SOURCE),
+  },
+  {
+    slug: "menu-dietary",
+    sourceFile: "menu-dietary.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(MENU_DIETARY_SOURCE),
   },
 ];
 

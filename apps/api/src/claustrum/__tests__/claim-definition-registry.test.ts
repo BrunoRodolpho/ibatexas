@@ -16,6 +16,8 @@
 import { describe, expect, it } from "vitest";
 import type { ClaimDefinition } from "@adjudicate/core";
 import { CLAIM_REGISTRY } from "../claim-registry.js";
+import { MENU_DIETARY_DEFINITION } from "../claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_CONTENTS_DEFINITION } from "../claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "../claimdefs/menu-item-price.generated.js";
 import { STORE_HOURS_DEFINITION } from "../claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "../claimdefs/store-info.generated.js";
@@ -168,9 +170,9 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
   });
 
   // R2-S1 — the same reference-identity guard for the two types adopted in that
-  // batch, plus R2-S2's MENU_ITEM_PRICE. Written as a table over the adopted set so a
-  // further adoption is one row, and so the guard cannot hold for the first-migrated
-  // type while quietly lapsing for a later one.
+  // batch, plus R2-S2's MENU_ITEM_PRICE and R2-S3's two menu siblings. Written as a table
+  // over the adopted set so a further adoption is one row, and so the guard cannot hold
+  // for the first-migrated type while quietly lapsing for a later one.
   it.each([
     ["STORE_HOURS", STORE_HOURS_DEFINITION],
     ["STORE_INFO", STORE_INFO_DEFINITION],
@@ -178,11 +180,19 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
     // REGISTRY SPEC, not here, so the definition boot consumes is the published
     // projection unchanged (asserted in claimdefs/__tests__/per-resource-claim.test.ts).
     ["MENU_ITEM_PRICE", MENU_ITEM_PRICE_DEFINITION],
+    // R2-S3 — the two PUBLIC per-item siblings, on the same footing. This is the
+    // GENERATED_DEFINITIONS loophole the table exists to close: a type whose spec/template/
+    // closure are spliced from its generated module but whose DEFINITION is still
+    // hand-reassembled by `buildClaimDefinition` would validate deep-equal and pass every
+    // other assertion in this file, while boot ran the fail-closed validator over an
+    // object the compiler never produced.
+    ["MENU_ITEM_CONTENTS", MENU_ITEM_CONTENTS_DEFINITION],
+    ["MENU_DIETARY", MENU_DIETARY_DEFINITION],
   ] as const)(
     "CLAIM_DEFINITIONS.%s IS the generated definition (reference identity)",
     (type, generated) => {
       expect(CLAIM_DEFINITIONS[type]).toBe(generated);
-      // All three are PUBLIC reads: `triadScoped: false` is DECLARED in the source, so
+      // All five are PUBLIC reads: `triadScoped: false` is DECLARED in the source, so
       // the value no longer depends on their absence from TRIAD_SCOPED_TYPES (an absence
       // proves nothing on its own).
       expect(generated.triadScoped).toBe(false);

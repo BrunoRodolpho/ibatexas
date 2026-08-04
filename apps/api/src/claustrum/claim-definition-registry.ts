@@ -56,6 +56,8 @@ import {
 // "sound-by-convention" (the EGRESS-finding failure shape). The generated definitions
 // are no longer dead: they are the objects the validator actually runs over for these
 // types.
+import { MENU_DIETARY_DEFINITION } from "./claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_CONTENTS_DEFINITION } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "./claimdefs/menu-item-price.generated.js";
 import { STORE_HOURS_DEFINITION } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "./claimdefs/store-info.generated.js";
@@ -131,6 +133,13 @@ const GENERATED_DEFINITIONS: Readonly<
   // hand-assembled before. `triadScoped: false` is DECLARED in the source (public
   // per-item reads carry no INV-4 closure obligation).
   MENU_ITEM_PRICE: MENU_ITEM_PRICE_DEFINITION,
+  // R2-S3 — the price type's two PUBLIC per-item siblings, on exactly the same footing:
+  // the `perResourceKey` facet lives on the REGISTRY SPEC, not here, so what boot consumes
+  // for each is the published projection unchanged, shape-for-shape what
+  // `assembleClaimDefinition` built before. `triadScoped: false` is DECLARED in both
+  // sources.
+  MENU_ITEM_CONTENTS: MENU_ITEM_CONTENTS_DEFINITION,
+  MENU_DIETARY: MENU_DIETARY_DEFINITION,
 };
 
 /**

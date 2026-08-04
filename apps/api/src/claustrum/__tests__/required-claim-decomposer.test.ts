@@ -843,14 +843,49 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     );
   });
 
+  // inv.18 v2 / R2-S3 — the MENU_ITEM_CONTENTS_Q and MENU_DIETARY_Q nets moved into
+  // `menu-item-contents.claim.ts` / `menu-dietary.claim.ts` as FOUR and TWO marker
+  // regexes, consumed the same `markers.some((m) => m.test(t))` way. Same statement as
+  // MENU_ITEM_PRICE above; each pre-migration literal is frozen here exactly as it stood
+  // in `classifyRequestSpans`. What did NOT move is either GUARD conjunction
+  // (`notOrderScoped && !mutationImperative`, plus `!isMenuOverview` on the CONTENTS span)
+  // — the compiler models markers, not suppression contexts — so the "o que tem no
+  // carrinho/cardápio", "tira o prato vegetariano" and allergen-boundary negatives keep
+  // being asserted by the span cases in `menu-claims.test.ts`.
+  it("MENU_ITEM_CONTENTS: the four generated marker arms rejoin to the original literal", () => {
+    // BKL-205's accented `v[êe]m` / `t[êe]m` are INSIDE arms 1 and 3: byte-identity is the
+    // only thing that keeps them, since dropping an accent empties the true-positive set
+    // on the real phrasing without failing any false-positive sweep.
+    expect(__SPAN_NET_SOURCES_FOR_TEST.menuItemContents).toBe(
+      String.raw`o que (v[êe]m|t[êe]m|acompanha)|do que [ée] (é |)feit|que v[êe]m (n|em)|composi[çc][ãa]o d`,
+    );
+  });
+
+  it("MENU_DIETARY: the two generated marker arms rejoin to the original literal", () => {
+    // The ANCHORING ASYMMETRY is load-bearing and is what this byte-identity pins: arm 1
+    // is UNANCHORED (it must match inside "comida vegetariano"), arm 2 IS word-bounded.
+    expect(__SPAN_NET_SOURCES_FOR_TEST.menuDietary).toBe(
+      String.raw`vegetarian[ao]?|\bvegan[ao]?\b`,
+    );
+  });
+
   // Guards the guard: a typo that emptied a part would make the assertions above
   // compare two wrong-but-equal strings only if the expectation were derived from
   // the code, which it is not — but an accidentally EMPTY reassembly is still worth
   // ruling out explicitly, since `''` is the one value that could silently satisfy
   // a future refactor of this very test.
+  //
+  // R2-S3 — the shared length floor moved 40 → 20 because it is bounded by the SHORTEST
+  // legitimate net, and `menuDietary` (30 chars, two deliberately narrow stems) is now
+  // that net. The backstop did NOT get blunter: 20 still fails a collapse of that shortest
+  // net to EITHER single arm (15 / 14 chars), which is a sharper discrimination than 40
+  // ever provided for the long nets. Every net's exact source is pinned byte-for-byte by
+  // its own case above; this case exists only to catch a degenerate reassembly if one of
+  // those pins is ever refactored away.
   it("the reassembled sources are non-empty and well-formed regexes", () => {
     for (const [name, source] of Object.entries(__SPAN_NET_SOURCES_FOR_TEST)) {
-      expect(source.length, name).toBeGreaterThan(40);
+      expect(source, name).not.toBe("");
+      expect(source.length, name).toBeGreaterThan(20);
       expect(() => new RegExp(source), name).not.toThrow();
     }
   });
