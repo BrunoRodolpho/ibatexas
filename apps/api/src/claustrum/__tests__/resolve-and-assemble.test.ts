@@ -17,12 +17,21 @@ import { createTokenBudgetGuard } from "@adjudicate/primitives";
 // hand-copied replica this file used to rebuild (see that describe block).
 import {
   AUTORESOLVE_CONFIRM_KINDS,
+  UNRESOLVED_REVIEW_PRODUCT_REFUSAL_CODE,
   confirmOnAutoResolveGuard,
+  refuseUnresolvedReviewProductGuard,
 } from "../compose-policy-packs.js";
 
 // ── Mutable mock controls ───────────────────────────────────────────────────
 let redisGet: (key: string) => Promise<string | null> = async () => null;
-let orderGetById: (id: string) => Promise<unknown> = async () => null;
+// F-14 — `opts` is threaded through because production's `getById` OWNER-SCOPES
+// on it (order-query.service.ts: `opts.customerId !== undefined && order?.customerId
+// !== opts.customerId → null`). A double that dropped the argument could not tell a
+// scoped read from an unscoped one, so an owner-scoping test written against it
+// would measure the double instead of the code. Existing implementations ignore
+// the second parameter, so threading it changes nothing for them.
+let orderGetById: (id: string, opts?: { customerId?: string }) => Promise<unknown> =
+  async () => null;
 let paymentGetById: (id: string) => Promise<unknown> = async () => null;
 let paymentGetActiveByOrderId: (orderId: string) => Promise<unknown> = async () => null;
 let reservationGetById: (id: string, customerId: string) => Promise<unknown> = async () => {
@@ -73,7 +82,7 @@ vi.mock("@ibatexas/tools", () => ({
 }));
 vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
-    getById: (id: string) => orderGetById(id),
+    getById: (id: string, opts?: { customerId?: string }) => orderGetById(id, opts),
     listByCustomer: (cid: string, input?: unknown) => orderListByCustomer(cid, input),
     findByDisplayId: (displayId: number) => orderFindByDisplayId(displayId),
   }),
@@ -2983,5 +2992,251 @@ describe("resolveAndAssemble — BKL-280 stayHomeDeliveryMarker ctx stamp", () =
       channel: "whatsapp",
     });
     expect(ctx.stayHomeDeliveryMarker).toBeUndefined();
+  });
+});
+
+// ── F-14 (ledger cycle 21) — order.review.submit resolution, DRIVEN FOR REAL ──
+//
+// The gap this block closes: until now nothing in this file called
+// `resolveAndAssemble` for `order.review.submit`. Its profile row
+// (kind-resolution-profiles.ts) could be deleted and only the hand-written
+// census would notice — no BEHAVIOUR was pinned. Every case below drives the
+// real resolver, so deleting the row reds a named behavioural test (the F-14/
+// F-15 deletion-experiment standard).
+//
+// It is ALSO the measurement record for F-14's question — "can a foreign
+// orderId reach the review write?". `order.review.submit` is absent from
+// OWNERSHIP_GATED_KINDS (authority-wiring.ts), so the kernel IDOR gate never
+// sees this kind; these cases measure what stands in its place. The decision
+// record lives on OWNERSHIP_GATED_KINDS itself.
+//
+// The reviewed order's line items ride on the projection's `itemsJson`
+// (denormalized OrderEventItem rows — `resolveReviewedProduct`'s own read).
+function reviewOrder(
+  customerId: string,
+  items: Array<{ productId: string; title: string }>,
+) {
+  return {
+    customerId,
+    itemsJson: items,
+    paymentMethod: "pix",
+    paymentStatus: "paid",
+    totalInCentavos: 99_900,
+    fulfillmentStatus: "delivered",
+  };
+}
+
+/**
+ * An `orderGetById` double that ENFORCES the same owner scoping production's
+ * `getById` does (order-query.service.ts): a scoped read whose row belongs to
+ * someone else resolves to `null`. Written this way deliberately — a double that
+ * ignored `opts.customerId` would hand `resolveReviewedProduct` a foreign order's
+ * line items and make an "owner-scoped" assertion measure the double instead of
+ * the code (that is exactly how the first draft of this block passed a foreign
+ * `productId` straight through). `resolveReviewedProduct` has NO post-check of
+ * its own — unlike `loadOrderCtx`, whose defence-in-depth re-check would mask a
+ * dropped argument — so this is the only place the threading is observable.
+ */
+function ownerScopedOrders(rows: Record<string, { customerId: string; itemsJson: unknown }>) {
+  return async (id: string, opts?: { customerId?: string }) => {
+    const row = rows[id];
+    if (row === undefined) return null;
+    if (opts?.customerId !== undefined && row.customerId !== opts.customerId) return null;
+    return row;
+  };
+}
+
+const reviewSubmit = (payload: Record<string, unknown>, customerId = "c1") =>
+  resolveAndAssemble({
+    kind: "order.review.submit",
+    payload: { rating: 5, ...payload },
+    customerId,
+    channel: "whatsapp",
+  });
+
+describe("resolveAndAssemble — order.review.submit (FE-D28 display-reference resolution)", () => {
+  it("display-number HIT: an OWNED order number binds THAT order and resolves its product from that order's own lines", async () => {
+    orderFindByDisplayId = async () => [
+      { id: "ord_foreign", customerId: "victim" },
+      { id: "ord_1234", customerId: "c1" },
+    ];
+    orderGetById = ownerScopedOrders({
+      ord_1234: reviewOrder("c1", [{ productId: "prod_costela", title: "Costela" }]),
+      ord_foreign: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+
+    const { payload, ctx, owned } = await reviewSubmit({ orderReference: "1234" });
+
+    expect((payload as { orderId?: string }).orderId).toBe("ord_1234");
+    expect((payload as { productId?: string }).productId).toBe("prod_costela");
+    // A public review posts against the resolved order → the turn always confirms.
+    expect(ctx.autoResolvedMoneyRef).toBe(true);
+    expect(ctx.reviewProductUnresolved).toBeUndefined();
+    expect(owned).toEqual(["ord_1234"]);
+  });
+
+  it("FALLBACK: no orderReference resolves the caller's most-recent order and STILL forces the confirm", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [{ productId: "prod_brisket", title: "Brisket" }]),
+    });
+
+    const { payload, ctx } = await reviewSubmit({});
+
+    expect((payload as { orderId?: string }).orderId).toBe("ord_recent");
+    expect((payload as { productId?: string }).productId).toBe("prod_brisket");
+    expect(ctx.autoResolvedMoneyRef).toBe(true);
+  });
+
+  it("IDOR: a display number naming ANOTHER customer's order never binds it — the fallback resolves the CALLER's own order", async () => {
+    orderFindByDisplayId = async () => [{ id: "ord_victim", customerId: "victim" }];
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [{ productId: "prod_brisket", title: "Brisket" }]),
+      ord_victim: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+
+    const { payload, owned } = await reviewSubmit({ orderReference: "1234" });
+
+    expect((payload as { orderId?: string }).orderId).toBe("ord_recent");
+    expect((payload as { orderId?: string }).orderId).not.toBe("ord_victim");
+    expect((payload as { productId?: string }).productId).toBe("prod_brisket");
+    expect(owned).toEqual(["ord_recent"]);
+  });
+
+  it("UNMATCHED: a caller who owns NO order resolves nothing — no orderId, no forced confirm", async () => {
+    orderFindByDisplayId = async () => [];
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+
+    const { payload, ctx, owned } = await reviewSubmit({ orderReference: "1234" });
+
+    expect((payload as { orderId?: string }).orderId).toBeUndefined();
+    expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+    expect(owned).toEqual([]);
+  });
+
+  it("MULTI-PRODUCT with no item reference: resolves NO product and stamps the honesty floor (never a guess)", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [
+        { productId: "prod_costela", title: "Costela" },
+        { productId: "prod_brisket", title: "Brisket" },
+      ]),
+    });
+
+    const { payload, ctx } = await reviewSubmit({});
+
+    expect((payload as { productId?: string }).productId).toBeUndefined();
+    expect(ctx.reviewProductUnresolved).toBe(true);
+  });
+
+  it("MULTI-PRODUCT with a matching item reference: resolves that line's product, floor NOT stamped", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [
+        { productId: "prod_costela", title: "Costela Bovina" },
+        { productId: "prod_brisket", title: "Brisket" },
+      ]),
+    });
+
+    const { payload, ctx } = await reviewSubmit({ item: "costela bovina" });
+
+    expect((payload as { productId?: string }).productId).toBe("prod_costela");
+    expect(ctx.reviewProductUnresolved).toBeUndefined();
+  });
+});
+
+// F-14 measurements 1 + 3 — the ONE branch where a pre-existing `payload.orderId`
+// survives `applyAutoResolve` untouched, and what stops it there.
+describe("resolveAndAssemble — order.review.submit: a foreign orderId already on the payload (F-14)", () => {
+  it("is OVERWRITTEN by the owner-scoped resolution whenever the caller owns any order", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [{ productId: "prod_brisket", title: "Brisket" }]),
+      ord_victim: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+
+    const { payload, owned } = await reviewSubmit({ orderId: "ord_victim" });
+
+    // The display-reference strategy does not consult a pre-existing orderId at
+    // all: it resolves owner-scoped and REPLACES it.
+    expect((payload as { orderId?: string }).orderId).toBe("ord_recent");
+    expect((payload as { productId?: string }).productId).toBe("prod_brisket");
+    expect(owned).toEqual(["ord_recent"]);
+  });
+
+  it("survives ONLY when the caller owns nothing — and then no product resolves and the ctx leaks NO foreign order fact", async () => {
+    orderFindByDisplayId = async () => [];
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+    orderGetById = ownerScopedOrders({
+      ord_victim: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+
+    const { payload, ctx, owned } = await reviewSubmit({ orderId: "ord_victim" });
+
+    // Measured honestly: the id itself is NOT scrubbed here.
+    expect((payload as { orderId?: string }).orderId).toBe("ord_victim");
+    // But the write can never form — productId is resolved from the order's own
+    // lines through an owner-scoped read, which returns nothing for a foreign id.
+    expect((payload as { productId?: string }).productId).toBeUndefined();
+    expect(ctx.reviewProductUnresolved).toBe(true);
+    // …and the ctx `order-by-id` builds carries no fact ABOUT the foreign order.
+    expect(ctx.resourceOwnerConfirmed).toBe(false);
+    expect(ctx.totalInCentavos).toBeUndefined();
+    expect(ctx.fulfillmentStatus).toBeUndefined();
+    expect(ctx.paymentStatus).toBeNull();
+    expect(ctx.paymentMethod).toBeNull();
+    expect(owned).toEqual([]);
+  });
+
+  it("the reviewed-product read is OWNER-SCOPED at the call site — getById receives the CALLER's customerId, not the payload's order", async () => {
+    // The only thing standing between a foreign order's line items and a review
+    // write is that `resolveReviewedProduct` passes `{ customerId }` to `getById`;
+    // it keeps no post-check of its own. Pin the argument, not just the outcome.
+    const seen: Array<{ id: string; customerId?: string }> = [];
+    orderFindByDisplayId = async () => [];
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+    orderGetById = async (id, opts) => {
+      seen.push({ id, customerId: opts?.customerId });
+      return null;
+    };
+
+    await reviewSubmit({ orderId: "ord_victim" }, "c1");
+
+    expect(seen).toContainEqual({ id: "ord_victim", customerId: "c1" });
+    expect(seen.some((c) => c.customerId === undefined)).toBe(false);
+  });
+
+  it("KERNEL SEAM: the real composed honesty guard turns that ctx into a REFUSE — and passes the owner's turn (control)", async () => {
+    // TREATMENT — the foreign-id ctx from the case above.
+    orderFindByDisplayId = async () => [];
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+    orderGetById = ownerScopedOrders({
+      ord_victim: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+    const foreign = await reviewSubmit({ orderId: "ord_victim" });
+
+    // CONTROL — the true owner's turn, resolved the same way. It MUST pass the
+    // guard, or the treatment's REFUSE would prove nothing about this input.
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [{ productId: "prod_brisket", title: "Brisket" }]),
+    });
+    const owner = await reviewSubmit({});
+
+    const reviewEnv = buildEnvelope({
+      kind: "order.review.submit",
+      payload: { rating: 5 },
+      actor: { principal: "llm", sessionId: "s" },
+      taint: "UNTRUSTED",
+      nonce: "n-review",
+    });
+
+    const refused = refuseUnresolvedReviewProductGuard(reviewEnv, { ctx: foreign.ctx });
+    expect(refused?.kind).toBe("REFUSE");
+    if (refused?.kind === "REFUSE") {
+      expect(refused.refusal.code).toBe(UNRESOLVED_REVIEW_PRODUCT_REFUSAL_CODE);
+    }
+    expect(refuseUnresolvedReviewProductGuard(reviewEnv, { ctx: owner.ctx })).toBeNull();
   });
 });

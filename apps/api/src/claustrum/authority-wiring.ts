@@ -17,7 +17,57 @@ import { createAuthorityGraphStore } from "@adjudicate/core";
 
 /** Money-moving kinds whose envelopes carry an ownership binding. The resource is
  *  the orderId — ownership flows through the order for both order.* and payment.*
- *  money kinds (resolveAndAssemble confirms order ownership for each). */
+ *  money kinds (resolveAndAssemble confirms order ownership for each).
+ *
+ *  ── Why `order.review.submit` is NOT here (F-14, ledger cycle 21) ──────────
+ *
+ *  It looks like it should be: it is a mutating `order.` kind whose profile row
+ *  loads the order by id (`ctxLoader: "order-by-id"`,
+ *  kind-resolution-profiles.ts), and a public review is reputation-moving even
+ *  though it is not money-moving. The absence was MEASURED rather than assumed,
+ *  and the three vectors a kernel binding would close are already closed
+ *  upstream. Each measurement has a named test; do not re-open F-14 without
+ *  first re-running them.
+ *
+ *   1. The model cannot author the id. `order.review.submit`'s extraction schema
+ *      declares NO `legacyPayloadChannels`, so `stripUnauthoredPayloadFields`
+ *      (ibatexas-planner.ts, the PARSE seam) drops BOTH `orderId` and
+ *      `productId` before `buildEnvelope`. The model only ever emits
+ *      `rating`/`comment` plus the NL references `item`/`orderReference`.
+ *      → ibatexas-planner.test.ts, "a smuggled orderId AND productId are BOTH
+ *        dropped".
+ *   2. The resolver resolves the id OWNER-SCOPED and OVERWRITES whatever was
+ *      there. `applyAutoResolve`'s `order-display-reference` branch never
+ *      consults a pre-existing `payload.orderId`: a display number is
+ *      IDOR-checked (`resolveCustomerOrderReference`) and an unmatched one falls
+ *      back to the CALLER's own orders. A foreign id survives that branch in one
+ *      case only — a caller who owns nothing — and there the review-product
+ *      resolution (`resolveReviewedProduct`, also owner-scoped) finds no line
+ *      items, stamps `REVIEW_PRODUCT_UNRESOLVED`, and
+ *      `refuseUnresolvedReviewProductGuard` (compose-policy-packs.ts) REFUSEs:
+ *      no `productId`, no write.
+ *      → resolve-and-assemble.test.ts, the two `order.review.submit` blocks.
+ *   3. No foreign fact reaches the turn. `loadOrderCtx` is owner-scoped at the
+ *      domain layer AND post-checks `order.customerId === customerId`, so a
+ *      foreign id yields the null-order ctx (`resourceOwnerConfirmed: false`,
+ *      `owned: []`) — nothing about the other customer's order is projected.
+ *      → resolve-and-assemble.test.ts, "the ctx leaks NO foreign order fact".
+ *
+ *  Residual, recorded honestly: the executor does NOT independently verify that
+ *  `orderId` belongs to the caller. Its upsert is keyed on the COMPOSITE
+ *  `(orderId, customerId)` with the customerId taken from the verified context
+ *  (customer.service.ts `performSubmitReview`), so a review can never
+ *  impersonate or overwrite the order owner's row — but the order-ownership
+ *  check itself lives entirely upstream, plus a route-level
+ *  `getById(orderId, {customerId})` gate on the separate web path
+ *  (POST /api/me/reviews, routes/me.ts).
+ *
+ *  If a future change DOES gate this kind, note that adding it here is not
+ *  sufficient on its own: `enforceOrderOwnership` (packages/pack-orders
+ *  policies.ts) gates on its OWN `OWNERSHIP_GATED_ORDER_KINDS` set, so a kind
+ *  added only here gets a `resourceRefs` stamp and an injected authority graph
+ *  that NOTHING reads — a change that looks wired and enforces nothing. Both
+ *  sets, and a control/treatment pair at the kernel seam, or neither. */
 export const OWNERSHIP_GATED_KINDS: ReadonlySet<string> = new Set([
   "order.cancel",
   "order.amend.request",
