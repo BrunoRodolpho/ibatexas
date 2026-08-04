@@ -491,3 +491,103 @@ describe("in-memory-redis — lists (lPush / lLen)", () => {
     await expect(loose(redis.client).lPush("k", {})).rejects.toThrow(/value must be a string/)
   })
 })
+
+// ── R5-S9 — the FIFO half of the list type ───────────────────────────────────
+//
+// Consumer: `packages/audit-sink/src/redis-spill-storage.ts` — RPUSH on append,
+// LPOP until null on drain. The end a value lands on and the end it leaves from
+// ARE the contract there, so both are pinned against the LIFO reading.
+
+describe("in-memory-redis — lists (rPush / lPop)", () => {
+  it("rPush appends to the TAIL where lPush prepends to the head", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("q", "first")
+    await redis.client.rPush("q", "second")
+    // Head-first storage: LPOP takes what rPush pushed FIRST. If rPush aliased
+    // lPush this would answer "second" — the LIFO reading, green under any
+    // assertion that only counts the list.
+    expect(await redis.client.lPop("q")).toBe("first")
+    await redis.client.lPush("q", "head")
+    expect(await redis.client.lPop("q")).toBe("head")
+  })
+
+  it("a multi-value rPush keeps argument order (real RPUSH), unlike lPush", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.rPush("q", ["a", "b", "c"])).toBe(3)
+    expect(await redis.client.lPop("q")).toBe("a")
+    expect(await redis.client.lPop("q")).toBe("b")
+    expect(await redis.client.lPop("q")).toBe("c")
+  })
+
+  it("drains an RPUSH'd queue in FIFO order, then terminates on null", async () => {
+    // The spill storage's whole read contract: `readAll()` LPOPs in a `for(;;)`
+    // and returns on null. A double that never answers null spins that loop.
+    const redis = createInMemoryRedis()
+    for (const v of ["r1", "r2", "r3"]) await redis.client.rPush("audit:spill:queue", v)
+    const drained: Array<string | null> = []
+    for (;;) {
+      const next = await redis.client.lPop("audit:spill:queue")
+      if (next === null) break
+      drained.push(next)
+    }
+    expect(drained).toEqual(["r1", "r2", "r3"])
+    expect(await redis.client.lPop("audit:spill:queue")).toBeNull()
+  })
+
+  it("lPop answers null for a list that never existed", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    expect(await redis.client.lPop("never:written")).toBeNull()
+  })
+
+  it("emptying a list DELETES the key, as real Redis does", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("q", "only")
+    await redis.client.expire("q", 60)
+    expect(redis.keys()).toEqual(["q"])
+    expect(await redis.client.lPop("q")).toBe("only")
+    // Not merely empty — gone. An empty list left behind reports exists=1 and
+    // keeps a TTL alive on a key production has already removed.
+    expect(redis.keys()).toEqual([])
+    expect(await redis.client.exists("q")).toBe(0)
+    expect(redis.ttlMs("q")).toBeUndefined()
+    expect(await redis.client.lLen("q")).toBe(0)
+  })
+
+  it("mirrors WRONGTYPE across the string/list boundary in both directions", async () => {
+    const redis = createInMemoryRedis({ seed: { str: "plain" } })
+    await expect(redis.client.rPush("str", "x")).rejects.toThrow(WrongTypeError)
+    await expect(redis.client.lPop("str")).rejects.toThrow(WrongTypeError)
+    await redis.client.rPush("list", "x")
+    await expect(redis.client.get("list")).rejects.toThrow(WrongTypeError)
+  })
+
+  it("an expired queue pops null rather than its stale head", async () => {
+    let now = 1_000
+    const redis = createInMemoryRedis({ now: () => now })
+    await redis.client.rPush("q", "stale")
+    expect(await redis.client.expire("q", 5)).toBe(true)
+    now += 6_000
+    expect(await redis.client.lPop("q")).toBeNull()
+    expect(redis.keys()).toEqual([])
+  })
+
+  it("refuses the unmodelled LPOP COUNT form instead of popping one", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("q", ["a", "b"])
+    await expect(loose(redis.client).lPop("q", 2)).rejects.toThrow(UnroutedRedisCall)
+    await expect(loose(redis.client).lPop("q", 2)).rejects.toThrow(/COUNT form is not modelled/)
+    // And it refused BEFORE touching the keyspace — nothing was popped.
+    expect(await redis.client.lLen("q")).toBe(2)
+  })
+
+  it("validates arguments on an EMPTY store", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    await expect(loose(redis.client).lPop(5)).rejects.toThrow(/key must be a string/)
+    await expect(loose(redis.client).lPop("")).rejects.toThrow(/key must not be empty/)
+    await expect(loose(redis.client).rPush("", "v")).rejects.toThrow(/key must not be empty/)
+    await expect(loose(redis.client).rPush("k", [])).rejects.toThrow(/at least one value/)
+    await expect(loose(redis.client).rPush("k", {})).rejects.toThrow(/value must be a string/)
+  })
+})

@@ -22,6 +22,15 @@
 // migrated caller issues them — an unused command has no real caller pattern to
 // model, so it would be guesswork validated by nothing.
 //
+// R5-S9 completes the list type with its FIFO half — `rPush` and `lPop` — for
+// one consumer: `packages/audit-sink/src/redis-spill-storage.ts`, which RPUSHes
+// every spilled audit record onto the tail and LPOPs one at a time off the head
+// until it reads `null`. Both ends of that queue are therefore load-bearing, and
+// so is the null terminator: a double that pushes and pops the same end turns
+// the module's documented "strict FIFO ordering matches the framework contract"
+// into LIFO with every ordering assertion still green. Deliberately NOT added:
+// `lRange` `lTrim` `rPop` `lRem` `blPop` — same rule as R5-S7, no consumer.
+//
 // ── rk() runs REAL through this adapter ───────────────────────────────────────
 //
 // This adapter knows nothing about key prefixes and rewrites no key. Callers
@@ -138,7 +147,8 @@ interface Entry {
   /**
    * `string` → the value; `hash` → field→value; `set` → members;
    * `zset` → member→score; `list` → elements, HEAD FIRST (index 0 is the head,
-   * which is what `lPush` prepends to).
+   * which is what `lPush` prepends to and `lPop` removes; `rPush` appends to
+   * the tail).
    */
   value: string | Map<string, string> | Set<string> | Map<string, number> | string[]
   /** Absolute expiry in ms, or `null` for no TTL. */
@@ -614,6 +624,60 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       for (const v of list) arr.unshift(String(v))
       if (entry === undefined) store.set(key, { kind: "list", value: arr, expiresAtMs: null })
       return arr.length
+    },
+
+    /**
+     * Append to a list's TAIL (real RPUSH) — `lPush`'s mirror, and the write
+     * half of the FIFO queue in `packages/audit-sink/src/redis-spill-storage.ts`
+     * ("RPUSH on append, LPOP on read — strict FIFO ordering matches the
+     * framework contract"). Which END a value lands on is the whole contract
+     * there, so it is modelled rather than aliased onto `lPush`.
+     */
+    async rPush(key: unknown, values: unknown): Promise<number> {
+      assertKey("rPush", key)
+      const list = Array.isArray(values) ? values : [values]
+      if (list.length === 0) throw new UnroutedRedisCall("rPush", "requires at least one value")
+      for (const v of list) assertValue("rPush", v)
+      record("rPush", [key, values])
+      const entry = typed(key, "list")
+      const arr = entry === undefined ? [] : (entry.value as string[])
+      // Real RPUSH appends each value in turn, so a multi-value push KEEPS
+      // argument order — the opposite of lPush, which reverses it.
+      for (const v of list) arr.push(String(v))
+      if (entry === undefined) store.set(key, { kind: "list", value: arr, expiresAtMs: null })
+      return arr.length
+    },
+
+    /**
+     * Remove and return the list's HEAD (real LPOP), or `null` when the list is
+     * absent or empty. `null` is the drain terminator the spill storage's
+     * `readAll()` loop rides on — it LPOPs `for (;;)` and stops on `null`, so a
+     * double answering anything else for an exhausted queue spins forever.
+     *
+     * Emptying a list DELETES the key, as real Redis does. Leaving an empty list
+     * behind would keep `exists` at 1 and a TTL alive on a key production has
+     * already removed.
+     *
+     * The COUNT form (`lPop(key, n)`) is NOT modelled: no migrated consumer
+     * issues it, and silently ignoring the count would pop one element where the
+     * caller asked for n — the benign-empty failure this adapter exists to avoid.
+     */
+    async lPop(key: unknown, count?: unknown): Promise<string | null> {
+      assertKey("lPop", key)
+      if (count !== undefined) {
+        throw new UnroutedRedisCall(
+          "lPop",
+          `the COUNT form is not modelled (got ${describe(count)}); no consumer issues it`,
+        )
+      }
+      record("lPop", [key])
+      const entry = typed(key, "list")
+      if (entry === undefined) return null
+      const arr = entry.value as string[]
+      const head = arr.shift()
+      if (head === undefined) return null
+      if (arr.length === 0) store.delete(key)
+      return head
     },
 
     async lLen(key: unknown): Promise<number> {

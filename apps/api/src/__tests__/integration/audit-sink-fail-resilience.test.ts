@@ -20,6 +20,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildAuditRecord, buildEnvelope } from "@adjudicate/core";
 import { adjudicate } from "@adjudicate/core/kernel";
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
 import {
   ordersPolicyBundle,
   type OrderIntentKind,
@@ -29,28 +30,26 @@ import {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function makeRedisSpillStub() {
-  const store = new Map<string, string[]>();
-  return {
-    _store: store,
-    async rPush(key: string, value: string) {
-      const list = store.get(key) ?? [];
-      list.push(value);
-      store.set(key, list);
-      return list.length;
-    },
-    async lPop(key: string) {
-      const list = store.get(key);
-      if (!list || list.length === 0) return null;
-      return list.shift() ?? null;
-    },
-    async lLen(key: string) {
-      return store.get(key)?.length ?? 0;
-    },
-    async expire(_key: string, _seconds: number) {
-      return 1;
-    },
-  };
+// R5-S9 — the hand-rolled FIFO double is gone; this drives the canonical
+// in-memory adapter (`@ibatexas/tools/testing`) instead.
+//
+// The double it replaces was HONEST about the queue — a Map of arrays with
+// `push`/`shift`, genuinely FIFO — which is why this file was the census'
+// "deferred, not refused" entry rather than an urgent one. It carried exactly
+// ONE fiction, and the adapter kills it: `expire` returned a constant `1` with
+// no TTL model behind it, so the storage's documented 7-day backlog window
+// (`DEFAULT_TTL_SECONDS`, "enough for any plausible inner-sink outage") was
+// asserted into a void — nothing in this file, or anywhere, could tell a 7-day
+// EXPIRE from a 7-second one. The adapter models TTL against an injected clock,
+// so the window is now a real assertion below.
+//
+// The clock is frozen so that window lands on an exact number rather than a
+// tolerance band around wall time.
+const FIXED_NOW_MS = Date.parse("2026-05-23T00:00:00.000Z");
+const SEVEN_DAYS_MS = 604_800_000;
+
+function makeSpillRedis() {
+  return createInMemoryRedis({ now: () => FIXED_NOW_MS });
 }
 
 function makeFailingPostgresWriter() {
@@ -73,16 +72,29 @@ function orderEnv(nonce: string) {
 }
 
 // Spill-queue key prefix — mirrors the inlined `rk()` in
-// `@ibatexas/audit-sink/redis-spill-storage.ts`, which (like the canonical
-// `rk()` in `@ibatexas/tools`) captures `APP_ENV` ONCE at module-load time
-// into a const, NOT per-call. `@ibatexas/audit-sink` is imported by the
-// global `src/__tests__/setup.ts` before any `beforeEach` runs, so the
-// leaf's prefix is frozen to whatever `APP_ENV` is at that first import
+// `@ibatexas/audit-sink/redis-spill-storage.ts`, which captures `APP_ENV` ONCE
+// at module-load time into a const, NOT per-call. `@ibatexas/audit-sink` is
+// imported by the global `src/__tests__/setup.ts` before any `beforeEach` runs,
+// so the leaf's prefix is frozen to whatever `APP_ENV` is at that first import
 // (`"development"` here, since nothing sets `APP_ENV` before setup). The
 // per-test `vi.stubEnv("APP_ENV", "test")` therefore CANNOT change the spill
 // key — it is far too late. We resolve the spill key the same way the SUT
 // does so the assertion reads the queue the SUT actually writes to. (Pre-fix
 // this hardcoded `test:audit:spill:queue` and silently read an empty list.)
+//
+// R5-S9 correction to this comment's own premise: it claimed the canonical
+// `rk()` in `@ibatexas/tools` freezes the same way. It does NOT — `redis/key.ts`
+// reads `process.env.APP_ENV` at CALL time, deliberately (FE-D26). So importing
+// the real `rk` here and calling it under the `beforeEach` stub would return
+// `test:audit:spill:queue` while the leaf writes `development:audit:spill:queue`,
+// which is the empty-list bug above with a real function instead of a hardcoded
+// string. The leaf's own header asserts it "MUST stay byte-identical to
+// packages/tools/src/redis/key.ts"; on the capture-time axis it is not. Filed in
+// helpers/redis-double-census.md — not fixed here, since either fix is a
+// behaviour change to a leaf-purity invariant and belongs to its owner.
+//
+// The adapter rewrites no key, so whatever the leaf's real (inlined) `rk`
+// produces is exactly what lands in the keyspace asserted below.
 const SPILL_QUEUE_KEY = `${process.env.APP_ENV ?? "development"}:audit:spill:queue`;
 
 function orderState(): OrderState {
@@ -128,7 +140,7 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
   });
 
   it("Redis spill captures the record when Postgres sink throws", async () => {
-    const redis = makeRedisSpillStub();
+    const redis = makeSpillRedis();
     const failingWriter = makeFailingPostgresWriter();
 
     // Import wiring through the @ibatexas/audit-sink barrel. We use the
@@ -136,7 +148,7 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
     // exported there.
     const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
-    wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
+    wiring._setAuditSinkDependencies({ redis: redis.client, prismaWriter: failingWriter });
 
     const env = orderEnv("n-resil-spill-01");
     const decision = adjudicate(env, orderState(), ordersPolicyBundle);
@@ -162,24 +174,37 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
     });
     await wiring.getAuditSink().emit(record2);
 
-    // First record evicted to Redis spill.
-    const spilled = redis._store.get(SPILL_QUEUE_KEY) ?? [];
-    expect(spilled.length).toBeGreaterThanOrEqual(1);
+    // First record evicted to Redis spill. The spill list is the ONLY key the
+    // sink wrote, and it is the one the leaf's real `rk()` derived — nothing
+    // rewrote it on the way in.
+    expect(redis.keys()).toEqual([SPILL_QUEUE_KEY]);
+    expect(await redis.client.lLen(SPILL_QUEUE_KEY)).toBeGreaterThanOrEqual(1);
+
+    // The 7-day backlog window, now that EXPIRE is real. Under the constant-`1`
+    // stub this assertion could not be written at all.
+    expect(redis.ttlMs(SPILL_QUEUE_KEY)).toBe(SEVEN_DAYS_MS);
+
+    // Read the head with LPOP — the same command, off the same end, that the
+    // storage's own `readAll()` drain uses. RPUSH-tail/LPOP-head is the module's
+    // stated FIFO contract, so reading any other way would assert against an
+    // order production never serves.
+    const head = await redis.client.lPop(SPILL_QUEUE_KEY);
+    expect(head).not.toBeNull();
 
     // The spilled record contains a recognizable JSON envelope with a
     // valid intentHash (redactor-redacted but structurally intact).
-    const parsed = JSON.parse(spilled[0]!) as { intentHash: string };
+    const parsed = JSON.parse(head!) as { intentHash: string };
     expect(parsed.intentHash).toMatch(/^[0-9a-f]+$/);
 
     wiring._resetAuditSink();
   });
 
   it("audit sink failure does NOT raise to the caller (fail-open boundary)", async () => {
-    const redis = makeRedisSpillStub();
+    const redis = makeSpillRedis();
     const failingWriter = makeFailingPostgresWriter();
     const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
-    wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
+    wiring._setAuditSinkDependencies({ redis: redis.client, prismaWriter: failingWriter });
 
     const env = orderEnv("n-resil-failopen");
     const record = buildAuditRecord({
@@ -196,11 +221,11 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
   });
 
   it("route-handler-style flow: decision → audit emit fail → route still returns 200", async () => {
-    const redis = makeRedisSpillStub();
+    const redis = makeSpillRedis();
     const failingWriter = makeFailingPostgresWriter();
     const wiring = await import("@ibatexas/audit-sink");
     wiring._resetAuditSink();
-    wiring._setAuditSinkDependencies({ redis, prismaWriter: failingWriter });
+    wiring._setAuditSinkDependencies({ redis: redis.client, prismaWriter: failingWriter });
 
     // Simulated route handler — adjudicate, decide, emit audit fire-
     // and-forget, return status.
