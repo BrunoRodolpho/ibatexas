@@ -16,6 +16,8 @@
 import { describe, expect, it } from "vitest";
 import type { ClaimDefinition } from "@adjudicate/core";
 import { CLAIM_REGISTRY } from "../claim-registry.js";
+import { STORE_HOURS_DEFINITION } from "../claimdefs/store-hours.generated.js";
+import { STORE_INFO_DEFINITION } from "../claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_DEFINITION } from "../claimdefs/store-open-now.generated.js";
 import {
   assertClaimDefinitionRegistryValid,
@@ -163,4 +165,22 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
     expect(STORE_OPEN_NOW_DEFINITION.triadScoped).toBe(true);
     expect(CLAIM_DEFINITIONS.STORE_OPEN_NOW.triadScoped).toBe(true);
   });
+
+  // R2-S1 — the same reference-identity guard for the two types adopted in this
+  // batch. Written as a table over the adopted set so a third adoption is one row,
+  // and so the guard cannot hold for the first-migrated type while quietly lapsing
+  // for a later one.
+  it.each([
+    ["STORE_HOURS", STORE_HOURS_DEFINITION],
+    ["STORE_INFO", STORE_INFO_DEFINITION],
+  ] as const)(
+    "CLAIM_DEFINITIONS.%s IS the generated definition (reference identity)",
+    (type, generated) => {
+      expect(CLAIM_DEFINITIONS[type]).toBe(generated);
+      // Both are PUBLIC fixed-subject reads: `triadScoped: false` is DECLARED in the
+      // source, so the value no longer depends on their absence from
+      // TRIAD_SCOPED_TYPES (an absence proves nothing on its own).
+      expect(generated.triadScoped).toBe(false);
+    },
+  );
 });

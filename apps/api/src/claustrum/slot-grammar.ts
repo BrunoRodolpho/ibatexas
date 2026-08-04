@@ -37,8 +37,13 @@
  * import beyond the `@adjudicate/core` claims types it consumes.
  */
 
-// inv.18 v2 — STORE_OPEN_NOW's validated template is GENERATED from its
-// ClaimDefinition source by the claimdef-compiler (DO NOT EDIT the generated file).
+// inv.18 v2 — these validated templates are GENERATED from their ClaimDefinition
+// sources by the claimdef-compiler (DO NOT EDIT the generated files). Each slot below
+// is a projection of the source's `render.validated` block, with the PROPOSITION
+// `claimType` filled = self, so a template can no longer drift from the registry spec
+// its proposition binds to.
+import { STORE_HOURS_TEMPLATE } from "./claimdefs/store-hours.generated.js";
+import { STORE_INFO_TEMPLATE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_TEMPLATE } from "./claimdefs/store-open-now.generated.js";
 
 /**
@@ -198,21 +203,14 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // render.prop("mealPeriod") with claimType filled = self; the ~11-line handwritten
   // entry collapsed into this single spliced import.
   [STORE_OPEN_NOW]: STORE_OPEN_NOW_TEMPLATE,
-  // BKL-121 — the STORE_HOURS validated template. Static pt-BR around the single
-  // ledger-bound proposition prop(STORE_HOURS, "hoursText"), bound 1:1 to the C6
-  // value-binding FIELD (claim-registry.ts `valueBinding.path = ["hoursText"]`); the
-  // StoreHoursRead shape's field is `hoursText` (turn-reads.ts). The value is a
-  // FREE-FORM pt-BR hours string ("11h–15h / 18h–23h" | "fechado"), evidence-bound
-  // from the real weekly schedule (never an enum, so no claims-labels localization).
-  [STORE_HOURS]: {
-    claimType: STORE_HOURS,
-    posture: "validated",
-    slots: [
-      lit("Hoje nosso horário de funcionamento é: "),
-      prop(STORE_HOURS, "hoursText"),
-      lit("."),
-    ],
-  },
+  // inv.18 v2 / R2-S1 — the STORE_HOURS template is GENERATED from its ClaimDefinition
+  // source (./claimdefs/store-hours.generated.ts — DO NOT EDIT). The proposition slot
+  // prop(STORE_HOURS, "hoursText") is derived from the source's render.prop("hoursText")
+  // with claimType filled = self, and the compiler binds it to the SAME source's C6
+  // `valueBinding.path = ["hoursText"]` — so the 1:1 slot↔field alignment (Inv 6) is now
+  // true BY CONSTRUCTION rather than by two files agreeing. The ~13-line handwritten
+  // entry collapsed into this single spliced import.
+  [STORE_HOURS]: STORE_HOURS_TEMPLATE,
   // BKL-138 — the DAY-SPECIFIC hours template (SCN-002/003). A SINGLE ledger-bound
   // proposition prop(STORE_HOURS_FOR_DATE, "hoursText"), bound 1:1 to the C6
   // value-binding FIELD (claim-registry.ts `valueBinding.path = ["hoursText"]`) — the
@@ -373,16 +371,14 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
     posture: "validated",
     slots: [prop(MENU_DIETARY, "dietaryText")],
   },
-  // BKL-136 — the store-info validated template. ONE proposition slot bound 1:1 to
-  // the C6 valueBinding FIELD (`infoText`, claim-registry.ts) — the deterministic
-  // pre-composed pt-BR address/parking sentence (store-info-resolver.ts), derived
-  // from OWNER-ATTESTED Medusa store.metadata. Bare single-prop shape like
-  // MENU_OVERVIEW (the scalar is already a complete sentence).
-  [STORE_INFO]: {
-    claimType: STORE_INFO,
-    posture: "validated",
-    slots: [prop(STORE_INFO, "infoText")],
-  },
+  // inv.18 v2 / R2-S1 — the STORE_INFO template is GENERATED from its ClaimDefinition
+  // source (./claimdefs/store-info.generated.ts — DO NOT EDIT). Its single proposition
+  // slot is derived from the source's render.prop("infoText") and bound by the compiler
+  // to the SAME source's C6 `valueBinding.path = ["infoText"]`; the ~10-line handwritten
+  // entry collapsed into this spliced import. The bare single-prop shape (like
+  // MENU_OVERVIEW) is unchanged — the scalar store-info-resolver.ts composes from
+  // OWNER-ATTESTED Medusa store.metadata is already a complete sentence.
+  [STORE_INFO]: STORE_INFO_TEMPLATE,
   // LE2-002 / NEW-007 — the GROUNDED-YES delivery-coverage template. ONE proposition
   // slot bound 1:1 to the C6 valueBinding FIELD (`coverageText`, claim-registry.ts):
   // the deterministic pt-BR scalar delivery-coverage-resolver.ts composes from the

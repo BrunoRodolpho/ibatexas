@@ -24,6 +24,8 @@ import {
   type CompiledArtifacts,
   compileClaimDefinition,
 } from "@adjudicate/core";
+import { STORE_HOURS_SOURCE } from "./store-hours.claim.js";
+import { STORE_INFO_SOURCE } from "./store-info.claim.js";
 import { STORE_OPEN_NOW_SOURCE } from "./store-open-now.claim.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -42,6 +44,16 @@ const UNITS: readonly GenUnit[] = [
     slug: "store-open-now",
     sourceFile: "store-open-now.claim.ts",
     artifacts: compileClaimDefinition(STORE_OPEN_NOW_SOURCE),
+  },
+  {
+    slug: "store-hours",
+    sourceFile: "store-hours.claim.ts",
+    artifacts: compileClaimDefinition(STORE_HOURS_SOURCE),
+  },
+  {
+    slug: "store-info",
+    sourceFile: "store-info.claim.ts",
+    artifacts: compileClaimDefinition(STORE_INFO_SOURCE),
   },
 ];
 
@@ -95,33 +107,49 @@ export function emitGeneratedModule(unit: GenUnit): string {
   });
 
   // (7) decomposition closure — spanClass literal + requires + the regex markers.
+  // OPTIONAL: a type with no §O#15 span (no closure row, no markers — e.g. STORE_HOURS,
+  // whose questions route to STORE_OPEN_NOW_Q / STORE_HOURS_FOR_DATE_Q) emits NO closure
+  // export at all. Emitting an empty-spanClass stub instead would publish a row that
+  // reads as a declared-but-blank span, and would pull an unused `RegistryClaimType`
+  // import in with it — so the block and its import are both conditional.
   const closure = a.closure;
+
+  // Every export is PREFIXED with the compiled type name, so the export identifiers are
+  // a projection of the source like everything else here (adding a claim type stays
+  // "add a source + a GenUnit", with no per-type edit to this emitter).
+  const P = a.type;
 
   return [
     HEADER(sourceFile, checksum),
     "",
-    `import type { GeneratedReadClaimSpec, RegistryClaimType } from "../claim-registry.js";`,
+    closure === undefined
+      ? `import type { GeneratedReadClaimSpec } from "../claim-registry.js";`
+      : `import type { GeneratedReadClaimSpec, RegistryClaimType } from "../claim-registry.js";`,
     `import type { Template } from "../slot-grammar.js";`,
     `import type { ClaimDefinition } from "@adjudicate/core";`,
     "",
     `/** (1) GENERATED registry spec row (evidence / falsifiers / value-binding). */`,
-    `export const STORE_OPEN_NOW_REGISTRY_SPEC = ${registrySpec} satisfies GeneratedReadClaimSpec;`,
+    `export const ${P}_REGISTRY_SPEC = ${registrySpec} satisfies GeneratedReadClaimSpec;`,
     "",
     `/** (3) GENERATED render template (proposition slots bound 1:1 to self + field). */`,
-    `export const STORE_OPEN_NOW_TEMPLATE = ${template} satisfies Template;`,
-    "",
-    `/** (7) GENERATED decomposition closure: span class + required companions + pt-BR markers. */`,
-    `export const STORE_OPEN_NOW_CLOSURE = {`,
-    `  spanClass: ${JSON.stringify(closure?.spanClass ?? "")},`,
-    `  requires: ${JSON.stringify(closure?.requires ?? [])} satisfies readonly RegistryClaimType[],`,
-    `  markers: ${regexArrayLiteral(closure?.markers ?? [])},`,
-    `} as const;`,
+    `export const ${P}_TEMPLATE = ${template} satisfies Template;`,
+    ...(closure === undefined
+      ? []
+      : [
+          "",
+          `/** (7) GENERATED decomposition closure: span class + required companions + pt-BR markers. */`,
+          `export const ${P}_CLOSURE = {`,
+          `  spanClass: ${JSON.stringify(closure.spanClass)},`,
+          `  requires: ${JSON.stringify(closure.requires)} satisfies readonly RegistryClaimType[],`,
+          `  markers: ${regexArrayLiteral(closure.markers)},`,
+          `} as const;`,
+        ]),
     "",
     `/** (4) GENERATED validator-wiring definition (defense-in-depth for set-level invariants). */`,
-    `export const STORE_OPEN_NOW_DEFINITION = ${tsLiteral(a.definition)} satisfies ClaimDefinition;`,
+    `export const ${P}_DEFINITION = ${tsLiteral(a.definition)} satisfies ClaimDefinition;`,
     "",
     `/** The compiled id (type@version) — the designed-in versioning stamp. */`,
-    `export const STORE_OPEN_NOW_ID = ${JSON.stringify(a.id)};`,
+    `export const ${P}_ID = ${JSON.stringify(a.id)};`,
     "",
   ].join("\n");
 }

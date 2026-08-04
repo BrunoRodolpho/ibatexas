@@ -819,6 +819,17 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     );
   });
 
+  // inv.18 v2 / R2-S1 — the STORE_INFO_Q net moved into `store-info.claim.ts` as SEVEN
+  // marker regexes and is consumed as `markers.some((m) => m.test(t))`. A `.some()` over
+  // the arms and a `.test()` on the alternation are the same predicate, but that argument
+  // is only worth as much as the arms still being the same arms — so the pre-migration
+  // literal is frozen here exactly as it stood in `classifyRequestSpans`.
+  it("STORE_INFO: the seven generated marker arms rejoin to the original literal", () => {
+    expect(__SPAN_NET_SOURCES_FOR_TEST.storeInfo).toBe(
+      String.raw`onde (fica|é|estão|est[áa]|se localiza)|endere[çc]o|localiza[çc][ãa]o|localizad|estacionamento|estacionar|como (chego|chegar)`,
+    );
+  });
+
   // Guards the guard: a typo that emptied a part would make the assertions above
   // compare two wrong-but-equal strings only if the expectation were derived from
   // the code, which it is not — but an accidentally EMPTY reassembly is still worth
