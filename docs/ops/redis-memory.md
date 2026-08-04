@@ -20,7 +20,7 @@ Example: `production:customer:profile:cust_123`
 | `claustrum:session:{sessionId}` | String (JSON) | 24 h (customer) / 48 h (guest) | Claustrum Conductor per-session memory. Distinct namespace from `session:*` (the history list). | `apps/api/src/claustrum-bootstrap.ts` |
 | `chat:stream:{sessionId}` | Stream | — | SSE stream channel for web chat token delivery. | `apps/api/src/streaming/emitter.ts` |
 | `chat:stream:replay:{sessionId}` | Stream | — | Replay buffer for reconnecting SSE clients. | `apps/api/src/streaming/emitter.ts` |
-| `web:agent:{sessionId}` | String (UUID) | 30 s | Web chat agent lock — UUID value, Lua conditional release, 10 s heartbeat. | `apps/api/src/streaming/execution-queue.ts` |
+| `web:agent:{sessionId}` | String (UUID) | 30 s | Web chat agent lock — UUID value, Lua conditional release, 10 s heartbeat. With no tracked lock value (process restart, double release) the key is LEFT to its TTL with a loud warn, never blind-`DEL`ed (F-21 class rollout). | `apps/api/src/streaming/execution-queue.ts` |
 | `llm:tokens:{channel}:{customerId}` | String (counter) | configurable | LLM token-usage counter per channel+customer (prevents runaway token spend). Pattern also queried by `ibx rate`. | `apps/api/src/claustrum/resolve-and-assemble.ts` |
 
 ---
@@ -52,7 +52,7 @@ Example: `production:customer:profile:cust_123`
 | `cart:create:lock:{sessionId}` | String (UUID) | 10 s | Cart creation lock (prevents TOCTOU double-create race). UUID value, Lua conditional release (F-21 — was a constant value + unconditional `DEL`). | `packages/tools/src/cart/get-or-create-cart.ts` |
 | `cart:owner:{cartId}` | String | 24 h | Cart ownership mapping (IDOR prevention). | `apps/api/src/routes/cart.ts` |
 | `cart:nudge:{cartId}` | String (JSON) | 48 h | Recovery tier sent for an abandoned cart `{tier, sentAt}`. | `apps/api/src/subscribers/cart-intelligence.ts` |
-| `checkout:idem:{idemToken}` | String | 120 s | Checkout single-flight gate (NX) — blocks concurrent/duplicate checkout submits. | `apps/api/src/routes/cart.ts` |
+| `checkout:idem:{idemToken}` | String (UUID) | 120 s | Checkout single-flight gate (NX) — blocks concurrent/duplicate checkout submits. UUID value, Lua conditional release on a FIXABLE failure only; the success path leaves it to the TTL (F-21 class rollout — was a constant value + unconditional `DEL`). | `apps/api/src/routes/cart.ts` |
 | `checkout:confirmation:{confirmationId}` | String (JSON) | 10 min | Customer checkout-confirmation receipt, drained atomically on consume. | `apps/api/src/routes/checkout-confirmation-store.ts` |
 | `customer:pending-orders:{customerId}` | Hash | 7 d | In-flight payment intents per customer, keyed by paymentIntentId. | `packages/tools/src/cart/create-checkout.ts` |
 
@@ -158,6 +158,8 @@ resumes them on a signal. Implemented in `@adjudicate/runtime`, driven by IbateX
 | `follow-up:scheduled` | Sorted Set | per-entry (via score) | Scheduled follow-up reminders, polled every 15 min. | `packages/tools/src/intelligence/schedule-follow-up.ts` |
 | `outreach:last:{customerId}` | String | 3–7 d | Cooldown preventing repeated outreach to the same customer. | `apps/api/src/jobs/proactive-engagement.ts` |
 | `outreach:weekly:count` | String (counter) | 7 d | Weekly outreach message counter for the admin dashboard. | `apps/api/src/jobs/proactive-engagement.ts` |
+| `agent:trigger:seen:{agentId}:{externalId}` | String (UUID in flight → `"1"` decided) | 5 min in flight → 7 d decided | Managed-agent redelivery claim on the deterministic event carrier. Two-phase: a UUID token while the turn runs, PROMOTED to the constant `"1"` for 7 d once a decision is reached. A turn that throws releases via Lua conditional `DEL` (F-21 class rollout — was a constant value + unconditional `DEL`); the promote is deliberately ownership-blind (a decided event is terminal and owned by nobody). | `apps/api/src/claustrum/agent-trigger-bridge.ts` |
+| `agent:trigger:cooldown:{agentId}:{kind}:{id}` | String (UUID) | per-agent `budgets.cooldownSeconds` (900 s) | Per-entity managed-agent cooldown — at most one remediation per entity per window. UUID value, Lua conditional release on a thrown turn (F-21 class rollout). | `apps/api/src/claustrum/agent-trigger-bridge.ts` |
 
 ---
 

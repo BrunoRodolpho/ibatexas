@@ -189,6 +189,7 @@ import {
   agentsEnabled,
   startManagedAgentPlane,
 } from "./claustrum/managed-agent-plane.js";
+import { createTriggerDedupRedis } from "./claustrum/trigger-dedup-redis.js";
 import type { AgentPlane } from "./claustrum/agent-plane.js";
 import type { AgentKillSwitchManager } from "./claustrum/agent-kill-switch.js";
 import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js";
@@ -4373,6 +4374,12 @@ export async function bootstrapClaustrum(
         // learning.event.v1 (fail-open; the leaf no-ops if Redis+NATS are absent).
         learningSink: getLearningSink(),
         redis: ledgerClient,
+        // F-21: the dedup claims are released with an ownership-checked Lua
+        // compare-and-delete, so this surface is composed from the RAW client
+        // (which can `eval`) rather than from `ledgerClient` (set/get/del only).
+        // It used to be the same object behind an `as unknown as` cast that
+        // would have thrown on the first failed agent turn.
+        dedupRedis: createTriggerDedupRedis(redis),
         pubsub,
         approvals: agentApprovals,
         // Proactive per-agent/per-window refund money breaker (bounds the FIRST

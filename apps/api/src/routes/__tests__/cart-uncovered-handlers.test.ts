@@ -37,8 +37,11 @@
 //   • The ownership guard runs against real SET-NX. The old `set`→"OK" constant
 //     meant a claim always "succeeded"; a claim on an already-owned key now
 //     really returns null.
-//   • The checkout idempotency gate is a real NX+EX key, so its release
-//     (`del`) is observable as the key DISAPPEARING, not just as a call.
+//   • The checkout idempotency gate is a real NX+EX key, so its release is
+//     observable as the key DISAPPEARING, not just as a call. Since F-21 that
+//     release is an ownership-checked compare-and-delete rather than a `del`,
+//     so the spy set carries a NARROW `eval` that serves that one script and
+//     throws by name on any other (see `createSpyRedis`).
 //   • `rk` is the REAL one. The old fake answered `ibatexas:<key>`; production
 //     under this vitest writes `development:<key>` (no `APP_ENV` is pinned in
 //     apps/api's config) — the keys under assertion were a prefix nothing
@@ -49,10 +52,12 @@
 //     the threading is real.
 //
 // The two commands the adapter REFUSES by design (W4 RULE 3) are `multi` and
-// `eval`, and this file reaches neither: every checkout here is `cash`, so the
-// PIX cache's MULTI pipeline is unreachable, and no case drives
-// `POST /api/cart/checkout/confirm`, so the confirmation store's Lua is too.
-// That is asserted, not assumed — see the `[seam]` case at the end of the file.
+// `eval`. `multi` stays unreached: every checkout here is `cash`, so the PIX
+// cache's MULTI pipeline is unreachable. `eval` is reached on exactly one path
+// since F-21 — the checkout gate's ownership-checked release on a fixable
+// failure — and is served by the narrow compare-and-delete spy rather than by
+// the adapter. Both facts are asserted, not assumed: see the `finalize
+// side-effects` cases and the `[seam]` case at the end of the file.
 
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
@@ -154,6 +159,10 @@ vi.mock("@ibatexas/tools", async () => {
     // The REAL rk (Hard Rule #7): the keys these tests assert on are the keys
     // production writes, prefix included.
     rk: actual.rk,
+    // F-21 — the REAL lock helper (pure over the injected client), so the
+    // checkout gate's claim + ownership-checked release land on the double
+    // below and the assertions read real behaviour.
+    acquireLockAtKeyOn: actual.acquireLockAtKeyOn,
     estimateDelivery: mockEstimateDelivery,
     createCheckout: mockCreateCheckout,
     reaisToCentavos: (amount: number) => Math.round(amount * 100),
@@ -275,6 +284,7 @@ type SpyRedis = {
   readonly hDel: Mock;
   readonly hGetAll: Mock;
   readonly expire: Mock;
+  readonly eval: Mock;
 };
 
 /**
@@ -300,6 +310,45 @@ function createSpyRedis(
     hDel: vi.fn((...a: unknown[]) => (real.hDel as (...x: unknown[]) => unknown)(...a)),
     hGetAll: vi.fn((...a: unknown[]) => (real.hGetAll as (...x: unknown[]) => unknown)(...a)),
     expire: vi.fn((...a: unknown[]) => (real.expire as (...x: unknown[]) => unknown)(...a)),
+    // F-21 — the checkout idempotency gate is a LOCK now, so its release is an
+    // ownership-checked Lua compare-and-delete rather than a `del`.
+    //
+    // `createInMemoryRedis` refuses `eval` on purpose (W4 RULE 3), and rightly:
+    // a general Map-stub of Lua is theater. This is not a general stub. It
+    // serves ONE recognised script — the compare-and-delete every lock in the
+    // repo shares — over the adapter's own get/del, and THROWS by name on any
+    // other script, so a newly-issued Lua path surfaces here instead of
+    // silently resolving. The narrow-script precedent is this file family's
+    // own: `createStatefulRedis` in `__tests__/cart-routes.test.ts` already
+    // carries a GET+DEL `eval` for the confirmation store.
+    //
+    // What this CANNOT prove is atomicity — the comparison happens in this
+    // process. That claim lives on real Redis, in
+    // `__tests__/checkout-idem-gate-ownership.test.ts`. What it proves here is
+    // the ROUTE property: the gate release goes through the ownership path and
+    // never through an unconditional `del`.
+    eval: vi.fn(
+      async (script: unknown, opts: unknown): Promise<number> => {
+        const text = String(script);
+        // Case-insensitive: the repo's two CAD spellings differ in case —
+        // `distributed-lock.ts` writes `redis.call("get" …)`, while
+        // `park-redis-capabilities.ts` writes `redis.call('GET' …)`.
+        if (!(/\bget\b/i.test(text) && /\bdel\b/i.test(text))) {
+          throw new Error(
+            `SpyRedis.eval: unrecognised Lua script — this double only serves the ` +
+              `compare-and-delete release. Script was:\n${text}`,
+          );
+        }
+        const { keys, arguments: args } = opts as {
+          keys: string[];
+          arguments: string[];
+        };
+        const key = keys[0] as string;
+        const current = await (real.get as (k: string) => Promise<string | null>)(key);
+        if (current !== args[0]) return 0;
+        return (real.del as (k: string) => Promise<number>)(key);
+      },
+    ),
   };
   // Spread the adapter's Proxy LAST so unwrapped commands (multi, eval, …) keep
   // throwing by name rather than silently resolving to undefined.
@@ -773,8 +822,17 @@ describe("POST /api/cart/checkout — finalize side-effects", () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.json().success).toBe(false);
-    // The fixable-failure gate release (redis.del) ran so the customer can retry.
-    expect(redis.del).toHaveBeenCalledWith(
+    // The fixable-failure gate release ran so the customer can retry — the key
+    // is really gone from the keyspace, not merely "a method was called".
+    expect(redis.memory.keys()).not.toContain(rk("checkout:idem:cart_01"));
+    // F-21: and it went through the OWNERSHIP-CHECKED path. Both halves are
+    // load-bearing — an unconditional `del` would also clear the key and
+    // satisfy the line above, which is exactly the defect being regressed.
+    expect(redis.eval).toHaveBeenCalledWith(
+      expect.stringMatching(/del/i),
+      expect.objectContaining({ keys: [rk("checkout:idem:cart_01")] }),
+    );
+    expect(redis.del).not.toHaveBeenCalledWith(
       expect.stringContaining("checkout:idem:"),
     );
   });
@@ -800,8 +858,15 @@ describe("POST /api/cart/checkout — finalize side-effects", () => {
     // The web checkout renders data.error ?? data.message — both carry the pt-BR copy.
     expect(body.error).toContain("cupom");
     expect(body.message).toContain("cupom");
-    // The fixable-failure gate release ran so the customer can remove the coupon and retry.
-    expect(redis.del).toHaveBeenCalledWith(
+    // The fixable-failure gate release ran so the customer can remove the
+    // coupon and retry — and (F-21) through the ownership-checked path, never
+    // an unconditional `del`.
+    expect(redis.memory.keys()).not.toContain(rk("checkout:idem:cart_01"));
+    expect(redis.eval).toHaveBeenCalledWith(
+      expect.stringMatching(/del/i),
+      expect.objectContaining({ keys: [rk("checkout:idem:cart_01")] }),
+    );
+    expect(redis.del).not.toHaveBeenCalledWith(
       expect.stringContaining("checkout:idem:"),
     );
   });
@@ -1340,13 +1405,23 @@ describe("[seam] cart routes drive the INJECTED Redis client", () => {
     // this surface: each of these seven is genuinely reachable from a route,
     // not a guess someone widened the type with.
     //
-    // The two absentees are the whole reason this file could migrate at all:
-    // `multi` (the PIX cache write — unreachable because every checkout here is
-    // `cash`) and `eval` (the confirmation store — unreachable because no case
-    // drives /checkout/confirm). A route change that put either on one of these
-    // paths would throw BY NAME out of the adapter's Proxy, and this assertion
-    // pins that their absence is a property of the driven paths rather than of
-    // what the file happens to assert.
+    // The two absentees are `multi` (the PIX cache write — unreachable because
+    // every checkout here is `cash`) and `eval`.
+    //
+    // F-21 sharpened what `eval`'s absence means. It is no longer "no route on
+    // these paths can issue Lua": the checkout idempotency gate is a lock now,
+    // and its fixable-failure release IS a compare-and-delete `eval` — the
+    // `finalize side-effects` cases above assert exactly that. What is true, and
+    // what this pins, is narrower and still worth pinning: none of the four
+    // requests driven HERE reaches it, because all four succeed and the success
+    // path deliberately leaves the gate to its TTL. So `eval`'s absence in this
+    // command set is evidence about the SUCCESS path specifically — a release
+    // that started firing on success would show up right here.
+    //
+    // A route change that put either command on one of these paths would throw
+    // BY NAME out of the adapter's Proxy (or out of the narrow `eval` spy), and
+    // this assertion pins that their absence is a property of the driven paths
+    // rather than of what the file happens to assert.
     const issued = new Set(redis.memory.calls.map((c) => c.command));
     expect(issued).not.toContain("multi");
     expect(issued).not.toContain("eval");

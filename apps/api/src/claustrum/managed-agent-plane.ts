@@ -119,8 +119,25 @@ export interface ManagedAgentPlaneDeps {
   readonly liveConductor: LiveAgentConductorDeps;
   /** Durable agent_runs journal (Postgres in prod; logging ring in tests). */
   readonly journal: AgentRunJournal;
-  /** Read/write Redis (dedup claims + kill-switch state). The ledger client satisfies this. */
+  /** Read/write Redis (kill-switch state). The ledger client satisfies this. */
   readonly redis: RedisLedgerClient;
+  /**
+   * The trigger-dedup claim surface — F-21.
+   *
+   * A SEPARATE member from `redis` above, and not a widening of it, because the
+   * two need different things. The kill switch reads and writes ordinary
+   * strings, which `RedisLedgerClient` covers. The dedup path additionally
+   * RELEASES claims, and after F-21 it releases them with an ownership-checked
+   * Lua compare-and-delete — a command `RedisLedgerClient` does not have.
+   *
+   * Until F-21 that gap was papered over here with
+   * `deps.redis as unknown as TriggerDedupRedis`. The cast type-checked and was
+   * false: `buildLedgerClient()` returns an object literal carrying only
+   * `set`/`get`/`del`, so any Lua issued through it would have thrown at
+   * runtime. Composed via `createTriggerDedupRedis()` from a client that really
+   * can `eval`, the cast is gone and the requirement is checked by `tsc`.
+   */
+  readonly dedupRedis: TriggerDedupRedis;
   /** Pub/sub Redis (a separate subscriber connection) for kill-switch propagation. */
   readonly pubsub: RedisPubSubClient;
   /** Stage-1 approval engine (the confirm-gated resolution surface; B2 target). */
@@ -184,7 +201,7 @@ export async function startManagedAgentPlane(
     runner,
     killSwitch,
     approvals: deps.approvals,
-    redis: deps.redis as unknown as TriggerDedupRedis,
+    redis: deps.dedupRedis,
     mapEvent: createPixTriggerMapper(deps.resolveCustomer),
   });
 

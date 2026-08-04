@@ -27,6 +27,7 @@ import { identityCtx, loadCartCtx } from "../claustrum/resolve-and-assemble.js";
 import {
   getRedisClient,
   rk,
+  acquireLockAtKeyOn,
   estimateDelivery,
   createCheckout,
   reaisToCentavos,
@@ -1916,8 +1917,22 @@ export async function cartRoutes(
         typeof idemHeader === "string" && idemHeader.trim()
           ? idemHeader.trim()
           : request.body.cartId;
+      //
+      // F-21 (class rollout): the gate is a LOCK, so it is taken with a
+      // per-request UUID token and released through the ownership-checking Lua
+      // compare-and-delete — never a bare `del`. The pre-rollout form set the
+      // constant "1" and `releaseGate` did `redis.del(checkoutGateKey)`, which
+      // is the class defect at a money-adjacent site: request A acquires, its
+      // checkout runs slow past the 120s EX, the customer retries and request B
+      // claims the now-free gate, then A hits a fixable failure and its
+      // `releaseGate` destroys B's gate. A third submit then races B ON THE
+      // CHECKOUT PATH — past the single-flight defense that exists to stop
+      // exactly that. With the token, A's release is a no-op and B stays
+      // protected. Same key (`checkout:idem:<token>` — unchanged so mutual
+      // exclusion survives a rolling deploy), same 120s TTL, same 409.
       const checkoutGateKey = rk(`checkout:idem:${idemToken}`);
-      if (!(await redis.set(checkoutGateKey, "1", { NX: true, EX: 120 }))) {
+      const checkoutGate = await acquireLockAtKeyOn(redis, checkoutGateKey, 120);
+      if (!checkoutGate) {
         return reply.status(409).send({
           statusCode: 409,
           error: "Conflict",
@@ -2041,7 +2056,15 @@ export async function cartRoutes(
           // P0-PAY-3 — fixable failure: release the idempotency gate so the
           // customer can correct + retry immediately rather than waiting out
           // the 120s TTL.
-          await redis.del(checkoutGateKey);
+          //
+          // F-21: ownership-conditional. If this request's 120s TTL already
+          // lapsed and a retry claimed the gate, the compare-and-delete matches
+          // nothing and leaves the retry's gate standing — the release is a
+          // no-op instead of an attack on the live request. The SUCCESS path
+          // deliberately does not come through here at all: a completed
+          // checkout leaves the gate to expire, so a duplicate submit inside
+          // the window still gets its 409.
+          await checkoutGate.release();
         },
       });
     },

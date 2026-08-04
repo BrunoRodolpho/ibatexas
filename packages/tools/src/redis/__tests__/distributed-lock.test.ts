@@ -21,7 +21,9 @@ vi.mock("../client.js", () => ({
   getRedisClient: mockGetRedisClient,
 }))
 
-const { acquireLock, acquireLockAtKey } = await import("../distributed-lock.js")
+const { acquireLock, acquireLockAtKey, acquireLockAtKeyOn } = await import(
+  "../distributed-lock.js"
+)
 
 interface EvalCall {
   script: string
@@ -138,5 +140,132 @@ describe("acquireLockAtKey", () => {
 
     expect(evalCalls).toHaveLength(2)
     expect(evalCalls[0]?.script).toBe(evalCalls[1]?.script)
+  })
+})
+
+// ── The injected-client form (F-21 class rollout) ────────────────────────────
+//
+// `acquireLockAtKeyOn(redis, key, ttl)` exists because the R5 rollout THREADS a
+// Redis client down each route family (PR #524): `routes/cart.ts` resolves every
+// Redis touch through `CartRouteDeps.redis`, so a lock helper that reached for
+// the singleton internally would reintroduce exactly the hidden global that
+// rollout removed. Same injected-first-parameter shape as `atomicIncr`.
+//
+// What these cases pin is that the injection is REAL — the commands land on the
+// client passed in, and the singleton is never consulted — plus that
+// `acquireLockAtKey` still behaves identically now that it delegates here.
+
+describe("acquireLockAtKeyOn — the injected-client form", () => {
+  /** A second, independent keyspace + spy set: the "other" client. */
+  function otherClient() {
+    const other = createInMemoryRedis()
+    const calls: EvalCall[] = []
+    return {
+      mem: other,
+      evalCalls: calls,
+      client: {
+        set: (key: string, value: string, opts?: unknown) =>
+          (other.client.set as (k: string, v: string, o?: unknown) => unknown)(
+            key,
+            value,
+            opts,
+          ) as Promise<string | null>,
+        eval: async (
+          script: string,
+          opts: { keys: string[]; arguments: string[] },
+        ) => {
+          calls.push({ script, keys: opts.keys, args: opts.arguments })
+          return 1
+        },
+      },
+    }
+  }
+
+  it("claims on the INJECTED client, never the singleton", async () => {
+    const other = otherClient()
+
+    const handle = await acquireLockAtKeyOn(other.client, rk("res:injected"))
+
+    expect(handle).not.toBeNull()
+    // The claim landed on the injected keyspace …
+    expect(other.mem.peek(rk("res:injected"))).toBe(handle?.value)
+    // … and NOT on the singleton's. Both halves matter: the first alone would
+    // pass if the helper wrote to both.
+    expect(mem.peek(rk("res:injected"))).toBeUndefined()
+    expect(mockGetRedisClient).not.toHaveBeenCalled()
+  })
+
+  it("releases on the INJECTED client, through the compare-and-delete script", async () => {
+    const other = otherClient()
+    const handle = await acquireLockAtKeyOn(other.client, rk("res:injected-rel"))
+
+    await handle?.release()
+
+    expect(other.evalCalls).toHaveLength(1)
+    expect(other.evalCalls[0]?.keys).toEqual([rk("res:injected-rel")])
+    expect(other.evalCalls[0]?.args).toEqual([handle?.value])
+    // The singleton saw neither the eval nor a del.
+    expect(evalCalls).toHaveLength(0)
+    expect(del).not.toHaveBeenCalled()
+    expect(mockGetRedisClient).not.toHaveBeenCalled()
+  })
+
+  it("mints a UUID token per acquisition, never a constant", async () => {
+    const other = otherClient()
+
+    const a = await acquireLockAtKeyOn(other.client, rk("res:tok-a"))
+    const b = await acquireLockAtKeyOn(other.client, rk("res:tok-b"))
+
+    expect(a?.value).toMatch(UUID_V4)
+    expect(b?.value).toMatch(UUID_V4)
+    expect(a?.value).not.toBe(b?.value)
+    expect(a?.value).not.toBe("1")
+  })
+
+  it("returns null when the injected client's key is already held", async () => {
+    const other = otherClient()
+    await acquireLockAtKeyOn(other.client, rk("res:injected-held"))
+
+    expect(
+      await acquireLockAtKeyOn(other.client, rk("res:injected-held")),
+    ).toBeNull()
+  })
+
+  it("honours ttlSeconds on the injected client", async () => {
+    const other = otherClient()
+
+    await acquireLockAtKeyOn(other.client, rk("res:injected-ttl"), 120)
+
+    // The adapter models expiry as `now() + ttl`; a BOUNDED read, not an exact
+    // one, because the two `now()`s differ by a millisecond or two (#517).
+    const ttlMs = other.mem.ttlMs(rk("res:injected-ttl"))
+    expect(ttlMs).not.toBeNull()
+    expect(ttlMs).toBeGreaterThan(0)
+    expect(ttlMs).toBeLessThanOrEqual(120_000)
+  })
+
+  it("uses the SAME release script as both singleton entry points", async () => {
+    const other = otherClient()
+    const injected = await acquireLockAtKeyOn(other.client, rk("res:same"))
+    await injected?.release()
+    const viaKey = await acquireLockAtKey(rk("lock:same"))
+    await viaKey?.release()
+
+    // One release script in the package — the #514 ruling's "no second inline
+    // copy of the Lua" property, now across three entry points.
+    expect(other.evalCalls[0]?.script).toBe(evalCalls[0]?.script)
+  })
+
+  it("acquireLockAtKey still resolves the singleton PER COMMAND after delegating", async () => {
+    // Behaviour preservation. Before F-21's class rollout, `acquireLockAtKey`
+    // called `getRedisClient()` at acquire AND again at release. It now
+    // delegates to the injected form through a lazily-resolving adapter, and
+    // this pins that the resolution timing did not quietly change to
+    // capture-once.
+    const handle = await acquireLockAtKey(rk("res:per-command"))
+    expect(mockGetRedisClient).toHaveBeenCalledTimes(1)
+
+    await handle?.release()
+    expect(mockGetRedisClient).toHaveBeenCalledTimes(2)
   })
 })
