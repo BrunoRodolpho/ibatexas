@@ -37,6 +37,11 @@
 //   - the REAL tool registry (`registerIbatexasToolPacks`) resolved by
 //     `resolveTool(envelope.kind)` — the true dispatch path
 //   - the REAL `WebConfirmChannel.matchToParked`, so a "sim" resumes a park
+//   - THE PER-TURN AMBIENT CONTEXTS (R4-S3). `runCustomerTurn` runs the turn through
+//     `claustrum/turn-context.ts`'s `customer-full` subset — the same module, and the
+//     same declared subset, the production customer ingresses consume. It used to
+//     hand-compose that choreography, which is how it came to omit wire truth
+//     entirely. `r4s3-harness-turn-contexts.e2e.test.ts` pins the consumption.
 //
 // WHAT IS FAKED, and where the boundary sits: ONLY the model and the outermost
 // I/O clients. Stripe (`vi.mock("stripe")`) and Medusa (`vi.stubGlobal("fetch")`)
@@ -61,7 +66,7 @@
 //
 // SCOPE: checkout-turn needs, plus the funnel's L0 tier (LE2-007 — `funnel`,
 // `realResponder`, `scheduleSignal`, `throwingModel`, and the per-turn funnel context
-// `runCustomerTurn` publishes like the production ingresses), plus the opt-in claims
+// the `customer-full` subset publishes), plus the opt-in claims
 // seams (BKL-234 — `withClaims`), plus (BKL-103) an optional `handoff` port so an
 // ESCALATE-ing turn can drive the AUT-017 park seam. No speculative ports, no
 // fixtures for other intent kinds — a kind's own fixtures live in its test file
@@ -117,9 +122,7 @@ import { createSafeUnknownGate } from "../claustrum/safe-unknown-gate.js";
 import { createIbatexasPromptComposer } from "../claustrum/prompts/ibatexas-prompts.js";
 import { createIbatexasResolver } from "../claustrum/ibatexas-resolver.js";
 import {
-  closeFunnelTurn,
   createParseFunnel,
-  openFunnelTurn,
   type FunnelParseMemoSeam,
   type FunnelPlannerSeam,
   type FunnelResponderSeam,
@@ -136,7 +139,10 @@ import { registerWorkflowScopedTools } from "../tools/register-workflow-scoped-t
 import type { WorkflowRuntime } from "../claustrum/workflow/workflow-runtime.js";
 import { installWorkflowRuntime } from "../claustrum/workflow/workflow-install.js";
 import { closeWorkflowTurn } from "../claustrum/workflow/workflow-trace.js";
-import { beginWorkflowTurn } from "../claustrum/workflow/workflow-turn.js";
+// R4-S3 — the per-turn AMBIENT CONTEXT choreography, consumed rather than mirrored.
+// See `runCustomerTurn` for why this harness is a consumer of the module the
+// production customer ingresses consume.
+import { runTurnWithContexts } from "../claustrum/turn-context.js";
 
 /** Fixed instant every park is stamped with, so park shapes are deterministic. */
 export const HARNESS_NOW = "2026-07-25T12:00:00.000Z";
@@ -1065,10 +1071,11 @@ export async function runCustomerTurn(
      * pre-existing caller is byte-identical.
      *
      * It is threaded to all THREE places the production ingresses thread it —
-     * the inbound message, the Capsule, and `beginWorkflowTurn` — because they
-     * are read by different layers and agreeing on two of them is how a
-     * WhatsApp workflow activity ends up adjudicated against web rules
-     * (`activityIdentityBase`'s own header says so).
+     * the inbound message, the Capsule, and the workflow turn binding (now via
+     * `runTurnWithContexts`, see below) — because they are read by different
+     * layers and agreeing on two of them is how a WhatsApp workflow activity ends
+     * up adjudicated against web rules (`activityIdentityBase`'s own header says
+     * so).
      *
      * The Capsule's `sessionKey` is channel-scoped to match, but note that
      * {@link makeStatefulCustomerSession} still keys its parks on the id IT
@@ -1096,27 +1103,47 @@ export async function runCustomerTurn(
     inbound: message,
   });
   try {
-    // LE2-007 — publish the turn's FUNNEL CONTEXT exactly as the production customer
-    // ingresses do (routes/chat.ts, routes/whatsapp-webhook.ts): the confirm-window
-    // fact read from the authoritative `capsule.loadedSession`, keyed on this turn's
-    // id. Inlined here because importing the route would drag the whole
-    // composition root into a unit test (the ingress is the one production seam
-    // R1-S2 did NOT extract — `composeCustomerConductor` composes the conductor,
-    // not the per-turn context publication around `handleTurn`) — and it is what
-    // makes the FE-D32 confirm-window gate reachable through the REAL
-    // seam instead of a synthetic probe. Harmless when no funnel is wired: nothing
-    // reads the context.
-    openFunnelTurn(capsule.turnId, {
-      confirmWindowOpen:
-        (capsule.loadedSession?.pendingConfirmations?.length ?? 0) > 0,
+    // ── THE TURN, inside the customer plane's DECLARED per-turn CONTEXT SUBSET ──
+    //
+    // R4-S3 — this harness is a CONSUMER of ../claustrum/turn-context.ts, not a
+    // fourth hand-composition of it. That module owns which contexts a customer
+    // ingress opens (`customer-full` = the funnel's per-turn context + wire truth +
+    // the workflow turn binding), their nesting, their close ordering, and the ONE
+    // spelling of the confirm-window derivation — so the fact this harness feeds it
+    // is the raw `capsule.loadedSession` park list, not a derived boolean. Before
+    // this slice the block below re-stated all of that by hand, which is how the
+    // harness could (and did) diverge from the ingresses it claims to stand in for.
+    //
+    // Why the harness could not just call the route: importing an ingress would drag
+    // the whole composition root into a unit test. R1-S2 extracted the CONDUCTOR
+    // composition (`composeCustomerConductor`) and R4-S2 extracted what is left —
+    // the per-turn context choreography around `handleTurn` — into an import-pure
+    // module, so both halves of "what an ingress does" are now reachable without any
+    // infrastructure, and this driver is production's second adapter for both.
+    //
+    // LE2-007 — the funnel publish is what makes the FE-D32 confirm-window gate
+    // reachable through the REAL seam instead of a synthetic probe: L0 reads the
+    // context keyed on THIS turn's id (funnel-tier.ts's `claim`), and an
+    // unpublished context is FAIL-CLOSED ("nobody told us"), never "no park".
+    //
+    // LE2-021 — the workflow binding is the ASYNC CALL TREE's, not the module's, so
+    // a caller driving two turns concurrently gets two bindings; `channel` reaches
+    // real guards through it (`canCheckout`), which is why it is threaded and not
+    // hardcoded.
+    //
+    // WIRE TRUTH is the one context this driver never armed by hand, and consuming
+    // the declared subset arms it. Measured inert for the existing suites (R4-S3):
+    // capture is relay-side (`@claustrum/openai` → Ollama) and every harness model
+    // is scripted, so nothing is ever pushed into the context and `sealWireCall`
+    // drains an empty bucket. Arming it is the correct direction regardless — NOT
+    // wrapping is the lossy option, not the neutral one (wire-capture.ts:25-26).
+    const turn = await runTurnWithContexts({
+      subset: "customer-full",
+      turnId: capsule.turnId,
+      channel,
+      pendingConfirmations: capsule.loadedSession?.pendingConfirmations,
+      thunk: () => handleTurn(capsule, message),
     });
-    // LE2-021 — bind the turn for the workflow decision observer, wrapping
-    // `handleTurn` exactly as the production ingresses do (routes/chat.ts,
-    // routes/whatsapp-webhook.ts). The binding is the async call tree's, not the
-    // module's, so a caller driving two turns concurrently gets two bindings.
-    const turn = await beginWorkflowTurn({ turnId: capsule.turnId, channel }, () =>
-      handleTurn(capsule, message),
-    );
     return {
       decision: turn.decision as Decision,
       response: turn.response.text,
@@ -1125,7 +1152,9 @@ export async function runCustomerTurn(
       turnId: capsule.turnId,
     };
   } finally {
-    closeFunnelTurn(capsule.turnId);
+    // The funnel close is the MODULE's now (its own `finally`, which settles before
+    // this one) — the ordering that is load-bearing, funnel close BEFORE
+    // `closeCapsule`, still holds. See turn-context.ts's LIFETIME NOTE.
     await harness.conductor.closeCapsule(capsule);
   }
 }
