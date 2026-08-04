@@ -54,7 +54,7 @@ import { getConductor } from "../claustrum-bootstrap.js";
 import {
   triageParkReply,
   unparkParks,
-  webCustomerParkTriagePolicy,
+  customerParkTriagePolicy,
 } from "../claustrum/park-reply-triage.js";
 import {
   classifyTurnDelivery,
@@ -444,7 +444,9 @@ async function runConductorTurn(params: {
       // falls through to the unchanged path below.
       //
       // The DECISION is owned by ../claustrum/park-reply-triage.ts; this ingress
-      // declares the WEB-CUSTOMER policy and keeps only its own delivery. That
+      // declares the CUSTOMER plane policy (as the `chat` surface — the customer
+      // WhatsApp ingress declares the SAME policy) and keeps only its own
+      // delivery. That
       // policy has no freshness partition (customer parks carry no TTL — see
       // web-confirm-channel.ts), so the branches engage on exactly the parks the
       // WebConfirmChannel matcher itself can still resume, and no stale-resume
@@ -457,7 +459,7 @@ async function runConductorTurn(params: {
         text: message,
         pendingConfirmations: parked,
         nowIso: inbound.receivedAt,
-        policy: webCustomerParkTriagePolicy(),
+        policy: customerParkTriagePolicy(),
       });
       if (triage.kind === "skip-with-reply") {
         // The verdict's `unpark` is LOAD-BEARING: the decline acknowledgment

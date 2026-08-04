@@ -69,9 +69,11 @@ export class WebConfirmChannel extends WebChannel {
 // and these are the WEB-plane mirrors of those two surfaces.
 //
 // R4-S1 — both selectors, their pt-BR copy, and the whole triage sequence they
-// belong to now live in ./park-reply-triage.ts as the WEB-CUSTOMER plane policy
-// (`webCustomerParkTriagePolicy`): no freshness partition, the narrower
-// soft-affirmative-ONLY admission, customer-register copy. The two names below are
+// belong to now live in ./park-reply-triage.ts as the CUSTOMER plane policy
+// (`customerParkTriagePolicy`, declared by BOTH customer surfaces since the
+// 2026-08-04 mandate wired routes/whatsapp-webhook.ts): no freshness partition,
+// the narrower soft-affirmative-ONLY admission, customer-register copy. The two
+// names below are
 // re-exported unchanged so routes/chat.ts and this driver's suite keep importing
 // from here; routes/chat.ts consumes the VERDICT (`triageParkReply`) directly.
 //

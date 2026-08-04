@@ -25,7 +25,7 @@ import {
   triageParkReply,
   unparkParks,
   WEB_NEGATIVE_DECLINE_ACK_PTBR,
-  webCustomerParkTriagePolicy,
+  customerParkTriagePolicy,
   type ParkTriagePolicy,
 } from "../park-reply-triage.js";
 
@@ -80,7 +80,10 @@ const WHATSAPP_EXCLUDED = excludedKindsForScope("whatsapp");
 const OPS = (): ParkTriagePolicy => opsParkTriagePolicy({ eventPrefix: "ops_chat" });
 const OPS_WA = (): ParkTriagePolicy =>
   opsParkTriagePolicy({ excludedKinds: WHATSAPP_EXCLUDED, eventPrefix: "ops_wa" });
-const WEB = (): ParkTriagePolicy => webCustomerParkTriagePolicy();
+/** The CUSTOMER plane policy. Named `WEB` for the surface these cases were written
+ *  against; since the 2026-08-04 mandate the customer WhatsApp surface declares the
+ *  SAME policy (only its `eventPrefix` differs), so every case below holds for both. */
+const WEB = (): ParkTriagePolicy => customerParkTriagePolicy();
 
 function triage(
   text: string,
@@ -520,8 +523,8 @@ describe("plane policy — the declared adapter config", () => {
     });
   });
 
-  it("the WEB-CUSTOMER policy declares NO freshness, NO stale branch, and soft-ONLY admission", () => {
-    const policy = webCustomerParkTriagePolicy();
+  it("the CUSTOMER plane policy (both customer surfaces) declares NO freshness, NO stale branch, and soft-ONLY admission", () => {
+    const policy = customerParkTriagePolicy();
     expect(policy.freshness).toEqual({ kind: "none" });
     expect(policy.staleResume).toBe(false);
     expect(policy.softAffirmativeAdmission).toBe("soft-only");

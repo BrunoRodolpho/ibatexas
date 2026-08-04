@@ -47,20 +47,48 @@
 //     verb-scope kind exclusion, the stale-resume branch, ops staff-facing pt-BR
 //     copy. The WhatsApp surface additionally passes `excludedKindsForScope
 //     ("whatsapp")` so it never restates or prunes a dashboard-only money park.
-//   - WEB-CUSTOMER ({@link webCustomerParkTriagePolicy}) — no TTL (customer parks
-//     carry no `expiresAt`, so every pending confirmation is live), hence no
-//     stale branch and no kind exclusion, and customer-register pt-BR copy.
+//   - CUSTOMER ({@link customerParkTriagePolicy}) — no TTL (customer parks carry
+//     no `expiresAt`, so every pending confirmation is live), hence no stale
+//     branch and no kind exclusion, and customer-register pt-BR copy.
 // The soft-affirmative ADMISSION rule is a per-plane knob and differs BY DESIGN:
-// ops admits a soft-affirmative-SHAPED reply, web only a soft-affirmative-ONLY
-// one (on the ops plane a staff "ok muda o preço" restating the park is an
-// acceptable prompt for an explicit confirm, whereas silently restating at a
-// customer reads as not having listened — see routes/chat.ts:449-451).
+// ops admits a soft-affirmative-SHAPED reply, the customer plane only a
+// soft-affirmative-ONLY one (on the ops plane a staff "ok muda o preço" restating
+// the park is an acceptable prompt for an explicit confirm, whereas silently
+// restating at a customer reads as not having listened — see routes/chat.ts).
 //
-// NOT WIRED — customer WhatsApp (routes/whatsapp-webhook.ts) runs its turn with
-// NO triage at all: a customer "não" on a parked confirmation still reaches the
-// planner (the BKL-191 re-prompt class). That plane's driver confirms on a bare
-// "ok" BY DESIGN, so wiring it is a behaviour change and an OWNER decision, not a
-// refactor. The opt-out is recorded at that ingress's turn entry.
+// Four SURFACES consume the two planes, and a surface is distinguished ONLY by
+// its `eventPrefix` (plus, for ops-WhatsApp, its `excludedKinds`):
+//   ops_chat  → routes/admin/ops-chat.ts       (OPS policy, no exclusion)
+//   ops_wa    → ops/ops-whatsapp-ingress.ts    (OPS policy, WhatsApp verb scope)
+//   chat      → routes/chat.ts                 (CUSTOMER policy)
+//   whatsapp  → routes/whatsapp-webhook.ts     (CUSTOMER policy)
+//
+// ── THE CUSTOMER-WHATSAPP OPT-OUT, AND ITS CLOSE (2026-08-04) ──────────────
+// R4-S1 extracted this decision and wired three of the four surfaces; customer
+// WhatsApp (routes/whatsapp-webhook.ts) was left OUT with a visible record,
+// because wiring it is a BEHAVIOUR change on the highest-traffic plane and so an
+// owner decision rather than a refactor. Two behaviours were named in that
+// record: a customer "não" on a parked confirmation reached the PLANNER (the
+// BKL-191 re-prompt class, still open there), and a bare soft "ok" already
+// EXECUTED the park because `@claustrum/channel-whatsapp`'s `matchToParked`
+// treats "ok" as an affirmative BY DESIGN (its AFFIRMATIVE_RE is
+// `yes|yep|sim|sí|si|ok|okay|confirm|confirmar`).
+//
+// The owner MANDATED the wiring on 2026-08-04, so the opt-out is CLOSED and the
+// surface declares {@link customerParkTriagePolicy} like routes/chat.ts. The
+// resulting change is stated plainly because it is the whole point of the ruling:
+// a bare "ok"/"pode"/"beleza" on a parked customer-WhatsApp confirmation NO
+// LONGER executes it — the ingress restates and asks for an explicit "sim",
+// which the channel driver then resumes through the unchanged adjudicated path.
+// Note the WEB customer surface was never opted out (it has consumed this module
+// since BKL-212) and is untouched by the mandate.
+//
+// STILL NOT WIRED on the customer plane — the STALE-RESUME branch, on BOTH
+// surfaces, and not by omission: a customer park carries no `expiresAt` at all
+// (`opsConfirmParkExpiresAt` returns a value only for a `system:`-prefixed ops
+// session), so there is no expiry to assert honestly and no `staleResumeNotice`
+// copy in customer register to assert it with. Giving customer parks a TTL would
+// change how long they LIVE, which the mandate explicitly excluded.
 
 import type {
   ParkedEnvelope,
@@ -383,15 +411,24 @@ function buildSoftAffirmativeRestateNotice(userPrompt: string): string {
 export const OPS_NEGATIVE_DECLINE_ACK_PTBR =
   "Ok, cancelei a ação pendente — nada foi executado.";
 
-/** pt-BR acknowledgment for a park the customer declined (web mirror of
- *  {@link OPS_NEGATIVE_DECLINE_ACK_PTBR}, customer register). */
+/**
+ * pt-BR acknowledgment for a park the CUSTOMER declined (the customer-register
+ * mirror of {@link OPS_NEGATIVE_DECLINE_ACK_PTBR}).
+ *
+ * The `WEB_` prefix is HISTORICAL, not a scope: this is the CUSTOMER plane's copy
+ * and both customer surfaces speak it (web since BKL-212, WhatsApp since the
+ * 2026-08-04 mandate). The name is kept because it is part of the pre-R4-S1 API
+ * `web-confirm-channel.ts` re-exports for its own suite.
+ */
 export const WEB_NEGATIVE_DECLINE_ACK_PTBR =
   "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.";
 
 const WEB_SOFT_AFFIRM_RESTATE_PREFIX_PTBR = "Só confirmando — você quer que eu faça ";
 const WEB_SOFT_AFFIRM_RESTATE_SUFFIX_PTBR = '? Responda "sim" para eu seguir.';
 
-/** Build the customer-web soft-affirmative restatement from the park's prompt. */
+/** Build the CUSTOMER-plane soft-affirmative restatement from the park's prompt
+ *  (both customer surfaces; the `Web` in the name is historical — see
+ *  {@link WEB_NEGATIVE_DECLINE_ACK_PTBR}). */
 function buildWebSoftAffirmativeRestateNotice(userPrompt: string): string {
   return `${WEB_SOFT_AFFIRM_RESTATE_PREFIX_PTBR}"${userPrompt}"${WEB_SOFT_AFFIRM_RESTATE_SUFFIX_PTBR}`;
 }
@@ -446,7 +483,7 @@ export interface ParkTriagePolicy {
 
 const EMPTY_EXCLUDED_KINDS: ReadonlySet<string> = new Set<string>();
 
-/** The web-customer plane has NO freshness clock (no TTL to compare against), so
+/** The customer plane has NO freshness clock (no TTL to compare against), so
  *  its two named selectors take no `nowIso`; the branches never read the clock
  *  under a `none`-freshness policy, and this placeholder makes that explicit at
  *  the call site instead of threading a value nothing can use. */
@@ -482,15 +519,25 @@ export function opsParkTriagePolicy(input?: {
 }
 
 /**
- * The WEB-CUSTOMER plane policy: no TTL (hence no stale branch), no kind
- * exclusion, the narrower soft-affirmative-ONLY admission, and customer-register
- * pt-BR copy. Customer parks carry no `expiresAt`
- * (`opsConfirmParkExpiresAt` stamps ops sessions only), so every pending
- * confirmation is live — the same premise `WebConfirmChannel.matchToParked` is
- * built on. A TTL filter here would silently disable the niceties for older parks
- * the matcher itself still resumes, which is exactly the divergence to avoid.
+ * The CUSTOMER plane policy — declared by BOTH customer surfaces (`routes/chat.ts`
+ * as `chat`, `routes/whatsapp-webhook.ts` as `whatsapp`): no TTL (hence no stale
+ * branch), no kind exclusion, the narrower soft-affirmative-ONLY admission, and
+ * customer-register pt-BR copy.
+ *
+ * Customer parks carry no `expiresAt` (`opsConfirmParkExpiresAt` returns a value
+ * ONLY for a `system:`-prefixed ops session), so every pending confirmation is
+ * live — the same premise `WebConfirmChannel.matchToParked` is built on. A TTL
+ * filter here would silently disable the niceties for older parks the matcher
+ * itself still resumes, which is exactly the divergence to avoid, and it would
+ * change how long a customer park effectively lives.
+ *
+ * The two customer surfaces differ ONLY in `eventPrefix`, deliberately: the plane
+ * difference that WOULD have justified a second builder — WhatsApp's driver
+ * treating a bare "ok" as an executing affirmative — is precisely what the
+ * 2026-08-04 mandate directed this triage to intercept (see the module header),
+ * so it is answered by wiring the SAME policy, not by weakening it for one surface.
  */
-export function webCustomerParkTriagePolicy(input?: {
+export function customerParkTriagePolicy(input?: {
   readonly eventPrefix?: string;
 }): ParkTriagePolicy {
   return {
@@ -911,7 +958,7 @@ export function webNegativeDeclineTarget(
     text,
     pendingConfirmations,
     WEB_CLOCKLESS_NOW,
-    webCustomerParkTriagePolicy(),
+    customerParkTriagePolicy(),
   );
 }
 
@@ -933,6 +980,6 @@ export function webSoftAffirmativeRestateNotice(
     text,
     pendingConfirmations,
     WEB_CLOCKLESS_NOW,
-    webCustomerParkTriagePolicy(),
+    customerParkTriagePolicy(),
   );
 }

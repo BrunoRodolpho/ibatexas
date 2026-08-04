@@ -1118,3 +1118,258 @@ describe("handleMessageAsync — ops-actor fork (BKL-086)", () => {
     expect(forkOrder).toBeLessThan(resolveOrder);
   }, 15000);
 });
+
+// ── Phase 6 — the customer-WhatsApp park-reply triage (the R4-S1 opt-out closes) ──
+//
+// The triage runs at the INGRESS, BEFORE handleTurn, so this route suite is the
+// only seam that can measure it: `runConductorTurn` is module-private and the
+// customer e2e harness drives `handleTurn` directly, i.e. it enters BELOW the
+// branch under test. These drive the real Fastify webhook exactly as the web
+// mirror (routes/__tests__/chat-route.test.ts, "BKL-212 parked-confirmation
+// niceties") drives the real chat route.
+//
+// `mockHandleTurn` is the load-bearing witness throughout: a triage branch SKIPS
+// the turn, so "the model was never called" is what distinguishes an answered
+// reply from one that fell through to the loop.
+describe("handleMessageAsync — park-reply triage (Phase 6, customer plane)", () => {
+  const PARK_PROMPT = "cancelar o pedido 4242";
+  const INTENT_HASH = "abc123def456";
+  const DECLINE_ACK =
+    "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.";
+  let mockUnpark: ReturnType<typeof vi.fn>;
+
+  /** Open the capsule with ONE parked confirmation in the CUSTOMER-plane shape:
+   *  no `expiresAt` (only a `system:`-prefixed ops session gets one). `parkedAt`
+   *  is a parameter so the no-TTL decision itself can be exercised. */
+  function withPark(parkedAt: string = new Date().toISOString()): void {
+    mockGetConductor.mockReturnValue({
+      openCapsule: vi.fn().mockResolvedValue({
+        id: "capsule-1",
+        turnId: "turn-park",
+        loadedSession: {
+          id: "whatsapp:cus-1",
+          pendingConfirmations: [
+            {
+              envelope: { kind: "order.cancel", intentHash: INTENT_HASH },
+              confirmationToken: "tok-1",
+              userPrompt: PARK_PROMPT,
+              parkedAt,
+            },
+          ],
+        },
+        session: { unpark: mockUnpark },
+      }),
+      closeCapsule: vi.fn().mockResolvedValue(undefined),
+    });
+  }
+
+  /** Open the capsule with NO parks (the pre-Phase-6 default shape). */
+  function withoutPark(): void {
+    mockGetConductor.mockReturnValue({
+      openCapsule: vi.fn().mockResolvedValue({
+        id: "capsule-1",
+        turnId: "turn-nopark",
+        loadedSession: { id: "whatsapp:cus-1", pendingConfirmations: [] },
+        session: { unpark: mockUnpark },
+      }),
+      closeCapsule: vi.fn().mockResolvedValue(undefined),
+    });
+  }
+
+  /** Drive ONE inbound WhatsApp message all the way through the async pipeline.
+   *
+   *  The turn input is the LAST USER message of the loaded session history (the
+   *  route re-reads the thread rather than trusting the raw webhook body), so the
+   *  history is seeded with `body` as that message. A trailing assistant message
+   *  keeps the post-lock retry a no-op — the suite-wide convention — so a single
+   *  inbound produces exactly ONE turn path to assert on. */
+  async function send(sid: string, body: string): Promise<void> {
+    mockLoadSession.mockResolvedValue([
+      { role: "user", content: body },
+      { role: "assistant", content: "resposta anterior" },
+    ]);
+    const app = await buildTestServer();
+    const res = await post(
+      app,
+      `MessageSid=${sid}&From=whatsapp%3A%2B5511999999999&Body=${encodeURIComponent(body)}`,
+    );
+    expect(res.statusCode).toBe(200);
+    // The lock release is the last thing the turn path does, triage or not.
+    await vi.waitFor(() => {
+      expect(mockReleaseAgentLock).toHaveBeenCalled();
+    }, { timeout: 8000 });
+  }
+
+  /** The text of the reply that reached Twilio, or undefined. */
+  function sentText(): string | undefined {
+    const call = mockSendText.mock.calls.find(([to]) => to === `whatsapp:${PHONE}`);
+    return (call?.[1] as { text?: string } | undefined)?.text;
+  }
+
+  beforeEach(() => {
+    mockTryDebounce.mockResolvedValue(true); // become the runner → reach the turn path
+    mockUnpark = vi.fn().mockResolvedValue(undefined);
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "resposta do modelo" },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
+  });
+
+  // (a) SOFT AFFIRMATIVE → restate, park SURVIVES.
+  it("(a) a bare soft affirmative (\"pode\") RESTATES the park, keeps it, and never runs the turn", async () => {
+    withPark();
+    await send("SM_SOFT", "pode");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Money-safety: a soft affirmative must never execute AND never unpark — the
+    // park survives so a follow-up "sim" still runs the adjudicated resume.
+    expect(mockUnpark).not.toHaveBeenCalled();
+    const text = sentText();
+    expect(text).toContain("Só confirmando");
+    expect(text).toContain(PARK_PROMPT);
+    expect(text).toContain('"sim"');
+    // A deterministic notice IS a delivered reply: persisted to the thread.
+    expect(mockAppendMessages).toHaveBeenCalledWith(
+      "sess-1",
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: expect.stringContaining("Só confirmando"),
+        }),
+      ]),
+      true,
+      expect.objectContaining({ channel: "whatsapp" }),
+    );
+  }, 15000);
+
+  // (a′) THE MANDATE'S BEHAVIOUR CHANGE, pinned. `@claustrum/channel-whatsapp`'s
+  // matchToParked lists "ok" in its AFFIRMATIVE_RE, so BEFORE this wiring a bare
+  // "ok" reached the loop and EXECUTED the parked action. It must now restate.
+  it.each(["ok", "beleza", "OK!", "claro"])(
+    "(a′) soft variant %j also restates instead of executing (the WhatsApp driver would have confirmed it)",
+    async (word) => {
+      withPark();
+      await send(`SM_SOFT_${word.replace(/\W/g, "")}`, word);
+
+      expect(mockHandleTurn).not.toHaveBeenCalled();
+      expect(mockUnpark).not.toHaveBeenCalled();
+      expect(sentText()).toContain("Só confirmando");
+    },
+    15000,
+  );
+
+  // (b) PURE NEGATIVE → decline + unpark + acknowledgment.
+  it("(b) a pure negative (\"não\") DECLINES the park: unparked before the turn, deterministic ACK, turn skipped", async () => {
+    withPark();
+    await send("SM_NEG", "não");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Unparked BEFORE the turn, keyed on the parked envelope's intentHash.
+    expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
+    expect(sentText()).toBe(DECLINE_ACK);
+  }, 15000);
+
+  // (c) STALE — the config decision itself, pinned as a POSITIVE assertion.
+  //
+  // There is no stale branch on this plane and that is a DECISION, not a gap: a
+  // customer park carries no `expiresAt` (`opsConfirmParkExpiresAt` returns a value
+  // only for a `system:`-prefixed ops session), so the customer policy declares
+  // `freshness: none` and every pending confirmation is live however old it is.
+  // This drives a park aged FAR past the ops 15-minute confirm TTL and asserts it
+  // is still treated as LIVE — no expiry notice, and the branches still engage. A
+  // future TTL on the customer plane (which would change how long a park lives)
+  // reds this test.
+  it("(c) a park aged past the OPS confirm TTL is still LIVE on the customer plane — no expiry notice", async () => {
+    const dayOld = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    withPark(dayOld);
+    await send("SM_STALE", "não");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Declined as a LIVE park (not reported expired, not left inert).
+    expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
+    const text = sentText();
+    expect(text).toBe(DECLINE_ACK);
+    expect(text).not.toContain("expirou");
+  }, 15000);
+
+  // (d) CONTROL — an explicit confirm must NOT be intercepted.
+  it("(d) CONTROL: an explicit \"sim\" is NOT intercepted — the normal confirm-resume turn runs, park untouched", async () => {
+    withPark();
+    await send("SM_SIM", "sim");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    // The conductor owns the resume unpark — the ingress must not pre-empt it.
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(sentText()).toBe("resposta do modelo");
+  }, 15000);
+
+  // (d′) CONTROL — every other shape the triage must let through.
+  it.each([
+    ["a soft yes carrying NEW content", "ok mas manda às 19h"],
+    ["a MIXED affirmative + negative (ambiguous, money-safe)", "não, pode deixar"],
+    ["an ordinary utterance", "quero uma costela"],
+  ])("(d′) CONTROL: %s runs the normal turn with the park untouched", async (_label, body) => {
+    withPark();
+    await send(`SM_CTL_${body.length}`, body);
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(sentText()).toBe("resposta do modelo");
+  }, 15000);
+
+  // (e) CONTROL — no parks at all: the loop runs untouched.
+  it.each(["não", "ok", "sim", "quero uma costela"])(
+    "(e) CONTROL: with NO park, %j takes the normal path",
+    async (body) => {
+      withoutPark();
+      await send(`SM_FREE_${body.length}`, body);
+
+      expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+      expect(mockUnpark).not.toHaveBeenCalled();
+      expect(sentText()).toBe("resposta do modelo");
+    },
+    15000,
+  );
+
+  // FAIL-HONEST — the acknowledgment asserts a cancellation, so it may only be
+  // sent once the unpark STUCK.
+  it("an unpark FAILURE falls through to the normal loop instead of claiming a cancellation", async () => {
+    withPark();
+    mockUnpark.mockRejectedValue(new Error("redis down"));
+    await send("SM_UNPARKFAIL", "não");
+
+    // The triage DID decide to decline and DID attempt the unpark — this is what
+    // separates the fail-honest fallthrough from an ingress with no triage at all
+    // (which never touches the store), so the assertion is not satisfied by the
+    // unwired baseline.
+    expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
+    // The park did NOT clear → we must not acknowledge; run the loop, where
+    // claustrum's own deny path still unparks.
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(sentText()).toBe("resposta do modelo");
+    expect(sentText()).not.toBe(DECLINE_ACK);
+  }, 15000);
+
+  // ── F-3 (recorded pairing) — a NEGATIVE carrying a SAFETY MARKER ────────────
+  // MEASURED, not chosen: `isPureNegativeReplyText("não, sou celíaco")` is true
+  // (a negative token, no affirmative/hash/defer token), so the triage answers it
+  // pre-turn and the celiac marker never reaches the planner's §O#9 closed-taxonomy
+  // safety routing. This asserts the MEASURED behaviour and is the pin an owner
+  // ruling would flip; the same hazard exists identically on the customer WEB
+  // surface, which has shipped this branch since BKL-212.
+  it("F-3: a negative carrying a SAFETY MARKER is answered by the triage — §O#9 never sees it (measured)", async () => {
+    withPark();
+    await send("SM_CELIAC", "não, sou celíaco");
+
+    // The triage answered pre-turn: the planner (and therefore §O#9) never ran.
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
+    const text = sentText();
+    expect(text).toBe(DECLINE_ACK);
+    // The reply speaks ONLY to the declined park — it makes no allergen/safety
+    // claim, so nothing unsound is asserted; the marker is simply unanswered.
+    expect(text).not.toContain("celíaco");
+    expect(text).not.toContain("glúten");
+  }, 15000);
+});
