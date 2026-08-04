@@ -18,6 +18,8 @@
 //      - `pushToDlq` was called with `intent.defer.resume`.
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing"
+import { rk } from "@ibatexas/tools"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import type { PaymentStatusChangedEvent } from "@ibatexas/types"
 
@@ -31,12 +33,6 @@ const mockSentryWithScope = vi.hoisted(() => vi.fn())
 const mockSentryCaptureMessage = vi.hoisted(() => vi.fn())
 const mockSentryCaptureException = vi.hoisted(() => vi.fn())
 
-interface Entry {
-  value: string
-  ttl: number
-}
-const store = new Map<string, Entry>()
-
 // Per-key throw spec. If `throwOnGet` returns true for a key, that get()
 // call throws. We use a function so the test can vary behavior per attempt
 // (e.g. throw on first 3 attempts, succeed on 4th — to verify retry).
@@ -46,78 +42,40 @@ const getAttempts = new Map<string, number>()
 const getCallLog: { key: string; threw: boolean }[] = []
 
 function resetTestState(): void {
-  store.clear()
   getAttempts.clear()
   getCallLog.length = 0
   throwOnGet = () => false
 }
 
-function makeRedisStub(): Record<string, unknown> {
-  return {
-    async get(key: string): Promise<string | null> {
-      const attempt = (getAttempts.get(key) ?? 0) + 1
-      getAttempts.set(key, attempt)
-      const willThrow = throwOnGet(key, attempt)
-      getCallLog.push({ key, threw: willThrow })
-      if (willThrow) {
-        throw new Error(`redis IOError (simulated, attempt=${attempt})`)
-      }
-      const e = store.get(key)
-      return e ? e.value : null
-    },
-    async set(
-      key: string,
-      value: string,
-      opts?: { NX?: boolean; EX?: number },
-    ): Promise<string | null> {
-      const exists = store.has(key)
-      if (opts?.NX && exists) return null
-      store.set(key, { value, ttl: opts?.EX ?? -1 })
-      return "OK"
-    },
-    async del(key: string): Promise<number> {
-      return store.delete(key) ? 1 : 0
-    },
-    async ttl(key: string): Promise<number> {
-      return store.get(key)?.ttl ?? -2
-    },
-    async incr(key: string): Promise<number> {
-      const e = store.get(key)
-      const n = e ? Number.parseInt(e.value, 10) + 1 : 1
-      store.set(key, { value: String(n), ttl: e?.ttl ?? -1 })
-      return n
-    },
-    async decr(key: string): Promise<number> {
-      const e = store.get(key)
-      const n = e ? Number.parseInt(e.value, 10) - 1 : -1
-      store.set(key, { value: String(n), ttl: e?.ttl ?? -1 })
-      return n
-    },
-    async expire(key: string, seconds: number): Promise<number> {
-      const e = store.get(key)
-      if (!e) return 0
-      store.set(key, { value: e.value, ttl: seconds })
-      return 1
-    },
-    scanIterator(opts: { MATCH?: string; COUNT?: number }) {
-      const pattern = opts.MATCH ?? "*"
-      const re = new RegExp(
-        "^" +
-          pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") +
-          "$",
-      )
-      const keys = [...store.keys()].filter((k) => re.test(k))
-      return (async function* () {
-        for (const k of keys) yield k
-      })()
-    },
-    async lPush(_k: string, _v: string): Promise<number> {
-      return 1
-    },
-  }
-}
+let redis: InMemoryRedis
 
-let redisStub: Record<string, unknown> = makeRedisStub()
+/**
+ * R5-S12 — the fault injector is now a SPY-DELEGATE over the canonical adapter
+ * rather than a hand-rolled keyspace. It decides whether THIS `get` should
+ * throw, records the attempt, and otherwise forwards to the adapter's real
+ * `get`. Every other command goes straight through untouched, so the retry
+ * path is exercised against real SET/DEL/INCR/SCAN semantics instead of a
+ * Map the test also wrote.
+ */
+function withGetFaults(client: InMemoryRedis["client"]): InMemoryRedis["client"] {
+  return new Proxy(client, {
+    get(target, prop) {
+      if (prop !== "get") return Reflect.get(target, prop) as unknown
+      return async (key: string): Promise<string | null> => {
+        const attempt = (getAttempts.get(key) ?? 0) + 1
+        getAttempts.set(key, attempt)
+        const willThrow = throwOnGet(key, attempt)
+        getCallLog.push({ key, threw: willThrow })
+        if (willThrow) {
+          throw new Error(`redis IOError (simulated, attempt=${attempt})`)
+        }
+        return (
+          target as unknown as { get(k: string): Promise<string | null> }
+        ).get(key)
+      }
+    },
+  }) as InMemoryRedis["client"]
+}
 const pushToDlqSpy = vi.hoisted(() => vi.fn(async () => undefined))
 
 vi.mock("@ibatexas/nats-client", () => ({
@@ -125,10 +83,11 @@ vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
 }))
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => redisStub),
-  rk: (key: string) => `test:${key}`,
-}))
+const mockGetRedisClient = vi.hoisted(() => vi.fn())
+vi.mock("@ibatexas/tools", async (orig) => {
+  const real = await orig<typeof import("@ibatexas/tools")>()
+  return { ...real, getRedisClient: mockGetRedisClient }
+})
 
 vi.mock("@adjudicate/core/kernel", async () => {
   const real = await vi.importActual<typeof import("@adjudicate/core/kernel")>(
@@ -151,14 +110,15 @@ vi.mock("../subscribers/dlq.js", () => ({
   pushToDlq: pushToDlqSpy,
 }))
 
-function parkEnvelope(
+async function parkEnvelope(
   sessionId: string,
   envelope: IntentEnvelope,
   signal: string,
   ttlSeconds = 900,
-): void {
-  store.set(`test:defer:pending:${sessionId}`, {
-    value: JSON.stringify({
+): Promise<void> {
+  await redis.client.set(
+    rk(`defer:pending:${sessionId}`),
+    JSON.stringify({
       envelope: {
         ...envelope,
         actorPrincipal: envelope.actor.principal,
@@ -166,8 +126,8 @@ function parkEnvelope(
       signal,
       parkedAt: "2025-01-01T00:00:00.000Z",
     }),
-    ttl: ttlSeconds,
-  })
+    { EX: ttlSeconds } as { EX: number },
+  )
 }
 
 function paymentConfirmed(): PaymentStatusChangedEvent {
@@ -186,7 +146,8 @@ describe("P1-D-VERIFY — defer-resolver resumedKey GET is robust to Redis IOErr
   beforeEach(() => {
     resetTestState()
     vi.clearAllMocks()
-    redisStub = makeRedisStub()
+    redis = createInMemoryRedis()
+    mockGetRedisClient.mockImplementation(async () => redis.client)
     mockSentryWithScope.mockImplementation((cb: (s: unknown) => void) =>
       cb({ setTag: vi.fn(), setContext: vi.fn(), setLevel: vi.fn() }),
     )
@@ -203,7 +164,7 @@ describe("P1-D-VERIFY — defer-resolver resumedKey GET is robust to Redis IOErr
       nonce: "p1d-nonce-1",
     })
 
-    parkEnvelope(sessionId, envelope, "payment.confirmed")
+    await parkEnvelope(sessionId, envelope, "payment.confirmed")
 
     // Configure the stub: any GET against a key containing "defer:resumed:"
     // throws — that's the line we're verifying.
@@ -215,7 +176,9 @@ describe("P1-D-VERIFY — defer-resolver resumedKey GET is robust to Redis IOErr
     const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
       await import("../subscribers/defer-resolver.js")
     setResumeIntentDispatcher(dispatcher)
-    await startDeferResolverSubscriber()
+    await startDeferResolverSubscriber(undefined, {
+      redis: withGetFaults(redis.client),
+    })
     const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as unknown as [
       string,
       (payload: unknown) => Promise<void>,
@@ -257,7 +220,7 @@ describe("P1-D-VERIFY — defer-resolver resumedKey GET is robust to Redis IOErr
       nonce: "p1d-nonce-2",
     })
 
-    parkEnvelope(sessionId, envelope, "payment.confirmed")
+    await parkEnvelope(sessionId, envelope, "payment.confirmed")
 
     // Throw on attempt 1, succeed afterwards. The retry should recover.
     throwOnGet = (key, attempt) =>
@@ -269,7 +232,9 @@ describe("P1-D-VERIFY — defer-resolver resumedKey GET is robust to Redis IOErr
     const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
       await import("../subscribers/defer-resolver.js")
     setResumeIntentDispatcher(dispatcher)
-    await startDeferResolverSubscriber()
+    await startDeferResolverSubscriber(undefined, {
+      redis: withGetFaults(redis.client),
+    })
     const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as unknown as [
       string,
       (payload: unknown) => Promise<void>,

@@ -232,4 +232,79 @@ describe("defer roundtrip (park → wire event → dispatch)", () => {
 
     setResumeIntentDispatcher(null)
   })
+
+  // ── The class (i-b) bound, stated rather than left invisible ──────────────
+  //
+  // R5-S12 measured what the census (class (i-b)) asserts from the other side.
+  // The resolver's success path DOES issue an `eval` — the compare-and-delete
+  // release of the `defer:resuming:*` mutex. The retired double had no `eval`
+  // at all, so the call threw `is not a function`; the canonical adapter throws
+  // `LuaAtomicityNotEmulated` (W4 RULE 3). BOTH are swallowed by
+  // `releaseDeferResumingLock`'s documented best-effort catch, so the marker is
+  // never cleared and the suite is green either way. The migration is therefore
+  // behaviour-preserving here, and it does NOT close the ownership invariant —
+  // that stays owner-gated on the real-Redis decision.
+  //
+  // This case exists so that bound is a tested statement instead of a silence.
+  // It also reds if anyone ever teaches the adapter to emulate EVAL, which is
+  // the W4 RULE 3 theater the adapter refuses on purpose.
+  it("[class (i-b) bound] the release EVAL is refused, so the resuming marker is NEVER cleared", async () => {
+    const sessionId = "sess_evalbound"
+    const envelope = buildEnvelope({
+      kind: "order.confirm",
+      payload: { orderId: "order_42", amountInCentavos: 8900 },
+      actor: { principal: "user", sessionId },
+      taint: "UNTRUSTED",
+      nonce: "evalbound-nonce-1",
+    })
+    await parkEnvelope(sessionId, envelope, "payment.confirmed")
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
+
+    const evalAttempts: unknown[][] = []
+    const probe = new Proxy(redis.client, {
+      get(target, prop) {
+        if (prop === "eval") {
+          return (...args: unknown[]) => {
+            evalAttempts.push(args)
+            // Delegate: the adapter's own refusal, not a stand-in for it.
+            return (
+              target as unknown as Record<string, (...a: unknown[]) => unknown>
+            ).eval(...args)
+          }
+        }
+        return Reflect.get(target, prop) as unknown
+      },
+    })
+
+    const dispatcher = vi.fn(async () => undefined)
+    const { setResumeIntentDispatcher, startDeferResolverSubscriber } =
+      await import("../subscribers/defer-resolver.js")
+    setResumeIntentDispatcher(dispatcher)
+    await startDeferResolverSubscriber(undefined, { redis: probe })
+    const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as unknown as [
+      string,
+      (payload: unknown) => Promise<void>,
+    ]
+    await callback(paymentConfirmed())
+
+    // The resume really did succeed...
+    expect(dispatcher).toHaveBeenCalledOnce()
+    // ...and it really did attempt exactly one compare-and-delete release.
+    expect(evalAttempts).toHaveLength(1)
+
+    // Which was refused — so the mutex is still held. This is the hole.
+    const resuming = redis.keys().filter((k) => k.startsWith(rk("defer:resuming:")))
+    expect(resuming).toHaveLength(1)
+
+    // The three optional DeferRedis commands are genuinely exercised on this
+    // path (incr/expire on the cycle counter, decr on the park counter), which
+    // is why DeferResolverRedis names them: a Pick that omitted them would
+    // compile and pass while silently disabling all three.
+    expect(redis.keys()).toContain(rk(`defer:count:${sessionId}`))
+    expect(redis.calls.map((c) => c.command)).toEqual(
+      expect.arrayContaining(["incr", "decr", "expire"]),
+    )
+
+    setResumeIntentDispatcher(null)
+  })
 })

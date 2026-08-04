@@ -377,3 +377,177 @@ Not fixed here because both directions are owner calls: making the leaf lazy
 changes a leaf-purity-motivated implementation, and making the header's claim
 accurate weakens a stated invariant. Either way the header should stop asserting
 byte-identity it does not have.
+
+---
+
+## R5-S12 — the direct-caller census, and the first threaded family
+
+Measured on branch `feat/arch-r5-s12-redis-threading` off `dev @ 78a44b75`.
+This section adds the **production-side** half the earlier passes never had: the
+census above enumerates *doubles*, and says nothing about which modules can
+accept a client at all. It also corrects two counts. **Read the reconciliation
+first — per this file's own calibration rule, a re-derived population is not
+trusted until it reproduces the prior enumeration.**
+
+### Reconciliation against R5-S8's enumerated 17
+
+R5-S9 recorded that a re-derivation of the shape sweep produced a larger,
+unfaithful number (28) that was never folded in. R5-S12 did **not** re-run the
+shape sweep. It verified the *enumerated 13 owner-gated rows* file-by-file on
+the axis that decides their class — whether the file's double defines `eval`:
+
+| Class | Expected | Measured | Agrees |
+|---|---|---|---|
+| (i) items 1–7, eval-EMULATING | `eval` defined | `eval` defined in all 7 | YES |
+| (i-b) items 8–13, eval-OMITTED | no `eval` | no `eval` in all 6 | YES |
+
+All 13 files still exist at their recorded paths and all 13 still carry the
+class the enumeration assigned them. The enumerated population of 17 is
+therefore reproduced, and the corrections below are additive to it, not a
+competing count. The `mockRedis` metric (27) and the `redisFake` cluster (12)
+were re-measured and are **unchanged** — note that a naive
+`git grep -l redisFake` now returns 13, because **this document** matches its
+own grep; the cluster is still 12 test files.
+
+### Correction 1 — the direct-caller population is 62, not 65
+
+`grep -rln getRedisClient apps/api/src --include='*.ts' | grep -v __tests__`
+returns 65, but **three of those never call it** — they reference it only to
+derive a type (`Awaited<ReturnType<typeof getRedisClient>>`), and one of the
+three imports it with `import type`:
+
+- `claustrum/agent-trigger-bridge.ts`
+- `claustrum/approval-engine-redis-wiring.ts`
+- `claustrum/memory-redis-adapter.ts`  (`import type`)
+
+**62 files issue 167 runtime `getRedisClient()` calls.** Any future slice sizing
+this surface should use 62/167, and should count *call sites*, not files: the
+distribution is very skewed — `routes/me/anonymize-otp-gate.ts` (16),
+`whatsapp/session.ts` (14), `subscribers/cart-intelligence.ts` (14),
+`routes/cart.ts` (10), `routes/auth.ts` (10).
+
+| Class | n | Notes |
+|---|---|---|
+| (a) composition roots / bootstraps / plugins | 6 | `index.ts`, `claustrum-bootstrap.ts`, `audit-sink-bootstrap.ts`, `learning-sink-bootstrap.ts`, `plugins/kernel-bootstrap.ts`, `plugins/rate-limit.ts` — these legitimately resolve the singleton; NOT threading targets |
+| (b) middleware | 2 | `middleware/auth.ts`, `middleware/staff-auth-infra-alert.ts` |
+| (c) reachable from an existing route composition root | 28 | 19 `routes/*`, plus `session/store.ts`, `ops/ops-history.ts`, `ops/ops-read-executor.ts`, `tools/pix-payer-identity.ts`, `tools/register-workflow-scoped-tools.ts`, `escalation/escalation-store.ts`, `escalation/escalation-park-store.ts`, `claustrum/parse-memo.ts`, `claustrum/resolve-and-assemble.ts`, `claustrum/turn-reads.ts` |
+| (d) jobs / subscribers / shared lib | 21 | `jobs/*` ×15, `subscribers/*` ×5, `lib/defer-resuming-lock.ts` |
+| (e) streaming | 2 | `streaming/emitter.ts`, `streaming/execution-queue.ts` |
+| (f) other | 2 | `whatsapp/client.ts`, `whatsapp/session.ts` |
+| type-only, NOT callers | 3 | the three above |
+
+Three modules already accept an injected client and are the in-repo deps-bag
+precedent for class (d): `jobs/dlq-depth-checker.ts`,
+`jobs/observability-liveness-checker.ts` (`readonly redis?: {...}` +
+`deps.redis ?? (await getRedisClient())`) and
+`jobs/escalation-park-expiry-sweeper.ts` (a **named** narrowed type,
+`SweeperRedis`). `claustrum-bootstrap.ts` carries `options.redis ??` as well.
+
+### Correction 2 — the 13 are NOT composition-root-gated
+
+R5-S12's brief framed the 13 as blocked because "their modules under test never
+accept a client". **That framing is wrong, and this document's Lua/eval framing
+is right.** The decisive counter-example is this census's own item 13:
+
+> `apps/api/src/adapters/__tests__/park-deferred-intent-nx-hoist.unit.test.ts`
+> contains **no `vi.mock` at all**. `parkDeferredIntentWithNxGuard` already
+> takes a `redis` argument. Nothing about composition roots blocks it.
+
+So "threading unblocks the 13" is false. Threading unblocks a **subset of 5**,
+and for a different reason than the brief assumed.
+
+### The family threaded, and the honest bound on what it buys
+
+**Threaded:** `subscribers/defer-resolver.ts` (`DeferResolverRedis`) and
+`lib/defer-resuming-lock.ts` (`DeferResumingLockClient`), following the class-(d)
+jobs deps-bag precedent above, not the route-root pattern. Default is the
+singleton resolved at the same point as before.
+
+**The bound, stated plainly: this buys ZERO new Lua coverage.** The
+compare-and-delete ownership invariant on `defer:resuming:*` remains uncovered
+and remains owner-gated on the real-Redis decision. What it buys is the
+retirement of 4 hand-rolled doubles and 4 faked `rk`s.
+
+R5-S12 **measured** the class (i-b) mechanism from the production side rather
+than inferring it, and the measurement is now pinned as a test
+(`defer-roundtrip.test.ts`, "[class (i-b) bound] the release EVAL is refused, so
+the resuming marker is NEVER cleared"):
+
+- The resolver's SUCCESS path issues exactly **one** `eval` — the CAD release.
+- The retired double had no `eval` → `TypeError`. The adapter throws
+  `LuaAtomicityNotEmulated`. **Both are swallowed** by
+  `releaseDeferResumingLock`'s documented best-effort catch.
+- Consequence, observed in the adapter keyspace after a *successful* resume:
+  `development:defer:resuming:<hash>` **is still present**. The mutex is never
+  released; only its TTL ends it.
+
+This also corrects an assumption worth recording: **a reached `eval` is NOT a
+red here.** One might expect the adapter's refusal to surface as a test failure
+and thereby prove the eval-omitted classification wrong. It does not, because
+the production code catches by design. Green tests are compatible with the hole;
+that is precisely why the hole survived this long.
+
+Bonus measurement, same run: the real `rk()` under `apps/api`'s vitest resolves
+to a **`development:`** prefix (no `APP_ENV` is pinned in
+`apps/api/vitest.config.ts` or `src/__tests__/setup.ts`). Every retired double in
+this family faked `rk` to `test:`, so these were genuine wrong-prefix fictions,
+not benign coincidences.
+
+### Migrated by R5-S12 (4)
+
+| File | Cases | Fiction killed |
+|---|---|---|
+| `__tests__/defer-roundtrip.test.ts` | 2 → 3 | `lPush` returned a constant `1` and stored nothing, so the DLQ write was asserted into a void. Now a real list write. Also pins that the happy path reaches ZERO singleton resolutions and the tamper path exactly ONE — the un-threaded `subscribers/dlq.ts`. |
+| `__tests__/boot-window-race.test.ts` | 2 | faked `rk` |
+| `__tests__/defer-roundtrip-extensions.test.ts` | 3 | the TTL case stored the `EX` argument and read it straight back, so it could only re-assert its own input. Now an exact remaining lifetime against a frozen clock. |
+| `__tests__/defer-resolver-resumedkey-redis-error.test.ts` | 2 | the fault injector became a spy-delegate: it decides whether THIS `get` throws and otherwise forwards to the adapter, so the retry path now runs against real SET/DEL/INCR/SCAN semantics. |
+
+### Deliberately deferred with reason (2)
+
+**`adapters/__tests__/park-deferred-intent-nx-hoist.unit.test.ts` — F-22.**
+Migratable today (it already takes a client), but excluded by owner ruling: it
+is F-22's site, and a naive migration silently routes `releaseNxPlaceholder`
+down its unconditional-`del` branch — the unsafe path the F-22 ruling is about.
+Waits on that ruling.
+
+**`__tests__/audit-2026-05-24/defer-resume-integrity.test.ts` — attempted,
+reverted, blocked by the SAME class as F-22, and this generalizes it.** The
+migration was written and run. All 3 cases died:
+
+```
+UnroutedRedisCall: [in-memory-redis] unrouted call: evalIncrCheck
+  at parkDeferredIntent (@adjudicate/runtime/src/defer-park.ts:231)
+  at parkDeferredIntentWithNxGuard (src/adapters/park-nx.ts:270)
+```
+
+`@adjudicate/runtime`'s `parkDeferredIntent` does
+`if (typeof args.redis.evalIncrCheck === "function")` — a **feature detection on
+an optional atomic command**. Against the retired plain-object double the
+property read yields `undefined` and the code takes its non-atomic
+INCR→EXPIRE→check→DECR fallback. Against the canonical adapter the property read
+goes through the throw-on-unrouted **Proxy**, so `typeof` itself throws and the
+park dies outright.
+
+**The general rule this establishes, which is bigger than either file:** the
+adapter's throw-on-access Proxy is structurally incompatible with
+`typeof client.X === "function"` feature detection. F-22 was recorded as being
+about `releaseNxPlaceholder`'s `eval` detect; there is at least a **second**
+site, in the framework's park path, and it fails *differently* — F-22 degrades
+silently, `evalIncrCheck` throws uncaught. Any module that feature-detects an
+optional Redis command cannot receive this adapter unmodified, and the fix is
+not to add the command: `evalIncrCheck` is a Lua script, so emulating it is the
+W4 RULE 3 theater this adapter exists to refuse. Whatever ruling settles F-22
+should settle the feature-detect class as a whole, not one call site.
+
+### Map after R5-S12
+
+| Bucket | Count |
+|---|---|
+| Owner-gated, class (i) — eval-emulating | 7 |
+| Owner-gated, class (i-b) — remaining | 2 (`defer-resume-integrity`, `park-nx-hoist` — both feature-detect-blocked) |
+| Refused — leaf-purity edge | 1 |
+| Migrated (R5-S8/S9) | 3 |
+| Migrated (R5-S12) | 4 |
+| **Enumerated population** | **17** |
+
+The `redisFake` cluster (12) is untouched and still owner-gated on `multi()`.
