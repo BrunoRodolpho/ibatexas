@@ -79,6 +79,10 @@ const ROLL_CALL = [
   { file: "src/__tests__/refund-drip-cap-before.test.ts", minExecuted: 1, realRedis: 1 },
   // Already on the shared harness before M0.
   { file: "src/adapters/__tests__/park-deferred-intent-nx-hash.test.ts", minExecuted: 3, realRedis: 3 },
+  // F-21 (PR #514), landed on dev while M0 was in review. Enumerated here
+  // because the completeness alarm below flagged it in CI — the first live
+  // catch, and the reason that alarm exists.
+  { file: "src/__tests__/cart-create-lock-ownership.test.ts", minExecuted: 6, realRedis: 6 },
   // 3 cases, of which 1 is inside the RUN_REAL_REDIS describe.
   { file: "src/__tests__/ledger-replay-suppression.test.ts", minExecuted: 3, realRedis: 1 },
   { file: "src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts", minExecuted: 3, realRedis: 3 },

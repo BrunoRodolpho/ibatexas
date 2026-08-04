@@ -55,7 +55,7 @@ consume, both rate limiters.
   > ✓ (measured on dev @ `2f5c4979`; table in the census). All five are on the
   > shared harness now, leaving one knob — `IBX_SKIP_REAL_REDIS=1`, local-dev
   > only. The loud half is `scripts/check-real-redis-suites.mjs`, wired as its
-  > own `ci.yml` step: a hand-written roll call of 8 suites / 21 cases that
+  > own `ci.yml` step: a hand-written roll call of 9 suites / 27 cases that
   > drives them itself (a cached `turbo test` cannot certify them) and fails
   > when any executes fewer cases than enumerated — zero included.
 - **Q2 — coverage is organized by SCRIPT SHAPE, not by file.** The 8 shapes in

@@ -305,7 +305,7 @@ coverage while the census recorded them as "already real Redis".
 M0 migrated all five onto `setupRedisTestContainer` and deleted the synthetic
 guards. There is now exactly one real-Redis knob, `IBX_SKIP_REAL_REDIS=1`
 (local-dev only), and `scripts/check-real-redis-suites.mjs` — a hand-written
-roll call of 8 suites / 21 cases, run as its own `ci.yml` step — fails the
+roll call of 9 suites / 27 cases, run as its own `ci.yml` step — fails the
 build if any enumerated suite executes fewer cases than it names.
 
 Still standing, and worth reading before M1: the harness suites
