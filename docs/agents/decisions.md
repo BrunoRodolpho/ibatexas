@@ -48,6 +48,14 @@ acceptance tests (P0-1, P0-2, P0-9) run against it; `testcontainers@^12` was alr
 already has an env-gated real-Redis test idiom (`REDIS_TEST_URL` skip-guards) alongside testcontainers —
 agents may use either pattern where the plan says "real-Redis test".
 
+> **The second sentence is SUPERSEDED as of M0 (2026-08-04).** The `REDIS_TEST_URL` idiom is the
+> silent-skip class: `REDIS_TEST_URL` is unset in CI, so those `describe.skipIf` blocks skipped and the
+> files still printed a ✓ — measured on dev @ `2f5c4979`, five files, twelve real-Redis cases, green.
+> All five are on `setupRedisTestContainer` now and the env var appears nowhere in the test tree. Use the
+> shared harness; the only real-Redis knob is `IBX_SKIP_REAL_REDIS=1` (local dev). New real-Redis suites
+> must be added to the roll call in `scripts/check-real-redis-suites.mjs` — the gate fails on any
+> un-enumerated one. See `docs/architecture/redis-lua-testing-decision.md` (Q1).
+
 ## D-008 — Phase 0 outcomes: assumptions adopted from the implementing agents (2026-06-12)
 
 All 10 workflow tasks `done`; commits 7b82f8e (P0-1), 83d2c8c (P0-2), d93dc89 (P0-6), 2a1deaf (P0-8),
