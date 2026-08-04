@@ -43,7 +43,7 @@ import {
   COLLECTION,
 } from "@ibatexas/tools";
 import { Channel, COUPON_REJECTED_CODE, type UserType } from "@ibatexas/types";
-import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
+import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma, type CustomerService } from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCartSyncPayload, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
 import {
@@ -102,6 +102,89 @@ type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 /** Supported checkout payment methods (mirrors the `z.enum(["pix","card","cash"])`
  *  body schema on POST /api/cart/checkout). */
 type PaymentMethod = "pix" | "card" | "cash";
+
+// ── R5-S2 — this route family's composition root ───────────────────────────
+//
+// The domain services the checkout chain reaches for, declared as LAZY
+// FACTORIES rather than constructed instances. `cartRoutes` resolves the set
+// once at registration and threads it down the chain; a caller overrides a
+// member through the plugin options (`server.register(cartRoutes, { deps })`) —
+// the same shape every third-party plugin registration in this app already
+// uses (`server.register(fastifyJwt, {...})` in server.ts, helmet, cors,
+// swagger, rate-limit), and the same "registrar takes a second parameter"
+// shape as `registerPromptRoutes(server, RL)` in routes/qa-prompts.ts. The
+// deps-object-with-resolved-defaults half mirrors `createResumeDispatcherAdapter
+// (deps: ResumeDispatcherAdapterDeps = {})` in src/adapters/resume-dispatcher.ts
+// and the `deps: Ops*Deps` threading throughout src/ops/.
+//
+// Two properties are load-bearing, not stylistic:
+//
+//   • FACTORIES, not instances. Every default still constructs on the request
+//     that needs it, never at plugin-registration time. That keeps
+//     `getAuditSink()` resolved per request exactly as before, and it keeps a
+//     test that mounts this plugin against a partial `@ibatexas/domain` mock
+//     from tripping over a missing factory at register time — the same reason
+//     routes/specials.ts memoizes lazily inside its plugin body instead of
+//     constructing in it.
+//
+//   • The chain functions take the resolved set as an ARGUMENT with NO default
+//     of their own. `cachePixDetailsForCustomer` is the proof point: it cannot
+//     silently fall back to a service bound to the `prisma` singleton, because
+//     there is nothing to fall back TO. A caller that omits the argument is a
+//     `tsc` error rather than a live connection — which is why the migrated
+//     route test no longer needs to intercept `@ibatexas/domain` to install a
+//     throwing `prisma` proxy: the reachability it was defending against no
+//     longer type-checks.
+//
+// Only the CustomerService behind the `customer.pix.details.save` persist is
+// injected in this slice — it is the one the migrated route test needs. Every
+// other domain access in this module still constructs internally, exactly as
+// before, and is a rollout target for a later slice:
+//
+//   • createCustomerService()            — loadCachedPixDetails (PIX pre-fill read)
+//   • createCustomerService()            — resolveCustomerCartBody (medusaId lookup)
+//   • createCustomerService()            — POST /api/cart handler (medusaId lookup)
+//   • createOrderCommandService(undefined, { auditSink }) — persistCheckoutOrderNote
+//   • createPaymentQueryService()        — computeOrderStatus, GET order-details
+//   • createOrderQueryService()          — computeOrderStatus, via `await import`
+//   • prisma.orderProjection.findFirst   — 3 direct singleton reads
+//                                          (persistCheckoutOrderNote,
+//                                           resolveDisplayIdOrder, resolveStatusOrderId)
+//
+// Adding a member to `CartRouteDeps` is the mechanical move for each; the
+// `prisma.orderProjection` reads need an owning service first.
+
+/** The domain services `cart.ts`'s checkout chain resolves through the seam. */
+export interface CartRouteDeps {
+  /**
+   * Builds the CustomerService that executes the `customer.pix.details.save`
+   * envelope. Called once per persist, so the audit sink is resolved on the
+   * request rather than at registration.
+   */
+  readonly customerService: () => CustomerService;
+}
+
+/**
+ * Fastify plugin options for `cartRoutes`. The overrides are nested under
+ * `deps` so no member can collide with a Fastify-reserved register option
+ * (`prefix`, `logLevel`, `logSerializers`). Omitted or partial → the
+ * production default fills the remainder, so `server.register(cartRoutes)`
+ * in routes/index.ts is unchanged and constructs exactly what it did before.
+ */
+export interface CartRoutesOptions {
+  readonly deps?: Partial<CartRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction cart.ts did inline. */
+function defaultCartRouteDeps(): CartRouteDeps {
+  return {
+    customerService: () => createCustomerService({ auditSink: getAuditSink() }),
+  };
+}
+
+function resolveCartRouteDeps(options?: CartRoutesOptions): CartRouteDeps {
+  return { ...defaultCartRouteDeps(), ...(options?.deps ?? {}) };
+}
 
 // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key helpers ────────
 //
@@ -163,10 +246,16 @@ async function loadCachedPixDetails(
 
 /** Cache PIX details to Redis + persist to Prisma via the kernel-adjudicated
  *  `customer.pix.details.save` envelope. Exported for unit-test access.
+ *
+ *  `deps` is REQUIRED and has no default: this function is the one the route
+ *  test drives directly, and a default here would be a silent path back to a
+ *  CustomerService bound to the `prisma` singleton. The caller
+ *  (`finalizeCheckout`, itself fed from `cartRoutes`) owns the resolution.
  *  @internal */
 export async function cachePixDetailsForCustomer(
   customerId: string,
   data: { name?: string; email?: string; cpf?: string },
+  deps: CartRouteDeps,
 ): Promise<void> {
   try {
     const redis = await getRedisClient();
@@ -186,7 +275,7 @@ export async function cachePixDetailsForCustomer(
     // the DB write but keep the Redis cache (best-effort caching is the
     // existing semantics — a checkout that completed against Medusa is
     // already booked).
-    const svc = createCustomerService({ auditSink: getAuditSink() });
+    const svc = deps.customerService();
     const payload: CustomerPixDetailsSavePayload = {
       name: data.name ?? "",
       email: data.email ?? "",
@@ -336,8 +425,10 @@ async function finalizeCheckout(args: {
    * the single-use receipt already prevents a double-confirm).
    */
   onFixableFailure?: () => Promise<void>;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: CartRouteDeps;
 }): Promise<FastifyReply> {
-  const { reply, result, cartId, paymentMethod, customerId, pixExtra, notes, onFixableFailure } = args;
+  const { reply, result, cartId, paymentMethod, customerId, pixExtra, notes, onFixableFailure, deps } = args;
 
   if (!result.success) {
     if (onFixableFailure) await onFixableFailure();
@@ -358,11 +449,15 @@ async function finalizeCheckout(args: {
 
   // Cache PIX details for authenticated customers on successful checkout
   if (paymentMethod === "pix" && customerId && pixExtra) {
-    void cachePixDetailsForCustomer(customerId, {
-      name: pixExtra.customerName,
-      email: pixExtra.customerEmail,
-      cpf: pixExtra.customerTaxId,
-    });
+    void cachePixDetailsForCustomer(
+      customerId,
+      {
+        name: pixExtra.customerName,
+        email: pixExtra.customerEmail,
+        cpf: pixExtra.customerTaxId,
+      },
+      deps,
+    );
   }
 
   // Untrack cart from abandoned-cart detection on successful checkout
@@ -1027,10 +1122,12 @@ async function respondToCheckoutDecision(args: {
   pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } | undefined;
   notes: string | undefined;
   releaseGate: () => Promise<void>;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: CartRouteDeps;
 }): Promise<FastifyReply> {
   const {
     reply, out, checkoutPayload, checkoutIdempotencyKey, cartId, sessionId,
-    paymentMethod, customerId, userType, checkoutBody, pixExtra, notes, releaseGate,
+    paymentMethod, customerId, userType, checkoutBody, pixExtra, notes, releaseGate, deps,
   } = args;
 
   // REQUEST_CONFIRMATION (large-ticket ≥ R$1.000) — park the prepared checkout
@@ -1074,6 +1171,7 @@ async function respondToCheckoutDecision(args: {
     ...(pixExtra ? { pixExtra } : {}),
     ...(notes ? { notes } : {}),
     onFixableFailure: releaseGate,
+    deps,
   });
 }
 
@@ -1274,8 +1372,14 @@ async function computeOrderStatus(args: {
   }
 }
 
-export async function cartRoutes(server: FastifyInstance): Promise<void> {
+export async function cartRoutes(
+  server: FastifyInstance,
+  options?: CartRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so nothing is
+  // constructed here — see the CartRouteDeps block above.
+  const deps = resolveCartRouteDeps(options);
 
   // POST /api/cart — create cart
   app.post(
@@ -1729,6 +1833,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         paymentMethod,
         customerId: request.customerId,
         userType: request.userType ?? "guest",
+        deps,
         checkoutBody: request.body as Record<string, unknown>,
         pixExtra,
         notes: request.body.notes,
@@ -1886,6 +1991,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         cartId: pending.cartId,
         paymentMethod: pending.payload.paymentMethod,
         customerId: request.customerId,
+        deps,
         ...(pending.pixExtra ? { pixExtra: pending.pixExtra } : {}),
         ...(typeof pending.checkoutBody.notes === "string"
           ? { notes: pending.checkoutBody.notes }

@@ -23,35 +23,44 @@
 //   • the CPF refusal is the pack's own `validateCpfShape` guard;
 //   • "persisted" / "not persisted" is observed as ROW STATE.
 //
-// The `vi.mock("@ibatexas/domain")` call itself has to stay, and it is doing
-// one job only: cart.ts constructs its own service internally
-// (`createCustomerService({ auditSink: getAuditSink() })`), so intercepting the
-// factory is the only way to reach the client seam from a route test. Every
-// method body is real. Injecting services at the route composition root is what
-// would remove this last interception.
+// ── R5-S2: the `vi.mock("@ibatexas/domain")` interception is GONE ─────────
+//
+// R5-S1 had to keep a factory interception, because cart.ts constructed its own
+// service internally (`createCustomerService({ auditSink: getAuditSink() })`) and
+// intercepting the module was the only way to reach the client seam from a route
+// test. cart.ts now takes its service as a `CartRouteDeps` argument, so this file
+// imports the REAL `@ibatexas/domain` — no module interception of any kind — and
+// hands the route the service it should use.
+//
+// That deletes the throwing-`prisma`-proxy the mock installed. What replaces it
+// is strictly stricter, in two layers:
+//
+//   1. COMPILE TIME. `cachePixDetailsForCustomer`'s `deps` parameter is REQUIRED
+//      and has no default, so there is no singleton-backed path to fall back to.
+//      Dropping the argument is a `tsc` error (TS2554), not a live connection —
+//      the proxy could only catch that at runtime, and only if the swallowing
+//      try/catch in the helper let it surface at all (it would not: it warns).
+//   2. RUN TIME. `serviceFactory` below is a `vi.fn`, and "uses the injected
+//      seam and constructs nothing of its own" asserts it was invoked exactly
+//      once per persist. A re-introduced internal construction makes that red.
+//
+// On top of both, the injected client itself THROWS on any unrouted call, and
+// "surfaces a failure from the INJECTED client" pins the route's observable
+// outcome to an error only the injected client can produce.
 
 import { describe, it, expect, vi, beforeEach, type MockInstance } from "vitest";
-import type { CustomerServiceOptions } from "@ibatexas/domain";
+import { createCustomerService, type CustomerService } from "@ibatexas/domain";
+import type { CustomerServiceClient } from "@ibatexas/domain";
 import {
   createInMemoryDomainClient,
   type InMemoryDomainClient,
 } from "@ibatexas/domain/testing";
+import { getAuditSink } from "@ibatexas/audit-sink";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────
 
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockRk = vi.hoisted(() => vi.fn((k: string) => `ibatexas:${k}`));
-
-/**
- * The client the intercepted factory injects, plus call-through spies on the
- * two CustomerService methods this file makes routing claims about. `vi.spyOn`
- * keeps the real implementation, so a recorded call is also an EXECUTED one.
- */
-const seam = vi.hoisted(() => ({
-  client: null as InMemoryDomainClient["client"] | null,
-  envelopeSpy: null as MockInstance | null,
-  bareArgSpy: null as MockInstance | null,
-}));
 
 vi.mock("@ibatexas/tools", () => ({
   getRedisClient: mockGetRedisClient,
@@ -69,42 +78,7 @@ vi.mock("@ibatexas/tools", () => ({
   MedusaAdjudicateNeedsReviewError: class {},
 }));
 
-vi.mock("@ibatexas/domain", async () => {
-  const actual =
-    await vi.importActual<typeof import("@ibatexas/domain")>("@ibatexas/domain");
-  return {
-    ...actual,
-    createCustomerService: (options?: CustomerServiceOptions) => {
-      if (!seam.client) {
-        throw new Error(
-          "[test] createCustomerService() reached before the in-memory client was installed",
-        );
-      }
-      const svc = actual.createCustomerService({
-        ...(options ?? {}),
-        client: seam.client,
-      });
-      seam.envelopeSpy = vi.spyOn(svc, "updatePixDetailsFromEnvelope");
-      seam.bareArgSpy = vi.spyOn(svc, "updatePixDetails");
-      return svc;
-    },
-    // The singleton must never be reached from this file. A throwing proxy makes
-    // that a loud failure instead of an accidental connection attempt.
-    prisma: new Proxy(
-      {},
-      {
-        get(_target, prop) {
-          throw new Error(
-            `[test] the prisma singleton was accessed (prisma.${String(prop)}) — ` +
-              "this suite runs entirely on the injected in-memory client",
-          );
-        },
-      },
-    ),
-  };
-});
-
-import { cachePixDetailsForCustomer } from "../cart.js";
+import { cachePixDetailsForCustomer, type CartRouteDeps } from "../cart.js";
 
 /** A CPF whose Modulo-11 checksum is valid, so the pack's guard accepts it. */
 const VALID_CPF = "39053344705";
@@ -123,16 +97,50 @@ function createMockRedis() {
   };
 }
 
-let db: InMemoryDomainClient;
-
-function envelopeSpy(): MockInstance {
-  if (!seam.envelopeSpy) throw new Error("[test] service was never constructed");
-  return seam.envelopeSpy;
+/**
+ * Wrap an in-memory client so `customer.update` — the delegate call
+ * `performUpdatePixDetails` makes — rejects with `message`.
+ *
+ * A top-level Proxy rather than a spread: `InMemoryDomainClient.client` is
+ * itself a Proxy whose target carries only `$transaction`/`$queryRaw`, so
+ * spreading it would silently drop every model delegate. The `customer`
+ * delegate underneath IS a plain object, so that one is spread.
+ */
+function withFailingCustomerUpdate(
+  base: CustomerServiceClient,
+  message: string,
+): CustomerServiceClient {
+  const source = base as unknown as Record<string, unknown>;
+  return new Proxy({} as Record<string, unknown>, {
+    get(_target, prop) {
+      if (prop === "customer") {
+        return {
+          ...(source["customer"] as Record<string, unknown>),
+          update: () => Promise.reject(new Error(message)),
+        };
+      }
+      return source[prop as string];
+    },
+  }) as unknown as CustomerServiceClient;
 }
 
-function bareArgSpy(): MockInstance {
-  if (!seam.bareArgSpy) throw new Error("[test] service was never constructed");
-  return seam.bareArgSpy;
+let db: InMemoryDomainClient;
+let service: CustomerService;
+let serviceFactory: ReturnType<typeof vi.fn>;
+let deps: CartRouteDeps;
+let envelopeSpy: MockInstance;
+let bareArgSpy: MockInstance;
+
+/** Build the dep set the route registration would resolve, over `client`. */
+function depsOver(client: CustomerServiceClient): CartRouteDeps {
+  // Same construction options cart.ts's own default uses — only `client` is
+  // added, so the audit sink and policy bundle are the production ones.
+  const svc = createCustomerService({ auditSink: getAuditSink(), client });
+  service = svc;
+  envelopeSpy = vi.spyOn(svc, "updatePixDetailsFromEnvelope");
+  bareArgSpy = vi.spyOn(svc, "updatePixDetails");
+  serviceFactory = vi.fn(() => svc);
+  return { customerService: serviceFactory as unknown as () => CustomerService };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -149,26 +157,24 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
         ],
       },
     });
-    seam.client = db.client;
-    seam.envelopeSpy = null;
-    seam.bareArgSpy = null;
+    deps = depsOver(db.client);
     mockGetRedisClient.mockResolvedValue(createMockRedis());
   });
 
   it("routes DB persist through updatePixDetailsFromEnvelope (not bare-arg)", async () => {
-    await cachePixDetailsForCustomer("cust_01", {
-      name: "Alice",
-      email: "alice@example.com",
-      cpf: VALID_CPF,
-    });
+    await cachePixDetailsForCustomer(
+      "cust_01",
+      { name: "Alice", email: "alice@example.com", cpf: VALID_CPF },
+      deps,
+    );
 
-    expect(envelopeSpy()).toHaveBeenCalledTimes(1);
-    expect(bareArgSpy()).not.toHaveBeenCalled();
+    expect(envelopeSpy).toHaveBeenCalledTimes(1);
+    expect(bareArgSpy).not.toHaveBeenCalled();
 
     // The real kernel decided this, and the real executor ran: the row carries
     // the details. Under the old fixture both facts were asserted by the mock's
     // own return value.
-    const out = await envelopeSpy().mock.results[0]!.value;
+    const out = await envelopeSpy.mock.results[0]!.value;
     expect(out.decision.kind).toBe("EXECUTE");
     expect(db.rows("customer").find((r) => r.id === "cust_01")).toMatchObject({
       name: "Alice",
@@ -177,14 +183,35 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
     });
   });
 
-  it("builds envelope with customer.pix.details.save kind + UNTRUSTED + user actor", async () => {
-    await cachePixDetailsForCustomer("cust_42", {
-      name: "Bob",
-      email: "bob@example.com",
+  it("uses the injected seam and constructs nothing of its own", async () => {
+    // R5-S2 guard. This is what replaces R5-S1's throwing `prisma` proxy at
+    // runtime: the route must obtain its CustomerService from `deps`, exactly
+    // once, and it must be the instance we handed it. If cart.ts ever grows an
+    // internal `createCustomerService(...)` fallback again, the factory count
+    // drops to 0 and the identity check fails — both before any row is touched.
+    await cachePixDetailsForCustomer(
+      "cust_01",
+      { name: "Alice", email: "alice@example.com", cpf: VALID_CPF },
+      deps,
+    );
+
+    expect(serviceFactory).toHaveBeenCalledTimes(1);
+    expect(serviceFactory.mock.results[0]!.value).toBe(service);
+    expect(envelopeSpy).toHaveBeenCalledTimes(1);
+    // …and the write landed in the injected store, not anywhere else.
+    expect(db.rows("customer").find((r) => r.id === "cust_01")).toMatchObject({
       cpf: VALID_CPF,
     });
+  });
 
-    const [envelope, state, extras] = envelopeSpy().mock.calls[0]!;
+  it("builds envelope with customer.pix.details.save kind + UNTRUSTED + user actor", async () => {
+    await cachePixDetailsForCustomer(
+      "cust_42",
+      { name: "Bob", email: "bob@example.com", cpf: VALID_CPF },
+      deps,
+    );
+
+    const [envelope, state, extras] = envelopeSpy.mock.calls[0]!;
     expect(envelope.kind).toBe("customer.pix.details.save");
     expect(envelope.taint).toBe("UNTRUSTED");
     expect(envelope.actor.principal).toBe("user");
@@ -206,15 +233,15 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
     const before = db.rows("customer").find((r) => r.id === "cust_03");
 
     await expect(
-      cachePixDetailsForCustomer("cust_03", {
-        name: "Carol",
-        email: "carol@example.com",
-        cpf: "bad",
-      }),
+      cachePixDetailsForCustomer(
+        "cust_03",
+        { name: "Carol", email: "carol@example.com", cpf: "bad" },
+        deps,
+      ),
     ).resolves.toBeUndefined();
 
     // The refusal is the pack's own CPF-shape guard, not a hand-rejected promise.
-    const out = await envelopeSpy().mock.results[0]!.value;
+    const out = await envelopeSpy.mock.results[0]!.value;
     expect(out.decision.kind).toBe("REFUSE");
     expect(out.decision.refusal.code).toBe("customer.cpf.invalid_format");
 
@@ -224,7 +251,7 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
     // name and email are NOT persisted alongside the bad CPF.
     expect(db.rows("customer").find((r) => r.id === "cust_03")).toEqual(before);
     // Bare-arg path was NOT used.
-    expect(bareArgSpy()).not.toHaveBeenCalled();
+    expect(bareArgSpy).not.toHaveBeenCalled();
   });
 
   it("swallows a DB failure on the persist and still flushes the Redis cache", async () => {
@@ -236,18 +263,51 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
     mockGetRedisClient.mockResolvedValue(redis);
 
     await expect(
-      cachePixDetailsForCustomer("cust_does_not_exist", {
-        name: "Dave",
-        email: "dave@example.com",
-        cpf: VALID_CPF,
-      }),
+      cachePixDetailsForCustomer(
+        "cust_does_not_exist",
+        { name: "Dave", email: "dave@example.com", cpf: VALID_CPF },
+        deps,
+      ),
     ).resolves.toBeUndefined();
 
-    expect(envelopeSpy()).toHaveBeenCalledTimes(1);
-    await expect(envelopeSpy().mock.results[0]!.value).rejects.toThrow(
+    expect(envelopeSpy).toHaveBeenCalledTimes(1);
+    await expect(envelopeSpy.mock.results[0]!.value).rejects.toThrow(
       /no customer row matches/,
     );
     expect(redis._pipeline.exec).toHaveBeenCalledTimes(1);
-    expect(bareArgSpy()).not.toHaveBeenCalled();
+    expect(bareArgSpy).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failure from the INJECTED client, not from the singleton", async () => {
+    // R5-S2 — the standing form of the revert-to-red proof. The only difference
+    // from the passing case is the client behind the injected service, so the
+    // route's observable outcome (the swallowed warning) can only carry this
+    // sentinel if the injected client is genuinely the one on the write path.
+    const sentinel = "injected-client: customer.update refused to run";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const failing = depsOver(withFailingCustomerUpdate(db.client, sentinel));
+
+      await expect(
+        cachePixDetailsForCustomer(
+          "cust_01",
+          { name: "Alice", email: "alice@example.com", cpf: VALID_CPF },
+          failing,
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(envelopeSpy).toHaveBeenCalledTimes(1);
+      await expect(envelopeSpy.mock.results[0]!.value).rejects.toThrow(sentinel);
+      expect(warn).toHaveBeenCalledWith(
+        "[cart/checkout] Failed to cache PIX details:",
+        sentinel,
+      );
+      // The kernel EXECUTEd, the executor threw, so nothing was persisted.
+      expect(db.rows("customer").find((r) => r.id === "cust_01")).not.toMatchObject(
+        { cpf: VALID_CPF },
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
