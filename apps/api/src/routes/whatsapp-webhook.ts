@@ -266,6 +266,25 @@ async function runConductorTurn(args: {
     inbound,
   });
   try {
+    // ── NO PARK-REPLY TRIAGE HERE — a recorded OPT-OUT, not an oversight ───────
+    // The other three ingresses (ops-whatsapp-ingress.ts, routes/admin/ops-chat.ts,
+    // routes/chat.ts) triage an inbound reply against the session's parked
+    // confirmations BEFORE handleTurn, and since R4-S1 that decision has a single
+    // owner: ../claustrum/park-reply-triage.ts. This plane deliberately does NOT
+    // consume it, so the gap is live and named:
+    //   - a customer "não" on a parked confirmation still reaches the PLANNER, and
+    //     claustrum's deny path unparks and then re-plans the "no" as a fresh
+    //     command — the BKL-191 re-prompt class, closed on the other three surfaces
+    //     (BKL-191 at ops, BKL-212 at web) and STILL OPEN here;
+    //   - a bare soft "ok" needs no restate branch on this plane: unlike web, the
+    //     `@claustrum/channel-whatsapp` driver CONFIRMS on a bare "ok" BY DESIGN
+    //     (see web-confirm-channel.ts's header), so a courtesy token here resumes
+    //     the park through the fully-adjudicated path already.
+    // Wiring the decline branch would change what a customer's "não" DOES on the
+    // highest-traffic plane, so it is an OWNER decision (a behaviour change), not a
+    // refactor. The module now exists and this plane needs only a policy — see
+    // `webCustomerParkTriagePolicy` and the NOT WIRED note in its header.
+    //
     // LE2-007 — publish this turn's FUNNEL CONTEXT (the WhatsApp customer mirror of
     // routes/chat.ts). The confirm-window fact is the one thing the funnel's L0 tier
     // cannot see from inside the loop (`CognitiveState` carries no session), and
