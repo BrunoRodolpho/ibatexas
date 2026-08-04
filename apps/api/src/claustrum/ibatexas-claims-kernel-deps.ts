@@ -140,16 +140,97 @@ export const SCHEDULE_CLUSTER_COMPATIBLE: readonly ConsistencyConstraint[] =
     ),
   );
 
+// ── F-10 — the STATUS-COMPANION co-render declaration (P2 / §O#1) ─────────────
+
+/**
+ * F-10 — declare (`ORDER_FULFILLMENT_STAGE`, `PAYMENT_STATUS`) COMPATIBLE. This is
+ * the BKL-234 class on a new pair; the reasoning below is the review §O#1 demands.
+ *
+ * ── Why this is needed (the defect, MEASURED) ────────────────────────────────
+ * A bare status question — "qual o status?" with NO order/payment/reservation
+ * discriminator — hits the hand-written bare-"status" fallback in
+ * `required-claim-decomposer.ts`, which deliberately OVER-INCLUDES both span classes
+ * (`ORDER_STATUS_Q` + `PAYMENT_STATUS_Q`) rather than silently drop either companion.
+ * §O#15 completeness then requires BOTH `ORDER_FULFILLMENT_STAGE` and `PAYMENT_STATUS`,
+ * and for a customer with ONE owned order both resolve on the SAME subject (that
+ * orderId — both types are `perResourceKey`, subjected by the order id). The pair had
+ * no declared relation, so the kernel's P2 stage applied §O#1 DEFAULT-DENY: both
+ * VALIDATED members SUPPRESSED, terminal ESCALATE. An answerable question — the
+ * customer's own order, both facts freshly read and ownership-confirmed — delivered a
+ * staff handoff instead. Safe, but wrong: the over-inclusion that exists to avoid
+ * dropping a companion was annihilating BOTH.
+ *
+ * Measured on BOTH routes before the fix (R2-S7 recorded it; re-measured here):
+ * the CLASSIFY-ONLY path (both types are `CLASSIFY_ONLY_ELIGIBLE_TYPES`, so a bare
+ * status ask resolves deterministically with no model proposal) and the MODEL path
+ * (the planner proposes both on one subject) BOTH terminated in the same ESCALATE.
+ *
+ * ── Why COMPATIBLE is the SOUND relation, not a weakening ────────────────────
+ * The two types answer DIFFERENT QUESTIONS about one order: the FULFILLMENT stage is
+ * kitchen/delivery progress (`em preparo` / `saiu para entrega`), the PAYMENT status is
+ * the money state (`pagamento pendente` / `pago`). They are complementary attributes,
+ * not competing answers, so there is no assignment of an order's state under which
+ * co-rendering them surfaces a self-contradiction (SDD §C P2). Every combination is a
+ * coherent real order: `em preparo` + `pagamento pendente` (placed, unpaid),
+ * `saiu para entrega` + `pago` (paid, out for delivery), `em preparo` + `pago`
+ * (prepaid, cooking), and `saiu para entrega` + `pagamento pendente` (pay-on-delivery,
+ * which this restaurant sells). MUTUAL_EXCLUSION would therefore be false, and
+ * IMPLICATION would assert an entailment NEITHER performs — a paid order is not thereby
+ * delivered, and a delivered order is not thereby paid (that is exactly the
+ * pay-on-delivery case, and asserting otherwise is the `fulfillment-claimed` /
+ * `payment-settled` confabulation the responder's success guard exists to prevent).
+ *
+ * THE LOAD-BEARING PRECONDITION, and why it is STRICTLY stronger than BKL-234's. That
+ * declaration needed a pinned single-load argument because its members do NOT share a
+ * freshness policy (`STORE_OPEN_NOW` is `must_read_this_turn` while `STORE_HOURS` is
+ * cacheable at a 1h TTL), so a stale value could in principle co-render with a fresh
+ * one. This pair has NO such hazard to discharge: EVERY required-evidence row of BOTH
+ * claimdefs is `must_read_this_turn` (`./claimdefs/order-fulfillment-stage.claim.ts`,
+ * `./claimdefs/payment-status.claim.ts` — evidence rows and falsifier rows alike), so
+ * neither member can ever carry a cached value into a co-render. Both are also
+ * `ownershipPolicy: "required"` and `perResourceKey`, so a same-subject co-render is by
+ * construction two live, owner-confirmed reads OF THE SAME ORDER — never a join across
+ * two orders, and never a guest's.
+ *
+ * SAFETY PRESERVED — this narrows §O#1 for exactly this ONE pair and nothing else:
+ *   · a SAME-TYPE pair still goes through `SAME_TYPE_VALUE_CONFLICT` (two VALIDATED
+ *     PAYMENT_STATUS claims with different values still suppress both — untouched);
+ *   · `ORDER_FULFILLMENT_STAGE` ⊥ `ORDER_ESTIMATED_ARRIVAL` stays MUTUAL_EXCLUSION in
+ *     the published table — declaring this pair does not make the stage type freely
+ *     co-renderable with everything;
+ *   · either type paired with any OTHER type is still UNDECLARED and still default-denies;
+ *   · only VALIDATED members ever reach P2 (§D), so this can never promote an
+ *     UNKNOWN/REFUSED claim — a refund or chargeback still demotes PAYMENT_STATUS to
+ *     UNKNOWN and it is dropped BEFORE this table is consulted.
+ *
+ * DELIBERATELY HAND-LISTED, unlike {@link SCHEDULE_CLUSTER_COMPATIBLE}. That constant
+ * GENERATES its pairs from a member list because its justification is CLUSTER-WIDE (every
+ * member projects from one schedule load, so a new member inherits the argument). No
+ * such cluster exists here: the reasoning above is specific to THESE TWO types'
+ * complementary semantics. Generating from a "status types" list would silently extend
+ * COMPATIBLE to a future third status type whose relation nobody reviewed — which is
+ * precisely what §O#1's default-deny is for.
+ */
+export const STATUS_COMPANIONS_COMPATIBLE: readonly ConsistencyConstraint[] = [
+  {
+    typeA: "ORDER_FULFILLMENT_STAGE",
+    typeB: "PAYMENT_STATUS",
+    relation: "COMPATIBLE",
+  },
+];
+
 /**
  * The IbateXas P2 constraint table: the published kernel-foundation table PLUS the
- * repo's own reviewed {@link SCHEDULE_CLUSTER_COMPATIBLE} declarations. This is the
- * DEFAULT for both deps builders below, so the ops and customer planes get an
- * identical P2 verdict for a schedule turn (the ops plane composes the same kernel
- * deps; a per-plane table would be a second source of truth for consistency).
+ * repo's own reviewed {@link SCHEDULE_CLUSTER_COMPATIBLE} and
+ * {@link STATUS_COMPANIONS_COMPATIBLE} declarations. This is the DEFAULT for both deps
+ * builders below, so the ops and customer planes get an identical P2 verdict for a
+ * schedule or status turn (the ops plane composes the same kernel deps; a per-plane
+ * table would be a second source of truth for consistency).
  */
 export const IBATEXAS_CONSISTENCY_TABLE: readonly ConsistencyConstraint[] = [
   ...DEFAULT_CONSISTENCY_TABLE,
   ...SCHEDULE_CLUSTER_COMPATIBLE,
+  ...STATUS_COMPANIONS_COMPATIBLE,
 ];
 
 export interface IbatexasClaimsKernelDepsConfig {
@@ -174,7 +255,8 @@ export interface IbatexasClaimsKernelDepsConfig {
   /**
    * The P2 same-subject constraint table. Defaults to
    * {@link IBATEXAS_CONSISTENCY_TABLE} (the published kernel-foundation table plus
-   * the reviewed schedule-cluster co-render declarations, BKL-234).
+   * the reviewed co-render declarations: the schedule cluster, BKL-234, and the
+   * status companions, F-10).
    */
   readonly consistencyTable?: readonly ConsistencyConstraint[];
 }
