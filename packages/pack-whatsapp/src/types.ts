@@ -60,6 +60,7 @@
 import { createSystemTaintPolicy } from "@adjudicate/primitives"
 
 export type WhatsAppIntentKind =
+  // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
   | "whatsapp.session.handover"
   // W5-6: persistence-side append (system-actor). The
   // conversation-archiver subscriber emits this for archival; the LLM
@@ -71,6 +72,7 @@ export type WhatsAppIntentKind =
   // the customer can trigger a governed handoff. Executor = handoffToHuman
   // (publishes support.handoff_requested → the existing handoff spine).
   | "whatsapp.handoff.request"
+  // ═══ END GENERATED REGION ═══
 
 // ── Payloads ────────────────────────────────────────────────────────────
 

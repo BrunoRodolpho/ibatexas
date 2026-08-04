@@ -57,17 +57,20 @@ import {
   type CapabilityPackId,
 } from "@ibatexas/catalog"
 
-import { GENERATED_BEGIN, GENERATED_END } from "./build-generated-region.js"
+import {
+  renderAnnotatedMemberRegion,
+  type KindAnnotations,
+} from "./annotated-member-region.js"
 
 /** Indentation of an element inside `xxxPack.intents: [ … ]` — two levels
  *  (object literal member, then array element) at this repo's 2-space width. */
 const ELEMENT_INDENT = "    "
 
-/** Comment lines to emit immediately BEFORE a given kind, without their `// `
- *  prefix (the renderer adds it). Keyed by kind within one pack's table so a
- *  note can never silently attach itself to a same-named kind in another
- *  pack's array. */
-type PackIntentAnnotations = Readonly<Record<string, readonly string[]>>
+/** This region's per-kind rationale notes. R6 leg 1b moved the TYPE to
+ *  `annotated-member-region.ts` so the pack kind-union regions could key their
+ *  own (genuinely different) notes the same way — see
+ *  `build-pack-kind-union-region.ts`'s table for why the two never merge. */
+type PackIntentAnnotations = KindAnnotations
 
 interface PackIntentsTarget {
   readonly packId: CapabilityPackId
@@ -162,16 +165,12 @@ export const PACK_INTENTS_TARGETS: readonly PackIntentsTarget[] = [
  * byte-identical output.
  */
 export function buildPackIntentsRegion(target: PackIntentsTarget): string {
-  const kinds = generatePackIntents(CAPABILITY_DEFINITIONS, target.packId)
-  const lines: string[] = [GENERATED_BEGIN]
-  for (const kind of kinds) {
-    for (const note of target.annotations?.[kind] ?? []) {
-      lines.push(`${ELEMENT_INDENT}// ${note}`)
-    }
-    lines.push(`${ELEMENT_INDENT}"${kind}",`)
-  }
-  lines.push(`${ELEMENT_INDENT}${GENERATED_END}`)
-  return lines.join("\n")
+  return renderAnnotatedMemberRegion({
+    kinds: generatePackIntents(CAPABILITY_DEFINITIONS, target.packId),
+    indent: ELEMENT_INDENT,
+    renderMember: (kind) => `"${kind}",`,
+    annotations: target.annotations,
+  })
 }
 
 /** Guidance the freshness gate and the write-side script both surface when a
