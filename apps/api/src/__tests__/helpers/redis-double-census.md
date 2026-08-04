@@ -755,3 +755,99 @@ population is class (i) — the 7 eval-EMULATING doubles, which M2 retires onto
 the shape suites.
 
 The `redisFake` cluster (12) is untouched and still owner-gated on `multi()`.
+
+---
+
+## R5 rollout, family 1 — the cart/session cluster
+
+Measured on branch `refactor/r5-rollout-cart-family`, rebased onto
+`dev @ 7875c459` (PR #523 landed mid-slice; the suite was re-measured on
+the new base — branch-local baseline **7421**, after **7433**, delta **+12**,
+which is exactly the per-file arithmetic below).
+R5-S12's correction 1 recorded `routes/cart.ts` as the top-3 direct caller (10
+call sites) and `session/store.ts` in class (c). This section threads that
+family and records what the threading did and did NOT buy.
+
+### The family, enumerated BEFORE editing
+
+The rule applied: a module is in the family iff it is (a) reachable from
+`routes/cart.ts` AND (b) issues a Redis command AND (c) belongs to the same
+deps flow. Three modules qualify — 14 call sites.
+
+| Module | Sites | Commands issued | Seam taken |
+|---|---|---|---|
+| `routes/cart.ts` | 10 | `hGetAll` `expire` `multi` `hSet` `hDel` `del` `get` `set` | `CartRouteDeps.redis: () => Promise<CartRouteRedisClient>` — the route root R5-S2/S5 already built, extended by its own lazy-factory idiom |
+| `routes/checkout-confirmation-store.ts` | 2 | `set`, `eval` | `CheckoutConfirmationStoreOptions.redis` — a client RESOLVER, because `cartRoutes` builds the store in its synchronous register phase and an instance would hoist the resolution |
+| `session/store.ts` | 2 | `lRange`, `multi` | `SessionStoreOptions.client` per entry point — the R5-S6 `estimate-delivery.ts` shape, NOT the route root (see the exclusion note) |
+
+**Excluded, with the measurement that decides each:**
+
+- `claustrum/resolve-and-assemble.ts` (3 sites). Cart-reachable in name only:
+  BOTH `loadCartCtx` calls in `routes/cart.ts` pass `{ cartId }`, and the
+  module's Redis branch is guarded by `cartId === null && sessionId !== undefined`.
+  The site is **unreachable from this family**. It is also R3 territory.
+- `packages/tools/src/cart/get-or-create-cart.ts` (1 site + the F-21
+  `acquireLockAtKey` lock). Post-F-21 it still resolves the package singleton
+  itself (`getRedisClient()` at line 148) and takes no client. It is NOT
+  reachable from `routes/cart.ts` at all — its callers are `routes/chat.ts`,
+  `routes/whatsapp-webhook.ts` and the tool registry, i.e. a different
+  composition flow. Threading it belongs to whichever family owns those roots.
+
+### What the threading is, in one line each
+
+- `CartRouteDeps.redis` is a FACTORY returning a promise, so every one of the 10
+  sites keeps its `await` exactly where it was — including the two inside
+  swallowing `try/catch`es, and including `trackCartId`'s own resolution, which
+  is deliberately NOT collapsed into the caller's client (the resolution COUNT
+  is asserted).
+- Per-consumer `Pick`s: `CartOwnershipRedis` (`get`/`set`), `ActiveCartsRedis`
+  (`hSet`/`expire`), `UntrackCartRedis` (`hDel`), `PixCacheReadRedis`
+  (`hGetAll`/`expire`), `PixCacheWriteRedis` (`multi`), `CartOwnerReleaseRedis`
+  (`del`), plus the hand-written exhaustive `CartRouteRedisClient` (9 commands).
+  The union is hand-written rather than derived as an intersection of the
+  consumer types: a derived union cannot disagree with its consumers, so it
+  could not catch a consumer that grew an undeclared command (F-14).
+- The store moved from a MODULE const to a registration-scoped one built off
+  `deps.redis`. Construction stays IO-free, so the register→ready structure is
+  unchanged and `await app.ready()` still resolves zero clients — pinned as a
+  test, not asserted in prose.
+
+### The fail-closed pick analysis (R5-S12's lesson, applied)
+
+**Feature detection: MEASURED, none.** No `typeof client.X === "function"`
+exists anywhere in the three modules, so the class that made `evalIncrCheck`
+degrade silently does not occur here.
+
+**Swallowing consumers: TWO, and they are the real hazard.**
+`loadCachedPixDetails` (`catch { return null }`) and
+`cachePixDetailsForCustomer` (`catch { console.warn }`, `void`-ed at the call
+site) turn a client that cannot serve them into a cache miss, not an error.
+Measured: un-threading `loadCachedPixDetails` alone reds THREE cases, one of
+which — "falls back to the customer service when Redis has no cache" — reds
+because the DB fallback lives INSIDE the same try block, so a Redis fault takes
+the customer lookup down with it. Every other consumer awaits with no catch.
+
+### The metric — vi.mock of `getRedisClient` in the family: 5 → 1
+
+| File | Before | After | Reason |
+|---|---|---|---|
+| `routes/__tests__/cart-uncovered-handlers.test.ts` | 9-command constant double | **`createInMemoryRedis` + spy-delegate**; `getRedisClient` is a rejecting TRIPWIRE | driven paths reach neither `multi` nor `eval` — asserted, not assumed |
+| `__tests__/session-store.test.ts` | whole-module `vi.mock` | **`vi.mock` DELETED**; double injected through `SessionStoreOptions`, real `rk` | double still hand-rolled: `appendMessages` is `multi`-only and the adapter has no `lRange` either |
+| `__tests__/checkout-confirmation-store.test.ts` | whole-module `vi.mock` | **`vi.mock` DELETED**; eval-emulating double injected through the store's option, real `rk` | `consume` is Lua — W4 RULE 3, the adapter refuses `eval` |
+| `routes/__tests__/cart-pix-details-envelope.test.ts` | supplied the client | injected through `deps.redis`; `getRedisClient` is a TRIPWIRE | `multi` is the subject's ONLY Redis touch |
+| `__tests__/cart-routes.test.ts` | supplied the client | injected through `deps.redis`; `getRedisClient` is a TRIPWIRE | drives the park→confirm round trip, i.e. `eval` |
+
+Counted as "the module mock still SUPPLIES a Redis client", the family goes
+**5 → 1** — and the one that remains (`cart-routes.test.ts`) supplies it only
+because `routes/cart.ts` imports `getRedisClient` as its own default and the
+factory must return something. Counted as "still emulates a W4-refused command
+somewhere", it is **4 → 3**: `multi` and `eval` are unchanged owner-gated
+ground, and this slice does not claim otherwise.
+
+Three fictions died on the way: the `ibatexas:` `rk` in four files (production
+under apps/api's vitest writes `development:`); the `set`→"OK" constant that
+made every ownership claim succeed; and a cross-suite LEAK in
+`cart-routes.test.ts`, where two describes reached Redis on a double installed
+by an earlier describe (`vi.clearAllMocks()` does not clear implementations).
+
+The `redisFake` cluster (12) and the class (i) seven are untouched.

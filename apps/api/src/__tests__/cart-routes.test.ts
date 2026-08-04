@@ -21,11 +21,6 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 // Importing the canonical setup here makes this test file config-independent
 // (idempotent: __setAuditSinkDependencies just re-assigns the deps).
 import "./setup.js";
-import { cartRoutes } from "../routes/cart.js";
-import {
-  createCheckoutConfirmationStore,
-  type PendingCheckout,
-} from "../routes/checkout-confirmation-store.js";
 // R0a — the mocked `@ibatexas/tools` re-exports the REAL token helpers
 // (importActual above) and the mocked `createCheckout`. We mint/verify tokens
 // with the real helpers and override createCheckout's resolved value to assert
@@ -34,12 +29,37 @@ import {
   createOrderAccessToken,
   verifyOrderAccessToken,
   createCheckout,
+  // The REAL rk (the module mock forwards it) — the seam probes below assert on
+  // the keys production writes, prefix included.
+  rk,
 } from "@ibatexas/tools";
+import { cartRoutes, type CartRouteRedisClient } from "../routes/cart.js";
+import {
+  createCheckoutConfirmationStore,
+  type PendingCheckout,
+} from "../routes/checkout-confirmation-store.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockGetRedisClient = vi.hoisted(() => vi.fn());
-const mockRk = vi.hoisted(() => vi.fn());
+/**
+ * R5 rollout — a TRIPWIRE, not a supplier.
+ *
+ * `routes/cart.ts` and its checkout-confirmation store now take their Redis
+ * client from `CartRouteDeps.redis`, which `buildTestServer` below overrides.
+ * Nothing in this file may reach the process singleton, so this rejects rather
+ * than answering a double — which matters because two consumers on these paths
+ * (`loadCachedPixDetails`, `cachePixDetailsForCustomer`) swallow their errors
+ * and would turn a silent fallback into a green test.
+ *
+ * It cannot simply be deleted: `routes/cart.ts` imports the symbol as the
+ * DEFAULT behind `defaultCartRouteDeps`, and this file's module factory has to
+ * supply every export the module imports.
+ */
+const mockGetRedisClient = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.reject(new Error("cart-routes: reached the getRedisClient singleton")),
+  ),
+);
 const mockMedusaStore = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 // P0-X9 follow-up: cart route mutations go through medusaAdjudicated.
@@ -116,7 +136,13 @@ vi.mock("@ibatexas/tools", async () => {
   const actual = await vi.importActual<typeof import("@ibatexas/tools")>("@ibatexas/tools");
   return {
     getRedisClient: mockGetRedisClient,
-    rk: mockRk,
+    // The REAL rk (Hard Rule #7). The retired fake answered `ibatexas:<key>`;
+    // production under apps/api's vitest writes `development:<key>` (no
+    // APP_ENV is pinned), so every key this file's doubles saw was a prefix
+    // nothing writes. No assertion here reads the prefix — they all use
+    // `stringContaining` on the suffix — so de-faking changes no claim, it
+    // only stops the doubles from being keyed on fiction.
+    rk: actual.rk,
     estimateDelivery: vi.fn(async () => ({ success: true })),
     createCheckout: vi.fn(async () => ({ success: true })),
     reaisToCentavos: (amount: number) => Math.round(amount * 100),
@@ -239,12 +265,42 @@ vi.mock("../middleware/auth.js", () => ({
 
 // ── Server factory ─────────────────────────────────────────────────────────────
 
+/**
+ * The Redis double the route family runs on for the CURRENT test.
+ *
+ * Deliberately `undefined` by default and reset before every test: that is
+ * exactly what `mockGetRedisClient` (an implementation-less `vi.fn`) used to
+ * resolve to after `vi.clearAllMocks()`, so a test that reaches Redis without
+ * assigning one fails the same way it always did instead of silently gaining a
+ * keyspace it never had.
+ *
+ * NOT `createInMemoryRedis`: `createStatefulRedis` below emulates `eval`, which
+ * the canonical adapter refuses (W4 RULE 3) — see the note on that factory.
+ */
+let redisDouble: unknown = undefined;
+
+beforeEach(() => {
+  redisDouble = undefined;
+});
+
+/** Resolver handed to `CartRouteDeps.redis` — reads the CURRENT double. */
+const injectedRedis = async () => redisDouble as CartRouteRedisClient;
+
+/** Install the double this test's routes (and its stores) will run on. */
+function setRedisDouble<T>(double: T): T {
+  redisDouble = double;
+  return double;
+}
+
 async function buildTestServer() {
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   await app.register(sensible);
-  await app.register(cartRoutes);
+  // R5 rollout — the ONLY dep override. Every other member keeps its
+  // production default, so the `@ibatexas/domain` module mock is still what
+  // stands behind the services.
+  await app.register(cartRoutes, { deps: { redis: injectedRedis } });
   await app.ready();
   return app;
 }
@@ -297,12 +353,11 @@ function createStatefulRedis() {
 describe("POST /api/cart — create cart", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("creates a cart and tracks it in Redis (via medusaAdjudicated)", async () => {
     const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    setRedisDouble(mockRedis);
     // P0-X9: mutations go through medusaAdjudicated, NOT bare medusaStore.
     mockMedusaAdjudicated.mockResolvedValue({ cart: { id: "cart_01", items: [] } });
 
@@ -340,7 +395,7 @@ describe("POST /api/cart — create cart", () => {
 
   it("passes customer_id when authenticated", async () => {
     const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    setRedisDouble(mockRedis);
     mockMedusaAdjudicated.mockResolvedValue({ cart: { id: "cart_02", items: [] } });
 
     const app = await buildTestServer();
@@ -365,7 +420,7 @@ describe("POST /api/cart — create cart", () => {
 
   it("creates anonymous cart without customer_id", async () => {
     const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    setRedisDouble(mockRedis);
     mockMedusaAdjudicated.mockResolvedValue({ cart: { id: "cart_03", items: [] } });
 
     const app = await buildTestServer();
@@ -387,7 +442,6 @@ describe("POST /api/cart — create cart", () => {
 describe("GET /api/cart/:id — get cart", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("returns cart data from Medusa", async () => {
@@ -428,12 +482,11 @@ describe("GET /api/cart/:id — get cart", () => {
 describe("POST /api/cart/:id/line-items — add item", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("adds item to cart (via medusaAdjudicated) and tracks cart in Redis", async () => {
     const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    setRedisDouble(mockRedis);
     mockMedusaAdjudicated.mockResolvedValue({
       cart: {
         id: "cart_01",
@@ -496,7 +549,6 @@ describe("POST /api/cart/:id/line-items — add item", () => {
 describe("PATCH /api/cart/:id/line-items/:itemId — update quantity", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("updates item quantity (via medusaAdjudicated)", async () => {
@@ -541,7 +593,6 @@ describe("PATCH /api/cart/:id/line-items/:itemId — update quantity", () => {
 describe("DELETE /api/cart/:id/line-items/:itemId — remove item", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("removes item from cart (via medusaAdjudicated)", async () => {
@@ -570,7 +621,6 @@ describe("DELETE /api/cart/:id/line-items/:itemId — remove item", () => {
 describe("POST /api/cart/:id/promotions — apply coupon", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("applies promotion code to cart (via medusaAdjudicated)", async () => {
@@ -629,7 +679,6 @@ describe("POST /api/cart/:id/promotions — apply coupon", () => {
 describe("POST /api/cart/:id/payment-sessions — initialize payment (v2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("creates payment collection then initializes session (both via medusaAdjudicated)", async () => {
@@ -699,7 +748,6 @@ describe("POST /api/cart/:id/payment-sessions — initialize payment (v2)", () =
 describe("GET /api/cart/orders/:orderId — IDOR check", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("returns 403/404 when order belongs to a different customer", async () => {
@@ -816,7 +864,6 @@ describe("GET /api/cart/orders/:orderId — IDOR check", () => {
 describe("GET /api/cart/orders/:orderId — R0a null-owner IDOR + per-order token", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   function nullOwnerOrder(id: string) {
@@ -897,7 +944,6 @@ describe("GET /api/cart/orders/:orderId — R0a null-owner IDOR + per-order toke
 describe("GET /api/cart/orders/:orderId/status — R0a null-owner IDOR + per-order token", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   function projection(customerId: string | null) {
@@ -991,7 +1037,6 @@ describe("GET /api/cart/orders/:orderId/status — R0a null-owner IDOR + per-ord
 describe("POST /api/cart/checkout — R0a mints a per-order access token (gate 3)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
   });
 
@@ -1000,7 +1045,7 @@ describe("POST /api/cart/checkout — R0a mints a per-order access token (gate 3
   // → the `verifyOrderAccessToken(...)` assertion throws / the typeof check
   // fails (RED).
   it("checkout response carries a valid token bound to the order", async () => {
-    mockGetRedisClient.mockResolvedValue(
+    setRedisDouble(
       createMockRedis({ del: vi.fn().mockResolvedValue(1) }),
     );
     // Guest card checkout (SEC-001 permits) with a concrete orderId so
@@ -1040,7 +1085,7 @@ describe("POST /api/cart/checkout — R0a mints a per-order access token (gate 3
   // 404s the webhook-created order. Drop that branch → accessToken is undefined
   // → the `verifyOrderAccessToken(...)` / typeof assertions go RED.
   it("guest card checkout (no orderId) mints a token bound to the paymentIntentId", async () => {
-    mockGetRedisClient.mockResolvedValue(
+    setRedisDouble(
       createMockRedis({ del: vi.fn().mockResolvedValue(1) }),
     );
     // Card branch shape: success, no orderId, a `pi_…` PaymentIntent id.
@@ -1091,7 +1136,6 @@ describe("POST /api/cart/checkout — R0a mints a per-order access token (gate 3
 describe("guest card tracking — pi_ read authorized by the bound per-order token (R0a #1)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   // The webhook-created order: NULL owner, resolved from the pi_ id via metadata.
@@ -1194,7 +1238,12 @@ describe("guest card tracking — pi_ read authorized by the bound per-order tok
 describe("POST /api/cart/checkout — BKL-180 order.cart.sync wire", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
+    // R5 rollout — this suite reaches Redis (the checkout idempotency gate),
+    // and used to run on a double LEAKED from an earlier suite: `vi.clearAllMocks()`
+    // clears calls but not implementations, so `mockGetRedisClient`'s
+    // `mockResolvedValue` from a previous describe survived into this one. The
+    // client is now per-test state, so the dependency is explicit.
+    setRedisDouble(createMockRedis());
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
     // A clean, non-completed existing cart → checkoutCartNeedsReplacement=false → the
     // sync leg runs the hydrate + order.cart.sync adjudication path.
@@ -1265,13 +1314,18 @@ describe("POST /api/cart/checkout — BKL-180 order.cart.sync wire", () => {
 describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
     // SEC-001 is about the route's auth gate, not the kernel's policy
     // decision. The kernel cutover (CLAUDE.md rule #9) made adjudicate()
     // always-authoritative — the legacy `IBX_KERNEL_SHADOW` env-stub no
     // longer exists. Mock the kernel to EXECUTE so each test isolates
     // the auth-gate behavior from `order.checkout.create` policy guards.
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+    // R5 rollout — this suite reaches Redis (the checkout idempotency gate),
+    // and used to run on a double LEAKED from an earlier suite: `vi.clearAllMocks()`
+    // clears calls but not implementations, so `mockGetRedisClient`'s
+    // `mockResolvedValue` from a previous describe survived into this one. The
+    // client is now per-test state, so the dependency is explicit.
+    setRedisDouble(createMockRedis());
   });
 
   it("guest checkout with card → 200 OK", async () => {
@@ -1289,7 +1343,7 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
   it("duplicate checkout (idempotency gate already held) → 409 (P0-PAY-3)", async () => {
     // SET NX returns null → a checkout for this cart is already in flight; the
     // second submit must be rejected before any payment/cart side-effect.
-    mockGetRedisClient.mockResolvedValue(createMockRedis({ set: vi.fn().mockResolvedValue(null) }));
+    setRedisDouble(createMockRedis({ set: vi.fn().mockResolvedValue(null) }));
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -1333,7 +1387,7 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
 
   it("authenticated checkout with cash → 200 OK", async () => {
     const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    setRedisDouble(mockRedis);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -1348,7 +1402,7 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
 
   it("authenticated checkout with PIX → 200 OK", async () => {
     const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    setRedisDouble(mockRedis);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -1363,7 +1417,7 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
 
   // ── P1-DATA-CPF — checksum validation at the PIX checkout boundary ─────────
   it("PIX checkout with a valid CPF → 200 OK", async () => {
-    mockGetRedisClient.mockResolvedValue(createMockRedis());
+    setRedisDouble(createMockRedis());
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -1377,7 +1431,7 @@ describe("POST /api/cart/checkout — SEC-001 cash/PIX auth", () => {
   });
 
   it("PIX checkout with an invalid CPF checksum → 422 INVALID_CPF (never reaches checkout)", async () => {
-    mockGetRedisClient.mockResolvedValue(createMockRedis());
+    setRedisDouble(createMockRedis());
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -1421,9 +1475,8 @@ describe("POST /api/cart/checkout — large-ticket confirmation", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
     redis = createStatefulRedis();
-    mockGetRedisClient.mockResolvedValue(redis);
+    setRedisDouble(redis);
     // Defaults: the pure kernel and the audited verb both auto-resolve to
     // EXECUTE; individual tests override to drive the branch under test.
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
@@ -1489,7 +1542,7 @@ describe("POST /api/cart/checkout — large-ticket confirmation", () => {
   });
 
   it("confirm when the cart now ≥ R$10.000 → 403 (override does NOT rescue REFUSE)", async () => {
-    const store = createCheckoutConfirmationStore();
+    const store = createCheckoutConfirmationStore({ redis: injectedRedis });
     const { confirmationId } = await store.create(basePending());
     // The kernel re-adjudicates against the grown cart and REFUSEs — the
     // receipt only satisfies the "ask first" threshold, never the hard cap.
@@ -1523,7 +1576,7 @@ describe("POST /api/cart/checkout — large-ticket confirmation", () => {
   });
 
   it("confirm by a different customer → 403 (ownership), never adjudicates", async () => {
-    const store = createCheckoutConfirmationStore();
+    const store = createCheckoutConfirmationStore({ redis: injectedRedis });
     const { confirmationId } = await store.create(
       basePending({ customerId: "cus_OTHER" }),
     );
@@ -1563,12 +1616,11 @@ describe("POST /api/cart/checkout — large-ticket confirmation", () => {
 describe("Cart routes — medusaAdjudicated error mapping (P0-X9)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
   });
 
   it("POST /api/cart → 403 with pt-BR copy on REFUSE", async () => {
     const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    setRedisDouble(mockRedis);
     mockMedusaAdjudicated.mockRejectedValue(
       new MockRefusedError({
         code: "cart.create.blocked",
@@ -1586,7 +1638,7 @@ describe("Cart routes — medusaAdjudicated error mapping (P0-X9)", () => {
 
   it("POST /api/cart/:id/line-items → 202 on DEFER", async () => {
     const mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    setRedisDouble(mockRedis);
     mockMedusaAdjudicated.mockRejectedValue(
       new MockDeferredError({ signal: "inventory.replenish" }),
     );
@@ -1615,5 +1667,93 @@ describe("Cart routes — medusaAdjudicated error mapping (P0-X9)", () => {
     expect(res.statusCode).toBe(503);
     const body = res.json();
     expect(body.error).toContain("atendimento humano");
+  });
+});
+
+// ── The Redis client seam, born guarded (F-5) ────────────────────────────────
+//
+// Every case above hands the routes a double and then asserts on that double.
+// That is not evidence the routes USED it: with the threading removed they
+// would resolve the process singleton, and the majority of these cases would
+// stay green — a guest checkout never consults the owner key, and the two PIX
+// helpers swallow their own failures.
+//
+// The consuming-surface probes are below. They read the two things a silent
+// fallback cannot fake: that the singleton was never resolved, and that the
+// checkout-confirmation store — built by `cartRoutes` off the SAME resolver,
+// which is the part of this slice a route test is the only place to observe —
+// ran its receipt round trip on our keyspace.
+
+describe("[seam] cart routes + their confirmation store drive the INJECTED client", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+    mockAdjudicateAndAudit.mockResolvedValue({
+      decision: { kind: "EXECUTE", basis: [] },
+      record: {},
+      ledgerHit: null,
+    });
+  });
+
+  it("the park→confirm round trip reads and drains OUR keyspace, never the singleton", async () => {
+    const redis = setRedisDouble(createStatefulRedis());
+    mockAdjudicate.mockReturnValue({
+      kind: "REQUEST_CONFIRMATION",
+      prompt: "Confirmar pedido de R$ 1.500,00?",
+      basis: [],
+    });
+
+    const app = await buildTestServer();
+    const parked = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_seam", paymentMethod: "cash" },
+      headers: { "x-customer-id": "cus_seam" },
+    });
+    expect(parked.statusCode).toBe(202);
+    const { confirmationId } = parked.json();
+
+    // The receipt is a REAL key in the double the ROUTE was handed — the store
+    // `cartRoutes` builds resolves through `deps.redis`, not through a module
+    // const bound to the singleton.
+    const receiptKey = rk(`checkout:confirmation:${confirmationId}`);
+    expect(redis.kv.has(receiptKey)).toBe(true);
+    // Written under the REAL rk prefix, the one production writes.
+    expect(receiptKey.startsWith("development:")).toBe(true);
+
+    mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+    const confirmed = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout/confirm",
+      payload: { confirmationId },
+      headers: { "x-customer-id": "cus_seam" },
+    });
+    expect(confirmed.statusCode).toBe(200);
+
+    // Single-use: the consume DRAINED our key, so the receipt is gone from the
+    // injected keyspace. A store still bound to the singleton would leave it.
+    expect(redis.kv.has(receiptKey)).toBe(false);
+    expect(redis.eval).toHaveBeenCalledTimes(1);
+
+    // …and nothing anywhere in the round trip resolved the singleton.
+    expect(mockGetRedisClient).not.toHaveBeenCalled();
+  });
+
+  it("registration alone resolves no client at all (the two-phase structure)", async () => {
+    // REGISTER phase: `resolveCartRouteDeps` merges function objects and
+    // `createCheckoutConfirmationStore` closes over one — both pure. If either
+    // eagerly resolved, this resolver would have run before `ready()` returned.
+    const resolver = vi.fn(
+      async () => createStatefulRedis() as unknown as CartRouteRedisClient,
+    );
+    const app = Fastify({ logger: false });
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    await app.register(sensible);
+    await app.register(cartRoutes, { deps: { redis: resolver } });
+    await app.ready();
+
+    expect(resolver).not.toHaveBeenCalled();
+    expect(mockGetRedisClient).not.toHaveBeenCalled();
   });
 });

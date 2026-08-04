@@ -19,7 +19,10 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
-import { createCheckoutConfirmationStore } from "./checkout-confirmation-store.js";
+import {
+  createCheckoutConfirmationStore,
+  type CheckoutConfirmationStore,
+} from "./checkout-confirmation-store.js";
 import { identityCtx, loadCartCtx } from "../claustrum/resolve-and-assemble.js";
 import {
   getRedisClient,
@@ -108,6 +111,81 @@ function mapMedusaErrorToReply(err: unknown, reply: FastifyReply): boolean {
 }
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+// ── R5 rollout — the cart family's Redis client seam ───────────────────────
+//
+// Every `getRedisClient()` this module used to call directly now resolves
+// through `CartRouteDeps.redis`. The per-consumer types below are the R5-S1
+// NARROWING rule applied one function at a time: each helper declares the
+// commands IT issues, so a client that cannot serve that helper is a `tsc`
+// error rather than a runtime `TypeError`, and reading a signature tells you
+// the whole Redis surface of the function without reading its body.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (R5-S12's lesson) ────────────────────────
+//
+// A Pick is only fail-closed if every declared command is genuinely ISSUED and
+// no consumer feature-detects an optional one (`typeof c.X === "function"` —
+// the shape that made `evalIncrCheck` degrade silently in the park path).
+// MEASURED for this family: there is no feature detection anywhere in
+// `routes/cart.ts`, `routes/checkout-confirmation-store.ts` or
+// `session/store.ts` — every command is called unconditionally once its branch
+// is reached. What this family DOES have is two consumers whose call is wrapped
+// in a swallowing `catch`, so a missing command degrades SILENTLY rather than
+// loudly:
+//
+//   • `loadCachedPixDetails`      — `catch { return null }` → looks like a cache
+//                                    miss and falls through to the DB lookup.
+//   • `cachePixDetailsForCustomer` — `catch { console.warn }`, and its call site
+//                                    `void`s the promise → nothing observes it.
+//
+// Those two are why the seam is born guarded by consuming-surface probes (see
+// `routes/__tests__/cart-redis-seam.test.ts`): each asserts the command landed
+// on the INJECTED keyspace, which a silent degradation cannot fake.
+//
+// Every other consumer here (`verifyCartOwnership`, `trackCartId`,
+// `untrackCartId`, the checkout gate, the `cart:owner` release) awaits its
+// command with no catch, so a missing member surfaces as a 500.
+
+/** `verifyCartOwnership` — read the owner key, then the atomic NX claim. */
+type CartOwnershipRedis = Pick<RedisClient, "get" | "set">;
+
+/** `trackCartId` — the `active:carts` hash write + its 48h TTL refresh. */
+type ActiveCartsRedis = Pick<RedisClient, "hSet" | "expire">;
+
+/** `untrackCartId` — the single `active:carts` field removal. */
+type UntrackCartRedis = Pick<RedisClient, "hDel">;
+
+/** `loadCachedPixDetails` — the PIX pre-fill read + its 90-day TTL refresh. */
+type PixCacheReadRedis = Pick<RedisClient, "hGetAll" | "expire">;
+
+/**
+ * `cachePixDetailsForCustomer` — the PIX cache write.
+ *
+ * `multi` only: the `hSet`/`expire` this helper issues are queued on the
+ * PIPELINE, not on the client, so declaring them here would be a lie about
+ * which object receives them. node-redis types the pipeline off `multi`'s own
+ * return type, so `tsc` still checks the queued commands exactly.
+ */
+type PixCacheWriteRedis = Pick<RedisClient, "multi">;
+
+/** `finalizeCheckout` — releasing the `cart:owner:<id>` claim after an order. */
+type CartOwnerReleaseRedis = Pick<RedisClient, "del">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route family issues — the type
+ * `CartRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived as an intersection of the
+ * per-consumer types above: a derived union can never disagree with its
+ * consumers, so it could not catch a consumer that grew a command nobody
+ * declared. `eval` is here because the checkout-confirmation store — built by
+ * `cartRoutes` off this same resolver — runs its single-use GET+DEL Lua through
+ * it. Widen this only by adding a command the family genuinely issues.
+ */
+export type CartRouteRedisClient = Pick<
+  RedisClient,
+  "get" | "set" | "del" | "hSet" | "hDel" | "hGetAll" | "expire" | "multi" | "eval"
+>;
 
 /** Supported checkout payment methods (mirrors the `z.enum(["pix","card","cash"])`
  *  body schema on POST /api/cart/checkout). */
@@ -199,6 +277,21 @@ export interface CartRouteDeps {
    * (`computeOrderStatus` and the GET order-details handler).
    */
   readonly paymentQueryService: () => PaymentQueryService;
+  /**
+   * Resolves the Redis client every Redis touch in this family runs on — the
+   * ten direct `getRedisClient()` calls this module used to make, plus the
+   * checkout-confirmation store `cartRoutes` builds off it.
+   *
+   * A FACTORY, for the same reason the service members above are: nothing
+   * connects at plugin-registration time. It returns a PROMISE because that is
+   * what `getRedisClient()` returns, and because keeping the `await` at each
+   * original call site is what makes "resolved at the same point" literally
+   * true — no consumer hoists the resolution out of the branch (or the
+   * try/catch) that owns it. `loadCachedPixDetails` still resolves inside its
+   * swallowing catch; the delivery-estimate and coupon handlers, which reach
+   * Redis never, still resolve nothing at all.
+   */
+  readonly redis: () => Promise<CartRouteRedisClient>;
 }
 
 /**
@@ -221,6 +314,7 @@ function defaultCartRouteDeps(): CartRouteDeps {
       createOrderCommandService(undefined, { auditSink: getAuditSink() }),
     orderQueryService: () => createOrderQueryService(),
     paymentQueryService: () => createPaymentQueryService(),
+    redis: () => getRedisClient(),
   };
 }
 
@@ -261,10 +355,10 @@ const PIX_CACHE_TTL = 90 * 86400; // 90 days
  *  error rather than a live connection. */
 async function loadCachedPixDetails(
   customerId: string,
-  deps: Pick<CartRouteDeps, "customerLookupService">,
+  deps: Pick<CartRouteDeps, "customerLookupService" | "redis">,
 ): Promise<{ name?: string; email?: string; cpf?: string } | null> {
   try {
-    const redis = await getRedisClient();
+    const redis: PixCacheReadRedis = await deps.redis();
     const key = rk(`customer:pix:${customerId}`);
     const hash = await redis.hGetAll(key);
     if (hash && Object.keys(hash).length > 0) {
@@ -302,10 +396,10 @@ async function loadCachedPixDetails(
 export async function cachePixDetailsForCustomer(
   customerId: string,
   data: { name?: string; email?: string; cpf?: string },
-  deps: Pick<CartRouteDeps, "customerService">,
+  deps: Pick<CartRouteDeps, "customerService" | "redis">,
 ): Promise<void> {
   try {
-    const redis = await getRedisClient();
+    const redis: PixCacheWriteRedis = await deps.redis();
     const key = rk(`customer:pix:${customerId}`);
     const pipeline = redis.multi();
     if (data.name) pipeline.hSet(key, "name", data.name);
@@ -373,16 +467,33 @@ const ACTIVE_CARTS_TTL = 48 * 60 * 60; // 48h — matches max session TTL (guest
  * Store {sessionType, lastActivity} so abandoned-cart-checker uses correct idle
  * threshold per session type.
  */
-async function trackCartId(cartId: string, sessionType: "guest" | "customer" = "guest"): Promise<void> {
-  const redis = await getRedisClient();
+async function trackCartId(
+  cartId: string,
+  sessionType: "guest" | "customer" = "guest",
+  deps: Pick<CartRouteDeps, "redis">,
+): Promise<void> {
+  // Resolved HERE, not hoisted to the handler: the POST /line-items handler
+  // already holds a client for its ownership check, and passing that one in
+  // would collapse two resolutions into one. `getRedisClient()` is memoized so
+  // the client is the same either way — but the resolution COUNT is observable
+  // (it is asserted in cart-routes.test.ts), and "byte-identical behaviour"
+  // includes that.
+  const redis: ActiveCartsRedis = await deps.redis();
   const data = JSON.stringify({ cartId, sessionType, lastActivity: Date.now() });
   await redis.hSet(rk("active:carts"), cartId, data);
   await redis.expire(rk("active:carts"), ACTIVE_CARTS_TTL);
 }
 
-/** Remove cartId from active:carts (called when order is placed). */
-export async function untrackCartId(cartId: string): Promise<void> {
-  const redis = await getRedisClient();
+/** Remove cartId from active:carts (called when order is placed).
+ *
+ *  `deps` is REQUIRED and has no default — the same rule the service members
+ *  follow: a default would be a silent path back to the process singleton on a
+ *  route whose client the caller has already chosen. @internal */
+export async function untrackCartId(
+  cartId: string,
+  deps: Pick<CartRouteDeps, "redis">,
+): Promise<void> {
+  const redis: UntrackCartRedis = await deps.redis();
   await redis.hDel(rk("active:carts"), cartId);
 }
 
@@ -394,7 +505,7 @@ export async function untrackCartId(cartId: string): Promise<void> {
 async function verifyCartOwnership(
   cartId: string,
   customerId: string | undefined,
-  redis: RedisClient,
+  redis: CartOwnershipRedis,
 ): Promise<boolean> {
   if (!customerId) return true; // Guest carts — no verification possible
   const ownerKey = rk(`cart:owner:${cartId}`);
@@ -411,8 +522,14 @@ async function verifyCartOwnership(
 }
 
 // Single-use store for parked large-ticket checkouts (REQUEST_CONFIRMATION).
-// Stateless — receipts live in Redis; one module instance is fine.
-const checkoutConfirmationStore = createCheckoutConfirmationStore();
+//
+// Stateless — the receipts live in Redis. It used to be a MODULE-scope const
+// ("one module instance is fine"); it is now built inside `cartRoutes` off
+// `deps.redis`, so the store's client is the family's client. Construction is
+// still free of IO (the store only resolves a client when a receipt is written
+// or consumed), so the move costs nothing at registration time and the
+// resolution point of each command is unchanged. The two helpers below that
+// need it take it as an ARGUMENT rather than closing over a module const.
 
 /**
  * R0a — customer-facing order-read authorization (closes the null-owner IDOR).
@@ -473,7 +590,7 @@ async function finalizeCheckout(args: {
    */
   onFixableFailure?: () => Promise<void>;
   /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: Pick<CartRouteDeps, "customerService" | "orderCommandService">;
+  deps: Pick<CartRouteDeps, "customerService" | "orderCommandService" | "redis">;
 }): Promise<FastifyReply> {
   const { reply, result, cartId, paymentMethod, customerId, pixExtra, notes, onFixableFailure, deps } = args;
 
@@ -509,8 +626,8 @@ async function finalizeCheckout(args: {
 
   // Untrack cart from abandoned-cart detection on successful checkout
   if (result.orderId) {
-    await untrackCartId(cartId);
-    const redis = await getRedisClient();
+    await untrackCartId(cartId, deps);
+    const redis: CartOwnerReleaseRedis = await deps.redis();
     await redis.del(rk(`cart:owner:${cartId}`));
   }
 
@@ -849,8 +966,9 @@ async function syncLocalCartForCheckout(args: {
   localItems: Array<{ variantId: string; quantity: number; productType?: string }>;
   customerId: string | undefined;
   log: RouteLog;
-  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: Pick<CartRouteDeps, "customerLookupService">;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. `redis` is
+   *  reached only on the cart-REPLACEMENT arm, through `trackCartId`. */
+  deps: Pick<CartRouteDeps, "customerLookupService" | "redis">;
 }): Promise<{ cartId: string } | { rejection: CheckoutRejection }> {
   const { localItems, customerId, log, deps } = args;
   let cartId = args.cartId;
@@ -881,7 +999,7 @@ async function syncLocalCartForCheckout(args: {
       };
     }
     cartId = newCart.cart.id;
-    await trackCartId(cartId, customerId ? "customer" : "guest");
+    await trackCartId(cartId, customerId ? "customer" : "guest", deps);
   }
 
   // BKL-180 — replace the N per-line `medusa.cart.line_items.add` replay with ONE
@@ -1068,8 +1186,10 @@ async function resolvePixBillingDetails(args: {
   pixEmail?: string;
   pixCpf?: string;
   customerId: string | undefined;
-  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: Pick<CartRouteDeps, "customerLookupService">;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. `redis` is
+   *  here only because the cached-pre-fill arm below reaches
+   *  `loadCachedPixDetails`; the form-supplied arm reaches Redis never. */
+  deps: Pick<CartRouteDeps, "customerLookupService" | "redis">;
 }): Promise<
   | { rejection: CheckoutRejection }
   | { pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } }
@@ -1174,19 +1294,26 @@ async function respondToCheckoutDecision(args: {
   pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } | undefined;
   notes: string | undefined;
   releaseGate: () => Promise<void>;
+  /**
+   * The registration-scoped confirmation store. Passed rather than closed over:
+   * the store is no longer a module const, because its Redis client now comes
+   * from `deps.redis` (see the block where it used to be constructed).
+   */
+  confirmationStore: CheckoutConfirmationStore;
   /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: Pick<CartRouteDeps, "customerService" | "orderCommandService">;
+  deps: Pick<CartRouteDeps, "customerService" | "orderCommandService" | "redis">;
 }): Promise<FastifyReply> {
   const {
     reply, out, checkoutPayload, checkoutIdempotencyKey, cartId, sessionId,
-    paymentMethod, customerId, userType, checkoutBody, pixExtra, notes, releaseGate, deps,
+    paymentMethod, customerId, userType, checkoutBody, pixExtra, notes, releaseGate,
+    confirmationStore, deps,
   } = args;
 
   // REQUEST_CONFIRMATION (large-ticket ≥ R$1.000) — park the prepared checkout
   // under a single-use receipt and enrich the 202 with the confirmationId.
   if (out.decision.kind === "REQUEST_CONFIRMATION") {
     const prompt = out.decision.prompt;
-    const parked = await checkoutConfirmationStore.create({
+    const parked = await confirmationStore.create({
       kind: "order.checkout.create",
       payload: checkoutPayload,
       idempotencyKey: checkoutIdempotencyKey,
@@ -1435,7 +1562,19 @@ export async function cartRoutes(
   const app = server.withTypeProvider<ZodTypeProvider>();
   // Resolved ONCE per registration. The members are factories, so nothing is
   // constructed here — see the CartRouteDeps block above.
+  //
+  // The two-phase STRUCTURE this preserves (R5-S5): everything in the REGISTER
+  // phase is pure — `resolveCartRouteDeps` merges two plain objects of
+  // functions, and `createCheckoutConfirmationStore` closes over one of them.
+  // Every construction and every Redis resolution happens in the READY phase,
+  // on the request that needs it. Adding `redis` did not move that line: the
+  // member is a factory returning a promise, so no connection is opened, no
+  // `getRedisClient()` is called, and `await app.ready()` still touches Redis
+  // exactly zero times.
   const deps = resolveCartRouteDeps(options);
+  // Registration-scoped, IO-free at construction — see the block above where
+  // this used to be a module const.
+  const confirmationStore = createCheckoutConfirmationStore({ redis: deps.redis });
 
   // POST /api/cart — create cart
   app.post(
@@ -1475,7 +1614,7 @@ export async function cartRoutes(
         });
 
         const cartId = (data as { cart?: { id: string } }).cart?.id;
-        if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest");
+        if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest", deps);
 
         return reply.code(201).send(data);
       } catch (err) {
@@ -1512,13 +1651,13 @@ export async function cartRoutes(
     },
     async (request, reply) => {
       // SEC: Verify cart ownership before mutation
-      const redis = await getRedisClient();
+      const redis: CartOwnershipRedis = await deps.redis();
       if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
       // Ensure cart is tracked for abandoned-cart detection
-      await trackCartId(request.params.id, request.customerId ? "customer" : "guest");
+      await trackCartId(request.params.id, request.customerId ? "customer" : "guest", deps);
 
       try {
         const data = await medusaAdjudicated<typeof request.body, unknown>({
@@ -1555,7 +1694,7 @@ export async function cartRoutes(
     },
     async (request, reply) => {
       // SEC: Verify cart ownership before mutation
-      const redis = await getRedisClient();
+      const redis: CartOwnershipRedis = await deps.redis();
       if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
@@ -1594,7 +1733,7 @@ export async function cartRoutes(
     },
     async (request, reply) => {
       // SEC: Verify cart ownership before mutation
-      const redis = await getRedisClient();
+      const redis: CartOwnershipRedis = await deps.redis();
       if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
@@ -1740,7 +1879,9 @@ export async function cartRoutes(
     },
     async (request, reply) => {
       // SEC: Verify cart ownership before checkout
-      const redis = await getRedisClient();
+      // Resolved ONCE for this handler, exactly as before: this same client
+      // serves the ownership gate AND the checkout:idem SET/DEL below.
+      const redis = await deps.redis();
       if (!(await verifyCartOwnership(request.body.cartId, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
@@ -1891,6 +2032,7 @@ export async function cartRoutes(
         paymentMethod,
         customerId: request.customerId,
         userType: request.userType ?? "guest",
+        confirmationStore,
         deps,
         checkoutBody: request.body as Record<string, unknown>,
         pixExtra,
@@ -1928,10 +2070,10 @@ export async function cartRoutes(
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      const redis = await getRedisClient();
+      const redis = await deps.redis();
 
       // Single-use consume — unknown / expired / already-confirmed → 410 Gone.
-      const pending = await checkoutConfirmationStore.consume(
+      const pending = await confirmationStore.consume(
         request.body.confirmationId,
       );
       if (!pending) {

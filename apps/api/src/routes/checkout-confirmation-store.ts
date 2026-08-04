@@ -99,6 +99,45 @@ export interface PendingCheckout {
   readonly createdAt: string;
 }
 
+/**
+ * The Redis-shaped client this store reads and writes through — R5 rollout.
+ *
+ * EXHAUSTIVE and deliberately narrow: `set` is `create`'s single write, `eval`
+ * is `consume`'s atomic GET+DEL. Nothing else in this file touches Redis.
+ *
+ * Fail-closed analysis: both members are ISSUED unconditionally once their
+ * method is reached, and neither is feature-detected (`typeof c.X ===
+ * "function"` — the shape that made the park path's `evalIncrCheck` degrade
+ * silently). `consume`'s only `try/catch` wraps `JSON.parse`, NOT the `eval`,
+ * so a client that cannot serve `eval` throws out of the route rather than
+ * turning every receipt into a 410. The UUID-shape gate above the `eval` is the
+ * one path that reaches Redis never, and it stays that way.
+ */
+export type CheckoutConfirmationRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "set" | "eval"
+>;
+
+/**
+ * Injection point for the store's Redis client.
+ *
+ * A RESOLVER (`() => Promise<client>`) rather than an instance, deliberately:
+ * `cartRoutes` builds this store in its synchronous registration phase and has
+ * no client in hand there. Taking an instance would force the route to `await
+ * getRedisClient()` at registration — hoisting a resolution that today happens
+ * per receipt, and opening a connection on a process that may never park a
+ * large-ticket checkout at all.
+ */
+export interface CheckoutConfirmationStoreOptions {
+  /**
+   * Resolves the client each command runs on. Defaults to the process
+   * singleton, resolved at the SAME point inside `create`/`consume` it always
+   * was — so `createCheckoutConfirmationStore()` with no argument is
+   * byte-identical to what this module did before.
+   */
+  readonly redis?: () => Promise<CheckoutConfirmationRedis>;
+}
+
 export interface CheckoutConfirmationStore {
   /**
    * Persist a parked checkout. Returns the receipt id (the customer sends
@@ -117,16 +156,25 @@ export interface CheckoutConfirmationStore {
 }
 
 /**
- * Build a checkout confirmation store wired to the default Redis client.
- * Stateless — the receipts live in Redis; one instance per route
- * registration is fine.
+ * Build a checkout confirmation store. Stateless — the receipts live in Redis;
+ * one instance per route registration is fine.
+ *
+ * With no options the client is the process singleton (the pre-R5 behaviour,
+ * unchanged); `cartRoutes` passes its own `deps.redis` so the store runs on the
+ * family's client.
  */
-export function createCheckoutConfirmationStore(): CheckoutConfirmationStore {
+export function createCheckoutConfirmationStore(
+  options?: CheckoutConfirmationStoreOptions,
+): CheckoutConfirmationStore {
+  /** One touch, one resolution — never hoisted out of the method that needs it. */
+  const resolveClient = (): Promise<CheckoutConfirmationRedis> =>
+    options?.redis ? options.redis() : getRedisClient();
+
   return {
     async create(pending) {
       const confirmationId = randomUUID();
       const key = rk(`checkout:confirmation:${confirmationId}`);
-      const redis = await getRedisClient();
+      const redis = await resolveClient();
       await redis.set(key, JSON.stringify(pending), {
         EX: CHECKOUT_CONFIRMATION_TTL_SECONDS,
       });
@@ -147,7 +195,7 @@ export function createCheckoutConfirmationStore(): CheckoutConfirmationStore {
         return null;
       }
       const key = rk(`checkout:confirmation:${confirmationId}`);
-      const redis = await getRedisClient();
+      const redis = await resolveClient();
       const raw = (await redis.eval(CONSUME_RECEIPT_SCRIPT, {
         keys: [key],
         arguments: [],
