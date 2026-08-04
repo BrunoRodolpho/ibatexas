@@ -193,6 +193,40 @@ describe("submitReviewFromEnvelope", () => {
     expect(upsertCall.create.customerId).toBe("cus_01")
   })
 
+  // F-14 (ledger cycle 21) — MEASUREMENT 2: what the review write is actually
+  // keyed on. `order.review.submit` is absent from OWNERSHIP_GATED_KINDS, so no
+  // kernel IDOR gate stands behind this write; the executor's own scoping is
+  // therefore load-bearing and is pinned here rather than left implicit.
+  //
+  // The upsert's unique selector is the COMPOSITE `(orderId, customerId)` and
+  // both the selector and the created row take `customerId` from the CALLER's
+  // verified context — never from the payload. Consequence: a review can only
+  // ever be created or updated AS the authenticated customer, so it can never
+  // overwrite or impersonate the order owner's own review row. What it does NOT
+  // do is verify that `orderId` belongs to that customer — that check lives
+  // upstream (the parse-seam id strip + the resolver's owner-scoped resolution,
+  // apps/api; the route-level `getById(orderId, {customerId})` gate on
+  // POST /api/me/reviews). Anything that moves the write off this composite key
+  // reds this test by name.
+  it("the write is keyed on the COMPOSITE (orderId, customerId) with the customerId from the verified caller — never the payload", async () => {
+    const svc = createCustomerService()
+    await svc.submitReviewFromEnvelope(
+      reviewEnvelope({
+        orderId: "order_01",
+        productId: "prod_01",
+        rating: 4,
+      }),
+      reviewState(),
+      { customerId: "cus_01", channel: Channel.WhatsApp },
+    )
+
+    const upsertCall = mockReviewUpsert.mock.calls[0][0]
+    expect(upsertCall.where).toEqual({
+      orderId_customerId: { orderId: "order_01", customerId: "cus_01" },
+    })
+    expect(upsertCall.create.customerId).toBe("cus_01")
+  })
+
   it("REFUSE: out-of-range rating short-circuits before Prisma", async () => {
     const svc = createCustomerService()
     const outcome = await svc.submitReviewFromEnvelope(

@@ -799,6 +799,44 @@ describe("createIbatexasPlanner — plan-time payload filter (FE-T11 review)", (
     expect(plan.envelopes[0]!.payload).toEqual({ item: "coca", quantity: 1 });
   });
 
+  // F-14 (ledger cycle 21) — MEASUREMENT 1. `order.review.submit` is absent from
+  // OWNERSHIP_GATED_KINDS (authority-wiring.ts), so the kernel IDOR gate never
+  // stamps or checks this kind. The question that makes that absence sound is
+  // whether the model can author the reviewed order's id AT ALL. It cannot: the
+  // capability declares NO `legacyPayloadChannels` (order-note-review.schema.ts),
+  // so BOTH Identity-class ids are dropped here, at the parse seam, before
+  // `buildEnvelope`. Everything downstream (`applyAutoResolve`'s owner-scoped
+  // overwrite, `resolveReviewedProduct`'s owner-scoped read) resolves them
+  // first-party. Deleting `order.review.submit` from the schema registry, or
+  // giving it a legacy channel for either id, reds this by name.
+  it("order.review.submit: a smuggled orderId AND productId are BOTH dropped — the two Identity-class ids are only ever resolver-stamped (F-14)", async () => {
+    const { model } = mockModel([
+      expressIntent("order.review.submit", {
+        rating: 5,
+        comment: "chegou quentinho",
+        item: "a costela",
+        orderReference: "1234",
+        orderId: "ord_VICTIM",
+        productId: "prod_VICTIM",
+      }),
+    ]);
+    const planner = createIbatexasPlanner({
+      model,
+      modelId: "claude-test",
+      capabilityPlanners: [capPlanner([], ["order.review.submit"])],
+    });
+
+    const plan = await planner.propose(mkState("dou 5 estrelas pro pedido 1234"));
+    expect(plan.envelopes).toHaveLength(1);
+    // The four Directive-class fields survive; neither id does.
+    expect(plan.envelopes[0]!.payload).toEqual({
+      rating: 5,
+      comment: "chegou quentinho",
+      item: "a costela",
+      orderReference: "1234",
+    });
+  });
+
   it("an UNAUTHORED capability's payload passes through completely VERBATIM (no authored schema yet — zero behavior change)", async () => {
     // order.item.add, then order.checkout.create, were this test's
     // successive examples — FE-T14 then T12 authored them both (the entire
