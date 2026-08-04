@@ -508,6 +508,30 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       return next
     },
 
+    /**
+     * `incr`'s mirror, and a real DECR in the one way that matters here: it
+     * goes NEGATIVE rather than flooring at zero. The backing consumer is
+     * `@adjudicate/runtime`'s `resumeDeferredIntent`, which decrements the
+     * per-session parked-envelope quota counter on a successful resume. A
+     * double that floored at 0 would hide a double-decrement — exactly the
+     * accounting bug the counter exists to make visible — so an over-release
+     * shows up as a negative count, the way Redis reports it.
+     */
+    async decr(key: unknown): Promise<number> {
+      assertKey("decr", key)
+      record("decr", [key])
+      const entry = typed(key, "string")
+      if (entry === undefined) {
+        store.set(key, { kind: "string", value: "-1", expiresAtMs: null })
+        return -1
+      }
+      const current = entry.value as string
+      if (!/^-?\d+$/.test(current)) throw new NotAnIntegerError(key, current)
+      const next = Number.parseInt(current, 10) - 1
+      entry.value = String(next)
+      return next
+    },
+
     async expire(key: unknown, seconds: unknown): Promise<boolean> {
       assertKey("expire", key)
       assertPositiveIntSeconds("expire", seconds)
