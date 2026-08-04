@@ -59,7 +59,25 @@ import { getAuditSink } from "@ibatexas/audit-sink";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────
 
-const mockGetRedisClient = vi.hoisted(() => vi.fn());
+/**
+ * R5 rollout — a TRIPWIRE, not a supplier.
+ *
+ * `cachePixDetailsForCustomer` now takes its Redis client from
+ * `deps.redis`, so nothing in this file may reach the process singleton. This
+ * `vi.fn` therefore REJECTS instead of answering a double: if the threading is
+ * removed and the helper falls back to `getRedisClient()`, the sentinel below
+ * lands in the helper's swallowed `console.warn` and the seam cases red.
+ *
+ * It is not deleted outright because `routes/cart.ts` still imports the symbol
+ * (it is the DEFAULT behind `defaultCartRouteDeps`), and this file's
+ * `vi.mock("@ibatexas/tools")` must supply every export the module imports.
+ */
+const SINGLETON_TRIPWIRE = "cart-pix-details: reached the getRedisClient singleton";
+const mockGetRedisClient = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.reject(new Error("cart-pix-details: reached the getRedisClient singleton")),
+  ),
+);
 const mockRk = vi.hoisted(() => vi.fn((k: string) => `ibatexas:${k}`));
 
 vi.mock("@ibatexas/tools", () => ({
@@ -83,6 +101,16 @@ import { cachePixDetailsForCustomer, type CartRouteDeps } from "../cart.js";
 /** A CPF whose Modulo-11 checksum is valid, so the pack's guard accepts it. */
 const VALID_CPF = "39053344705";
 
+/**
+ * The PIX-cache write double.
+ *
+ * NOT `createInMemoryRedis`: `cachePixDetailsForCustomer`'s only Redis touch is
+ * a MULTI pipeline, and the canonical adapter refuses `multi` (W4 — pipeline
+ * semantics are the owner-gated class). So this file keeps a hand double; what
+ * changed in the R5 rollout is WHERE it enters — through `deps.redis`, the
+ * production seam, rather than through a module interception of
+ * `getRedisClient`.
+ */
 function createMockRedis() {
   const pipeline = {
     hSet: vi.fn().mockReturnThis(),
@@ -128,6 +156,10 @@ let db: InMemoryDomainClient;
 let service: CustomerService;
 let serviceFactory: ReturnType<typeof vi.fn>;
 let deps: CartRouteDeps;
+/** The client `deps.redis` hands out — reassigned per test. */
+let redis: ReturnType<typeof createMockRedis>;
+/** Counts how many times the subject resolved a client through the seam. */
+let redisFactory: ReturnType<typeof vi.fn>;
 let envelopeSpy: MockInstance;
 let bareArgSpy: MockInstance;
 
@@ -157,12 +189,18 @@ function depsOver(client: CustomerServiceClient): CartRouteDeps {
   envelopeSpy = vi.spyOn(svc, "updatePixDetailsFromEnvelope");
   bareArgSpy = vi.spyOn(svc, "updatePixDetails");
   serviceFactory = vi.fn(() => svc);
+  redis = createMockRedis();
+  redisFactory = vi.fn(async () => redis);
   return {
     customerService: serviceFactory as unknown as () => CustomerService,
     customerLookupService: unreachableDep("customerLookupService"),
     orderCommandService: unreachableDep("orderCommandService"),
     orderQueryService: unreachableDep("orderQueryService"),
     paymentQueryService: unreachableDep("paymentQueryService"),
+    // R5 rollout — the PIX cache write runs on THIS client, not the singleton.
+    // `unreachableDep` is wrong for this member: unlike the four services above,
+    // `cachePixDetailsForCustomer` genuinely reaches it.
+    redis: redisFactory as unknown as CartRouteDeps["redis"],
   };
 }
 
@@ -181,7 +219,6 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
       },
     });
     deps = depsOver(db.client);
-    mockGetRedisClient.mockResolvedValue(createMockRedis());
   });
 
   it("routes DB persist through updatePixDetailsFromEnvelope (not bare-arg)", async () => {
@@ -251,8 +288,6 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
   });
 
   it("propagates Redis-cache writes even when the envelope dispatch refuses", async () => {
-    const redis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(redis);
     const before = db.rows("customer").find((r) => r.id === "cust_03");
 
     await expect(
@@ -282,9 +317,6 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
     // booked against Medusa must not fail on a cache/persist hiccup). An unknown
     // customerId is the production shape of that failure: the kernel EXECUTEs
     // and the executor's UPDATE finds no row (Prisma P2025).
-    const redis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(redis);
-
     await expect(
       cachePixDetailsForCustomer(
         "cust_does_not_exist",
@@ -329,6 +361,64 @@ describe("cart.ts — cachePixDetailsForCustomer envelope routing", () => {
       expect(db.rows("customer").find((r) => r.id === "cust_01")).not.toMatchObject(
         { cpf: VALID_CPF },
       );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // ── R5 rollout — the Redis client seam, born guarded ────────────────────
+  //
+  // F-5: a new seam ships with a probe of its CONSUMING SURFACE. Injecting a
+  // client and asserting on it proves nothing on its own — the subject could
+  // ignore the argument and resolve the singleton, and every assertion above
+  // would still pass, because none of them looks at where the write landed.
+  //
+  // The FAIL-CLOSED PICK hazard this specifically covers: this consumer's whole
+  // body is inside a swallowing `try/catch`. A Redis client that cannot serve
+  // it does not raise — it warns and returns. So "the cache write happened" has
+  // to be observed on the injected object, and "the singleton was not reached"
+  // has to be observed separately, or a silent degradation reads as green.
+
+  it("[seam] the PIX cache write lands on the INJECTED client, resolved once", async () => {
+    await cachePixDetailsForCustomer(
+      "cust_01",
+      { name: "Alice", email: "alice@example.com", cpf: VALID_CPF },
+      deps,
+    );
+
+    // Resolved through the seam exactly once — one Redis touch, one resolution.
+    expect(redisFactory).toHaveBeenCalledTimes(1);
+    // …and the pipeline it opened is the one we handed over.
+    expect(redis.multi).toHaveBeenCalledTimes(1);
+    expect(redis._pipeline.exec).toHaveBeenCalledTimes(1);
+    // Fields queued on the injected pipeline, under the rk()-namespaced key.
+    expect(redis._pipeline.hSet).toHaveBeenCalledWith(
+      "ibatexas:customer:pix:cust_01",
+      "cpf",
+      VALID_CPF,
+    );
+  });
+
+  it("[seam] never resolves the getRedisClient singleton", async () => {
+    // The tripwire rejects. `cachePixDetailsForCustomer` swallows into a warn,
+    // so a fallback would be INVISIBLE without this assertion — which is the
+    // whole point of pinning the call count rather than the outcome.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await cachePixDetailsForCustomer(
+        "cust_01",
+        { name: "Alice", email: "alice@example.com", cpf: VALID_CPF },
+        deps,
+      );
+
+      expect(mockGetRedisClient).not.toHaveBeenCalled();
+      // Positive control: the tripwire's sentinel never reached the warn path,
+      // and no warn happened at all — so the run above really was clean.
+      expect(warn).not.toHaveBeenCalledWith(
+        "[cart/checkout] Failed to cache PIX details:",
+        SINGLETON_TRIPWIRE,
+      );
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }

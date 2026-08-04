@@ -20,8 +20,42 @@
 //
 // All external deps are mocked — no DB / network / Redis / LLM. pt-BR copy is
 // asserted verbatim where the route owns it.
+//
+// ── R5 rollout — Redis is the CANONICAL in-memory adapter now ─────────────
+//
+// This file used to intercept `getRedisClient` and answer a hand-rolled
+// nine-command object of constants: `hSet`→1, `expire`→true, `set`→"OK",
+// `get`→null, `del`→1, `hGetAll`→{}, plus a `multi` whose pipeline discarded
+// everything and an `eval`→null. `routes/cart.ts` now takes its client from
+// `CartRouteDeps.redis`, so the client arrives as an ARGUMENT and the double is
+// `createInMemoryRedis()` from `@ibatexas/tools/testing` — a real keyspace with
+// real NX/TTL/hash semantics — wrapped in a SPY-DELEGATE so every existing
+// `toHaveBeenCalledWith` survives while the call actually goes THROUGH.
+//
+// What that changes, concretely:
+//
+//   • The ownership guard runs against real SET-NX. The old `set`→"OK" constant
+//     meant a claim always "succeeded"; a claim on an already-owned key now
+//     really returns null.
+//   • The checkout idempotency gate is a real NX+EX key, so its release
+//     (`del`) is observable as the key DISAPPEARING, not just as a call.
+//   • `rk` is the REAL one. The old fake answered `ibatexas:<key>`; production
+//     under this vitest writes `development:<key>` (no `APP_ENV` is pinned in
+//     apps/api's config) — the keys under assertion were a prefix nothing
+//     writes.
+//   • `getRedisClient` is now a TRIPWIRE that rejects. It cannot be deleted
+//     from the module factory — `routes/cart.ts` imports it as the default
+//     behind `defaultCartRouteDeps` — so it is repurposed into the guard that
+//     the threading is real.
+//
+// The two commands the adapter REFUSES by design (W4 RULE 3) are `multi` and
+// `eval`, and this file reaches neither: every checkout here is `cash`, so the
+// PIX cache's MULTI pipeline is unreachable, and no case drives
+// `POST /api/cart/checkout/confirm`, so the confirmation store's Lua is too.
+// That is asserted, not assumed — see the `[seam]` case at the end of the file.
 
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
 import Fastify from "fastify";
 import {
   serializerCompiler,
@@ -31,12 +65,24 @@ import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
 // Wire the no-op audit sink BEFORE importing the routes (see cart-routes.test.ts).
 import "../../__tests__/setup.js";
-import { cartRoutes } from "../cart.js";
+// The REAL `rk` (the module mock below forwards it) — every key this file seeds
+// or asserts is computed the way production computes it.
+import { rk } from "@ibatexas/tools";
+import { cartRoutes, type CartRouteRedisClient } from "../cart.js";
 
 // ── Hoisted mocks ───────────────────────────────────────────────────────────
 
-const mockGetRedisClient = vi.hoisted(() => vi.fn());
-const mockRk = vi.hoisted(() => vi.fn());
+/**
+ * TRIPWIRE, not a supplier — see the R5 block in the file header. Every Redis
+ * touch in these routes must come from the injected `deps.redis`; reaching the
+ * singleton is a failure, and rejecting makes it a LOUD one on the paths that
+ * would otherwise swallow it (`loadCachedPixDetails` catches and returns null).
+ */
+const mockGetRedisClient = vi.hoisted(() =>
+  vi.fn(() =>
+    Promise.reject(new Error("cart-uncovered-handlers: reached the getRedisClient singleton")),
+  ),
+);
 const mockMedusaStore = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockMedusaAdjudicated = vi.hoisted(() => vi.fn());
@@ -105,7 +151,9 @@ vi.mock("@ibatexas/tools", async () => {
   const actual = await vi.importActual<typeof import("@ibatexas/tools")>("@ibatexas/tools");
   return {
     getRedisClient: mockGetRedisClient,
-    rk: mockRk,
+    // The REAL rk (Hard Rule #7): the keys these tests assert on are the keys
+    // production writes, prefix included.
+    rk: actual.rk,
     estimateDelivery: mockEstimateDelivery,
     createCheckout: mockCreateCheckout,
     reaisToCentavos: (amount: number) => Math.round(amount * 100),
@@ -204,39 +252,85 @@ vi.mock("../../middleware/auth.js", () => ({
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 
+/**
+ * The spy-delegate over the canonical adapter (R5-S7).
+ *
+ * Each command is a `vi.fn()` that FORWARDS to `createInMemoryRedis()`'s
+ * client, so `toHaveBeenCalledWith` / `not.toHaveBeenCalled` keep working
+ * unedited while the command really executes against a keyspace. A bare Proxy
+ * client would have no spyable own properties; a plain double would have no
+ * semantics. This has both.
+ *
+ * Only the commands `routes/cart.ts` issues are wrapped. Anything else falls
+ * through to the adapter's throw-on-unrouted Proxy, so a newly-issued command
+ * surfaces by NAME instead of returning `undefined`.
+ */
+type SpyRedis = {
+  readonly memory: InMemoryRedis;
+  readonly client: CartRouteRedisClient;
+  readonly get: Mock;
+  readonly set: Mock;
+  readonly del: Mock;
+  readonly hSet: Mock;
+  readonly hDel: Mock;
+  readonly hGetAll: Mock;
+  readonly expire: Mock;
+};
+
+/**
+ * A FROZEN clock for the adapter's TTL model.
+ *
+ * The adapter records expiry as `now() + ttl` and reports `ttlMs` as
+ * `expiresAt - now()`. Against the wall clock those two `now()`s differ by a
+ * millisecond or two, so an exact TTL assertion is a coin flip. Freezing makes
+ * "the 48h TTL" an exact, non-flaky claim — the same technique the R5-S9
+ * spill-storage migration used to pin its 7-day window.
+ */
+const FROZEN_NOW = 1_800_000_000_000;
+
+function createSpyRedis(
+  memory: InMemoryRedis = createInMemoryRedis({ now: () => FROZEN_NOW }),
+): SpyRedis {
+  const real = memory.client;
+  const spies = {
+    get: vi.fn((...a: unknown[]) => (real.get as (...x: unknown[]) => unknown)(...a)),
+    set: vi.fn((...a: unknown[]) => (real.set as (...x: unknown[]) => unknown)(...a)),
+    del: vi.fn((...a: unknown[]) => (real.del as (...x: unknown[]) => unknown)(...a)),
+    hSet: vi.fn((...a: unknown[]) => (real.hSet as (...x: unknown[]) => unknown)(...a)),
+    hDel: vi.fn((...a: unknown[]) => (real.hDel as (...x: unknown[]) => unknown)(...a)),
+    hGetAll: vi.fn((...a: unknown[]) => (real.hGetAll as (...x: unknown[]) => unknown)(...a)),
+    expire: vi.fn((...a: unknown[]) => (real.expire as (...x: unknown[]) => unknown)(...a)),
+  };
+  // Spread the adapter's Proxy LAST so unwrapped commands (multi, eval, …) keep
+  // throwing by name rather than silently resolving to undefined.
+  const client = new Proxy({} as Record<string, unknown>, {
+    get: (_t, prop: string | symbol) =>
+      typeof prop === "string" && prop in spies
+        ? (spies as Record<string, unknown>)[prop]
+        : (real as unknown as Record<string | symbol, unknown>)[prop],
+  }) as unknown as CartRouteRedisClient;
+  return { memory, client, ...spies };
+}
+
+/** The client the route family runs on for the current test. */
+let redis: SpyRedis;
+
 async function buildTestServer() {
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   await app.register(sensible);
-  await app.register(cartRoutes);
+  // R5 rollout — the ONLY override. Every other CartRouteDeps member keeps its
+  // production default, which is what makes `@ibatexas/domain`'s module mock
+  // still the thing under these tests.
+  await app.register(cartRoutes, { deps: { redis: async () => redis.client } });
   await app.ready();
   return app;
 }
 
-function createMockRedis(overrides: Record<string, unknown> = {}) {
-  return {
-    hSet: vi.fn().mockResolvedValue(1),
-    hDel: vi.fn().mockResolvedValue(1),
-    hGetAll: vi.fn().mockResolvedValue({}),
-    expire: vi.fn().mockResolvedValue(true),
-    set: vi.fn().mockResolvedValue("OK"),
-    get: vi.fn().mockResolvedValue(null),
-    del: vi.fn().mockResolvedValue(1),
-    multi: vi.fn(() => ({
-      hSet: vi.fn().mockReturnThis(),
-      expire: vi.fn().mockReturnThis(),
-      exec: vi.fn().mockResolvedValue([]),
-    })),
-    eval: vi.fn().mockResolvedValue(null),
-    ...overrides,
-  };
-}
-
 beforeEach(() => {
   vi.clearAllMocks();
-  mockRk.mockImplementation((key: string) => `ibatexas:${key}`);
-  mockGetRedisClient.mockResolvedValue(createMockRedis());
+  redis = createSpyRedis();
   mockGetMealPeriod.mockReturnValue("lunch");
   mockLoadSchedule.mockResolvedValue({ days: {} });
   mockCreateCheckout.mockResolvedValue({ success: true });
@@ -252,12 +346,20 @@ beforeEach(() => {
 // ── Cart-ownership 403 across mutating routes ────────────────────────────────
 
 describe("cart-ownership guard — 403 on a foreign cart", () => {
-  function foreignOwnerRedis() {
-    return createMockRedis({ get: vi.fn().mockResolvedValue("cust_OTHER") });
+  /**
+   * Plant the competing owner in the keyspace, for real.
+   *
+   * The retired double answered every `get` with the constant `"cust_OTHER"` —
+   * including the re-GET after a lost NX claim, and including any OTHER key the
+   * route might read. This writes ONE key, the one `verifyCartOwnership`
+   * actually consults, through the adapter's own SET.
+   */
+  async function seedForeignOwner(cartId = "cart_01") {
+    await redis.memory.client.set(rk(`cart:owner:${cartId}`), "cust_OTHER");
   }
 
   it("POST /api/cart/:id/line-items → 403", async () => {
-    mockGetRedisClient.mockResolvedValue(foreignOwnerRedis());
+    await seedForeignOwner();
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -271,7 +373,7 @@ describe("cart-ownership guard — 403 on a foreign cart", () => {
   });
 
   it("PATCH /api/cart/:id/line-items/:itemId → 403", async () => {
-    mockGetRedisClient.mockResolvedValue(foreignOwnerRedis());
+    await seedForeignOwner();
     const app = await buildTestServer();
     const res = await app.inject({
       method: "PATCH",
@@ -284,7 +386,7 @@ describe("cart-ownership guard — 403 on a foreign cart", () => {
   });
 
   it("DELETE /api/cart/:id/line-items/:itemId → 403", async () => {
-    mockGetRedisClient.mockResolvedValue(foreignOwnerRedis());
+    await seedForeignOwner();
     const app = await buildTestServer();
     const res = await app.inject({
       method: "DELETE",
@@ -295,7 +397,7 @@ describe("cart-ownership guard — 403 on a foreign cart", () => {
   });
 
   it("POST /api/cart/checkout → 403", async () => {
-    mockGetRedisClient.mockResolvedValue(foreignOwnerRedis());
+    await seedForeignOwner();
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -312,12 +414,19 @@ describe("cart-ownership guard — 403 on a foreign cart", () => {
   it("lost claim race (NX fails, actual owner differs) → 403", async () => {
     // owner GET null → claim NX returns null (another request won) → re-GET
     // returns a DIFFERENT customer → not us → 403.
-    mockGetRedisClient.mockResolvedValue(
-      createMockRedis({
-        get: vi.fn().mockResolvedValue("cust_OTHER"),
-        set: vi.fn().mockResolvedValue(null),
-      }),
-    );
+    //
+    // The retired double asserted this with `get`→"cust_OTHER" + `set`→null,
+    // which never reached the race AT ALL: the FIRST get already returned an
+    // owner, so `verifyCartOwnership` returned on the `owner === customerId`
+    // line and the `set` override was dead code. The race is now driven for
+    // real — the interleaving competitor is modelled by planting its claim
+    // between our GET and our SET, and every command after that (the failing
+    // NX, the re-GET that reads "cust_OTHER") is the adapter's own semantics.
+    const ownerKey = rk("cart:owner:cart_01");
+    redis.set.mockImplementationOnce(async (...args: unknown[]) => {
+      await redis.memory.client.set(ownerKey, "cust_OTHER"); // the competitor wins
+      return (redis.memory.client.set as (...x: unknown[]) => Promise<unknown>)(...args);
+    });
     const app = await buildTestServer();
     const res = await app.inject({
       method: "POST",
@@ -393,8 +502,6 @@ describe("POST /api/cart/checkout — composition guards (422)", () => {
   // local-item sync helpers need their Medusa mocks (mirrors the sync-chain
   // suite below). EXECUTE → createCheckout is invoked → 200.
   function setupAcceptedCheckoutMocks() {
-    const redis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(redis);
     mockMedusaStore.mockResolvedValue({ cart: { items: [], payment_collection: null } });
     mockMedusaAdjudicated.mockResolvedValue({ ok: true });
   }
@@ -510,8 +617,6 @@ describe("POST /api/cart/checkout — local-item sync chain", () => {
   const merchItems = [{ variantId: "var_A", quantity: 2, productType: "merchandise" as const }];
 
   it("clean cart: clears existing items then re-adds local items, EXECUTE 200", async () => {
-    const redis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(redis);
     // Existing cart is clean (no completed_at / no payment sessions) with one stale item.
     mockMedusaStore.mockResolvedValue({ cart: { items: [{ id: "old_1" }], payment_collection: null } });
     mockMedusaAdjudicated.mockResolvedValue({ ok: true });
@@ -656,8 +761,6 @@ describe("POST /api/cart/checkout — local-item sync chain", () => {
 
 describe("POST /api/cart/checkout — finalize side-effects", () => {
   it("createCheckout failure → 400 and the idempotency gate is released", async () => {
-    const redis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(redis);
     mockCreateCheckout.mockResolvedValue({ success: false, message: "Estoque insuficiente." });
 
     const app = await buildTestServer();
@@ -677,8 +780,6 @@ describe("POST /api/cart/checkout — finalize side-effects", () => {
   });
 
   it("COUPON_REJECTED (D1 fail-closed coupon) → 422 with the typed code + pt-BR error, gate released", async () => {
-    const redis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(redis);
     mockCreateCheckout.mockResolvedValue({
       success: false,
       code: "COUPON_REJECTED",
@@ -706,8 +807,6 @@ describe("POST /api/cart/checkout — finalize side-effects", () => {
   });
 
   it("success with notes + IBX order → persists the note via order.note.add envelope", async () => {
-    const redis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(redis);
     mockCreateCheckout.mockResolvedValue({ success: true, orderId: "IBX-0004", paymentMethod: "cash" });
     mockFindFirst.mockResolvedValue({
       id: "proj_1",
@@ -798,7 +897,6 @@ describe("cart routes — medusaAdjudicated error mapping (uncovered)", () => {
   });
 
   it("POST /api/cart re-throws a non-typed error → 500", async () => {
-    mockGetRedisClient.mockResolvedValue(createMockRedis());
     mockMedusaAdjudicated.mockRejectedValue(new Error("medusa down"));
     const app = await buildTestServer();
     const res = await app.inject({ method: "POST", url: "/api/cart" });
@@ -812,10 +910,14 @@ describe("cart routes — medusaAdjudicated error mapping (uncovered)", () => {
 
 describe("GET /api/cart/pix-details", () => {
   it("returns the Redis-cached PIX details (cache hit) and refreshes the TTL", async () => {
-    const redis = createMockRedis({
-      hGetAll: vi.fn().mockResolvedValue({ name: "Ana", email: "ana@x.com", cpf: "39053344705" }),
+    // A REAL hash at the key the route reads, written with the same HSET the
+    // PIX cache write uses — the retired double answered a constant object for
+    // every hGetAll, whatever the key.
+    await redis.memory.client.hSet(rk("customer:pix:cus_01"), {
+      name: "Ana",
+      email: "ana@x.com",
+      cpf: "39053344705",
     });
-    mockGetRedisClient.mockResolvedValue(redis);
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -830,7 +932,7 @@ describe("GET /api/cart/pix-details", () => {
   });
 
   it("falls back to the customer service when Redis has no cache", async () => {
-    mockGetRedisClient.mockResolvedValue(createMockRedis()); // hGetAll → {}
+    // The keyspace is empty — hGetAll answers {} because nothing was cached.
     mockGetById.mockResolvedValue({ name: "Bob", email: "bob@x.com", cpf: "11144477735" });
 
     const app = await buildTestServer();
@@ -845,7 +947,6 @@ describe("GET /api/cart/pix-details", () => {
   });
 
   it("returns {} when nothing is cached and the customer lookup yields nothing", async () => {
-    mockGetRedisClient.mockResolvedValue(createMockRedis());
     mockGetById.mockResolvedValue(null);
 
     const app = await buildTestServer();
@@ -1143,6 +1244,115 @@ describe("GET /api/cart/orders/:orderId/status — resolution + Medusa fallback"
     const res = await app.inject({ method: "GET", url: "/api/cart/orders/order_err/status" });
     expect(res.statusCode).toBe(502);
     expect(res.json().error).toBe("Failed to fetch order status");
+  });
+});
+
+// ── The Redis client seam, born guarded (F-5) ────────────────────────────────
+//
+// Every case above injects a client and then asserts on it. That is NOT proof
+// the route used the injection: if `CartRouteDeps.redis` were dropped and
+// `routes/cart.ts` went back to `await getRedisClient()`, most of those cases
+// would still be green — the ownership 403s would come from a `get` that
+// answers nothing, the estimate/coupon/order-read cases never touch Redis at
+// all, and `loadCachedPixDetails` SWALLOWS its failure into a cache-miss.
+//
+// So the seam is pinned on its CONSUMING SURFACE, three ways:
+//   1. the write really landed in the injected keyspace (state, not calls);
+//   2. the process singleton was never resolved (the tripwire's call count);
+//   3. the family's declared command set is the set actually issued — which is
+//      also what proves the two W4-refused commands (`multi`, `eval`) are out
+//      of this file's reach rather than merely unasserted.
+
+describe("[seam] cart routes drive the INJECTED Redis client", () => {
+  it("the cart-tracking write lands in the injected keyspace, at the real rk key", async () => {
+    mockMedusaAdjudicated.mockResolvedValue({ cart: { id: "cart_seam" } });
+    const app = await buildTestServer();
+
+    const res = await app.inject({ method: "POST", url: "/api/cart" });
+    expect(res.statusCode).toBe(201);
+
+    // STATE, not a call: the field exists in the adapter's own hash.
+    expect(redis.memory.keys()).toContain(rk("active:carts"));
+    const tracked = await redis.memory.client.hGetAll(rk("active:carts"));
+    expect(JSON.parse(tracked["cart_seam"]!)).toMatchObject({
+      cartId: "cart_seam",
+      sessionType: "guest",
+    });
+    // …and the 48h TTL is a real remaining lifetime, not a `true` constant.
+    expect(redis.memory.ttlMs(rk("active:carts"))).toBe(48 * 60 * 60 * 1000);
+  });
+
+  it("the checkout idempotency gate is a real NX key, released by the fixable-failure DEL", async () => {
+    mockCreateCheckout.mockResolvedValue({ success: false, message: "Estoque insuficiente." });
+    const app = await buildTestServer();
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_gate", paymentMethod: "cash" },
+      headers: { "x-customer-id": "cus_gate" },
+    });
+    expect(res.statusCode).toBe(400);
+
+    // The release is observable as ABSENCE, which a `del`→1 constant could not
+    // show: the gate key is gone from the keyspace, so a retry can re-claim it.
+    expect(redis.memory.keys()).not.toContain(rk("checkout:idem:cart_gate"));
+    const reclaim = await redis.memory.client.set(
+      rk("checkout:idem:cart_gate"),
+      "1",
+      { NX: true, EX: 120 },
+    );
+    expect(reclaim).toBe("OK");
+  });
+
+  it("never resolves the getRedisClient singleton, and issues only the declared commands", async () => {
+    mockMedusaAdjudicated.mockResolvedValue({ cart: { id: "cart_probe" } });
+    mockCreateCheckout.mockResolvedValue({ success: true, orderId: "IBX-0009" });
+    const app = await buildTestServer();
+
+    await app.inject({ method: "POST", url: "/api/cart" });
+    await app.inject({
+      method: "POST",
+      url: "/api/cart/cart_probe/line-items",
+      payload: { variant_id: "var_1", quantity: 1 },
+      headers: { "x-customer-id": "cus_probe" },
+    });
+    await app.inject({
+      method: "GET",
+      url: "/api/cart/pix-details",
+      headers: { "x-customer-id": "cus_probe" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/api/cart/checkout",
+      payload: { cartId: "cart_probe", paymentMethod: "cash" },
+      headers: { "x-customer-id": "cus_probe" },
+    });
+
+    // (2) The singleton was never reached. Its tripwire rejects, and
+    // `loadCachedPixDetails` would have swallowed that into a null — so the
+    // call COUNT is the only honest observation available.
+    expect(mockGetRedisClient).not.toHaveBeenCalled();
+
+    // (3) The observed command set. `CartRouteRedisClient` declares NINE
+    // commands; the four requests above issue SEVEN of them — every member
+    // except the two the adapter refuses. So the Pick is not over-declared on
+    // this surface: each of these seven is genuinely reachable from a route,
+    // not a guess someone widened the type with.
+    //
+    // The two absentees are the whole reason this file could migrate at all:
+    // `multi` (the PIX cache write — unreachable because every checkout here is
+    // `cash`) and `eval` (the confirmation store — unreachable because no case
+    // drives /checkout/confirm). A route change that put either on one of these
+    // paths would throw BY NAME out of the adapter's Proxy, and this assertion
+    // pins that their absence is a property of the driven paths rather than of
+    // what the file happens to assert.
+    const issued = new Set(redis.memory.calls.map((c) => c.command));
+    expect(issued).not.toContain("multi");
+    expect(issued).not.toContain("eval");
+    expect([...issued].sort()).toEqual(
+      ["del", "expire", "get", "hDel", "hGetAll", "hSet", "set"].sort(),
+    );
   });
 });
 
