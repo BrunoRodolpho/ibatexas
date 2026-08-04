@@ -12,7 +12,13 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildEnvelope } from "@adjudicate/core";
-import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitives";
+import { createTokenBudgetGuard } from "@adjudicate/primitives";
+// R3-S1 — the REAL confirm-on-autoresolve guard + its kind set, instead of the
+// hand-copied replica this file used to rebuild (see that describe block).
+import {
+  AUTORESOLVE_CONFIRM_KINDS,
+  confirmOnAutoResolveGuard,
+} from "../compose-policy-packs.js";
 
 // ── Mutable mock controls ───────────────────────────────────────────────────
 let redisGet: (key: string) => Promise<string | null> = async () => null;
@@ -1888,21 +1894,19 @@ describe("resolve-and-assemble — BKL-216 amend in-message order reference", ()
   );
 });
 
-describe("confirm-on-autoresolve guard (mirrors claustrum-bootstrap)", () => {
-  const guard = createConfirmGuard<string, unknown, unknown>({
-    matches: (env) =>
-      new Set([
-        "order.cancel",
-        "payment.pix.regenerate",
-        "reservation.cancel",
-        ...INFLIGHT_MODIFY_KINDS, // BKL-038 — mirrors AUTORESOLVE_CONFIRM_KINDS
-      ]).has(env.kind),
-    extract: (_env, state) =>
-      (state as { ctx?: { autoResolvedMoneyRef?: boolean } }).ctx?.autoResolvedMoneyRef ? 1 : 0,
-    threshold: 1,
-    comparator: ">=",
-    prompt: () => "confirma?",
-  });
+// R3-S1 — this block used to rebuild the guard locally from a HAND-COPIED kind
+// set that had ALREADY drifted from AUTORESOLVE_CONFIRM_KINDS: it omitted
+// order.review.submit (FE-D28) and reservation.modify (FE-T14), and its
+// "outside the set" case named order.review.submit — a kind production has
+// auto-resolved since FE-D28, so the replica asserted the opposite of live
+// behavior. It now drives the REAL composed adopter guard
+// (`confirmOnAutoResolveGuard`, compose-policy-packs.ts): no copy is left to
+// drift. Set MEMBERSHIP (including the positive cases for the two dropped
+// kinds) is pinned by autoresolve-confirm-lockstep.test.ts; what this block
+// proves is guard BEHAVIOR against the exact `ctx.autoResolvedMoneyRef` shape
+// the resolve-stage tests above stamp.
+describe("confirm-on-autoresolve guard (the REAL composed adopter guard)", () => {
+  const guard = confirmOnAutoResolveGuard;
   const cancelEnv = buildEnvelope({
     kind: "order.cancel",
     payload: { orderId: "o1" },
@@ -1921,16 +1925,21 @@ describe("confirm-on-autoresolve guard (mirrors claustrum-bootstrap)", () => {
     expect(guard(cancelEnv, { ctx: {} })).toBeNull();
   });
   it("does not fire for a kind outside the auto-resolve set", () => {
-    // order.review.submit is an order-by-id kind but is NOT auto-resolved, so the
-    // guard must never fire for it even if the flag were somehow present.
-    const reviewEnv = buildEnvelope({
-      kind: "order.review.submit",
+    // order.checkout.create is deliberately NOT auto-resolved: its cartId comes
+    // from the session's active-cart key — THE customer's one cart, not a guess
+    // among several (order-checkout-create.schema.ts states this explicitly).
+    // Asserting its absence from the real set first keeps the case directional:
+    // if checkout were ever added to AUTORESOLVE_CONFIRM_KINDS this fails loudly
+    // instead of silently becoming a no-op assertion.
+    expect(AUTORESOLVE_CONFIRM_KINDS.has("order.checkout.create")).toBe(false);
+    const checkoutEnv = buildEnvelope({
+      kind: "order.checkout.create",
       payload: {},
       actor: { principal: "llm", sessionId: "s" },
       taint: "UNTRUSTED",
       nonce: "n2",
     });
-    expect(guard(reviewEnv, { ctx: { autoResolvedMoneyRef: true } })).toBeNull();
+    expect(guard(checkoutEnv, { ctx: { autoResolvedMoneyRef: true } })).toBeNull();
   });
 
   // BKL-038 — the in-flight modify kinds confirm their auto-resolved target just
