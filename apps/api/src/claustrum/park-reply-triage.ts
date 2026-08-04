@@ -24,9 +24,26 @@
 //      it: unpark + acknowledge, and the turn is SKIPPED so the negative text
 //      never reaches the planner (claustrum's own deny path unparks and THEN
 //      re-plans the "no" as a fresh command — the BKL-191 re-prompt).
+//      EXCEPT (F-3) when the reply carries a SAFETY MARKER and the plane declares
+//      `safetyMarkerDefersDecline`: this branch STANDS DOWN — see below.
 //   4. otherwise PROCEED-WITH-TURN — the normal cognitive loop runs unchanged.
 // Steps 1-3 SKIP the turn, so no turn_trace/intent_audit row is written; the
 // ingress is expected to emit the verdict's structured event for forensics.
+//
+// ── F-3 · A SAFETY MARKER OUTRANKS THE SHORT-CIRCUIT ───────────────────────
+// `isPureNegativeReplyText("não, sou celíaco")` is TRUE, so step 3 answered a
+// declared medical marker with the decline acknowledgment and the marker never
+// reached the planner's §O#9 safety routing / BKL-184 abstain. Applying the owner's
+// standing F-3 ruling (PR #515): a safety marker OUTRANKS a short-circuit, and the
+// gate chooses NO terminal — it removes the short-circuit so the EXISTING machinery
+// routes. Step 3 therefore stands down for a marker-bearing negative on a plane
+// that declares the predicate, and the turn PROCEEDS with `pendingConfirmations`
+// intact. The stand-down names NO unpark (money-safe: the triage never claims a
+// cancellation it did not acknowledge); the park's fate passes to the conductor's
+// own deny path, which unparks and re-plans — and for THIS class the re-planned
+// text carries real content, so the safety machinery answers it. Only step 3 is
+// gated; the reason steps 1-2 need no gate is in `negativeDeclineBranch`.
+// This does NOT add customer-facing copy: F-3's copy decision is owner-gated.
 //
 // ── THE FAIL-HONEST UNPARK CONTRACT ────────────────────────────────────────
 // This module is PURE: it never touches the store. A `skip-with-reply` verdict
@@ -96,6 +113,7 @@ import type {
   SessionPort,
   UserResolution,
 } from "@claustrum/core";
+import { carriesSafetyMarker } from "./required-claim-decomposer.js";
 
 // ── pt-BR reply lexicons ─────────────────────────────────────────────────────
 // Word-boundary-anchored so a token never matches inside a larger word.
@@ -476,6 +494,23 @@ export interface ParkTriagePolicy {
    * customer who added a NEW request reads as not having listened.
    */
   readonly softAffirmativeAdmission: "soft-shaped" | "soft-only";
+  /**
+   * F-3 — the SAFETY-MARKER test this plane's negative-decline branch stands down
+   * for, or ABSENT when the plane has no safety machinery to stand down FOR.
+   *
+   * A plane that DECLARES this predicate is asserting: "a reply my predicate calls
+   * a safety turn has a deterministic safety terminal waiting for it downstream, so
+   * intercepting it here would suppress that terminal." A plane that declares
+   * NOTHING is asserting the opposite — and standing down there would trade the
+   * honest decline acknowledgment for no safety answer at all, which is strictly
+   * worse. This is why the knob is a per-plane DECLARATION and not a module-wide
+   * constant: see the two builders below, each of which states its own reason.
+   *
+   * It is a PREDICATE rather than a boolean so the policy carries the actual net,
+   * making "which net decides" readable at the declaration site instead of hidden
+   * in a branch. Absent ⟹ the branch behaves EXACTLY as it did before F-3.
+   */
+  readonly safetyMarkerDefersDecline?: (text: string) => boolean;
   readonly copy: ParkTriageCopy;
   /** Structured-event namespace for this SURFACE (`ops_wa` / `ops_chat` / `chat`). */
   readonly eventPrefix: string;
@@ -495,6 +530,41 @@ const WEB_CLOCKLESS_NOW = "";
  * WhatsApp surface's `excludedKindsForScope("whatsapp")` (the dashboard passes
  * none); `ttlSeconds` defaults to {@link getOpsConfirmParkTtlSeconds} — read at
  * CALL time, so an env override applies per turn.
+ *
+ * ── F-3 · WHY THIS PLANE DECLARES NO `safetyMarkerDefersDecline` ────────────
+ *
+ * NOT because the ops plane cannot route a marker — MEASURED, it can, and the
+ * naive reading of that measurement would have made the gate unconditional. The
+ * routing half is genuinely shared: `composeOpsConductor` builds the SAME
+ * `buildClaimsSeams` (ops-conductor.ts) over the SAME `createIbatexasPlanner`, and
+ * the safety block in `proposeClaims` reads neither plane nor `claimScope` — the
+ * marker union and `routeSafety`'s §O#9 ESCALATE are plane-agnostic, and
+ * `OPS_CLAIM_SCOPE` (a customer SUPERSET) cannot disable them.
+ *
+ * The reason is that standing down is only an improvement when a real terminal is
+ * WAITING, and on this plane that premise fails in three MEASURED ways:
+ *
+ *   · The emergency template's closing promise — "Vou avisar nossa equipe para
+ *     ajudar." (slot-grammar.ts) — is FALSE on an ops turn: `onSafetyEmergency` is
+ *     deliberately omitted from the ops seams, so nothing publishes the staff
+ *     handoff. Trading an honest decline acknowledgment for an unbacked promise is
+ *     not a safety improvement.
+ *   · The BKL-184 abstain frequently never renders here. Ops declares
+ *     `hasDeterministicReadRender` (the BKL-100 read governor), so on any turn that
+ *     captured a read the render precedence keeps the draft and the abstain copy is
+ *     discarded — the very outcome the stand-down is supposed to buy.
+ *   · Both templates are CUSTOMER-register pt-BR ("Quer que eu peça para um
+ *     atendente confirmar com a cozinha?") addressed to a staff member. There is no
+ *     ops-authored safety copy at all, and no ops test drives a marker through
+ *     `handleTurn`.
+ *
+ * So on ops the stand-down would reliably DELETE the honest "cancelei a ação
+ * pendente" and only sometimes replace it with text that is in the wrong register
+ * and partly untrue. That is a behaviour change on the staff money plane with no
+ * safety surface behind it — an owner decision, exactly like the customer-WhatsApp
+ * wiring was (see the module header), not something to take as a side effect of a
+ * customer-plane fix. Declaring the knob here is a one-line change the day ops
+ * grows its own safety surface; until then this plane's step 3 is UNCHANGED.
  */
 export function opsParkTriagePolicy(input?: {
   readonly excludedKinds?: ReadonlySet<string>;
@@ -536,6 +606,16 @@ export function opsParkTriagePolicy(input?: {
  * treating a bare "ok" as an executing affirmative — is precisely what the
  * 2026-08-04 mandate directed this triage to intercept (see the module header),
  * so it is answered by wiring the SAME policy, not by weakening it for one surface.
+ *
+ * F-3 — this plane DECLARES {@link ParkTriagePolicy.safetyMarkerDefersDecline},
+ * because the customer turn path is the one with the safety machinery: the §O#9
+ * closed-taxonomy ESCALATE (`routeSafety`, driven by the deterministic
+ * `detectMedicalEmergencyMarkers` contribution) and the ratified BKL-184 abstain
+ * copy the customer claims render adapter selects off `isDietQualifiedAsk`. So a
+ * marker-bearing negative that this branch stands down for lands on a REAL safety
+ * terminal, which is what makes standing down an improvement rather than a
+ * silencing. The predicate is {@link carriesSafetyMarker} — the union of exactly
+ * those two nets, never a third spelling (see its docblock, and PR #515).
  */
 export function customerParkTriagePolicy(input?: {
   readonly eventPrefix?: string;
@@ -545,6 +625,7 @@ export function customerParkTriagePolicy(input?: {
     excludedKinds: EMPTY_EXCLUDED_KINDS,
     staleResume: false,
     softAffirmativeAdmission: "soft-only",
+    safetyMarkerDefersDecline: carriesSafetyMarker,
     copy: {
       softAffirmativeRestate: buildWebSoftAffirmativeRestateNotice,
       negativeDeclineAck: WEB_NEGATIVE_DECLINE_ACK_PTBR,
@@ -659,7 +740,9 @@ function softAffirmativeRestateBranch(
  *    - a MIXED reply (broad affirmative + negative, "não, pode deixar") →
  *      `undefined` (ambiguous — money-safety, the park survives and
  *      {@link isAmbiguousOpsReply} clarifies);
- *    - a NEGATIVE with no live in-scope park → `undefined` (ordinary utterance).
+ *    - a NEGATIVE with no live in-scope park → `undefined` (ordinary utterance);
+ *    - F-3 — a negative carrying a SAFETY MARKER on a plane that declares
+ *      {@link ParkTriagePolicy.safetyMarkerDefersDecline} → `undefined` (see below).
  *  KNOWN TRADEOFF (documented): a decline that ALSO embeds a brand-new command
  *  ("não quero, cancela o pedido 42") is swallowed with the acknowledgment — the
  *  sender re-sends the command against a clean slate; the alternative (running the
@@ -674,6 +757,48 @@ function negativeDeclineBranch(
   // Pure-negative ONLY: a hash/defer reply belongs to the normal loop, and a mixed
   // affirmative+negative is AMBIGUOUS (the matcher's null) — never decline.
   if (!isPureNegativeReplyText(text)) return undefined;
+  // ── F-3 · A SAFETY MARKER OUTRANKS THE SHORT-CIRCUIT ──────────────────────
+  //
+  // The KNOWN TRADEOFF above ("a decline that also embeds a new command is
+  // swallowed") is acceptable for an ordinary command — the sender re-sends it.
+  // It is NOT acceptable for a SAFETY turn: `isPureNegativeReplyText("não, sou
+  // celíaco")` is TRUE (a negative token, no affirmative/hash/defer token), so this
+  // branch answered a declared medical marker with the decline acknowledgment and
+  // the marker never reached the planner's §O#9 closed-taxonomy safety routing or
+  // the BKL-184 diet abstain. MEASURED, on both customer surfaces: web since
+  // BKL-212, customer WhatsApp since the 2026-08-04 mandate. `"não consigo
+  // respirar"` — ACTIVE DISTRESS, the §O#9 ESCALATE proper — is in the same class.
+  //
+  // The owner's standing F-3 ruling (PR #515) settles the shape: a safety marker
+  // OUTRANKS a short-circuit, and the gate chooses NO terminal of its own — it
+  // REMOVES the short-circuit so the EXISTING machinery routes. Returning
+  // `undefined` here yields `proceed-with-turn`, and the turn runs with
+  // `pendingConfirmations` INTACT.
+  //
+  // WHAT THIS DOES NOT DO — and this is the money-safe half. This branch is the
+  // only one that names an `unpark`, and standing down names NONE: the triage
+  // claims no cancellation it did not acknowledge, and removes no park. The reply
+  // is still a negative, so on the deferred turn the channel driver's own
+  // `matchToParked` resolves it to `deny` (the SAME lexicon — see
+  // {@link matchOpsReplyToParked}) and claustrum's deny path unparks and re-plans
+  // the text as a fresh command. That re-plan is exactly the BKL-191 re-prompt this
+  // branch exists to prevent — but for a marker-bearing negative the re-planned text
+  // has REAL CONTENT ("sou celíaco"), so the safety machinery answers it instead of
+  // re-prompting. The pre-triage behaviour is the RIGHT behaviour for this class,
+  // which is why the fix is a stand-down and not a new terminal.
+  //
+  // WHY A DECLARED POLICY FIELD AND NOT AN UNCONDITIONAL CHECK: standing down is
+  // only safe where a safety terminal is actually waiting. See the two builders.
+  //
+  // WHY ONLY THIS BRANCH. The soft-affirmative branch needs no gate: under the
+  // CUSTOMER admission rule (`soft-only`) EVERY word token must itself be a soft
+  // affirmative, and the soft lexicon (pode|ok|okay|isso|claro|manda|beleza)
+  // contains no substring either safety net matches — MEASURED exhaustively over
+  // that alphabet in every case form, all lengths ≤ 4, across 8 separators:
+  // 1_633_527 soft-only strings, ZERO carrying a marker (the same probe returns
+  // TRUE for "não, sou celíaco", so it is not vacuous). The stale-resume branch is
+  // structurally unreachable on the customer plane (`freshness: "none"`).
+  if (policy.safetyMarkerDefersDecline?.(text) === true) return undefined;
   return pickMostRecentlyParked(freshInScopeParks(pending, nowIso, policy)) ?? undefined;
 }
 

@@ -26,8 +26,11 @@ import {
   unparkParks,
   WEB_NEGATIVE_DECLINE_ACK_PTBR,
   customerParkTriagePolicy,
+  isSoftAffirmativeOnlyText,
+  isPureNegativeReplyText,
   type ParkTriagePolicy,
 } from "../park-reply-triage.js";
+import { carriesSafetyMarker } from "../required-claim-decomposer.js";
 
 /** A park with an explicit kind + prompt, so scope exclusion and the restated
  *  copy are both observable. */
@@ -271,6 +274,164 @@ describe("triageParkReply — branch 3: pure-negative decline", () => {
     const newer = parked({ hash: "2222ccccdddd", parkedAt: "2026-07-04T11:59:30.000Z" });
     const verdict = triage("não", [older, newer], OPS());
     expect(verdict.kind === "skip-with-reply" && verdict.unpark).toEqual([newer]);
+  });
+});
+
+// ── F-3 · A SAFETY MARKER OUTRANKS THE DECLINE SHORT-CIRCUIT ─────────────────
+//
+// The owner's standing F-3 ruling (PR #515): a safety marker OUTRANKS a
+// short-circuit, and the gate chooses NO terminal — it removes the short-circuit so
+// the EXISTING machinery routes. Applied here to the negative-decline branch, whose
+// text predicate `isPureNegativeReplyText` is TRUE for "não, sou celíaco".
+//
+// EVERY case below is a CONTROL/TREATMENT PAIR in the SAME test: the identical park
+// set is driven with a marker-free negative (which MUST still decline) and with the
+// marker-bearing one. Without the control arm these would pass against a triage
+// that had stopped declining ANYTHING — the assertion "proceeds" is satisfied by a
+// deleted branch, and by a park set that was never declinable in the first place.
+/** The two nets `carriesSafetyMarker` composes, each with a real pt-BR probe.
+ *  HAND-WRITTEN — never derived from the predicate under test, so a net that
+ *  stopped firing shows up as a failure here instead of as an empty table. */
+const MARKER_NEGATIVES: ReadonlyArray<readonly [string, string]> = [
+  ["BKL-270 diet net · celiac", "não, sou celíaco"],
+  ["BKL-270 diet net · diabetes", "não posso, sou diabético"],
+  ["BKL-270 diet net · allergen family", "não, tenho alergia a amendoim"],
+  ["BKL-209 emergency net · active distress", "não consigo respirar"],
+];
+const MARKER_TEXTS: readonly string[] = MARKER_NEGATIVES.map(([, t]) => t);
+
+describe("F-3 — a marker-bearing negative is NOT intercepted (customer plane)", () => {
+  it("every probe in the table IS a pure negative AND DOES carry a marker (roll call)", () => {
+    // The premise the whole block rests on. Stated as its own test so a probe that
+    // silently stopped being a pure negative (or stopped carrying a marker) fails
+    // HERE, loudly, instead of turning every "PROCEEDS" assertion below vacuous —
+    // a marker-free ordinary utterance also proceeds.
+    expect(MARKER_TEXTS).toHaveLength(4);
+    for (const text of MARKER_TEXTS) {
+      expect(isPureNegativeReplyText(text)).toBe(true);
+      expect(carriesSafetyMarker(text)).toBe(true);
+    }
+  });
+
+  it.each(MARKER_NEGATIVES)(
+    "%s (%j) PROCEEDS — while a marker-free negative on the SAME park still declines",
+    (_net, markerText) => {
+      // CONTROL — the park IS declinable, and the branch still works.
+      const control = triage("não", [FRESH], WEB());
+      expect(control.kind).toBe("skip-with-reply");
+      expect(control.kind === "skip-with-reply" && control.branch).toBe(
+        "negative-decline",
+      );
+
+      // TREATMENT — same park, same plane; only the marker differs.
+      const treatment = triage(markerText, [FRESH], WEB());
+      expect(treatment.kind).toBe("proceed-with-turn");
+    },
+  );
+
+  it("the stand-down names NO unpark — the triage never claims an unacknowledged cancellation", () => {
+    // The money-safe half of the ruling. `proceed-with-turn` carries no `unpark`
+    // field at all, so there is nothing an ingress could execute: the park's fate
+    // passes to the conductor's own deny path on the turn that now runs.
+    for (const [, text] of MARKER_NEGATIVES) {
+      const verdict = triage(text, [FRESH], WEB());
+      expect(verdict).toEqual({ kind: "proceed-with-turn" });
+    }
+    // …and the control still names exactly the one park it acknowledges.
+    const control = triage("não", [FRESH], WEB());
+    expect(control.kind === "skip-with-reply" && control.unpark).toEqual([FRESH]);
+  });
+
+  it("the marker is what defers it — the SAME sentence without one still declines", () => {
+    // "não, sou vegetariano" carries NO marker by design: BKL-214 drew the
+    // preference/restriction line and `vegano`/`vegetariano` are deliberately OUT
+    // of the diet net (they are the positive tags MENU_DIETARY renders). So this
+    // pair isolates the marker itself rather than the sentence SHAPE.
+    expect(carriesSafetyMarker("não, sou vegetariano")).toBe(false);
+    expect(triage("não, sou vegetariano", [FRESH], WEB()).kind).toBe("skip-with-reply");
+    expect(carriesSafetyMarker("não, sou celíaco")).toBe(true);
+    expect(triage("não, sou celíaco", [FRESH], WEB()).kind).toBe("proceed-with-turn");
+  });
+
+  it("a marker on a NON-negative reply changes nothing — the gate is on branch 3 only", () => {
+    // An explicit confirm and an ordinary utterance never reached this branch, so
+    // the gate must not have moved them. Both still PROCEED, as they always did.
+    expect(triage("sim, sou celíaco", [FRESH], WEB()).kind).toBe("proceed-with-turn");
+    expect(triage("sou celíaco", [FRESH], WEB()).kind).toBe("proceed-with-turn");
+    // …and the soft-affirmative branch still restates, untouched.
+    expect(triage("ok", [FRESH], WEB()).kind).toBe("skip-with-reply");
+  });
+
+  it("SOFT-ONLY ∩ MARKER = ∅ — which is why branch 2 needs no gate", () => {
+    // The module claims the customer soft-affirmative admission (`soft-only`, every
+    // word token itself a soft affirmative) can never carry a marker. Asserted here
+    // over the WHOLE soft lexicon in the case forms a customer types, singly and in
+    // combination, so the claim is checked rather than believed.
+    const SOFT = ["pode", "ok", "okay", "isso", "claro", "manda", "beleza"];
+    let softOnlySeen = 0;
+    for (const a of SOFT) {
+      for (const form of [a, a.toUpperCase(), `${a}!`, `${a}, ${a}`, `${a} ${a} ${a}`]) {
+        expect(isSoftAffirmativeOnlyText(form)).toBe(true);
+        softOnlySeen += 1;
+        expect(carriesSafetyMarker(form)).toBe(false);
+      }
+    }
+    expect(softOnlySeen).toBe(SOFT.length * 5);
+    // NON-VACUOUS: the same predicate returns TRUE on a real marker.
+    expect(carriesSafetyMarker("sou celíaco")).toBe(true);
+  });
+});
+
+describe("F-3 — the gate is a DECLARED per-plane knob, and OPS declares none", () => {
+  it("the customer policy declares the predicate; the ops policy declares nothing", () => {
+    // The plane scope is readable off the policy itself rather than inferred from
+    // behaviour, which is the point of making it a declared field.
+    expect(customerParkTriagePolicy().safetyMarkerDefersDecline).toBe(carriesSafetyMarker);
+    expect(opsParkTriagePolicy().safetyMarkerDefersDecline).toBeUndefined();
+    expect(
+      opsParkTriagePolicy({ excludedKinds: WHATSAPP_EXCLUDED }).safetyMarkerDefersDecline,
+    ).toBeUndefined();
+  });
+
+  it.each(MARKER_TEXTS)(
+    "OPS still declines %j — this plane's step 3 is UNCHANGED by F-3",
+    (text) => {
+      // The ops stand-down is an owner decision, not a side effect of a
+      // customer-plane fix: the emergency template's staff-handoff promise is
+      // unbacked here (no `onSafetyEmergency` sink), the BKL-184 abstain is
+      // discarded by the ops read-render precedence, and the copy is
+      // customer-register. See `opsParkTriagePolicy`'s docblock.
+      for (const policy of [OPS, OPS_WA]) {
+        const verdict = triage(text, [FRESH], policy());
+        expect(verdict.kind).toBe("skip-with-reply");
+        expect(verdict.kind === "skip-with-reply" && verdict.branch).toBe(
+          "negative-decline",
+        );
+        expect(verdict.kind === "skip-with-reply" && verdict.notice).toBe(
+          OPS_NEGATIVE_DECLINE_ACK_PTBR,
+        );
+        expect(verdict.kind === "skip-with-reply" && verdict.unpark).toEqual([FRESH]);
+      }
+      // The SAME text on the customer plane defers — so the divergence is the
+      // declared knob, not something about the text.
+      expect(triage(text, [FRESH], WEB()).kind).toBe("proceed-with-turn");
+    },
+  );
+
+  it("an explicitly declared knob defers on the OPS plane too (the field is live, not decorative)", () => {
+    // Control/treatment on the FIELD itself: the ops branch is not hard-coded to
+    // ignore the gate — it reads the policy. Without this, "ops still declines"
+    // would also pass against a gate wired only into the customer code path, and
+    // the day ops declares the knob nothing would happen.
+    const opsWithKnob: ParkTriagePolicy = {
+      ...opsParkTriagePolicy(),
+      safetyMarkerDefersDecline: carriesSafetyMarker,
+    };
+    expect(triage("não, sou celíaco", [FRESH], opsWithKnob).kind).toBe(
+      "proceed-with-turn",
+    );
+    // …and it still declines a marker-free negative, so the knob is not a kill switch.
+    expect(triage("não", [FRESH], opsWithKnob).kind).toBe("skip-with-reply");
   });
 });
 

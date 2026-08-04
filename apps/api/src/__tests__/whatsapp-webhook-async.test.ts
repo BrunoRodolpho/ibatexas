@@ -1351,25 +1351,70 @@ describe("handleMessageAsync — park-reply triage (Phase 6, customer plane)", (
     expect(sentText()).not.toBe(DECLINE_ACK);
   }, 15000);
 
-  // ── F-3 (recorded pairing) — a NEGATIVE carrying a SAFETY MARKER ────────────
-  // MEASURED, not chosen: `isPureNegativeReplyText("não, sou celíaco")` is true
-  // (a negative token, no affirmative/hash/defer token), so the triage answers it
-  // pre-turn and the celiac marker never reaches the planner's §O#9 closed-taxonomy
-  // safety routing. This asserts the MEASURED behaviour and is the pin an owner
-  // ruling would flip; the same hazard exists identically on the customer WEB
-  // surface, which has shipped this branch since BKL-212.
-  it("F-3: a negative carrying a SAFETY MARKER is answered by the triage — §O#9 never sees it (measured)", async () => {
+  // ── F-3 (CLOSED) — a NEGATIVE carrying a SAFETY MARKER falls through ────────
+  // This block previously PINNED the defect: `isPureNegativeReplyText("não, sou
+  // celíaco")` is true (a negative token, no affirmative/hash/defer token), so the
+  // triage answered the reply pre-turn with the decline ACK and the celiac marker
+  // never reached the planner's §O#9 closed-taxonomy safety routing. That pin was
+  // written as a change-detector an owner ruling would flip; the owner's standing
+  // F-3 ruling (PR #515 — a safety marker OUTRANKS a short-circuit, and the gate
+  // chooses NO terminal) has now been applied to this seam, so it is flipped here
+  // into a DIRECTIONAL guard of the new behaviour.
+  //
+  // WHAT IS ASSERTED, and why this file. The triage is a PRE-handleTurn branch, so
+  // `mockHandleTurn` is the only witness that can tell "the triage answered it"
+  // from "the turn ran": the customer e2e harness drives `handleTurn` directly and
+  // therefore enters BELOW the branch under test. `handleTurn` being CALLED is the
+  // whole claim — it is what puts the marker in front of the planner.
+  //
+  // WHAT HAPPENS TO THE PARK — measured, and named rather than assumed. The triage
+  // stands down, so it unparks NOTHING (money-safety: no cancellation is claimed
+  // without its acknowledgment). `handleTurn` is mocked here, so the conductor's
+  // own deny path does not run in THIS harness and the park simply survives the
+  // ingress; in production that deny path unparks and re-plans the text, which for
+  // a marker-bearing negative carries real content for the safety machinery to
+  // answer. The assertion below is scoped to what this seam actually decides.
+  it("F-3: a negative carrying a SAFETY MARKER reaches handleTurn — the triage stands down and unparks NOTHING", async () => {
     withPark();
     await send("SM_CELIAC", "não, sou celíaco");
 
-    // The triage answered pre-turn: the planner (and therefore §O#9) never ran.
+    // The turn RAN — the marker is now in front of the planner (§O#9 / BKL-184).
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    // The text handed to the conductor is the customer's own words, unmodified.
+    expect(mockHandleTurn.mock.calls[0]?.[1]).toMatchObject({ text: "não, sou celíaco" });
+    // The TRIAGE unparked nothing: it declined to intercept, so it claims no
+    // cancellation. The park's fate belongs to the conductor's deny path.
+    expect(mockUnpark).not.toHaveBeenCalled();
+    // No decline ACK was sent — the turn's own reply is delivered instead.
+    const text = sentText();
+    expect(text).not.toBe(DECLINE_ACK);
+    expect(text).toBe("resposta do modelo");
+  }, 15000);
+
+  // The CONTROL that makes the case above directional. Same park, same ingress,
+  // same code path — only the marker differs. Without it, "handleTurn was called"
+  // would also pass against a triage whose decline branch had been deleted outright.
+  it("F-3 CONTROL: a marker-FREE negative on the same park still declines byte-identically", async () => {
+    withPark();
+    await send("SM_NOMARKER", "não, sou vegetariano");
+
+    // `vegetariano` is deliberately OUT of the diet net (BKL-214 drew the
+    // preference/restriction line), so this is the SAME sentence shape with no
+    // marker — and it must still be intercepted exactly as before.
     expect(mockHandleTurn).not.toHaveBeenCalled();
     expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
-    const text = sentText();
-    expect(text).toBe(DECLINE_ACK);
-    // The reply speaks ONLY to the declined park — it makes no allergen/safety
-    // claim, so nothing unsound is asserted; the marker is simply unanswered.
-    expect(text).not.toContain("celíaco");
-    expect(text).not.toContain("glúten");
+    expect(sentText()).toBe(DECLINE_ACK);
+  }, 15000);
+
+  // The ACTIVE-DISTRESS member of the class — the §O#9 ESCALATE proper (BKL-209),
+  // not the BKL-270 diet net. Both halves of `carriesSafetyMarker` are exercised at
+  // the ingress, so a regression in either net is visible at this seam.
+  it("F-3: an ACTIVE-DISTRESS negative also reaches handleTurn (the BKL-209 net, not just the diet net)", async () => {
+    withPark();
+    await send("SM_DISTRESS", "não consigo respirar");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(sentText()).not.toBe(DECLINE_ACK);
   }, 15000);
 });

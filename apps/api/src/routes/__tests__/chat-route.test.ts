@@ -1010,6 +1010,42 @@ describe("POST /api/chat/messages — BKL-212 parked-confirmation niceties", () 
       ),
     });
   });
+
+  // ── F-3 · A SAFETY MARKER OUTRANKS THE DECLINE SHORT-CIRCUIT ──────────────
+  // The WEB customer surface has shipped the decline branch since BKL-212, so it
+  // carried the same defect as the WhatsApp surface: `isPureNegativeReplyText("não,
+  // sou celíaco")` is TRUE, and the ACK above answered a declared medical marker
+  // while §O#9 / BKL-184 never saw it. The owner's standing F-3 ruling (PR #515)
+  // is applied at the triage seam, so the turn now RUNS and the existing machinery
+  // routes. `mockHandleTurn` is the witness — the triage skips the turn, so "the
+  // model was never called" is what separates an intercepted reply from one that
+  // fell through.
+  it("F-3: a marker-bearing negative reaches handleTurn — the triage stands down and unparks NOTHING", async () => {
+    withPark();
+    await postGuest("não, sou celíaco");
+
+    // The turn RAN: the marker is now in front of the planner.
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    // The TRIAGE claimed no cancellation — it unparked nothing. (In production the
+    // conductor's own deny path owns the park from here; `handleTurn` is mocked.)
+    expect(mockUnpark).not.toHaveBeenCalled();
+    // No decline ACK on the wire; the turn's own reply is delivered.
+    expect(deliveredText()).toBe("Olá! Como posso ajudar?");
+  });
+
+  it("F-3 CONTROL: a marker-FREE negative of the same shape still declines byte-identically", async () => {
+    withPark();
+    // `vegetariano` is deliberately OUT of the diet net (BKL-214 preference vs
+    // restriction), so only the MARKER differs from the case above. Without this
+    // control, "handleTurn was called" would also pass against a deleted branch.
+    await postGuest("não, sou vegetariano");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(mockUnpark).toHaveBeenCalledWith("web:guest:session", INTENT_HASH);
+    expect(deliveredText()).toBe(
+      "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.",
+    );
+  });
 });
 
 // ── GET /api/chat/stream/:sessionId (hijacked SSE) ──────────────────────────
