@@ -33,7 +33,7 @@ import { parse as parseQuerystring } from "node:querystring";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import twilio from "twilio";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
-import { beginWireTurn } from "../claustrum/wire-capture.js";
+import { runTurnWithContexts } from "../claustrum/turn-context.js";
 import {
   mintBroadcastReply,
   mintFallbackReply,
@@ -42,11 +42,7 @@ import {
 } from "@adjudicate/core";
 import { getRedisClient, rk, atomicIncr, getLoyaltyBalance, getOrCreateCart } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
-import { beginWorkflowTurn } from "../claustrum/workflow/workflow-turn.js";
 import { getConductor } from "../claustrum-bootstrap.js";
-// LE2-007 — the funnel's per-turn context (the confirm-window fact only the ingress
-// can see). See funnel-tier.ts.
-import { closeFunnelTurn, openFunnelTurn } from "../claustrum/funnel-tier.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
   normalizePhone,
@@ -285,28 +281,25 @@ async function runConductorTurn(args: {
     // refactor. The module now exists and this plane needs only a policy — see
     // `webCustomerParkTriagePolicy` and the NOT WIRED note in its header.
     //
-    // LE2-007 — publish this turn's FUNNEL CONTEXT (the WhatsApp customer mirror of
-    // routes/chat.ts). The confirm-window fact is the one thing the funnel's L0 tier
-    // cannot see from inside the loop (`CognitiveState` carries no session), and
-    // FE-D32 says L0 must not fire at all while a confirmation is parked. This plane
-    // needs the gate MORE than web does, not less: its channel driver confirms on a
-    // bare "ok" by design (see web-confirm-channel.ts's header), so courtesy tokens
-    // during a park are load-bearing here. Absent this publish the tier is
-    // fail-closed (no L0), never fail-open.
-    openFunnelTurn(capsule.turnId, {
-      confirmWindowOpen:
-        (capsule.loadedSession?.pendingConfirmations?.length ?? 0) > 0,
+    // ── THE TURN, inside this ingress's per-turn CONTEXT SUBSET (R4-S2) ────────
+    // `customer-full` — the same declared subset as routes/chat.ts (wire truth +
+    // the workflow turn binding + the funnel context), owned by
+    // ../claustrum/turn-context.ts.
+    //
+    // This plane needs the confirm-window gate MORE than web does, not less: its
+    // channel driver confirms on a bare "ok" by design (see web-confirm-channel.ts's
+    // header), so courtesy tokens during a park are load-bearing here. Absent the
+    // publish the tier is fail-closed (no L0), never fail-open. It also makes the
+    // workflow binding's concurrency argument concrete: webhook deliveries for
+    // different customers are handled in parallel in one process, so a module-scope
+    // binding would cross-bind their confirms.
+    const turn = await runTurnWithContexts({
+      subset: "customer-full",
+      turnId: capsule.turnId,
+      channel: "whatsapp",
+      pendingConfirmations: capsule.loadedSession?.pendingConfirmations,
+      thunk: () => handleTurn(capsule, inbound),
     });
-    // LE2-021 — bind this turn for the workflow decision observer (the web
-    // mirror is routes/chat.ts). This plane makes the concurrency argument
-    // concrete: webhook deliveries for different customers are handled in
-    // parallel in one process, so a module-scope binding would cross-bind their
-    // confirms. See workflow/workflow-turn.ts.
-    const turn = await beginWireTurn(() =>
-      beginWorkflowTurn({ turnId: capsule.turnId, channel: "whatsapp" }, () =>
-        handleTurn(capsule, inbound),
-      ),
-    );
     const pixData = extractPixData(turn.acted);
     // Classify the delivery outcome at the source (the only place that can tell
     // an empty completion from a whitespace-only one). The pause early-return
@@ -344,8 +337,8 @@ async function runConductorTurn(args: {
       ...(pixData ? { pixData } : {}),
     };
   } finally {
-    // LE2-007 — drop this turn's funnel state (LRU-capped store; this is hygiene).
-    closeFunnelTurn(capsule.turnId);
+    // The funnel state was dropped when the turn settled (turn-context.ts's one
+    // `finally`); the capsule stays this ingress's to close.
     await conductor.closeCapsule(capsule);
   }
 }

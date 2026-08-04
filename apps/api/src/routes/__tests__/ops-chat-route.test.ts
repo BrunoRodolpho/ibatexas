@@ -30,6 +30,19 @@ vi.mock("../../ops/ops-history.js", () => ({
 }));
 
 import { adminOpsChatRoutes } from "../admin/ops-chat.js";
+// R4-S2 — the per-turn ambient contexts, read through their own APIs. None of these
+// three modules is mocked here, so the probe below sees exactly what the real route
+// established.
+import { funnelTurnContext } from "../../claustrum/funnel-tier.js";
+import {
+  captureWireExchange,
+  claimWireExchanges,
+  sealWireCall,
+} from "../../claustrum/wire-capture.js";
+import {
+  currentWorkflowChannel,
+  currentWorkflowTurnId,
+} from "../../claustrum/workflow/workflow-turn.js";
 
 const AUTH_HEADERS = {
   staffId: "x-test-staff-id",
@@ -369,6 +382,74 @@ describe("GET /api/admin/ops/chat/history (BKL-084)", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ messages: [], count: 0 });
+    await app.close();
+  });
+});
+
+// ── R4-S2 · the DECLARED per-turn context subset, observed at this ingress ───
+//
+// The ops plane declares `wire-only` (turn-context.ts's TURN_CONTEXT_SUBSETS): wire
+// truth IS wired, the workflow binding and the funnel publish are DECLARED
+// omissions. Both halves are asserted here from the consumer side, because a
+// declared omission that nothing observes is indistinguishable from a forgotten
+// one — and because wire truth silently going missing is the failure mode
+// wire-capture.ts:25-26 warns about.
+describe("POST /api/admin/ops/chat — R4-S2 per-turn context subset (wire-only)", () => {
+  const TURN_ID = "ops-turn-1";
+
+  it("wires wire truth and NEITHER the workflow binding NOR the funnel context", async () => {
+    getOpsConductorFactory.mockReturnValue(() => ({
+      openCapsule: vi.fn(async () => ({ id: "capsule", turnId: TURN_ID })),
+      closeCapsule: vi.fn(async () => {}),
+    }));
+
+    let observed:
+      | {
+          funnel: unknown;
+          workflowTurnId: string | undefined;
+          workflowChannel: string | undefined;
+          wireExchanges: number;
+        }
+      | undefined;
+    handleTurn.mockImplementation(async () => {
+      captureWireExchange({
+        model: "nemotron",
+        request: { messages: [] },
+        response: { choices: [] },
+        at: new Date().toISOString(),
+      });
+      sealWireCall(TURN_ID);
+      observed = {
+        funnel: funnelTurnContext(TURN_ID),
+        workflowTurnId: currentWorkflowTurnId(),
+        workflowChannel: currentWorkflowChannel(),
+        wireExchanges: claimWireExchanges(TURN_ID).length,
+      };
+      return {
+        response: { text: "Marquei a picanha como indisponível." },
+        decision: { kind: "EXECUTE" },
+        acted: { kind: "executed" },
+        plan: { envelopes: [] },
+      };
+    });
+
+    const app = await build();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/admin/ops/chat",
+      payload: { message: "acabou a picanha" },
+      headers: AS_OWNER,
+    });
+    expect(res.statusCode).toBe(200);
+
+    // `wire: true` is load-bearing — an unwrapped ops turn would capture nothing.
+    expect(observed?.wireExchanges).toBe(1);
+    // The two DECLARED omissions, in their fail-closed shape: an unbound workflow
+    // caller loses a confirm quote (it never inherits a stranger's), and an
+    // unpublished funnel context makes `decideL0` stand down.
+    expect(observed?.workflowTurnId).toBeUndefined();
+    expect(observed?.workflowChannel).toBeUndefined();
+    expect(observed?.funnel).toBeUndefined();
     await app.close();
   });
 });

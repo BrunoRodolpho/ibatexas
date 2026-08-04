@@ -40,7 +40,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@ibatexas/types";
 import { handleTurn, type ChannelMessage, type Conductor } from "@claustrum/core";
-import { beginWireTurn } from "../claustrum/wire-capture.js";
+import { runTurnWithContexts } from "../claustrum/turn-context.js";
 import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { createStaffService } from "@ibatexas/domain";
 import type {
@@ -425,7 +425,13 @@ async function runOpsTurn(
         }
       }
 
-      const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
+      // The ops plane's per-turn context subset is `wire-only` — wire truth, no
+      // workflow binding, no funnel publish. Both omissions are DECLARED with their
+      // by-design records in ../claustrum/turn-context.ts's TURN_CONTEXT_SUBSETS.
+      const turn = await runTurnWithContexts({
+        subset: "wire-only",
+        thunk: () => handleTurn(capsule, inbound),
+      });
       // Persist the assistant reply AFTER a successful turn (best-effort).
       try {
         await deps.appendHistory(staffId, [

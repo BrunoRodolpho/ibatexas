@@ -32,7 +32,7 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
-import { beginWireTurn } from "../../claustrum/wire-capture.js";
+import { runTurnWithContexts } from "../../claustrum/turn-context.js";
 import { requireStaff } from "../../middleware/staff-auth.js";
 import { getOpsConductorFactory } from "../../claustrum-bootstrap.js";
 import {
@@ -301,7 +301,12 @@ export async function adminOpsChatRoutes(server: FastifyInstance): Promise<void>
           }
         }
 
-        const turn = await beginWireTurn(() => handleTurn(capsule, inbound));
+        // `wire-only` — the ops dashboard's declared per-turn context subset (no
+        // workflow binding, no funnel publish; see TURN_CONTEXT_SUBSETS).
+        const turn = await runTurnWithContexts({
+          subset: "wire-only",
+          thunk: () => handleTurn(capsule, inbound),
+        });
         // Persist the assistant reply AFTER a successful turn (best-effort).
         try {
           await appendOpsMessages(staffId, [

@@ -146,6 +146,19 @@ vi.mock("../../incidents/incident-auto-close.js", () => ({
 }));
 
 import { chatRoutes } from "../chat.js";
+// R4-S2 — the per-turn ambient contexts, read through their OWN APIs so the probes
+// below observe what the real route actually established (none of these three
+// modules is mocked in this suite).
+import { funnelTurnContext } from "../../claustrum/funnel-tier.js";
+import {
+  captureWireExchange,
+  claimWireExchanges,
+  sealWireCall,
+} from "../../claustrum/wire-capture.js";
+import {
+  currentWorkflowChannel,
+  currentWorkflowTurnId,
+} from "../../claustrum/workflow/workflow-turn.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1119,5 +1132,123 @@ describe("GET /api/chat/stream/:sessionId — chunk delivery", () => {
     expect(res.payload).toContain('"type":"done"');
     expect(close).toHaveBeenCalled();
     await app.close();
+  });
+});
+
+// ── R4-S2 · the DECLARED per-turn context subset, observed at this ingress ──
+//
+// Before R4-S2 this ingress hand-assembled the funnel publish + the wire context +
+// the workflow binding, and NO suite at any of the five ingresses observed any of
+// them: the whole choreography could be deleted and every existing test stayed
+// green. These probes close that blind spot from the CONSUMER side — the real route
+// runs, and `handleTurn` (mocked here) reads the contexts' own APIs from inside the
+// turn, which is the only place they are meant to be visible.
+describe("POST /api/chat/messages — R4-S2 per-turn context subset (customer-full)", () => {
+  const TURN_ID = "turn-1";
+
+  interface Observed {
+    readonly funnel: { readonly confirmWindowOpen: boolean } | undefined;
+    readonly workflowTurnId: string | undefined;
+    readonly workflowChannel: string | undefined;
+    readonly wireExchanges: number;
+  }
+
+  /** Probe every context from INSIDE the turn, then answer like a normal turn. */
+  function probeInsideTurn(): { read: () => Observed | undefined } {
+    let observed: Observed | undefined;
+    mockHandleTurn.mockImplementation(async () => {
+      captureWireExchange({
+        model: "nemotron",
+        request: { messages: [] },
+        response: { choices: [] },
+        at: new Date().toISOString(),
+      });
+      sealWireCall(TURN_ID);
+      observed = {
+        funnel: funnelTurnContext(TURN_ID),
+        workflowTurnId: currentWorkflowTurnId(),
+        workflowChannel: currentWorkflowChannel(),
+        wireExchanges: claimWireExchanges(TURN_ID).length,
+      };
+      return { response: { text: "Olá! Como posso ajudar?" }, decision: { kind: "EXECUTE" } };
+    });
+    return { read: () => observed };
+  }
+
+  /** Open the capsule with `parks` pending confirmations (customer shape: no TTL). */
+  function withParks(parks: number): void {
+    mockOpenCapsule.mockResolvedValue({
+      id: "capsule-1",
+      turnId: TURN_ID,
+      loadedSession: {
+        id: "web:guest:session",
+        pendingConfirmations: Array.from({ length: parks }, (_unused, i) => ({
+          envelope: { kind: "order.cancel", intentHash: `hash${i}` },
+          confirmationToken: `tok-${i}`,
+          userPrompt: "cancelar o pedido 4242",
+          parkedAt: new Date().toISOString(),
+        })),
+      },
+      session: { unpark: vi.fn(async () => {}) },
+    });
+  }
+
+  async function postGuest(message: string): Promise<void> {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message, channel: "web" },
+    });
+    expect(res.statusCode).toBe(200);
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+    await app.close();
+  }
+
+  it("establishes ALL THREE contexts around the turn — wire, workflow binding, funnel", async () => {
+    const probe = probeInsideTurn();
+    await postGuest("oi");
+
+    expect(probe.read()).toEqual({
+      funnel: { confirmWindowOpen: false },
+      workflowTurnId: TURN_ID,
+      workflowChannel: "web",
+      wireExchanges: 1,
+    });
+  });
+
+  it("publishes confirmWindowOpen TRUE when the session holds a park (FE-D32)", async () => {
+    // A plain request — neither a soft affirmative nor a negative — so the
+    // park-reply triage falls THROUGH to the turn and the funnel gets published.
+    withParks(1);
+    const probe = probeInsideTurn();
+    await postGuest("quero uma picanha");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(probe.read()?.funnel).toEqual({ confirmWindowOpen: true });
+  });
+
+  it("publishes confirmWindowOpen FALSE on an EMPTY park list", async () => {
+    withParks(0);
+    const probe = probeInsideTurn();
+    await postGuest("quero uma picanha");
+
+    expect(probe.read()?.funnel).toEqual({ confirmWindowOpen: false });
+  });
+
+  it("drops the funnel context after the turn — and STILL drops it when the turn THROWS", async () => {
+    withParks(1);
+    mockHandleTurn.mockImplementation(async () => {
+      // Live inside the turn…
+      expect(funnelTurnContext(TURN_ID)).toEqual({ confirmWindowOpen: true });
+      throw new Error("planner exploded");
+    });
+    await postGuest("quero uma picanha");
+
+    // …and gone after it, via turn-context.ts's single `finally`. A leak here is a
+    // cross-turn hazard: the next turn on a park-free session would inherit an
+    // open confirm window and L0 would stand down for no reason.
+    expect(funnelTurnContext(TURN_ID)).toBeUndefined();
+    expect(currentWorkflowTurnId()).toBeUndefined();
   });
 });

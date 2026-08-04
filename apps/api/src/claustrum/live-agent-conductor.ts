@@ -47,7 +47,7 @@ import {
   type ToolRegistry,
   type TurnResult,
 } from "@claustrum/core";
-import { beginWireTurn } from "./wire-capture.js";
+import { runTurnWithContexts } from "./turn-context.js";
 import type { IntentEnvelope } from "@adjudicate/core";
 import { logger } from "../lib/logger.js";
 import { isSessionPausedForHuman } from "../escalation/escalation-store.js";
@@ -261,7 +261,15 @@ export function createLiveTriggerRunner(
     });
 
     try {
-      const result = await beginWireTurn(() => handleTurn(capsule, agentInbound));
+      // `wire-only` — the managed-agent plane's declared per-turn context subset.
+      // It is the third `wire-only` consumer for the same two reasons the ops planes
+      // are (turn-context.ts's TURN_CONTEXT_SUBSETS names it): this composition omits
+      // the planner/responder funnel seam, and an unbound workflow caller correctly
+      // loses a confirm quote rather than inheriting a stranger's.
+      const result = await runTurnWithContexts({
+        subset: "wire-only",
+        thunk: () => handleTurn(capsule, agentInbound),
+      });
       // W1 no-reply incident — DEFERRED here (P2-16). The WhatsApp + web/chat
       // seams (whatsapp-webhook.ts, routes/chat.ts via conversation/no-delivery.ts)
       // detect "customer owed a reply" and open a governed incident on an
