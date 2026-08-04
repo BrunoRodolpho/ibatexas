@@ -17,18 +17,24 @@ export interface LockHandle {
 }
 
 /**
- * Acquire a distributed lock.
+ * Acquire a distributed lock AT AN ALREADY-BUILT KEY.
  *
- * @param resource - Lock resource name (e.g. "payment:abc123"). Will be prefixed with "lock:" via rk().
+ * The lower half of {@link acquireLock}, split out (F-21) for call sites that
+ * own a key whose shape predates the `lock:<resource>` convention and cannot
+ * change it without breaking mutual exclusion across a rolling deploy — e.g.
+ * `rk("cart:create:lock:<sessionId>")` in `cart/get-or-create-cart.ts`. Such a
+ * site must still get the ownership semantics, and it must get them from THIS
+ * implementation rather than a second inline copy of the Lua.
+ *
+ * @param key - A key ALREADY built with `rk()` (Hard Rule #7). Never a raw string.
  * @param ttlSeconds - Lock TTL in seconds (default 10).
  * @returns LockHandle if acquired, null if already held.
  */
-export async function acquireLock(
-  resource: string,
+export async function acquireLockAtKey(
+  key: string,
   ttlSeconds = 10,
 ): Promise<LockHandle | null> {
   const redis = await getRedisClient()
-  const key = rk(`lock:${resource}`)
   const value = randomUUID()
 
   const acquired = await redis.set(key, value, { EX: ttlSeconds, NX: true })
@@ -42,6 +48,20 @@ export async function acquireLock(
       await r.eval(RELEASE_LOCK_SCRIPT, { keys: [key], arguments: [value] })
     },
   }
+}
+
+/**
+ * Acquire a distributed lock.
+ *
+ * @param resource - Lock resource name (e.g. "payment:abc123"). Will be prefixed with "lock:" via rk().
+ * @param ttlSeconds - Lock TTL in seconds (default 10).
+ * @returns LockHandle if acquired, null if already held.
+ */
+export async function acquireLock(
+  resource: string,
+  ttlSeconds = 10,
+): Promise<LockHandle | null> {
+  return acquireLockAtKey(rk(`lock:${resource}`), ttlSeconds)
 }
 
 /**
