@@ -5,33 +5,42 @@
 // the audit 03 R4 race. If this test passes after the fix, the race
 // has been killed.
 //
-// Skipped when REDIS_TEST_URL is not set.
+// Real Redis comes from the SHARED testcontainer harness
+// (`helpers/redis-testcontainer.ts`). This file used to gate on its own
+// `REDIS_TEST_URL` env check, unset in CI — so the race demo skipped
+// silently while the file reported green (measured on dev @ 2f5c4979:
+// "refund-drip-cap-before.test.ts (2 tests | 1 skipped)"). Retired by M0 of
+// the multi()/eval ruling (docs/architecture/redis-lua-testing-decision.md,
+// Q1): one knob only, `IBX_SKIP_REAL_REDIS=1`, local-dev-only, policed by
+// `scripts/check-real-redis-suites.mjs`.
 //
 // Scenario: N=5 concurrent reservations at 8000 centavos with cap
 // 20000 centavos. Pre-fix: all 5 read currentTotal=0, all pass the
 // cap check, all INCRBY → final = 40000 > cap (TOCTOU exploited).
 // Post-fix: at most floor(cap/amount)=2 reservations succeed.
 
-import { describe, it, expect, beforeEach, afterAll } from "vitest"
-import { createClient, type RedisClientType } from "redis"
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest"
+import type { RedisClientType } from "redis"
+import {
+  RUN_REAL_REDIS,
+  setupRedisTestContainer,
+  type RedisTestHarness,
+} from "./helpers/redis-testcontainer.js"
 
-const REDIS_URL = process.env.REDIS_TEST_URL
-const RUN_REAL_REDIS = REDIS_URL !== undefined && REDIS_URL.length > 0
-
+let harness: RedisTestHarness | null = null
 let testRedis: RedisClientType | null = null
 
 async function setupRedis(): Promise<RedisClientType> {
   if (testRedis) return testRedis
-  const c = createClient({ url: REDIS_URL }) as RedisClientType
-  c.on("error", () => {})
-  await c.connect()
-  testRedis = c
-  return c
+  harness = await setupRedisTestContainer()
+  testRedis = harness.client
+  return testRedis
 }
 
 afterAll(async () => {
-  if (testRedis) {
-    await testRedis.quit().catch(() => {})
+  if (harness) {
+    await harness.teardown()
+    harness = null
     testRedis = null
   }
 })
@@ -66,6 +75,12 @@ describe.skipIf(!RUN_REAL_REDIS)(
   "P1-I refund cap pre-fix race demonstration (real Redis)",
   () => {
     const TEST_KEY = `test-w1c:before-race:refund:${Date.now()}`
+
+    // 120s: a COLD `redis:7-alpine` pull can outlast the package-wide 30s
+    // hookTimeout (apps/api/vitest.config.ts).
+    beforeAll(async () => {
+      await setupRedis()
+    }, 120_000)
 
     beforeEach(async () => {
       const redis = await setupRedis()
@@ -118,16 +133,3 @@ describe.skipIf(!RUN_REAL_REDIS)(
     }, 15_000)
   },
 )
-
-// Non-skipped guard so vitest reports the file as "ran".
-describe("P1-I refund cap — pre-fix demo guard", () => {
-  it("documents the real-Redis test gating", () => {
-    if (!RUN_REAL_REDIS) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[P1-I pre-fix demo] REDIS_TEST_URL not set; skipping real-Redis race demo.",
-      )
-    }
-    expect(typeof RUN_REAL_REDIS).toBe("boolean")
-  })
-})

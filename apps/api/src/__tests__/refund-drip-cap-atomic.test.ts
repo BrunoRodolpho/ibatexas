@@ -5,39 +5,46 @@
 // Five concurrent refunds at cap-1 all read currentTotal=0, all passed
 // the check, all executed, all INCRBYed — cap bypassed by ~5×.
 //
-// This test uses a REAL Redis (not a Map stub) on port 6380 and fires
-// N=5 concurrent calls to tryReserveDailyRefund. Assertion: AT MOST k
-// reservations succeed where k×amount ≤ cap.
+// This test uses a REAL Redis (not a Map stub) and fires N=5 concurrent
+// calls to tryReserveDailyRefund. Assertion: AT MOST k reservations
+// succeed where k×amount ≤ cap.
 //
-// Skipped when REDIS_TEST_URL is not set; the W1C agent's docker
-// container exposes Redis on redis://localhost:6380 — set
-// REDIS_TEST_URL=redis://localhost:6380 to enable.
+// Real Redis comes from the SHARED testcontainer harness
+// (`helpers/redis-testcontainer.ts`). This file used to gate on its own
+// `REDIS_TEST_URL` env check, unset in CI — so all three cases skipped
+// silently while the file reported green (measured on dev @ 2f5c4979:
+// "refund-drip-cap-atomic.test.ts (4 tests | 3 skipped)"). Retired by M0 of
+// the multi()/eval ruling (docs/architecture/redis-lua-testing-decision.md,
+// Q1): one knob only, `IBX_SKIP_REAL_REDIS=1`, local-dev-only, policed by
+// `scripts/check-real-redis-suites.mjs`.
 //
 // Scenario:
 //   N=5, amount=R$80,00 (8000 centavos), cap=R$200,00 (20000 centavos)
 //   floor(cap/amount) = 2 → at most 2 reservations may succeed.
 //   Pre-fix: all 5 succeed. Post-fix: exactly 2 succeed.
 
-import { describe, it, expect, beforeEach, afterAll } from "vitest"
-import { createClient, type RedisClientType } from "redis"
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest"
+import type { RedisClientType } from "redis"
+import {
+  RUN_REAL_REDIS,
+  setupRedisTestContainer,
+  type RedisTestHarness,
+} from "./helpers/redis-testcontainer.js"
 
-const REDIS_URL = process.env.REDIS_TEST_URL
-const RUN_REAL_REDIS = REDIS_URL !== undefined && REDIS_URL.length > 0
-
+let harness: RedisTestHarness | null = null
 let testRedis: RedisClientType | null = null
 
 async function setupRedis(): Promise<RedisClientType> {
   if (testRedis) return testRedis
-  const c = createClient({ url: REDIS_URL }) as RedisClientType
-  c.on("error", () => {})
-  await c.connect()
-  testRedis = c
-  return c
+  harness = await setupRedisTestContainer()
+  testRedis = harness.client
+  return testRedis
 }
 
 afterAll(async () => {
-  if (testRedis) {
-    await testRedis.quit().catch(() => {})
+  if (harness) {
+    await harness.teardown()
+    harness = null
     testRedis = null
   }
 })
@@ -45,7 +52,6 @@ afterAll(async () => {
 // Mock @ibatexas/tools.getRedisClient to return our real test Redis.
 // importOriginal so we keep tool exports (SearchProductsTool etc) that
 // other transitively-imported modules need.
-import { vi } from "vitest"
 vi.mock("@ibatexas/tools", async (importOriginal) => {
   const actual =
     (await importOriginal()) as typeof import("@ibatexas/tools")
@@ -63,6 +69,12 @@ describe.skipIf(!RUN_REAL_REDIS)(
   "P1-I-TRUE refund drip cap (real Redis, concurrency)",
   () => {
     const TEST_STAFF = `staff_${Date.now()}`
+
+    // 120s: a COLD `redis:7-alpine` pull can outlast the package-wide 30s
+    // hookTimeout (apps/api/vitest.config.ts).
+    beforeAll(async () => {
+      await setupRedis()
+    }, 120_000)
 
     beforeEach(async () => {
       const redis = await setupRedis()
@@ -150,22 +162,3 @@ describe.skipIf(!RUN_REAL_REDIS)(
     })
   },
 )
-
-// Always include at least one non-skipped test so CI's "no tests found"
-// guard is happy even when REDIS_TEST_URL is unset.
-describe("P1-I-TRUE refund cap — synthetic guard", () => {
-  it("documents the real-Redis test gating", () => {
-    if (!RUN_REAL_REDIS) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[P1-I-TRUE] REDIS_TEST_URL not set; skipping real-Redis concurrency tests. " +
-          "Run docker run --rm -d -p 6380:6379 --name w1c-redis redis:7-alpine " +
-          "and REDIS_TEST_URL=redis://localhost:6380 pnpm vitest to exercise.",
-      )
-    }
-    // Smoke-assert the module under test loaded (the dynamic import of the
-    // payments route resolved the helper) so this non-skipped guard exercises
-    // a real condition rather than an unconditional truth.
-    expect(typeof tryReserveDailyRefund).toBe("function")
-  })
-})

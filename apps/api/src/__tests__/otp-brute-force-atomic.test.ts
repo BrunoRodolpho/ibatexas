@@ -11,28 +11,37 @@
 // sentinel in a single Lua eval. N concurrent attempts each see a
 // distinct post-INCR count; the (THRESHOLD+1) onwards trip lockout.
 //
-// Uses real Redis on port 6380 (W1C cluster's container).
+// Uses real Redis via the SHARED testcontainer harness
+// (`helpers/redis-testcontainer.ts`). This file used to gate on its own
+// `REDIS_TEST_URL` env check, unset in CI — so all four cases skipped
+// silently while the file reported green (measured on dev @ 2f5c4979:
+// "otp-brute-force-atomic.test.ts (5 tests | 4 skipped)"). Retired by M0
+// of the multi()/eval ruling (docs/architecture/redis-lua-testing-
+// decision.md, Q1): one knob only, `IBX_SKIP_REAL_REDIS=1`, local-dev-only,
+// policed by `scripts/check-real-redis-suites.mjs`.
 
-import { describe, it, expect, beforeEach, afterAll, vi } from "vitest"
-import { createClient, type RedisClientType } from "redis"
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest"
+import type { RedisClientType } from "redis"
+import {
+  RUN_REAL_REDIS,
+  setupRedisTestContainer,
+  type RedisTestHarness,
+} from "./helpers/redis-testcontainer.js"
 
-const REDIS_URL = process.env.REDIS_TEST_URL
-const RUN_REAL_REDIS = REDIS_URL !== undefined && REDIS_URL.length > 0
-
+let harness: RedisTestHarness | null = null
 let testRedis: RedisClientType | null = null
 
 async function setupRedis(): Promise<RedisClientType> {
   if (testRedis) return testRedis
-  const c = createClient({ url: REDIS_URL }) as RedisClientType
-  c.on("error", () => {})
-  await c.connect()
-  testRedis = c
-  return c
+  harness = await setupRedisTestContainer()
+  testRedis = harness.client
+  return testRedis
 }
 
 afterAll(async () => {
-  if (testRedis) {
-    await testRedis.quit().catch(() => {})
+  if (harness) {
+    await harness.teardown()
+    harness = null
     testRedis = null
   }
 })
@@ -60,6 +69,12 @@ describe.skipIf(!RUN_REAL_REDIS)(
   "P0-X-OTP atomic brute-force counter (real Redis, concurrency)",
   () => {
     const TEST_CUSTOMER = `cust_${Date.now()}`
+
+    // 120s: a COLD `redis:7-alpine` pull can outlast the package-wide 30s
+    // hookTimeout (apps/api/vitest.config.ts).
+    beforeAll(async () => {
+      await setupRedis()
+    }, 120_000)
 
     beforeEach(async () => {
       const redis = await setupRedis()
@@ -171,17 +186,3 @@ describe.skipIf(!RUN_REAL_REDIS)(
     })
   },
 )
-
-describe("P0-X-OTP — synthetic guard", () => {
-  it("documents the real-Redis test gating", () => {
-    if (!RUN_REAL_REDIS) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[P0-X-OTP] REDIS_TEST_URL not set; skipping real-Redis concurrency tests. " +
-          "Run docker run --rm -d -p 6380:6379 --name w1c-redis redis:7-alpine " +
-          "and REDIS_TEST_URL=redis://localhost:6380 pnpm vitest to exercise.",
-      )
-    }
-    expect(typeof RUN_REAL_REDIS).toBe("boolean")
-  })
-})
