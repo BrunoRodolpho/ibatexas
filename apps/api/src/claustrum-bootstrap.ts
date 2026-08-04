@@ -38,7 +38,6 @@ import { randomBytes } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { Pool } from "pg";
 import {
-  createConductor,
   createToolRegistry,
   type Adjudicator,
   type AuditVerification,
@@ -51,7 +50,6 @@ import {
   type LLMTrace,
   type MemoryAccess,
   type ModelProvider,
-  type ResponderPort,
   type Session,
   type SessionPort,
   type TelemetryPort,
@@ -291,16 +289,20 @@ import {
   type SealablePackInput,
 } from "@adjudicate/conformance";
 import {
-  createIbatexasPlanner,
-  type ClaimAwarePlannerPort,
-} from "./claustrum/ibatexas-planner.js";
-import {
   buildClaimsSeams,
   claimsPipelineEnabled,
   warnOncePerMessage,
 } from "./claustrum/claims-pipeline.js";
-import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
-import { renderCustomerActionAnswer } from "./claustrum/customer-action-render.js";
+// R1-S1 — the CUSTOMER conductor plane's composition. This bootstrap is now one
+// ADAPTER of it (resolve infrastructure → one call); the e2e harness becomes the
+// second. Everything about how the customer plane is wired — the always-on
+// `readAnswer`, the ONE shared funnel instance, the hoisted planner the claims
+// seams wrap — lives there, so a harness can no longer hand-copy a drifting twin.
+import {
+  composeCustomerConductor,
+  plannerCustomerIdFromState,
+  type CustomerConductorDeps,
+} from "./claustrum/compose-customer-conductor.js";
 // BKL-078 — the question-shape SAFE-UNKNOWN gate (flag-gated in buildResponder).
 // LE2 decision 6: the construction moved to `safe-unknown-gate.ts` so the ops
 // conductor composes the SAME object instead of forking one (D5 dissolved).
@@ -308,11 +310,7 @@ import { createSafeUnknownGate } from "./claustrum/safe-unknown-gate.js";
 // LE2-007/009 — the parse funnel's tier seams (L0 social short-circuit + L1
 // exact-match parse memoization) + the per-turn stage store the once-per-turn
 // telemetry stamp reads for tier attribution.
-import {
-  createParseFunnel,
-  funnelStage,
-  type FunnelParseMemoSeam,
-} from "./claustrum/funnel-tier.js";
+import { createParseFunnel, funnelStage } from "./claustrum/funnel-tier.js";
 import { createRedisParseCacheStore } from "./claustrum/parse-memo.js";
 // LE2-008 — the L2 tier's retriever over the catalog conversation projection.
 import {
@@ -401,14 +399,8 @@ import {
   createWorkflowRuntime,
   type WorkflowRuntime,
 } from "./claustrum/workflow/workflow-runtime.js";
-import {
-  installWorkflowRuntime,
-  observeWorkflowDecisions,
-} from "./claustrum/workflow/workflow-install.js";
-import {
-  currentWorkflowChannel,
-  currentWorkflowTurnId,
-} from "./claustrum/workflow/workflow-turn.js";
+import { installWorkflowRuntime } from "./claustrum/workflow/workflow-install.js";
+import { currentWorkflowChannel } from "./claustrum/workflow/workflow-turn.js";
 import {
   composeOpsConductor,
   opsPlaneDriftProblems,
@@ -2215,74 +2207,14 @@ export function policyForKind(
 // live alongside the pack list in @ibatexas/packs-composed
 // (IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, imported above).
 
-/**
- * Map the claustrum CognitiveState onto the union (state, context) the pack
- * capability planners read. Each pack reads only its own `ctx` field
- * (orders/reservations: customerId; reservations: staffId; onboarding:
- * isAuthenticated; payments/whatsapp: none), so a union ctx satisfies all.
- *
- * WS3 — thread the real actor. The Capsule carries the authoritative actor, but
- * `PlannerPort.propose` (and therefore `deriveContext`) is handed only a
- * `CognitiveState`, never the Capsule. The faithful in-CognitiveState carrier of
- * the customer identity is `state.memory.customerId`: `handleTurn` assembles
- * `cognition.memory = capsule.memory.recall(capsule.customerId, …)` and
- * `MemorySnapshot.customerId` is exactly the Capsule's customerId. We derive the
- * customer/auth context from it so that AUTHENTICATED intent kinds
- * (`order.checkout.create`, `order.cancel`, `order.amend.request`,
- * `order.note.add`, every `reservation.*`, both `customer.*`) become proposable
- * when a real customer is present — previously hardcoded `customerId:null,
- * isAuthenticated:false` exposed only the unauthenticated subset.
- *
- * Guest convention mirrors `agentCtxFromCapsule` (register-ibatexas-tool-packs):
- * an empty or `guest:`/`anon:`-prefixed customerId is NOT a real customer — it
- * yields `customerId:null, isAuthenticated:false`. The kernel's authGuards remain
- * the authoritative auth check on the envelope; this only widens what the planner
- * is *willing to propose*. `staffId` stays null: a staff actor lives on the
- * Capsule's `actor.role`, which CognitiveState does not carry, so staff-only
- * reservation kinds (`reservation.checkin`/`.complete`) remain non-proposable via
- * the chat planner (they are staff-route only) — a documented follow-up if a
- * staff chat surface is ever wired.
- */
-function plannerCustomerIdFromState(state: CognitiveState): string | null {
-  const raw = (state.memory as { customerId?: unknown } | undefined)?.customerId;
-  if (typeof raw !== "string") return null;
-  const id = raw.trim();
-  // A guest/anon-marker or empty id is NOT a real customer → null. Reuses the
-  // exported guest-convention predicate from the tool registry (A3) so the
-  // planner's willingness-to-propose can never drift from the read-executor
-  // identity scope. `isGuestCustomerId` treats empty/whitespace as guest, so
-  // the prior explicit `id === ""` guard is subsumed.
-  if (isGuestCustomerId(id)) return null;
-  return id;
-}
-
-export function deriveIbatexasPlannerContext(state: CognitiveState): {
-  readonly state: unknown;
-  readonly context: unknown;
-} {
-  const customerId = plannerCustomerIdFromState(state);
-  const isAuthenticated = customerId !== null;
-  return {
-    state: {
-      ctx: {
-        // Single-tenant supply for the pack tenant-binding authGuard
-        // (AuthReviewer-009): the app names the request's tenant in state. The
-        // guard REFUSEs a mismatch; env-driven (Hard Rule #3).
-        tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
-        channel: state.perception.channel,
-        // Real actor, derived from the recalled memory snapshot (= Capsule
-        // customerId). orders/reservations read `customerId`; onboarding reads
-        // `isAuthenticated`.
-        customerId,
-        staffId: null,
-        isAuthenticated,
-        cartId: null,
-        orderId: null,
-      },
-    },
-    context: {},
-  };
-}
+// R1-S1 — the planner's CognitiveState→pack-context derivation (and the guest
+// convention helper it reads) MOVED to compose-customer-conductor.ts: they are
+// part of what "the customer planner" is, and the composer is where the planner is
+// built. RE-EXPORTED here so every existing importer of this module is unaffected;
+// `agentCtxFromState` below still reads the SAME `plannerCustomerIdFromState`, so
+// the planner's willingness-to-propose and the read executors' identity scope stay
+// mechanically incapable of drifting.
+export { deriveIbatexasPlannerContext } from "./claustrum/compose-customer-conductor.js";
 
 // ── BKL-027 (F2) — read-tool executor registry ────────────────────────────────
 //
@@ -3764,137 +3696,6 @@ export async function bootstrapClaustrum(
       "funnel L2: no embedder declared by this composition — full-roster surface",
     );
   }
-  const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
-    createIbatexasPlanner({
-      model,
-      modelId: chatModelId,
-      capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-      deriveContext: deriveIbatexasPlannerContext,
-      promptComposer,
-      telemetry,
-      resolveScheduleSignal,
-      // BKL-027 — activate the one-hop read-tool enrichment loop.
-      readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
-      funnel,
-      // LE2-009 — the L1 half of the same instance (see IbatexasPlannerDeps.parseMemo
-      // for why the two seams are passed separately rather than as one object).
-      ...(funnel.lookupParse !== undefined ? { parseMemo: funnel as FunnelParseMemoSeam } : {}),
-      // LE2-008 — the L2 seams: the retriever plus the SAME funnel instance that
-      // carries L0/L1, so all three tiers stamp into one per-turn stage store and
-      // the trace can never name two tiers for one turn.
-      ...(capabilityRetriever === undefined
-        ? {}
-        : { retriever: capabilityRetriever, scopeSeam: funnel }),
-      // LE2-025b — alias canonicalization at parse entry. Unconditional: it is
-      // deterministic catalog data with no external dependency (no embedder, no
-      // engine), so there is nothing to degrade to and no reason to gate it.
-      aliasSeam: funnel,
-      // LE2-021 — the workflow selection surface. The planner advertises the
-      // closed `start_workflow` enum for this turn's authorized roster and
-      // instantiates whatever the model selects from it. Empty corpus ⟹ nothing
-      // advertised ⟹ byte-identical wire.
-      workflowRuntime,
-    });
-  const buildResponder = (model: ModelProvider): ResponderPort =>
-    createIbatexasResponder({
-      model,
-      modelId: chatModelId,
-      explainer: ibxExplainer,
-      promptComposer,
-      telemetry,
-      resolveScheduleSignal,
-      // BKL-215 — the CUSTOMER-plane deterministic mutation-success render. On a
-      // committed amend EXECUTE the reply states WHAT THE VERB DID from the
-      // executed envelope, never the model (which live-composed a FALSE FAILURE
-      // "houve um erro ao adicionar o item" on a real success). Returns undefined
-      // for every non-amend kind → the grounded model path below is byte-identical
-      // for them. The customer analog of the ops readAnswer.renderAction (BKL-149).
-      readAnswer: {
-        // No deterministic customer READ render here — customer reads flow
-        // through the claims pipeline, not this port (the ops-only read capture).
-        render: (_turnId: string) => undefined,
-        renderAction: (acted: unknown, _turnId: string) =>
-          renderCustomerActionAnswer(acted),
-      },
-      // LE2-021 — the WHOLE-WORKFLOW confirm. The responder cannot reach the
-      // workflow runtime (nothing under `claustrum/workflow/` is importable from
-      // it, by design), so the composition root hands it this closure. Returns
-      // `undefined` on every turn that selected no workflow, and on any instance
-      // with an unresolved param — both degrade to `decision.prompt`, which is
-      // the behaviour every confirm had before this line existed.
-      workflowConfirm: (turnId: string) => workflowRuntime.renderConfirm(turnId),
-      // LE2-022 — the FEASIBILITY notice, wired for the same reason and read on
-      // the opposite branch. When a pre-check refuses, the planner drops the
-      // anchor envelope, so the turn reaches the responder as a REFUSE on an
-      // empty plan; without this closure it would fall through to a model
-      // completion and the customer would be told, in prose the model authored,
-      // why a route they named is not happening — a proposition the model has no
-      // grounds for, since the reason lives in a projection it never saw.
-      // `undefined` on every turn no pre-check refused.
-      workflowNotice: (turnId: string) => workflowRuntime.renderNotice(turnId),
-      // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate, wired ONLY
-      // when ENABLE_CLAIMS_PIPELINE is on (the SAME flag buildClaimsSeams reads).
-      // Closes the `prose_preserved` hallucination leak on the conversational
-      // fallback: a non-smalltalk info-question that produced no validated claim
-      // degrades to the deterministic proposition-free SAFE_UNKNOWN reply instead of
-      // a model-authored prose draft. Flag-OFF → omitted → byte-identical.
-      //
-      // LE2 decision 6 — the OPS conductor now composes this SAME gate (D5, "ops
-      // never wires safe-unknown", is DISSOLVED). The construction lives in
-      // `safe-unknown-gate.ts`; the customer plane keeps the closed-hours offer
-      // (the default), the staff plane opts out of that customer copy.
-      ...(claimsPipelineEnabled() ? { safeUnknown: createSafeUnknownGate() } : {}),
-      // LE2-007 — the responder half of the funnel seam (the SAME instance the
-      // planner got): an L0-stamped turn renders its pt-BR template instead of the
-      // conversational completion.
-      funnel,
-    });
-
-  // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
-  // is hoisted so the claim-planner adapter reuses the SAME claim-aware instance
-  // (its `proposeClaims`, Q6b). `buildClaimsSeams` returns {} when
-  // ENABLE_CLAIMS_PIPELINE is OFF (the default), so the spread below is a no-op
-  // and the Conductor is composed BYTE-IDENTICALLY to today (no INVESTIGATE /
-  // CLAIMS-VALIDATE stage runs). ON → the shadow claims path is injected
-  // (activation is a later PR). No `clock` is passed (not in the published
-  // ConductorOptions; the per-turn clock is PENDING R2a).
-  const planner = buildPlanner(modelProvider);
-  // F2 observability (RCA 2026-06-29): when the claims pipeline is ENABLED but the
-  // LINKED kernels are below the egress-brand floor, log a loud warning so the
-  // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
-  const claimsSeams = buildClaimsSeams({
-    planner,
-    warn: (message) => logger.warn(message),
-    // BKL-108 — unconditional boot marker (ENABLED/disabled), so the RUNNING
-    // process's claims-pipeline state is readable from the boot log (a stale-env
-    // tsx respawn is otherwise indistinguishable from an enabled boot).
-    info: (message) => logger.info({ component: "startup" }, message),
-    // BKL-209 — a medical-emergency §O#9 ESCALATE fires this best-effort sink to
-    // put the emergency on the staff surface (support.handoff_requested → the
-    // handoff-subscriber → Escalações + staff WhatsApp), so "vou avisar nossa
-    // equipe" is TRUE. Session-keyed by turnId so each emergency turn pages once
-    // (no cross-turn dedup — every reported emergency should reach staff). Fully
-    // fire-and-forget: swallow all errors; a publish failure never breaks the
-    // customer's (already-safe) render.
-    onSafetyEmergency: (ctx) => {
-      const sessionId = `safety-emergency:${ctx.turnId ?? "unknown"}`;
-      void publishNatsEvent("support.handoff_requested", {
-        sessionId,
-        reason: "EMERGÊNCIA MÉDICA relatada no chat — atenda imediatamente.",
-      }).then(
-        () =>
-          logger.warn(
-            { component: "safety", turnId: ctx.turnId },
-            "medical-emergency ESCALATE surfaced — support.handoff_requested published (BKL-209)",
-          ),
-        (err: unknown) =>
-          logger.error(
-            { component: "safety", turnId: ctx.turnId, err: String(err) },
-            "medical-emergency surfacing FAILED — escalation is render-only (BKL-209)",
-          ),
-      );
-    },
-  });
   // AUT-017 — the ESCALATE PARK deps shared by the customer + ops conductors.
   // On a resumable money-intent ESCALATE the HandoffPort parks the FULL envelope
   // (single-use, Redis-backed) so an OWNER can approve-and-execute it later. The
@@ -3911,42 +3712,88 @@ export async function bootstrapClaustrum(
       };
     },
   };
-  _conductor = createConductor({
-    // LE2-021 — the workflow decision observer. OBSERVE-ONLY by construction
-    // (every method returns the inner result unchanged), and it reads the turn
-    // from the AsyncLocalStorage binding the ingresses install around
-    // `handleTurn`, so concurrent turns never cross-bind their confirms. See
-    // claustrum/workflow/workflow-turn.ts.
-    adjudicator: observeWorkflowDecisions(
-      adjudicator,
-      workflowRuntime,
-      currentWorkflowTurnId,
-    ),
+
+  // R1-S1 — the customer plane's ingredients, RESOLVED. Everything above is
+  // infrastructure (pools, clients, config, boot gates, the logger); everything the
+  // composition DOES with them is compose-customer-conductor.ts. This bag is the
+  // whole contract between the two, and the only reason this file still knows the
+  // customer plane exists.
+  const customerConductorDeps: CustomerConductorDeps = {
+    // UNWRAPPED on purpose — the composer applies `observeWorkflowDecisions` itself,
+    // so no adapter of it can compose a customer conductor that forgets the
+    // workflow decision observer.
+    adjudicator,
+    workflowRuntime,
+    model: modelProvider,
+    chatModelId,
     memory,
     grounding,
-    planner,
-    responder: buildResponder(modelProvider),
-    explainer: ibxExplainer,
-    handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
+    channels,
     telemetry,
     session: redisSessionStore(),
     tools: toolRegistry,
-    channels,
     tenantResolver: resolveIbatexasTenantPolicy,
-    // F4 / conductor rich-state: the pre-adjudication resolve stage assembles the
-    // per-pack SystemState (real entity state + sessionTokensConsumed) so the
-    // kernel adjudicates commerce mutations correctly instead of panic-REFUSING
-    // against the stub tenant state. See claustrum/resolve-and-assemble.ts.
     resolver: createIbatexasResolver(),
-    // RC-R3 / Decision 1: without a distributed lock the conductor falls back to
-    // its in-process InMemorySessionLock, so two api replicas would adjudicate
-    // the same `${channel}:${customerId}` session concurrently (double-EXECUTE).
-    // Postgres advisory locks pin acquire/release to one pooled connection.
     sessionLock: new PostgresAdvisorySessionLock(pgPool),
-    // B-PR1 — OFF by default → {} (no-op spread, byte-identical). ON → the three
-    // optional claims seams (investigator / claimPlanner / claimsKernel).
-    ...claimsSeams,
-  });
+    handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
+    promptComposer,
+    explainer: ibxExplainer,
+    resolveScheduleSignal,
+    funnel,
+    capabilityRetriever,
+    readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
+    // B-PR1 — the claims seams, as a factory over the planner the composer hoists
+    // (Q6b: the claim-planner adapter must wrap the SAME claim-aware instance the
+    // Conductor gets). The logger + NATS sinks below are exactly why this is a
+    // closure the adapter supplies rather than something the pure composer builds.
+    claimsSeamsFor: (planner) =>
+      // F2 observability (RCA 2026-06-29): when the claims pipeline is ENABLED but the
+      // LINKED kernels are below the egress-brand floor, log a loud warning so the
+      // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
+      buildClaimsSeams({
+        planner,
+        warn: (message) => logger.warn(message),
+        // BKL-108 — unconditional boot marker (ENABLED/disabled), so the RUNNING
+        // process's claims-pipeline state is readable from the boot log (a stale-env
+        // tsx respawn is otherwise indistinguishable from an enabled boot).
+        info: (message) => logger.info({ component: "startup" }, message),
+        // BKL-209 — a medical-emergency §O#9 ESCALATE fires this best-effort sink to
+        // put the emergency on the staff surface (support.handoff_requested → the
+        // handoff-subscriber → Escalações + staff WhatsApp), so "vou avisar nossa
+        // equipe" is TRUE. Session-keyed by turnId so each emergency turn pages once
+        // (no cross-turn dedup — every reported emergency should reach staff). Fully
+        // fire-and-forget: swallow all errors; a publish failure never breaks the
+        // customer's (already-safe) render.
+        onSafetyEmergency: (ctx) => {
+          const sessionId = `safety-emergency:${ctx.turnId ?? "unknown"}`;
+          void publishNatsEvent("support.handoff_requested", {
+            sessionId,
+            reason: "EMERGÊNCIA MÉDICA relatada no chat — atenda imediatamente.",
+          }).then(
+            () =>
+              logger.warn(
+                { component: "safety", turnId: ctx.turnId },
+                "medical-emergency ESCALATE surfaced — support.handoff_requested published (BKL-209)",
+              ),
+            (err: unknown) =>
+              logger.error(
+                { component: "safety", turnId: ctx.turnId, err: String(err) },
+                "medical-emergency surfacing FAILED — escalation is render-only (BKL-209)",
+              ),
+          );
+        },
+      }),
+    // BKL-078 — the flag read stays in the adapter (Hard Rule #3: config comes from
+    // the composition root). A FACTORY, not a gate object, so the composer invokes
+    // it at responder-construction time — byte-identical to the inline
+    // `claimsPipelineEnabled() ? { safeUnknown: createSafeUnknownGate() } : {}`.
+    safeUnknownGateFor: () =>
+      claimsPipelineEnabled() ? createSafeUnknownGate() : undefined,
+  };
+  // ONE call. `buildPlanner`/`buildResponder` come back out because the
+  // managed-agent plane (below) recomposes them over its per-trigger capped model.
+  const composedCustomer = composeCustomerConductor(customerConductorDeps);
+  _conductor = composedCustomer.conductor;
 
   // ── NEW-032 ops-actor conductor plane (slice B) — ALWAYS composed ───────────
   // The ops plane is a SECOND conductor composition recomposed PER REQUEST by
@@ -4495,8 +4342,8 @@ export async function bootstrapClaustrum(
         modelProvider,
         // Same DRY factories the conductor uses — the per-trigger capped model is
         // passed in by the live runner (H1). Wiring BOTH points is now one call.
-        buildPlanner,
-        buildResponder,
+        buildPlanner: composedCustomer.buildPlanner,
+        buildResponder: composedCustomer.buildResponder,
         // BKL-003 — B-PR1 claims seams for the managed-agent plane, FLAG
         // DEFAULT-OFF. Per-trigger factory (NOT a boot singleton): the live
         // conductor is recomposed per trigger with a fresh planner, and the
