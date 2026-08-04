@@ -769,6 +769,49 @@ export function detectMedicalEmergencyMarkers(text: string): string[] {
 }
 
 /**
+ * F-3 — does this request text carry a SAFETY MARKER, i.e. is it a turn whose
+ * outcome the deterministic safety machinery already decides?
+ *
+ * ── WHY A COMPOSITION AND NOT A NET ─────────────────────────────────────────
+ *
+ * There is deliberately NO new regex here. This is the UNION of the two
+ * deterministic nets the safety path itself already trusts, and nothing else:
+ *
+ *   · {@link isMedicalEmergencyAsk} — the BKL-209 active-distress net. It is the
+ *     `detectMedicalEmergencyMarkers` contribution the planner merges into
+ *     `SafetyRoutingInput.markers`, which `routeSafety` turns into the §O#9
+ *     ESCALATE (ibatexas-planner.ts, `proposeClaims`), and the SAME net the render
+ *     adapter reads to select `SAFE_ESCALATE_EMERGENCY_TEMPLATE`.
+ *   · {@link isDietQualifiedAsk} — the BKL-270 diet net (allergen family ∪
+ *     diabetes/celiac/intolerance). It is the gate the INVESTIGATOR reads to
+ *     suppress a `dietaryPosture: "abstain"` read (ibatexas-investigator.ts), and
+ *     the gate the render adapter reads to select the ratified BKL-184
+ *     abstain-plus-handoff copy.
+ *
+ * A THIRD, weaker spelling of "this is a safety turn" would be a second safety
+ * authority: it could fire where the enforcement does not (routing a turn into a
+ * flow that then answers it normally) or — worse — fail to fire where the
+ * enforcement does. Composing the two exported predicates means any correction to
+ * either net travels here for free, by construction.
+ *
+ * ── WHAT IT IS FOR ──────────────────────────────────────────────────────────
+ *
+ * The owner ruled (2026-08-04) that a safety marker OUTRANKS alias ambiguity: an
+ * utterance that is BOTH a declared-ambiguous catalog surface AND a safety turn
+ * ("a costela tem amendoim?", "sou celíaco, posso comer a costela?") must reach the
+ * safety machinery rather than being short-circuited into the LE2-025b catalog
+ * disambiguation with zero claims. The planner's ALIAS short-circuit therefore
+ * consults this predicate — and ONLY the short-circuit: canonicalization itself,
+ * the parse text, and the L1 key surface are untouched.
+ *
+ * Pure. `false` on an empty/absent utterance, so an absent text is byte-identical
+ * to today's behaviour.
+ */
+export function carriesSafetyMarker(text: string): boolean {
+  return isMedicalEmergencyAsk(text) || isDietQualifiedAsk(text);
+}
+
+/**
  * The IMPERATIVE-MUTATION net — TRUE iff this text carries a pt-BR mutation verb.
  *
  * EXTRACTED (BKL-262 Stage 1) from {@link classifyRequestSpans}, where it has always

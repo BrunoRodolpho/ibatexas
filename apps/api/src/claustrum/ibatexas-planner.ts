@@ -85,7 +85,12 @@ import {
   type SafetyRoutingInput,
   type SpanCompleteness,
 } from "./claim-registry.js";
-import { detectMedicalEmergencyMarkers } from "./required-claim-decomposer.js";
+import {
+  carriesSafetyMarker,
+  detectMedicalEmergencyMarkers,
+  isDietQualifiedAsk,
+  isMedicalEmergencyAsk,
+} from "./required-claim-decomposer.js";
 import {
   CLAIM_PLANNER_PERSONA,
   EXPRESS_INTENT_TOOL,
@@ -1183,7 +1188,81 @@ export function createIbatexasPlanner(
       const aliasSeam = deps.aliasSeam;
       const aliasResult =
         aliasSeam === undefined ? undefined : canonicalizeAliases(state.perception.text);
-      if (aliasSeam !== undefined && aliasResult !== undefined && aliasResult.ambiguous.length > 0) {
+      // ── F-3 · A SAFETY MARKER OUTRANKS AMBIGUITY ───────────────────────────
+      //
+      // The short-circuit below is a TIER CLAIM: `stampAliasClarify` stamps ALIAS,
+      // `tierAuthorsOwnReply("ALIAS")` is TRUE, and `proposeClaims` therefore
+      // returns the EMPTY claim plan for the turn. That suppresses the whole claim
+      // plane — including the §O#9 closed-taxonomy safety router and the P4
+      // completeness wall — on a turn that is NOT span-free. (The safety argument
+      // written above the L0 gates is scoped to L0, whose utterances have no
+      // content span at all; it does not transfer to ALIAS, and reading it as
+      // though it did is what left this open.)
+      //
+      // MEASURED consequence before this gate: `"a costela tem amendoim?"` — a
+      // direct allergen question, Hard Rule #1 territory — proposed ZERO claims and
+      // answered with the bare catalog disambiguation. Same for a declared medical
+      // marker ("sou celíaco, …"). The owner RULED (2026-08-04) that a safety marker
+      // outranks the ambiguity: safety routing runs, and the ambiguity is resolved
+      // INSIDE that flow rather than ahead of it.
+      //
+      // WHAT THIS GATES, PRECISELY: only whether the turn SHORT-CIRCUITS.
+      // `canonicalizeAliases` still runs, unchanged, above; `parseText` below is
+      // still `aliasResult.text` — which the canonicalizer returns BYTE-IDENTICAL to
+      // the customer's words on the ambiguous branch, by construction ("return the
+      // ORIGINAL text in that case rather than a half-rewritten one"). So the text
+      // the parser sees, the retrieval query and the L1 key digest are all exactly
+      // what they would have been; no funnel key-surface component changes.
+      //
+      // WHY THE MARKER TEST IS `carriesSafetyMarker` AND NOT A LOCAL REGEX: it is
+      // the union of the two deterministic nets the safety path ITSELF consumes
+      // (the BKL-209 emergency net behind `routeSafety`'s §O#9 ESCALATE, and the
+      // BKL-270 diet net behind the investigator's read suppression and the BKL-184
+      // abstain copy). A weaker net here would be a SECOND safety authority that
+      // could route a turn into a flow the enforcement then declines to treat as a
+      // safety turn — see the predicate's own docblock.
+      //
+      // WHERE THE AMBIGUITY GOES ON THE DEFERRED TURN — it is SUBSUMED, not lost.
+      // Both in-scope classes reach a terminal that is INVARIANT over which reading
+      // the customer meant, so no disambiguation is needed to reach the safe
+      // outcome: a distress marker forces the §O#9 ESCALATE (asking "a bovina ou a
+      // congelada?" of someone who cannot breathe is the failure, not the fix), and
+      // a diet-qualified ask has its `abstain` reads suppressed for EVERY candidate
+      // reading alike, landing on the ratified BKL-184 proposition-free abstain +
+      // human-handoff offer. Voicing the two candidate products INSIDE that safe
+      // reply is a customer-facing COPY decision (a new rendered pt-BR surface, and
+      // a carrier so non-customer planes stay byte-identical); it is deliberately
+      // NOT taken here — see the PR body.
+      const safetyOutranksAmbiguity =
+        aliasResult !== undefined &&
+        aliasResult.ambiguous.length > 0 &&
+        carriesSafetyMarker(state.perception.text);
+      if (safetyOutranksAmbiguity) {
+        // TRACE-ONLY. Skipping the stamp means the ALIAS tier never claims this
+        // turn, so the funnel's own `funnel.tier` line is never written for it and
+        // the ambiguity would otherwise be invisible to RCA. This line is the
+        // deferral record: it names the surface, its candidates and WHICH net
+        // outranked it, and it changes no control flow.
+        logger.info(
+          {
+            component: "planner",
+            event: "planner.alias_ambiguity_deferred_to_safety",
+            turnId: state.turnId,
+            surface: aliasResult.ambiguous[0]?.surface ?? "",
+            candidates: aliasResult.ambiguous[0]?.candidates ?? [],
+            ambiguousSurfaces: aliasResult.ambiguous.length,
+            medicalEmergency: isMedicalEmergencyAsk(state.perception.text),
+            dietQualified: isDietQualifiedAsk(state.perception.text),
+          },
+          "planner: F-3 — safety marker outranks alias ambiguity; §O#9 routing runs instead of the catalog clarify",
+        );
+      }
+      if (
+        aliasSeam !== undefined &&
+        aliasResult !== undefined &&
+        aliasResult.ambiguous.length > 0 &&
+        !safetyOutranksAmbiguity
+      ) {
         // A declared-ambiguous surface with nothing in the utterance to choose.
         // CLARIFY — never a nearest neighbour. The compile gate (LE2-025a) is what
         // guarantees we can always RECOGNISE this case: a multi-entity surface
