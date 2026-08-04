@@ -591,3 +591,46 @@ describe("in-memory-redis — lists (rPush / lPop)", () => {
     await expect(loose(redis.client).rPush("k", {})).rejects.toThrow(/value must be a string/)
   })
 })
+
+// ── (5) DECR — the counter's release half (R5-S12) ───────────────────────────
+//
+// Added for `@adjudicate/runtime`'s `resumeDeferredIntent`, which DECRs the
+// per-session parked-envelope quota counter on a successful resume. The
+// property worth pinning is the one a hand-rolled double gets wrong: real DECR
+// goes NEGATIVE. A double that floors at zero turns a double-release — the
+// accounting bug the counter exists to expose — into a silent no-op.
+
+describe("in-memory-redis — decr", () => {
+  it("decrements an existing counter and mirrors INCR's round trip", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.incr("test:parks")).toBe(1)
+    expect(await redis.client.incr("test:parks")).toBe(2)
+    expect(await redis.client.decr("test:parks")).toBe(1)
+    expect(redis.peek("test:parks")).toBe("1")
+  })
+
+  it("goes NEGATIVE rather than flooring at zero, so an over-release is visible", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.decr("test:parks")).toBe(-1)
+    expect(await redis.client.decr("test:parks")).toBe(-2)
+    expect(redis.peek("test:parks")).toBe("-2")
+  })
+
+  it("mirrors real Redis on DECR against a non-numeric value", async () => {
+    const redis = createInMemoryRedis({ seed: { "test:word": "banana" } })
+    await expect(redis.client.decr("test:word")).rejects.toThrow(NotAnIntegerError)
+  })
+
+  it("validates its key on an EMPTY store", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    await expect(loose(redis.client).decr(5)).rejects.toThrow(/key must be a string/)
+    await expect(loose(redis.client).decr("")).rejects.toThrow(/key must not be empty/)
+  })
+
+  it("refuses a WRONGTYPE key instead of inventing a number", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.lPush("test:list", "v")
+    await expect(redis.client.decr("test:list")).rejects.toThrow(WrongTypeError)
+  })
+})
