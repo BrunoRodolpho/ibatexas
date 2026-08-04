@@ -107,9 +107,9 @@ below are that pre-WS5 state, still.
 | 8 | `apps/api/src/__tests__/defer-roundtrip.test.ts` | `defer-resolver.js` → `releaseDeferResumingLock` |
 | 9 | `apps/api/src/__tests__/defer-roundtrip-extensions.test.ts` | same |
 | 10 | `apps/api/src/__tests__/defer-resolver-resumedkey-redis-error.test.ts` | same |
-| 11 | `apps/api/src/__tests__/audit-2026-05-24/defer-resume-integrity.test.ts` | same |
+| 11 | `apps/api/src/__tests__/audit-2026-05-24/defer-resume-integrity.test.ts` | same — **RESOLVED in Phase 5**: on the shared testcontainer harness; the release EVAL is real and the marker IS cleared (asserted) |
 | 12 | `apps/api/src/__tests__/boot-window-race.test.ts` | same |
-| 13 | `apps/api/src/adapters/__tests__/park-deferred-intent-nx-hoist.unit.test.ts` | `park-nx.ts` → `releaseNxPlaceholder` |
+| 13 | `apps/api/src/adapters/__tests__/park-deferred-intent-nx-hoist.unit.test.ts` | `park-nx.ts` → `releaseNxPlaceholder` — **RESOLVED in Phase 5**: the SUT no longer reaches a Lua site from this file at all (see below) |
 
 Swapping the in-memory adapter into these files is **behaviour-preserving but
 pointless**: the adapter's `eval` throws too (deliberately, naming W4 RULE 3),
@@ -120,6 +120,25 @@ Item 13 is worse than the others: `releaseNxPlaceholder` *feature-detects*
 `typeof r.eval === "function"`. With no `eval` on the double the detection fails
 and the code takes its **plain-`del`** branch — so that file exercises only the
 unsafe path, and the CAD it is nominally about never runs. See the defect below.
+
+> **RESOLVED in Phase 5 for items 11 and 13, by different routes** — which is
+> the point: "reaches a Lua site with a double that omits `eval`" has two exits,
+> and only one of them is a container.
+>
+> **Item 11 migrated** onto `setupRedisTestContainer` (enrolled in the M0 roll
+> call, 3 cases). It parks through `createParkRedisCapabilities()`, so the
+> framework's ATOMIC quota branch runs, and the resolver's
+> `defer:resuming:*` release is a real Lua compare-and-delete. The class-(i-b)
+> hole R5-S12 measured — a fully GREEN resume that never clears the marker — is
+> now an assertion in that file rather than a finding in this one.
+>
+> **Item 13 did not need a container: the property it tests never reaches
+> Redis.** `hoistAndValidateVerificationFields` runs to completion before the
+> wrapper's first command, so its coverage is Redis-independent. It stays a unit
+> file, but its double is now a `ParkRedisCapabilities`-typed **tripwire** whose
+> every member (including the two Lua ones) rejects with a sentinel. Nothing is
+> emulated, and the SUT no longer reaches `parkDeferredIntent` — so the file's
+> membership in this class lapses rather than being repaired.
 
 ---
 
@@ -432,10 +451,17 @@ CLAUDE.md rule #9 on `@adjudicate/*` source ownership.
 | unit | `adapters/__tests__/park-redis-capabilities.unit.test.ts` | composition fails closed per command (hand-written roll call, not `it.each`); the atomic members delegate to `client.eval` with the exact script + arguments |
 | testcontainer | `__tests__/park-nx-release-failure-mode.test.ts` | a failed CAD leaves the key (and never touches a foreign owner's); the working CAD is ownership-checked; `evalIncrCheck` is genuinely atomic under 40-way concurrency; and the pre-F-22 release, run verbatim in the same end state, DOES destroy the foreign key |
 
-**One double left honest rather than "fixed".** The stub in
+**One double left honest rather than "fixed".** ~~The stub in
 `adapters/__tests__/park-deferred-intent-nx-hoist.unit.test.ts` deliberately
 does NOT carry `evalIncrCheck`/`compareAndDelete`, so the framework takes its
-non-atomic branch *inside that unit test*. Adding in-memory versions would be
+non-atomic branch *inside that unit test*.~~ **Superseded in Phase 5** — that
+stub is gone. Refusing to fake the two Lua members was right; keeping a double
+that *omitted* them was the wrong way to express it, because omission is what
+routes the framework down the non-atomic branch. The replacement declares the
+full `ParkRedisCapabilities` contract and makes every member **reject** with a
+`RedisTouchedSentinel`, so the non-atomic branch is unreachable from that file
+and "the wrapper touched Redis" becomes the file's control rather than an
+accident. Adding in-memory versions would still be
 exactly the Lua-emulation theater W4 RULE 3 forbids — the atomicity claims are
 proven at the testcontainer layer or not at all. The two real-Redis park suites
 (`park-deferred-intent-nx.test.ts`, `park-deferred-intent-nx-hash.test.ts`)
@@ -618,13 +644,52 @@ not benign coincidences.
 | `__tests__/defer-roundtrip-extensions.test.ts` | 3 | the TTL case stored the `EX` argument and read it straight back, so it could only re-assert its own input. Now an exact remaining lifetime against a frozen clock. |
 | `__tests__/defer-resolver-resumedkey-redis-error.test.ts` | 2 | the fault injector became a spy-delegate: it decides whether THIS `get` throws and otherwise forwards to the adapter, so the retry path now runs against real SET/DEL/INCR/SCAN semantics. |
 
-### Deliberately deferred with reason (2)
+### Deliberately deferred with reason (2) — **BOTH RESOLVED in Phase 5**
+
+> Phase 5 (branch `test/phase5-deferred-park-migrations`) discharged both after
+> the F-22 ruling landed. The two entries below are kept verbatim as the record
+> of *why* they waited; each carries its resolution.
 
 **`adapters/__tests__/park-deferred-intent-nx-hoist.unit.test.ts` — F-22.**
 Migratable today (it already takes a client), but excluded by owner ruling: it
 is F-22's site, and a naive migration silently routes `releaseNxPlaceholder`
 down its unconditional-`del` branch — the unsafe path the F-22 ruling is about.
 Waits on that ruling.
+
+> **RESOLVED — ruling: it stays a UNIT test (option b), with the double
+> replaced.** Read the file and the SUT: `hoistAndValidateVerificationFields` is
+> the first statement of `parkDeferredIntentWithNxGuard` and the SETNX
+> placeholder is the next one, so **7 of the file's 9 cases provably never reach
+> the socket** — the property is Redis-independent and a container would buy no
+> signal (ruling Q2: "8 container suites, not 20"). The remaining 2 were
+> happy-path cases whose entire assertion was `result.parked === true`, i.e.
+> "the wrapper did not refuse"; they were the ONLY reason the framework's
+> non-atomic branch ran inside this file.
+>
+> What changed: the `redis` argument is now typed as the production
+> `ParkRedisCapabilities` (previously it was cast into that type through
+> `as unknown as`, which is how a stub missing the atomic members compiled at
+> all), and every member — the two Lua ones included — **rejects** with a
+> `RedisTouchedSentinel`. Nothing emulates a Redis command; the file's SUT never
+> reaches `parkDeferredIntent`; the case count is unchanged at 9.
+>
+> **What the non-atomic branch loses, and why that is acceptable:** nothing that
+> was ever a claim. No assertion in this file distinguished the atomic seam from
+> the fallback — the fallback simply happened to be what ran. Per F-22's
+> composition guarantee the branch is DEAD in this repo (every park site goes
+> through `createParkRedisCapabilities()`, where `evalIncrCheck` is REQUIRED),
+> and that deadness is pinned by observation, not by intent, in
+> `park-nx-release-failure-mode.test.ts`'s spy-delegate case ("the framework
+> consumes OUR evalIncrCheck — its non-atomic INCR fallback never runs").
+> Exercising a branch production cannot reach was coverage of the wrong thing.
+>
+> **What the two retired happy-path cases became.** They were converted, not
+> deleted: each is now the file's **control** — a complete (respectively, a
+> hoist-requiring) envelope must get PAST validation and trip the wire, proving
+> the seven negatives are not green because the validator refuses everything
+> (F-14). Their stronger form — that the hoisted `actorPrincipal` actually lands
+> on the blob Redis stores, and that the blob hash-verifies — already exists on
+> real Redis in `park-deferred-intent-nx-hash.test.ts`.
 
 **`__tests__/audit-2026-05-24/defer-resume-integrity.test.ts` — attempted,
 reverted, blocked by the SAME class as F-22, and this generalizes it.** The
@@ -655,15 +720,38 @@ not to add the command: `evalIncrCheck` is a Lua script, so emulating it is the
 W4 RULE 3 theater this adapter exists to refuse. Whatever ruling settles F-22
 should settle the feature-detect class as a whole, not one call site.
 
-### Map after R5-S12
+> **RESOLVED — migrated to the testcontainer harness in Phase 5.** F-22 settled
+> the feature-detect class exactly as this paragraph asked: the probe is not
+> defeated, it is made deterministic at the composition root, so
+> `createParkRedisCapabilities()` always carries `evalIncrCheck` and the
+> `typeof` read cannot throw. But a deterministic probe does not make an
+> in-memory home honest — `evalIncrCheck` is Lua, and the rule this paragraph
+> ends on ("the fix is not to add the command") still holds. So the substrate
+> moved instead: the file is now on `setupRedisTestContainer`, parks through the
+> production factory, and is enrolled in the M0 roll call at 3 cases. Its three
+> audit-chain assertions are unchanged in substance; what changed under them is
+> that the park's quota claim is a real `EVAL`, the resolver's release is a real
+> compare-and-delete, and the blob the file reads back is bytes Redis stored.
+> Two fictions died with the stub: the faked `test:` `rk` (the real one resolves
+> to `development:` here — this section's own bonus measurement), and the
+> missing release EVAL. The tamper case's in-place blob edit is re-expressed as
+> a real `SET … KEEPTTL`, so the tamper is still at REST.
+
+### Map after R5-S12, updated by Phase 5
 
 | Bucket | Count |
 |---|---|
 | Owner-gated, class (i) — eval-emulating | 7 |
-| Owner-gated, class (i-b) — remaining | 2 (`defer-resume-integrity`, `park-nx-hoist` — both feature-detect-blocked) |
+| ~~Owner-gated, class (i-b) — remaining~~ | ~~2 (`defer-resume-integrity`, `park-nx-hoist` — both feature-detect-blocked)~~ → **0** |
 | Refused — leaf-purity edge | 1 |
 | Migrated (R5-S8/S9) | 3 |
 | Migrated (R5-S12) | 4 |
+| Resolved (Phase 5) | 2 — `defer-resume-integrity` to the container; `park-nx-hoist` retained as a unit test with a refusing typed double |
 | **Enumerated population** | **17** |
+
+Class (i-b) is now **empty**: items 8–10 and 12 were migrated by R5-S12, and
+items 11 and 13 by Phase 5. The whole owner-gated remainder of the enumerated
+population is class (i) — the 7 eval-EMULATING doubles, which M2 retires onto
+the shape suites.
 
 The `redisFake` cluster (12) is untouched and still owner-gated on `multi()`.
