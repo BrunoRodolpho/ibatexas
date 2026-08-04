@@ -228,6 +228,58 @@ describe("LE2-025b — canonicalization at parse entry feeds the L1 key and the 
     expect(funnel.counters?.()).toMatchObject({ hits: 0, misses: 2 });
   });
 
+  // ── F-2 · THE MEMO PROOF, STRUCTURAL HALF ──────────────────────────────────
+  //
+  // The funnel key-surface contract: the canonicalized text is what the parser
+  // sees, so a canonicalization change changes the PARSE. If the two sides of that
+  // change could share a key, a post-fix turn would replay a pre-fix parse — the
+  // stale-entry hazard the F-2 fix had to answer before it was safe to ship.
+  //
+  // TWO mechanisms answer it and this pins the structural one, which holds even
+  // with `ALIAS_CANONICALIZATION_VERSION` reverted: the key digests `parseText`,
+  // and `parseText` IS the canonicalized string, so the utterance component itself
+  // moves for exactly the utterances whose canonicalization moved. (The DECLARED
+  // half — the revision component — is pinned in
+  // `claustrum/__tests__/parse-memo-catalog-version.test.ts`.)
+  //
+  // Reverting the algorithm fix reds this: turn 2 would canonicalize back into
+  // turn 1's string and HIT.
+  it("SEAM 1 (F-2): an entry written under the PRE-FIX parse surface is not served after the fix", async () => {
+    const funnel = createParseFunnel({ parseCacheStore: createRedisParseCacheStore() });
+    const conversationId = "conv_alias_l1_f2";
+
+    // Turn 1 plants the entry a WARTED deploy wrote. Its text is verbatim what
+    // v1 canonicalized turn 2's sentence into — handle plus the modifier it
+    // failed to consume — and that string is INERT under v2 (the idempotence
+    // pre-pass owns the handle's three tokens and "bovina" is not a surface), so
+    // it reaches the memo byte-identical and lands on exactly the pre-fix key.
+    const firstModel = scriptedModel(NOTE_CALL);
+    const first = buildHarness({ model: firstModel, funnel });
+    await runCustomerTurn(first.harness, {
+      customerId: CUSTOMER,
+      conversationId,
+      text: "adiciona uma costela-bovina-defumada bovina ao carrinho",
+    });
+    expect(sentUserMessage(firstModel)).toBe(
+      "adiciona uma costela-bovina-defumada bovina ao carrinho",
+    );
+    expect(funnel.counters?.()).toMatchObject({ misses: 1, stores: 1 });
+
+    // Turn 2 — the CUSTOMER'S actual sentence. Under v1 it canonicalized into
+    // turn 1's string and would have hit. Under v2 it canonicalizes clean, so the
+    // planted entry is unreachable and the turn re-parses.
+    const secondModel = scriptedModel(NOTE_CALL);
+    const second = buildHarness({ model: secondModel, funnel });
+    await runCustomerTurn(second.harness, {
+      customerId: CUSTOMER,
+      conversationId,
+      text: "adiciona uma costela bovina ao carrinho",
+    });
+
+    expect(sentUserMessage(secondModel)).toBe("adiciona uma costela-bovina-defumada ao carrinho");
+    expect(funnel.counters?.()).toMatchObject({ hits: 0, misses: 2, stores: 2 });
+  });
+
   it("SEAM 2 (L2): the retrieval query is built from the CANONICAL text", async () => {
     const funnel = createParseFunnel();
     const embedder = recordingEmbedder();
