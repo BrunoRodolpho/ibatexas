@@ -64,6 +64,8 @@ import type {
 import { MENU_DIETARY_REGISTRY_SPEC } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_REGISTRY_SPEC } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_REGISTRY_SPEC } from "./claimdefs/menu-item-price.generated.js";
+import { ORDER_HISTORY_REGISTRY_SPEC } from "./claimdefs/order-history.generated.js";
+import { PAYMENT_HISTORY_REGISTRY_SPEC } from "./claimdefs/payment-history.generated.js";
 import { RESERVATION_STATUS_REGISTRY_SPEC } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_REGISTRY_SPEC } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_REGISTRY_SPEC } from "./claimdefs/store-info.generated.js";
@@ -900,88 +902,40 @@ export const REGISTRY_SPECS = {
     // field (ledger-sourced, deterministic; never model-authored).
     valueBinding: { key: "cart_empty", path: ["emptinessText"] },
   },
-  // FE-D03 slice C — ORDER_HISTORY: the owner-scoped list read ("meu histórico de
-  // pedidos"). Structurally the CART_CONTENTS idiom (owner-scoped, must_read_this_turn,
-  // perResourceKey by the authenticated customerId), but its C6 proposition is a
-  // DETERMINISTICALLY PRE-COMPOSED bounded most-recent-N summary scalar
-  // (historySummaryText, "Pedido #1042 (entregue, R$89,00), … — mostrando os N mais
-  // recentes") derived from order listByCustomer (owner-scoped). The
-  // `order_history_changed` falsifier is DECLARED (so ORDER_HISTORY escapes the W6
-  // UNKNOWN-only cap and can VALIDATE) but DELIBERATELY UNREAD — the CART_CONTENTS
-  // `cart_cleared` disposition: the summary is a must_read_this_turn SNAPSHOT that
-  // already reflects each order's current status, so a same-read "changed" signal is
-  // tautological AND inert (an always-absent key never fires; demote-only safety holds).
+  // inv.18 v2 / R2-S5 — the HISTORIES PAIR is now GENERATED from their ClaimDefinition
+  // sources (`./claimdefs/order-history.generated.ts` /
+  // `./claimdefs/payment-history.generated.ts`, compiled from the matching `.claim.ts`).
+  // The SECOND and THIRD owner-scoped types to compile from source, on exactly the
+  // RESERVATION_STATUS footing R2-S4 established: each required-evidence row carries
+  // `ownershipPolicy: "required"` and is projected VERBATIM (by reference) by the
+  // published `toRegistrySpec`, so `ownerScopedBaseKey` below still resolves
+  // `order_history` / `payment_history` off the GENERATED specs exactly as it did off
+  // these stanzas — no second schema widening was needed for the ownership axis (only
+  // R2-S2's `perResourceKey`, via `./claimdefs/per-resource-claim.ts`). The generated rows
+  // carry the UNSUFFIXED base keys plus `perResourceKey: true`, and `selectCandidateClaim`
+  // suffixes them by `:{subject}` at select time as before — here the subject is the
+  // AUTHENTICATED customerId (one history per customer), matching the investigator's
+  // `order_history:{customerId}` / `payment_history:{customerId}`. These two lines REPLACE
+  // ~73 lines of handwritten stanza (evidence + the deliberately-unread W6 falsifiers +
+  // the C6 bindings, whose rationales moved verbatim into the sources) and can never drift
+  // from the templates or the closure rows, which are generated too.
+  // BKL-270 — the postures are SPLICED here for the same reason as on their five
+  // siblings: `compileClaimDefinition` has no concept of `dietaryPosture`, so it cannot
+  // emit the field, and splicing keeps the generated files byte-pure under their
+  // source-checksum drift guard.
+  // `answer-anyway` for ORDER_HISTORY: looks food-shaped and is NOT —
+  // composeOrderHistorySummary renders order display numbers, status enums and money,
+  // with NO item names. Nothing about food reaches the customer, so a restrictive
+  // qualifier has nothing to attach to.
   ORDER_HISTORY: {
-    kind: "read_claim",
-    // BKL-270 — looks food-shaped and is NOT: composeOrderHistorySummary renders
-    // order display numbers, status enums and money, with NO item names. Nothing
-    // about food reaches the customer, so a restrictive qualifier has nothing to
-    // attach to.
+    ...ORDER_HISTORY_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "order_history",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: true,
-    // Parameterize by subject — matches the investigator's `order_history:{customerId}`.
-    perResourceKey: true,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "order_history_changed",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered summary to the read's PRE-COMPOSED `historySummaryText`.
-    valueBinding: { key: "order_history", path: ["historySummaryText"] },
   },
-  // FE-D03 slice C — PAYMENT_HISTORY: the owner-scoped payment-list read ("meus últimos
-  // pagamentos"). The exact ORDER_HISTORY shape over payment listByCustomer (owner-scoped
-  // via the Payment→OrderProjection.customerId join; includes terminal/refunded rows —
-  // it is billing HISTORY). `payment_history_changed` is likewise DECLARED-but-UNREAD:
-  // must_read_this_turn re-reads each payment's current status (incl. refunded/disputed —
-  // the same facts BKL-006's per-order refund/chargeback probes surface), so the summary
-  // already reflects them and a separate falsifier would demote a snapshot that is
-  // already current — no independent cross-read contradiction (re-verified: the refund/
-  // chargeback probes are per-ORDER and this is a per-CUSTOMER snapshot; wiring them
-  // here would be tautological). Declared-unread, mirroring cart_cleared.
+  // `answer-anyway` for PAYMENT_HISTORY: money, method, status enum, bounded to the most
+  // recent N. Same argument as ORDER_HISTORY with even less surface.
   PAYMENT_HISTORY: {
-    kind: "read_claim",
-    // BKL-270 — money, method, status enum, bounded to the most recent N. Same
-    // argument as ORDER_HISTORY with even less surface.
+    ...PAYMENT_HISTORY_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "payment_history",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: true,
-    perResourceKey: true,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "payment_history_changed",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "payment_history", path: ["historySummaryText"] },
   },
   // inv.18 v2 / R2-S2 — MENU_ITEM_PRICE is now GENERATED from its ClaimDefinition source
   // (`./claimdefs/menu-item-price.generated.ts`, compiled from `menu-item-price.claim.ts`).

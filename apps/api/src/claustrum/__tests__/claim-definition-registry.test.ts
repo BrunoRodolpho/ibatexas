@@ -19,6 +19,8 @@ import { CLAIM_REGISTRY } from "../claim-registry.js";
 import { MENU_DIETARY_DEFINITION } from "../claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "../claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "../claimdefs/menu-item-price.generated.js";
+import { ORDER_HISTORY_DEFINITION } from "../claimdefs/order-history.generated.js";
+import { PAYMENT_HISTORY_DEFINITION } from "../claimdefs/payment-history.generated.js";
 import { RESERVATION_STATUS_DEFINITION } from "../claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_DEFINITION } from "../claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "../claimdefs/store-info.generated.js";
@@ -203,6 +205,13 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
     // still lists it) and the deep shape would still match — the fallback would be
     // INVISIBLE to every value assertion. Only reference identity catches it.
     ["RESERVATION_STATUS", RESERVATION_STATUS_DEFINITION, true],
+    // R2-S5 — the HISTORIES pair, on the RESERVATION_STATUS footing: both Triad-scoped,
+    // both still listed in TRIAD_SCOPED_TYPES, so for both a silent fallback to
+    // `buildClaimDefinition` would produce a deep-equal object with the RIGHT flag and
+    // pass every value assertion in this file. Reference identity is again the only guard
+    // that sees it.
+    ["ORDER_HISTORY", ORDER_HISTORY_DEFINITION, true],
+    ["PAYMENT_HISTORY", PAYMENT_HISTORY_DEFINITION, true],
   ] as const)(
     "CLAIM_DEFINITIONS.%s IS the generated definition (reference identity)",
     (type, generated, triadScoped) => {
@@ -235,4 +244,23 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
       RESERVATION_STATUS_DEFINITION.requiredEvidence,
     );
   });
+
+  // R2-S5 — the same ownership-axis pin for the histories pair, as a TABLE so the two
+  // cannot diverge and so a third owner-scoped adoption is one row. Each history type is
+  // owner-scoped by a DIFFERENT mechanism in the read (order `listByCustomer` vs the
+  // payment→OrderProjection.customerId join), but both must surface here as the identical
+  // single `"required"` row — that sameness is what lets one turn-seam harness prove both.
+  it.each([
+    ["ORDER_HISTORY", ORDER_HISTORY_DEFINITION],
+    ["PAYMENT_HISTORY", PAYMENT_HISTORY_DEFINITION],
+  ] as const)(
+    "the generated %s definition carries ownershipPolicy: required on its evidence",
+    (type, generated) => {
+      expect(generated.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual(["required"]);
+      expect(generated.falsifiers?.map((f) => f.ownershipPolicy)).toEqual(["required"]);
+      // Reference identity one level down: boot must run the validator over the SAME
+      // evidence rows the compiler emitted, not a structural copy.
+      expect(CLAIM_DEFINITIONS[type].requiredEvidence).toBe(generated.requiredEvidence);
+    },
+  );
 });

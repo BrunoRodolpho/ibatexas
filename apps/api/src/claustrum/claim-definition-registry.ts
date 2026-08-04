@@ -59,6 +59,8 @@ import {
 import { MENU_DIETARY_DEFINITION } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "./claimdefs/menu-item-price.generated.js";
+import { ORDER_HISTORY_DEFINITION } from "./claimdefs/order-history.generated.js";
+import { PAYMENT_HISTORY_DEFINITION } from "./claimdefs/payment-history.generated.js";
 import { RESERVATION_STATUS_DEFINITION } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_DEFINITION } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "./claimdefs/store-info.generated.js";
@@ -99,6 +101,9 @@ const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaim
   "CART_EMPTY",
   // FE-D03 slice C — owner-scoped list reads; INV-4 requires each in a
   // REQUIRED_CLAIM_CLOSURE row (ORDER_HISTORY_Q / PAYMENT_HISTORY_Q).
+  // R2-S5 — `triadScoped: true` is now DECLARED in order-history.claim.ts /
+  // payment-history.claim.ts, so these two memberships are documentation/fail-safe only
+  // (the STORE_OPEN_NOW / RESERVATION_STATUS disposition).
   "ORDER_HISTORY",
   "PAYMENT_HISTORY",
 ]);
@@ -155,6 +160,18 @@ const GENERATED_DEFINITIONS: Readonly<
   // never propagated either, so what boot consumes here is shape-for-shape what it
   // hand-assembled before.
   RESERVATION_STATUS: RESERVATION_STATUS_DEFINITION,
+  // R2-S5 — the HISTORIES pair, the second and third owner-scoped types to compile from
+  // source and the second and third generated definitions with `triadScoped: TRUE`. That
+  // flag is DECLARED in each source, so each type's INV-4 closure obligation is now
+  // discharged by its GENERATED ORDER_HISTORY_Q / PAYMENT_HISTORY_Q row rather than by its
+  // membership in TRIAD_SCOPED_TYPES above (which no longer decides anything for either —
+  // see that set's note). `perResourceKey` and the per-row `ownershipPolicy` are
+  // REGISTRY-SPEC facets that `selectCandidateClaim` / `ownerScopedBaseKey` read, not
+  // fields of the generic `ClaimDefinition` the inv.18 validator quantifies over —
+  // `assembleClaimDefinition` never propagated either, so what boot consumes here is
+  // shape-for-shape what it hand-assembled before.
+  ORDER_HISTORY: ORDER_HISTORY_DEFINITION,
+  PAYMENT_HISTORY: PAYMENT_HISTORY_DEFINITION,
 };
 
 /**

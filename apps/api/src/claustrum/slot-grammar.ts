@@ -45,6 +45,8 @@
 import { MENU_DIETARY_TEMPLATE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_TEMPLATE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_TEMPLATE } from "./claimdefs/menu-item-price.generated.js";
+import { ORDER_HISTORY_TEMPLATE } from "./claimdefs/order-history.generated.js";
+import { PAYMENT_HISTORY_TEMPLATE } from "./claimdefs/payment-history.generated.js";
 import { RESERVATION_STATUS_TEMPLATE } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_TEMPLATE } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_TEMPLATE } from "./claimdefs/store-info.generated.js";
@@ -309,24 +311,15 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // composePaymentHistorySummary) — never an enum, never model-authored. Same
   // single-C6-field shape as CART_CONTENTS (the frozen single-scalar kernel drops every
   // sibling field post-mint, so a list renders as one bound string).
-  [ORDER_HISTORY]: {
-    claimType: ORDER_HISTORY,
-    posture: "validated",
-    slots: [
-      lit("Seu histórico de pedidos: "),
-      prop(ORDER_HISTORY, "historySummaryText"),
-      lit("."),
-    ],
-  },
-  [PAYMENT_HISTORY]: {
-    claimType: PAYMENT_HISTORY,
-    posture: "validated",
-    slots: [
-      lit("Seu histórico de pagamentos: "),
-      prop(PAYMENT_HISTORY, "historySummaryText"),
-      lit("."),
-    ],
-  },
+  // inv.18 v2 / R2-S5 — BOTH templates are GENERATED from their ClaimDefinition sources
+  // (./claimdefs/order-history.generated.ts / ./claimdefs/payment-history.generated.ts),
+  // so the frame literals and the bound field can no longer drift from the registry row's
+  // C6 `valueBinding` or from the closure row — all three are projections of one source.
+  // The `ORDER_HISTORY` / `PAYMENT_HISTORY` const identifiers above stay exported for the
+  // rest of the grammar's consumers; the compiled templates carry the same `claimType`
+  // string by construction (asserted by reference-identity + deep-equal guards).
+  [ORDER_HISTORY]: ORDER_HISTORY_TEMPLATE,
+  [PAYMENT_HISTORY]: PAYMENT_HISTORY_TEMPLATE,
   // BKL-142 — the menu price/contents validated templates. ONE proposition slot each,
   // bound 1:1 to the C6 valueBinding FIELD (`priceText` / `contentsText`, claim-
   // registry.ts). The value is a DETERMINISTICALLY PRE-COMPOSED pt-BR scalar
