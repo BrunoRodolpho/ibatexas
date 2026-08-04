@@ -26,8 +26,10 @@ import { createClient } from "redis"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import { deferParkKey } from "@adjudicate/runtime"
 import {
+  createParkRedisCapabilities,
   parkDeferredIntentWithNxGuard,
   type ParkDeferredIntentNxResult,
+  type ParkRedisCapabilities,
 } from "../adapters/park-deferred-intent-nx.js"
 
 type RedisClient = ReturnType<typeof createClient>
@@ -39,33 +41,15 @@ function rk(key: string): string {
   return `test-park-nx:${key}`
 }
 
-// The framework's ParkRedis interface needs incr/decr/expire/set. The node-redis
-// v4 client exposes all of these as methods returning Promise<...>; we just
-// re-export the methods unchanged.
-function makeParkRedis(client: RedisClient): {
-  incr: (key: string) => Promise<number>
-  decr: (key: string) => Promise<number>
-  expire: (key: string, seconds: number, mode?: "NX") => Promise<unknown>
-  set: (
-    key: string,
-    value: string,
-    options: { EX?: number; NX?: boolean },
-  ) => Promise<string | null>
-  del: (key: string) => Promise<unknown>
-  get: (key: string) => Promise<string | null>
-} {
-  return {
-    incr: (key) => client.incr(key),
-    decr: (key) => client.decr(key),
-    expire: (key, seconds) => client.expire(key, seconds),
-    set: (key, value, options) =>
-      client.set(key, value, {
-        ...(options.EX !== undefined ? { EX: options.EX } : {}),
-        ...(options.NX ? { NX: true } : {}),
-      }) as Promise<string | null>,
-    del: (key) => client.del(key),
-    get: (key) => client.get(key),
-  }
+// F-22: the wrapper takes a COMPOSITION-VALIDATED surface, not a bare client.
+// This used to be a hand-written shim that re-exported incr/decr/expire/set/
+// del/get; that shim carried no `eval`, so the wrapper's old feature-detect
+// missed and every park here exercised the plain-`del` "legacy" branch. Routing
+// the real node-redis client through the production factory means these tests
+// now drive the real Lua (compare-and-delete release, atomic quota check) on a
+// real server — which is the only place that atomicity is observable at all.
+function makeParkRedis(client: RedisClient): ParkRedisCapabilities {
+  return createParkRedisCapabilities(client)
 }
 
 function buildTestEnvelope(args: {

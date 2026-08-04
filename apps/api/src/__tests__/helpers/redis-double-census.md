@@ -332,6 +332,83 @@ runs against a key another caller may by then own. CLAUDE.md rule #10.
 No test covers the CAD branch: item 13's double has no `eval`, so the
 feature-detect fails and only branch 1 is exercised.
 
+> **RESOLVED by F-22** (branch `fix/f22-capability-validation`). Both branches
+> are deleted; release is the CAD, always, and a failed CAD leaves the key to
+> its TTL. See the F-22 section below.
+
+### F-22 — capabilities are validated at the composition root
+
+The owner ruled the F-21 finding above as a **class**, not a site:
+*"Capabilities are validated at composition root. Runtime should never branch
+based on optional Redis features."* The class had two measured members, with
+different failure modes and — importantly — different repair surfaces.
+
+**Member 1, in-repo: `park-nx.ts` `releaseNxPlaceholder`.** Fixed directly. The
+feature detect and the `catch → plain del` fallback are both gone. `redis` is
+now a `ParkRedisCapabilities` (see below), so `compareAndDelete` is a REQUIRED
+member and there is nothing to ask. When the CAD **fails**, the key is
+deliberately **left to its TTL** and the failure is logged loudly. That is a
+behaviour change in the failure mode, and the safe direction: leaving the
+placeholder costs the session one refused DEFER for at most `ttlSeconds`
+(surfaced as the pt-BR collision refusal), where a blind DEL can permanently
+destroy another owner's real parked envelope. The TTL was always documented as
+the ultimate safety net; F-22 makes it the *only* fallback.
+
+**Member 2, external: `@adjudicate/runtime`'s `parkDeferredIntent`.** It does
+`typeof args.redis.evalIncrCheck === "function"` and takes a NON-ATOMIC
+`INCR → EXPIRE → check → DECR` fallback when the member is absent — the
+framework's own doc-comment names the resulting over-commit race (two
+concurrent parks at `quota − 1` can both pass before either rolls back). That
+package is a pinned npm dep whose source of truth is the platform repo, so it
+is **not editable here** and was not touched.
+
+**What the composition guarantee makes deterministic in this repo.**
+`apps/api/src/adapters/park-redis-capabilities.ts` is the composition root for
+this path's Redis surface. `createParkRedisCapabilities(client)` proves the
+client carries `eval`/`set`/`incr`/`decr`/`expire` — throwing
+`RedisCapabilityUnavailableError` with the missing names if not — and returns a
+`ParkRedisCapabilities` that **promotes `evalIncrCheck` from optional to
+REQUIRED** and adds `compareAndDelete`. `parkDeferredIntentWithNxGuard` accepts
+only that type. Consequently the framework's probe is **deterministically TRUE**
+for every park issued by this repo, and its non-atomic fallback is **dead code
+here**. That is pinned by observation, not by assertion of intent: the
+testcontainer case *"the framework consumes OUR evalIncrCheck — its non-atomic
+INCR fallback never runs"* spy-delegates `evalIncrCheck`, `incr` and `expire`
+and requires the first to be called with the framework's own arguments and the
+other two never to be called at all.
+
+**What the platform fix would be.** Delete the probe in
+`packages/runtime/src/defer-park.ts` and promote `ParkRedis.evalIncrCheck` from
+optional to required (a major for the `runtime` package), so every adopter is
+forced to supply the atomic seam rather than silently inheriting the racy
+sequence. Until then the fallback remains reachable for *other* adopters; the
+in-repo guarantee only closes it here. **Not attempted in this repo** — see
+CLAUDE.md rule #9 on `@adjudicate/*` source ownership.
+
+**Regression surfaces.**
+
+| Layer | File | Proves |
+|---|---|---|
+| structural | `__tests__/bypass-detection/redis-capability-detect-conformance.test.ts` | zero capability probes in `apps/api/src` + `packages/tools/src` production code, outside a 1-entry hand-written allowlist (the validator itself, whose probe's only outcome is a throw) |
+| unit | `adapters/__tests__/park-redis-capabilities.unit.test.ts` | composition fails closed per command (hand-written roll call, not `it.each`); the atomic members delegate to `client.eval` with the exact script + arguments |
+| testcontainer | `__tests__/park-nx-release-failure-mode.test.ts` | a failed CAD leaves the key (and never touches a foreign owner's); the working CAD is ownership-checked; `evalIncrCheck` is genuinely atomic under 40-way concurrency; and the pre-F-22 release, run verbatim in the same end state, DOES destroy the foreign key |
+
+**One double left honest rather than "fixed".** The stub in
+`adapters/__tests__/park-deferred-intent-nx-hoist.unit.test.ts` deliberately
+does NOT carry `evalIncrCheck`/`compareAndDelete`, so the framework takes its
+non-atomic branch *inside that unit test*. Adding in-memory versions would be
+exactly the Lua-emulation theater W4 RULE 3 forbids — the atomicity claims are
+proven at the testcontainer layer or not at all. The two real-Redis park suites
+(`park-deferred-intent-nx.test.ts`, `park-deferred-intent-nx-hash.test.ts`)
+previously hand-built a shim with no `eval` — meaning every park they ran took
+the wrapper's plain-`del` "legacy" branch — and now compose through the
+production factory instead.
+
+**One consequence to know.** On the atomic path the framework reports
+`observed: quota + 1` rather than the true count on a quota refusal (it would
+cost an extra round trip). `me.ts` only logs that field, so nothing branches on
+it; the user-facing refusal is unchanged.
+
 ### `ibx dlq list` cannot observe SCAN scoping
 
 In `packages/cli/src/commands/dlq.ts`, discovered events are filtered by

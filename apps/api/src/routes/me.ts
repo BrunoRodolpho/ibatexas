@@ -52,7 +52,11 @@ import { Channel } from "@ibatexas/types";
 // re-exports `apps/api/src/adapters/park-nx.ts`). me.ts's DEFER call sites
 // (LGPD-grace / PIX-pending parks) and the quota-metric hook must share the
 // same park-nx module instance — see kernel-bootstrap.ts.
+// F-22: `getParkRedisCapabilities()` is the composition root for this path's
+// Redis surface — it validates the client and returns one whose atomic members
+// are REQUIRED. Never hand `parkDeferredIntentWithNxGuard` a bare client.
 import {
+  getParkRedisCapabilities,
   parkDeferredIntentWithNxGuard,
   PARK_COLLISION_REFUSAL_PT_BR,
 } from "../adapters/park-deferred-intent-nx.js";
@@ -1118,7 +1122,11 @@ export async function meRoutes(
           | { code: "quota_exceeded" | "collision"; message: string }
           | null = null;
         try {
-          const redis = await getRedisClient();
+          // F-22 — composition root: proves the client can serve the park
+          // path's atomicity (Lua CAD release + atomic quota check-and-incr)
+          // and fails CLOSED here if it cannot. The catch below turns that
+          // into the same 503 + pt-BR refusal a park failure already produces.
+          const redis = await getParkRedisCapabilities();
           const ttlSeconds = ANONYMIZE_GRACE_TTL_SECONDS + 60;
           const parkResult = await parkDeferredIntentWithNxGuard({
             envelope: {
