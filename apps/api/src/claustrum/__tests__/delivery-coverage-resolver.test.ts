@@ -19,13 +19,15 @@
 // The turn-seam / claim / render half lives in the sibling
 // `delivery-coverage-claim.test.ts`.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Fastify, {
   type FastifyInstance,
   type FastifyRequest,
   type FastifyReply,
 } from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
+import type { InMemoryRedis } from "@ibatexas/tools/testing";
+import { rk } from "@ibatexas/tools";
 import { deliveryZoneRoutes } from "../../routes/admin/delivery-zones.js";
 import {
   clearDeliveryCoverageMemoForTests,
@@ -55,24 +57,44 @@ interface FakeZone {
 
 const zoneTable = vi.hoisted(() => ({ rows: [] as FakeZone[] }));
 
-/** The estimation tool's per-CEP cache, modelled as the real Redis one is: a
- *  key→result map that `invalidateDeliveryCache()` clears wholesale. */
-const cepCache = vi.hoisted(() => new Map<string, unknown>());
+/**
+ * R5-S6 — the per-CEP cache is now REAL.
+ *
+ * This suite used to hand-write the cache it was testing: a `cepCache` Map, an
+ * `invalidateDeliveryCache` stub whose whole body was `cepCache.clear()` (with a
+ * comment claiming it was "byte-for-byte the real contract"), an
+ * `estimateDelivery` stub that re-implemented the read-through, and
+ * `rk: (k) => `ibatexas:${k}`` — a prefix production has never written, since the
+ * real `rk()` emits `${APP_ENV}:`. Branch (4) below is the suite's reason to
+ * exist, and none of the code it names ever ran: a wrong SCAN pattern, a broken
+ * cursor loop, or a changed key prefix were all invisible.
+ *
+ * Now the REAL `estimateDelivery` and the REAL `invalidateDeliveryCache` run,
+ * over the canonical in-memory adapter from `@ibatexas/tools/testing`. `rk()`
+ * runs real, so every key below is the one production writes.
+ */
+const redisHolder = vi.hoisted(() => ({ current: null as InMemoryRedis | null }));
 
-const mockEstimateDelivery = vi.hoisted(() => vi.fn());
-const mockInvalidateDeliveryCache = vi.hoisted(() =>
-  vi.fn(async () => {
-    // Byte-for-byte the real contract (estimate-delivery.ts): drop every
-    // `delivery:cep:*` entry so the next lookup re-reads the zone rows.
-    cepCache.clear();
-  }),
-);
-const mockRedisSet = vi.hoisted(() => vi.fn(async () => "OK" as string | null));
+/** The adapter, once the mock factory has built it. */
+function redis(): InMemoryRedis {
+  if (redisHolder.current === null) throw new Error("in-memory redis not initialised");
+  return redisHolder.current;
+}
 
 vi.mock("@ibatexas/domain", () => ({
   createDeliveryZoneService: () => ({
     async listAll() {
       return zoneTable.rows.map((z) => ({ ...z }));
+    },
+    /** The lookup the REAL estimateDelivery makes on its CEP arm. */
+    async findActiveByPrefix(prefix5: string, _fullCep: string) {
+      const row = zoneTable.rows.find(
+        (z) => z.active && z.cepPrefixes.includes(prefix5),
+      );
+      return row === undefined ? null : { ...row };
+    },
+    async findActiveWithCoords() {
+      return [];
     },
     async update(id: string, data: Partial<FakeZone>) {
       const row = zoneTable.rows.find((z) => z.id === id);
@@ -90,12 +112,39 @@ vi.mock("@ibatexas/domain", () => ({
   }),
 }));
 
-vi.mock("@ibatexas/tools", () => ({
-  estimateDelivery: mockEstimateDelivery,
-  invalidateDeliveryCache: mockInvalidateDeliveryCache,
-  getRedisClient: async () => ({ set: mockRedisSet }),
-  rk: (k: string) => `ibatexas:${k}`,
+// Spies that OBSERVE the two entry points. Their default implementation (re-armed
+// in `beforeEach`) is the REAL function bound to the adapter; a handful of cases
+// below override one deliberately, and say why.
+const estimateSpy = vi.hoisted(() => vi.fn());
+const invalidateSpy = vi.hoisted(() => vi.fn());
+/** Filled by the mock factory with the real functions, client already injected. */
+const bound = vi.hoisted(() => ({
+  estimate: null as null | ((input: unknown) => Promise<unknown>),
+  invalidate: null as null | (() => Promise<void>),
 }));
+
+// The ONLY substitution is the Redis client. Every other export — including the
+// logic of the two functions under test and `rk` — is the real one.
+vi.mock("@ibatexas/tools", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ibatexas/tools")>();
+  const { createInMemoryRedis } = await import("@ibatexas/tools/testing");
+  redisHolder.current = createInMemoryRedis();
+  const client = () => redisHolder.current!.client;
+  bound.estimate = (input) =>
+    actual.estimateDelivery(
+      input as Parameters<typeof actual.estimateDelivery>[0],
+      { client: client() },
+    );
+  bound.invalidate = () => actual.invalidateDeliveryCache({ client: client() });
+  return {
+    ...actual,
+    // The admin route's dedup SET lands in the SAME keyspace the invalidation
+    // scans — so a MATCH pattern that over-reaches would now delete it.
+    getRedisClient: async () => client(),
+    estimateDelivery: estimateSpy,
+    invalidateDeliveryCache: invalidateSpy,
+  };
+});
 
 // The admin route's manager gate is proven by escalations-authz.test.ts; here it
 // passes through so the seam under test is the CACHE one, not the auth one.
@@ -140,31 +189,11 @@ function seedZones(over: readonly Partial<FakeZone>[] = []): void {
   zoneTable.rows = SEED_ZONES.map((z, i) => ({ ...z, ...(over[i] ?? {}) }));
 }
 
-/** Model the estimation tool over the CURRENT zone rows + the CURRENT cep cache —
- *  the same read-through shape estimate-delivery.ts has (cache first, then the
- *  prefix match), so an invalidation is observable exactly where it is in prod. */
-function wireEstimateDeliveryOverZones(): void {
-  mockEstimateDelivery.mockImplementation(async ({ cep }: { cep?: string }) => {
-    const clean = (cep ?? "").replaceAll(/\D/g, "");
-    const cached = cepCache.get(clean);
-    if (cached !== undefined) return cached;
-    const zone = zoneTable.rows.find(
-      (z) => z.active && z.cepPrefixes.some((p) => clean.startsWith(p)),
-    );
-    const result =
-      zone === undefined
-        ? { success: false, cep: clean, message: "fora de área" }
-        : {
-            success: true,
-            cep: clean,
-            zoneName: zone.name,
-            feeInCentavos: zone.feeInCentavos,
-            estimatedMinutes: zone.estimatedMinutes,
-            message: "ok",
-          };
-    cepCache.set(clean, result);
-    return result;
-  });
+/** Keys the REAL estimateDelivery caches its per-CEP answers under. */
+function cachedCepKeys(): string[] {
+  return redis()
+    .keys()
+    .filter((k) => k.startsWith(rk("delivery:cep:")));
 }
 
 async function buildAdminServer(): Promise<FastifyInstance> {
@@ -178,12 +207,24 @@ async function buildAdminServer(): Promise<FastifyInstance> {
 
 beforeEach(() => {
   clearDeliveryCoverageMemoForTests();
-  cepCache.clear();
+  redis().flush();
   seedZones();
-  mockEstimateDelivery.mockReset();
-  mockInvalidateDeliveryCache.mockClear();
-  mockRedisSet.mockClear();
-  mockRedisSet.mockResolvedValue("OK");
+  // Re-arm both spies to the REAL implementation. Overriding is opt-in per case.
+  estimateSpy.mockReset();
+  estimateSpy.mockImplementation((input: unknown) => bound.estimate!(input));
+  invalidateSpy.mockReset();
+  invalidateSpy.mockImplementation(() => bound.invalidate!());
+  // The REAL estimateDelivery probes ViaCEP before matching a prefix. Stub it
+  // "CEP exists" so the branch under test is the ZONE decision, never network
+  // reachability (a real fetch here would also violate the no-network rule).
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(JSON.stringify({ cep: "00000-000" }), { status: 200 })),
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 // ── (1) Pure composers ────────────────────────────────────────────────────────
@@ -297,7 +338,9 @@ describe("LE2-002 — resolver, zone-NAME arm (over the delivery-zones projectio
       "Sim, entregamos em Ibaté — taxa de R$ 15,00 e prazo estimado de cerca de 50 minutos",
     );
     // The zone-name arm never touches the estimation tool (no CEP to estimate).
-    expect(mockEstimateDelivery).not.toHaveBeenCalled();
+    expect(estimateSpy).not.toHaveBeenCalled();
+    // …and therefore caches nothing.
+    expect(cachedCepKeys()).toEqual([]);
   });
 
   it("an UNRECOGNISED place → needs_cep (asks), never a nearby zone", async () => {
@@ -358,9 +401,8 @@ describe("LE2-002 — resolver, zone-NAME arm (over the delivery-zones projectio
 
 describe("LE2-002 — resolver, CEP arm (through the existing estimation tool)", () => {
   it("a CEP inside a zone → covered, with the tool's fee + ETA", async () => {
-    wireEstimateDeliveryOverZones();
     const out = await resolveDeliveryCoverage("c1", "entregam no CEP 14815000?");
-    expect(mockEstimateDelivery).toHaveBeenCalledWith({ cep: "14815000" });
+    expect(estimateSpy).toHaveBeenCalledWith({ cep: "14815000" });
     expect(out.kind).toBe("covered");
     if (out.kind !== "covered") throw new Error("unreachable");
     expect(out.coverageText).toBe(
@@ -369,7 +411,6 @@ describe("LE2-002 — resolver, CEP arm (through the existing estimation tool)",
   });
 
   it("a CEP OUTSIDE every zone → not_covered (a VALIDATED negative, not an UNKNOWN)", async () => {
-    wireEstimateDeliveryOverZones();
     const out = await resolveDeliveryCoverage("c2", "entregam no 01001-000?");
     expect(out).toEqual({
       kind: "not_covered",
@@ -378,24 +419,47 @@ describe("LE2-002 — resolver, CEP arm (through the existing estimation tool)",
   });
 
   it("an INVALID / unresolvable CEP (no echoed cep) → needs_cep, never not_covered", async () => {
-    mockEstimateDelivery.mockResolvedValue({
-      success: false,
-      message: "CEP não encontrado. Verifique o número informado.",
-    });
+    // Driven through the REAL tool: ViaCEP reporting the CEP does not exist is
+    // exactly what makes it return a success:false with NO echoed `cep`.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ erro: true }), { status: 200 })),
+    );
     expect(await resolveDeliveryCoverage("c3", "entregam no 99999999?")).toEqual({
       kind: "needs_cep",
     });
+    // An unresolvable CEP must NOT be cached — the next lookup has to re-ask.
+    expect(cachedCepKeys()).toEqual([]);
   });
 
   it("a THROWING estimation tool → unknown, NEVER not_covered (Inv 7)", async () => {
-    mockEstimateDelivery.mockRejectedValue(new Error("viacep down"));
-    expect(await resolveDeliveryCoverage("c4", "entregam no 14815000?")).toEqual({
-      kind: "unknown",
+    // The throw comes from the REAL tool's own zone lookup, not from a stub.
+    const original = zoneTable.rows;
+    Object.defineProperty(zoneTable, "rows", {
+      get() {
+        throw new Error("db down");
+      },
+      configurable: true,
     });
+    try {
+      expect(await resolveDeliveryCoverage("c4", "entregam no 14815000?")).toEqual({
+        kind: "unknown",
+      });
+    } finally {
+      Object.defineProperty(zoneTable, "rows", {
+        value: original,
+        writable: true,
+        configurable: true,
+      });
+    }
   });
 
   it("a success WITHOUT a zone name/fee (the tool's zone-LIST branch) → unknown", async () => {
-    mockEstimateDelivery.mockResolvedValue({
+    // The one case that CANNOT be driven through the real tool: the zone-LIST
+    // shape is only returned for a call with NO cep, and the resolver always
+    // passes one. This stays a deliberate boundary stub — it pins the RESOLVER's
+    // defensive handling of a success it cannot render, not the tool's output.
+    estimateSpy.mockResolvedValue({
       success: true,
       message: "Áreas de entrega: …",
     });
@@ -405,7 +469,6 @@ describe("LE2-002 — resolver, CEP arm (through the existing estimation tool)",
   });
 
   it("the CEP wins over a zone name in the same message (it is the precise datum)", async () => {
-    wireEstimateDeliveryOverZones();
     const out = await resolveDeliveryCoverage(
       "c6",
       "moro em Ibaté, o CEP é 01001000, entregam?",
@@ -452,13 +515,14 @@ describe("LE2-002 — an admin zone edit reflects in the next chat answer", () =
   });
 
   it("CEP arm: the route's invalidateDeliveryCache() drops the stale per-CEP entry", async () => {
-    wireEstimateDeliveryOverZones();
-
-    // A first customer asks by CEP — the tool caches the R$ 15,00 answer.
+    // A first customer asks by CEP — the tool caches the R$ 15,00 answer under
+    // the key the REAL rk() builds.
     const before = await resolveDeliveryCoverage("seam-b-1", "entregam no 14815000?");
     if (before.kind !== "covered") throw new Error("unreachable");
     expect(before.feeInCentavos).toBe(1500);
-    expect(cepCache.size).toBe(1);
+    await vi.waitFor(() =>
+      expect(cachedCepKeys()).toEqual([rk("delivery:cep:14815000")]),
+    );
 
     // The admin raises the fee. WITHOUT the invalidation the cached R$ 15,00 would
     // survive and the next customer would be quoted a stale price.
@@ -478,9 +542,14 @@ describe("LE2-002 — an admin zone edit reflects in the next chat answer", () =
     expect(res.statusCode).toBe(200);
     await app.close();
 
-    // The route fired the EXISTING invalidation, and it emptied the per-CEP cache.
-    expect(mockInvalidateDeliveryCache).toHaveBeenCalledTimes(1);
-    expect(cepCache.size).toBe(0);
+    // The route fired the EXISTING invalidation, and the REAL scan-and-delete
+    // emptied the per-CEP cache.
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+    expect(cachedCepKeys()).toEqual([]);
+    // …and it deleted ONLY the delivery keys: the route's own dedup key, written
+    // through the same real rk() into the same keyspace, survives. That is what
+    // makes the SCAN's MATCH pattern load-bearing rather than decorative.
+    expect(redis().keys()).toContain(rk("dz:update:dedup:req-seam-b"));
 
     // …so the next turn's CEP answer carries the NEW fee + ETA.
     const after = await resolveDeliveryCoverage("seam-b-2", "entregam no 14815000?");
