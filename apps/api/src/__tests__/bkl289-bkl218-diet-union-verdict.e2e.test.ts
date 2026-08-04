@@ -65,6 +65,26 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
   };
 });
 
+// ── R5-S10 / F-18 — this backend is AMBIENT here, by declared design ──────────
+// Every assertion in this file is read-INDEPENDENT of the triad backend. The
+// subjects are the span net (`classifyRequestSpans` / `decomposeRequiredClaims`,
+// called directly), the BKL-184 abstain copy, and first-party menu contents that
+// come from the `searchProducts` mock above — never from a read below.
+//
+// Wholesale-neutering this backend (every read throws) leaves all 4 tests green.
+// That is MEASURED and EXPECTED, not a coverage gap: the seed's only role is
+// keeping turns on the RESOLVE path. The hours/schedule reads and the three
+// §O#15 companion signals run on essentially every turn, and letting them fail
+// closed would degrade turns out from under the diet verdict this file exists to
+// measure. Deleting the seed is therefore NOT free, and it stays.
+//
+// The read-DERIVED coverage of this double lives in the suites whose subject IS
+// its content — customer-hours-claims / r2s8-hours-for-date-claims /
+// ops-hours-read / ops-store-open-claims — which fail hard under the same
+// neutering. A read-driven assertion belongs there, not bolted onto a diet suite.
+//
+// The declared set is exactly the reads these turns actually reach (measured):
+// the `*ForDate` trio is never invoked here, so it is not declared.
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
   const { buildTriadReadBackend } = await import(
@@ -78,9 +98,6 @@ vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
         readScheduleOverride: async () => null,
         readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
         readHoliday: async () => null,
-        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-        readHolidayForDate: async () => null,
-        readScheduleOverrideForDate: async () => null,
         listActiveOrderIds: async () => [],
         listActiveReservationIds: async () => [],
         countActivePayments: async () => 0,

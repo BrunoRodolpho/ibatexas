@@ -42,6 +42,25 @@ import type { SalesAnalytics } from "../sales-analytics-compose.js";
 // its customer half builds `createDomainTriadReadBackend()` (Prisma + Redis +
 // Medusa). Mock exactly that factory so the turn runs with no DB/network while
 // every claims stage — including the whole ops half — stays genuine.
+//
+// ── R5-S10 / F-18 — this half is AMBIENT here, by declared design ─────────────
+// Every assertion in this file is read-INDEPENDENT of the CUSTOMER-half backend
+// below. The rendered subjects (orders today · pending escalations · today's
+// reservations, and their empty and degraded forms) all resolve from the OPS
+// READ ROSTER — `opsSnapshot` / `salesAnalytics` — which is a different double,
+// asserted directly and genuinely load-bearing here.
+//
+// Wholesale-neutering the customer half (every read throws) leaves all 16 tests
+// green. That is MEASURED and EXPECTED, not a coverage gap: a staff principal
+// owns no customer orders, payments or reservations, so this half exists to say
+// present-with-0 and keep the turn on the RESOLVE path. Letting it fail closed
+// would degrade the turn out from under the ops claim being measured — the AC3
+// degradation cases in particular have to degrade for the OPS read's reason, not
+// an ambient customer read's. Deleting the seed is NOT free, so it stays.
+//
+// The read-DERIVED coverage of this double lives where its content IS the
+// subject — ops-hours-read / ops-store-open-claims / customer-hours-claims /
+// r2s8-hours-for-date-claims — which fail hard under the same neutering.
 vi.mock("../../claustrum/turn-reads.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../claustrum/turn-reads.js")>();

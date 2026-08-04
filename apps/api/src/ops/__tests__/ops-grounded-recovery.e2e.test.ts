@@ -33,6 +33,29 @@ import { PROPOSE_CLAIM_TOOL } from "../../claustrum/ibatexas-planner.js";
 import { CLAIMS_PIPELINE_ENABLED_ENV } from "../../claustrum/claims-pipeline.js";
 import type { ScheduleRead, StoreHoursRead } from "../../claustrum/turn-reads.js";
 
+// ── R5-S10 / F-18 — this backend is AMBIENT here, and the file says so itself ─
+// Every assertion is read-INDEPENDENT of the triad backend: the subjects are the
+// REFUSE-recovery branch's composition (the refusal leads, no fabricated fact
+// ships, the model is never asked to author a recovery reply, a SECURITY refusal
+// skips recovery, the false-SUCCESS lexicon still detects). None is read-derived.
+//
+// This suite ALREADY argues that boundary rather than merely relying on it: the
+// "why the grounded-read arm has no live class today" case below measures that a
+// read one-hop and an `express_intent` do not co-occur, so a REFUSED turn never
+// carries a read at all. Read-independence here is the file's own thesis.
+//
+// Consequently wholesale-neutering this backend (every read throws) leaves all
+// 10 tests green — MEASURED and EXPECTED, not a coverage gap.
+//
+// The `*Throws` flags are the opposite of dead weight: two cases deliberately
+// flip them to true so NOTHING validates and the recovery branch is reached. The
+// seeded non-throwing values in `beforeEach` are what make that contrast a
+// contrast — every other case runs on the RESOLVE path. So the seed stays, and
+// its role is to be the counterweight to the flags rather than to be asserted on.
+//
+// The read-DERIVED coverage of this double lives where its content IS the
+// subject — ops-hours-read / ops-store-open-claims / customer-hours-claims /
+// r2s8-hours-for-date-claims — which fail hard under the same neutering.
 const { scheduleBackend } = vi.hoisted(() => ({
   scheduleBackend: {
     signal: { isClosed: false, mealPeriod: "dinner" } as ScheduleRead,
