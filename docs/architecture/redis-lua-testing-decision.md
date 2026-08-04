@@ -65,6 +65,19 @@ consume, both rate limiters.
   composition root; no runtime `typeof` feature-detection) defines the
   client-capability contract the migrated tests code against. Class-(i-b)
   migrations and the two deferred files land after it.
+  **LANDED** (branch `fix/f22-capability-validation`): the contract is
+  `ParkRedisCapabilities` + `createParkRedisCapabilities()` in
+  `apps/api/src/adapters/park-redis-capabilities.ts` — a factory that proves the
+  client carries the commands the path needs (throwing
+  `RedisCapabilityUnavailableError` naming the missing ones) and returns a
+  surface whose atomic members are REQUIRED. Migrated tests compose through it
+  rather than hand-building a shim; the two real-Redis park suites already do,
+  and the shape of their CAD contract suite (M1) is
+  `apps/api/src/__tests__/park-nx-release-failure-mode.test.ts`. The policy is
+  held repo-wide by
+  `apps/api/src/__tests__/bypass-detection/redis-capability-detect-conformance.test.ts`.
+  See the F-22 section of the census for the full record, including the
+  platform-side follow-up this repo cannot make.
 
 ## What Option B would have bought, for the record
 

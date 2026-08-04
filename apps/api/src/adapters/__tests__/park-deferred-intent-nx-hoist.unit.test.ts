@@ -36,6 +36,16 @@ function rk(key: string): string {
 // just enough for the happy-path tests (SET NX, INCR, EXPIRE NX, DECR, DEL).
 // We do NOT need to model exact semantics — the wrapper either throws BEFORE
 // touching Redis (fail-loud paths) or succeeds against the stub.
+//
+// F-22: this stub deliberately does NOT carry `evalIncrCheck` or
+// `compareAndDelete`, so inside THIS file the framework takes its non-atomic
+// quota branch. That is intentional. Faking those two members here would be
+// Lua-emulation theater (W4 RULE 3) — an in-process `eval` decides the very
+// comparison the script exists to make atomic, and hands back green on a path
+// with no real coverage. Production cannot reach that branch: every park call
+// site is composed through `createParkRedisCapabilities()`, where both members
+// are REQUIRED. The atomicity claims live at the testcontainer layer, in
+// `apps/api/src/__tests__/park-nx-release-failure-mode.test.ts`.
 function makeRedisStub(): {
   get: (key: string) => Promise<string | null>
   set: (

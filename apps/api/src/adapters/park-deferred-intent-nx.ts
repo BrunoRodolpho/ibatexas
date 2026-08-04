@@ -19,5 +19,17 @@ export {
   setDeferQuotaExceededHook,
   ParkVerificationFieldsMissingError,
   PARK_COLLISION_REFUSAL_PT_BR,
+  type ParkDeferredIntentNxArgs,
   type ParkDeferredIntentNxResult,
 } from "./park-nx.js"
+
+// F-22 — the composition root for this path's Redis surface. Re-exported here
+// so a park call site imports the wrapper and the factory that produces its
+// (validated) `redis` argument from ONE place.
+export {
+  createParkRedisCapabilities,
+  getParkRedisCapabilities,
+  RedisCapabilityUnavailableError,
+  REQUIRED_PARK_REDIS_COMMANDS,
+  type ParkRedisCapabilities,
+} from "./park-redis-capabilities.js"
