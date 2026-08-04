@@ -27,6 +27,11 @@ export {
   createCustomerService,
   type CustomerService,
   type CustomerServiceOptions,
+  // R5-S1 — the injectable prisma-shaped client seam. `CustomerAdjudicateOptions`
+  // is the narrower option shape for the module-level envelope entry points,
+  // which still bind the singleton and therefore accept no client.
+  type CustomerServiceClient,
+  type CustomerAdjudicateOptions,
   anonymizeCustomer,
   anonymizeCustomerFromEnvelope,
   exportCustomerData,
