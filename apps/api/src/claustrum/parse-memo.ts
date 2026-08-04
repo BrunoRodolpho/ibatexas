@@ -96,29 +96,58 @@
 //
 // ── THE KEY, AND THE ADDITIVE SLOT L2 WILL USE ─────────────────────────────────
 // The key is a digest over EVERY input the parse is a function of (see
-// {@link buildParseCacheKey}). Two of those inputs are versions rather than
-// content — `KEY_SCHEMA_VERSION` and `CATALOG_VERSION` — and one,
-// `surfaceVersion`, is the slot reserved for the L2 scoped-parse tier: when L2
-// lands it names its retrieval index/surface revision there and every pre-L2
-// entry becomes unreachable in the same move. That IS the purge: a bumped
-// component yields a different digest, so stale entries can never be read and
-// age out on their TTL. There is no separate invalidation path to get wrong, and
-// no version component is ever omitted from the digest.
+// {@link buildParseCacheKey}). Three of those inputs are versions rather than
+// content — `KEY_SCHEMA_VERSION`, `CATALOG_VERSION` and
+// `ALIAS_CANONICALIZATION_VERSION` — and one, `surfaceVersion`, is the slot
+// reserved for the L2 scoped-parse tier: when L2 lands it names its retrieval
+// index/surface revision there and every pre-L2 entry becomes unreachable in the
+// same move. That IS the purge: a bumped component yields a different digest, so
+// stale entries can never be read and age out on their TTL. There is no separate
+// invalidation path to get wrong, and no version component is ever omitted from
+// the digest.
+//
+// ── F-2 · WHY THE CANONICALIZER EARNED A COMPONENT OF ITS OWN ─────────────────
+// The utterance this key digests is not the customer's — it is the ALIAS-
+// CANONICALIZED text (`ibatexas-planner.ts` passes `parseText`, and sends that
+// same string to the model). That is deliberate and load-bearing: keying on one
+// string while parsing another is exactly the unsoundness alias-canonicalization's
+// own header refuses.
+//
+// It also means the canonicalizer is a LAYER THAT CHANGES WHAT THE PARSER SEES,
+// and this key's contract is that every such layer is represented in it. The
+// gazetteer's DATA already was (a table edit bumps `CATALOG_VERSION`); its CODE
+// was not. `ALIAS_CANONICALIZATION_VERSION` closes that, and F-2 — a rewrite that
+// left a consumed modifier in the text — is the measured reason it needed closing.
+//
+// Note the two mechanisms are independent, and BOTH now hold for F-2:
+//   1. STRUCTURAL — an utterance whose canonicalization changed hashes to a
+//      different key by construction, because the canonical text IS a key
+//      component. Pinned so a future edit cannot quietly re-key on raw text.
+//   2. DECLARED   — the revision component moves, so the invalidation does not
+//      DEPEND on (1) still being true.
 
 import { createHash } from "node:crypto";
 import { CATALOG_VERSION } from "@ibatexas/catalog";
 import { getRedisClient, rk } from "@ibatexas/tools";
 import { logger } from "../lib/logger.js";
+import { ALIAS_CANONICALIZATION_VERSION } from "./alias-canonicalization.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. PURE CORE — canonicalization, the key, the stored shape
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * The stored-shape schema version. Bump on ANY breaking change to
- * {@link MemoizedParse} or to what {@link buildParseCacheKey} digests — a bump
- * makes every prior entry unreachable, which is this cache's only purge
- * mechanism (see the module header).
+ * The STORED-SHAPE schema version. Bump on any breaking change to
+ * {@link MemoizedParse}, or to the MEANING of a component
+ * {@link buildParseCacheKey} already digests — a bump makes every prior entry
+ * unreachable, which is this cache's purge mechanism (see the module header).
+ *
+ * ADDING a new digested component is NOT one of those cases and does not need a
+ * bump: a new component changes the digest for every input, so it is already a
+ * total purge on its own, and `keyVersion` is also written into each entry and
+ * re-checked on read — a bump that did not correspond to a stored-shape change
+ * would make that read guard assert something untrue. `ALIAS_CANONICALIZATION_
+ * VERSION` (F-2) was added under exactly this reading.
  */
 export const KEY_SCHEMA_VERSION = 1;
 
@@ -171,7 +200,9 @@ function stableStringify(value: unknown): string {
  * Every input the parse is a function of. Each field is load-bearing — dropping
  * one would let a parse produced under one condition be served under another:
  *
- *  - `utterance`      — the question itself (canonicalized).
+ *  - `utterance`      — the question itself. The planner passes the ALIAS-
+ *                       CANONICALIZED text, which is also the string it sends to
+ *                       the model; see the module header's F-2 note.
  *  - `modelId`        — a different model is a different function.
  *  - `system`         — the FULLY COMPOSED system prompt, digested. This
  *                       subsumes persona edits, the fragment manifest, AND the
@@ -212,6 +243,11 @@ export function buildParseCacheKey(input: ParseCacheKeyInput): ParseCacheKey {
   const digest = stableDigest({
     keySchemaVersion: KEY_SCHEMA_VERSION,
     catalogVersion: CATALOG_VERSION,
+    // F-2 — the alias rewrite's own revision. Like `CATALOG_VERSION`, imported
+    // rather than threaded through the argument list: it is a property of the
+    // deployed code, not of a call site, and a caller must not be able to claim a
+    // revision the process is not running.
+    aliasCanonicalizationVersion: ALIAS_CANONICALIZATION_VERSION,
     surfaceVersion: input.surfaceVersion ?? FULL_ROSTER_SURFACE_VERSION,
     modelId: input.modelId,
     utterance: canonicalizeUtterance(input.utterance),

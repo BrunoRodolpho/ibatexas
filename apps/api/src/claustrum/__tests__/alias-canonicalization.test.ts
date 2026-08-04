@@ -6,12 +6,52 @@
 // `apps/api/src/__tests__/alias-canonicalization.e2e.test.ts`. This file covers
 // the resolution rules themselves, including the ones whose failure is silent.
 
-import { describe, expect, it } from "vitest";
-import { ALIAS_GAZETTEER } from "@ibatexas/catalog";
+import { describe, expect, it, vi } from "vitest";
+import { ALIAS_GAZETTEER, type AliasEdge } from "@ibatexas/catalog";
 import {
+  ALIAS_CANONICALIZATION_VERSION,
   canonicalizeAliases,
   renderAliasClarify,
 } from "../alias-canonicalization.js";
+
+/**
+ * Run the canonicalizer against an AUTHORED gazetteer instead of the shipped one.
+ *
+ * F-2's rule is about "any surface + `disambiguatedBy` pair", and the seed table
+ * holds exactly one such surface (`costela`). Proving the rule on that row alone
+ * would leave "the fix is a costela special case" and "the fix is general"
+ * indistinguishable — so the general cases below author their own edges: a
+ * MULTI-WORD surface, a three-way ambiguity, a surface whose canonical handle does
+ * NOT contain the disambiguator.
+ *
+ * The module builds its indexes at load, so each call needs a fresh module graph.
+ */
+async function underGazetteer(
+  edges: readonly AliasEdge[],
+  text: string,
+): Promise<{
+  text: string;
+  resolutions: ReadonlyArray<Record<string, unknown>>;
+  ambiguous: ReadonlyArray<{ surface: string }>;
+}> {
+  vi.resetModules();
+  vi.doMock("@ibatexas/catalog", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@ibatexas/catalog")>()),
+    ALIAS_GAZETTEER: edges,
+  }));
+  const mod = await import("../alias-canonicalization.js");
+  const r = mod.canonicalizeAliases(text);
+  vi.doUnmock("@ibatexas/catalog");
+  return r as never;
+}
+
+const AUTHORED = (over: Partial<AliasEdge>): AliasEdge => ({
+  surface: "x",
+  canonical: "x-handle",
+  provenance: "authored",
+  why: "test fixture",
+  ...over,
+});
 
 describe("unambiguous surfaces resolve deterministically", () => {
   it("rewrites a bare colloquial to its canonical handle", () => {
@@ -99,7 +139,15 @@ describe("ambiguity CLARIFIES — never a nearest neighbour", () => {
     const r = canonicalizeAliases(`muda a costela ${token} para 3 unidades`);
     expect(r.ambiguous).toEqual([]);
     expect(r.resolutions[0]).toMatchObject({ canonical, disambiguatedBy: token });
-    expect(r.text).toContain(canonical);
+    // F-2 — the EXACT text, not `toContain`. `toContain(canonical)` was true of the
+    // warted output too ("costela-bovina-defumada bovina" contains the handle), so
+    // it could never have caught the duplicated modifier. This is the assertion the
+    // defect walked through.
+    expect(r.text).toBe(`muda a costela-bovina-defumada para 3 unidades`.replace(
+      "costela-bovina-defumada",
+      canonical,
+    ));
+    expect(r.resolutions[0]).toMatchObject({ disambiguatorConsumed: true });
   });
 
   it("clarifies when BOTH disambiguators appear — two answers is as unanswerable as none", () => {
@@ -112,7 +160,178 @@ describe("ambiguity CLARIFIES — never a nearest neighbour", () => {
     const r = canonicalizeAliases("quero a COSTELA Bovina");
     expect(r.ambiguous).toEqual([]);
     expect(r.resolutions[0]?.canonical).toBe("costela-bovina-defumada");
+    // F-2 — the fold decides CONSUMPTION as well as selection: an upper-case
+    // "Bovina" is the same spent token as a lower-case one.
+    expect(r.text).toBe("quero a costela-bovina-defumada");
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// F-2 — THE REWRITE CONSUMES ITS DISAMBIGUATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The recorded defect, measured live in production during R1-S2:
+//   "combina com a costela bovina" -> "a costela-bovina-defumada bovina"
+// The token that SELECTED the reading survived into the rewritten text, and the
+// rewritten text is what the parser sees.
+
+describe("F-2 — a consumed disambiguator is spliced out, not left behind", () => {
+  it("THE RECORDED DEFECT: the production utterance canonicalizes clean", () => {
+    const r = canonicalizeAliases("o que combina com a costela bovina?");
+    expect(r.text).toBe("o que combina com a costela-bovina-defumada?");
+    // The exact warted string this replaced, named so a regression is unmistakable.
+    expect(r.text).not.toBe("o que combina com a costela-bovina-defumada bovina?");
+  });
+
+  it("the modifier is gone from the text but still ANSWERS 'why this reading'", () => {
+    const r = canonicalizeAliases("quanto custa a costela bovina?");
+    expect(r.text).toBe("quanto custa a costela-bovina-defumada?");
+    expect(r.resolutions).toEqual([
+      {
+        surface: "costela",
+        canonical: "costela-bovina-defumada",
+        disambiguatedBy: "bovina",
+        disambiguatorConsumed: true,
+      },
+    ]);
+  });
+
+  it("`surface` stays the ALIAS SURFACE — the trace names the edge that fired", () => {
+    // Not "costela bovina". The gazetteer is keyed on the surface, and widening
+    // this field would stop it answering which row resolved the word.
+    expect(canonicalizeAliases("tira a costela congelada").resolutions[0]?.surface).toBe(
+      "costela",
+    );
+  });
+
+  it("consumes a PRECEDING disambiguator too — the rule is adjacency, not word order", async () => {
+    const r = await underGazetteer(
+      [
+        AUTHORED({ surface: "pao", canonical: "pao-de-alho", disambiguatedBy: "alho" }),
+        AUTHORED({ surface: "pao", canonical: "pao-de-queijo", disambiguatedBy: "queijo" }),
+      ],
+      "quero o alho pao",
+    );
+    expect(r.text).toBe("quero o pao-de-alho");
+  });
+
+  it("a NON-ADJACENT disambiguator still SELECTS and is deliberately LEFT IN PLACE", () => {
+    // The bounded residual, and the reason the rule is scoped to adjacency: here
+    // "bovina" belongs to a different phrase four tokens away, and splicing it out
+    // would corrupt a sentence this layer exists to keep faithful. It is reported
+    // as un-consumed rather than silently cleaned OR silently ignored.
+    const r = canonicalizeAliases("Costela Defumada: Costela bovina defumada 12h.");
+    expect(r.text).toBe("costela-bovina-defumada Defumada: Costela bovina defumada 12h.");
+    expect(r.resolutions[0]).toMatchObject({ disambiguatedBy: "bovina" });
+    expect(r.resolutions[0]).not.toHaveProperty("disambiguatorConsumed");
+  });
+
+  it("never steals a token another surface or a canonical handle already owns", async () => {
+    // "queijo" is BOTH `pao`'s disambiguator and a surface in its own right. It is
+    // consumed by whichever claims it first and can never be spliced twice, which
+    // is what would produce overlapping rewrite spans and a corrupted splice.
+    const r = await underGazetteer(
+      [
+        AUTHORED({ surface: "pao", canonical: "pao-de-alho", disambiguatedBy: "alho" }),
+        AUTHORED({ surface: "pao", canonical: "pao-de-queijo", disambiguatedBy: "queijo" }),
+        AUTHORED({ surface: "queijo", canonical: "queijo-coalho" }),
+      ],
+      "quero pao queijo",
+    );
+    // Longest-first index order puts the single-token surfaces in gazetteer order;
+    // whichever wins, the output is a well-formed splice with no duplicated token.
+    expect(r.text).not.toContain("queijo queijo");
+    expect(r.text.split(/\s+/).filter((w) => w === "queijo")).toHaveLength(0);
+  });
+
+  it("works for a MULTI-WORD surface — the span is the hull, not a fixed offset", async () => {
+    const r = await underGazetteer(
+      [
+        AUTHORED({
+          surface: "calabresa americana",
+          canonical: "calabresa-americana-em-fatias",
+          disambiguatedBy: "fatiada",
+        }),
+        AUTHORED({
+          surface: "calabresa americana",
+          canonical: "calabresa-americana-inteira",
+          disambiguatedBy: "inteira",
+        }),
+      ],
+      "poe uma calabresa americana fatiada no carrinho",
+    );
+    expect(r.text).toBe("poe uma calabresa-americana-em-fatias no carrinho");
+  });
+
+  it("DOES NOT fire when the idempotence pre-pass already owns the span", () => {
+    // The boundary, pinned because it is easy to mistake for a miss: a customer who
+    // writes the product's full pt-BR name has written the canonical handle in its
+    // SPACED spelling, the pre-pass consumes all three tokens as terminal, and no
+    // alias edge — and so no F-2 consumption — ever runs. `pairing-resolver.ts`
+    // depends on exactly this, which is why it matches the spaced form too.
+    const r = canonicalizeAliases("o que combina com a costela bovina defumada?");
+    expect(r.text).toBe("o que combina com a costela bovina defumada?");
+    expect(r.resolutions).toEqual([]);
+    expect(r.ambiguous).toEqual([]);
+  });
+
+  it("works when the canonical handle does NOT contain the disambiguator", async () => {
+    // The fix must not be "the handle already says it, so drop it" — it is "the
+    // token was SPENT selecting". A handle that spells the reading differently is
+    // the case that tells those two rules apart.
+    const r = await underGazetteer(
+      [
+        AUTHORED({ surface: "costela", canonical: "prod-4471", disambiguatedBy: "bovina" }),
+        AUTHORED({ surface: "costela", canonical: "prod-9902", disambiguatedBy: "congelada" }),
+      ],
+      "quero a costela bovina",
+    );
+    expect(r.text).toBe("quero a prod-4471");
+  });
+
+  it("stays IDEMPOTENT: canonicalizing the fixed output is byte-identical", () => {
+    const once = canonicalizeAliases("quanto custa a costela bovina?").text;
+    const twice = canonicalizeAliases(once);
+    expect(twice.text).toBe(once);
+    expect(twice.resolutions).toEqual([]);
+  });
+
+  it("THE GENERAL RULE, over every ambiguous pair the shipped gazetteer declares", () => {
+    // ROLL CALL, HAND-WRITTEN. Deriving this list from the gazetteer would make a
+    // deleted row delete its own coverage silently; the equality pin below is what
+    // forces a new ambiguous surface to be considered here rather than skipped.
+    const DECLARED_AMBIGUOUS_PAIRS = [
+      { surface: "costela", disambiguatedBy: "bovina", canonical: "costela-bovina-defumada" },
+      { surface: "costela", disambiguatedBy: "congelada", canonical: "costela-defumada-congelada" },
+    ] as const;
+
+    const bySurface = new Map<string, number>();
+    for (const e of ALIAS_GAZETTEER) bySurface.set(e.surface, (bySurface.get(e.surface) ?? 0) + 1);
+    const live = ALIAS_GAZETTEER.filter((e) => (bySurface.get(e.surface) ?? 0) > 1).map((e) => ({
+      surface: e.surface,
+      disambiguatedBy: e.disambiguatedBy,
+      canonical: e.canonical,
+    }));
+    // NAMES, not a count — a swapped row would satisfy a count.
+    expect(live).toEqual([...DECLARED_AMBIGUOUS_PAIRS]);
+
+    for (const pair of DECLARED_AMBIGUOUS_PAIRS) {
+      const r = canonicalizeAliases(`quero ${pair.surface} ${pair.disambiguatedBy} hoje`);
+      expect(r.text).toBe(`quero ${pair.canonical} hoje`);
+      expect(r.ambiguous).toEqual([]);
+    }
+  });
+});
+
+describe("F-2 — the rewrite revision is DECLARED, and the L1 key digests it", () => {
+  it("is a positive integer the bump discipline can move", () => {
+    expect(Number.isInteger(ALIAS_CANONICALIZATION_VERSION)).toBe(true);
+    expect(ALIAS_CANONICALIZATION_VERSION).toBeGreaterThanOrEqual(2);
+  });
+
+  // That it PARTICIPATES in the parse-cache key is proven where the key is built:
+  // `parse-memo-catalog-version.test.ts`, alongside the CATALOG_VERSION case it
+  // mirrors. Asserting it here would only re-state the import.
 });
 
 describe("the clarify question", () => {

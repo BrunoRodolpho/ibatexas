@@ -685,6 +685,17 @@ describe("R2-S8 — the §O#15 union still parameterizes this type off the LEDGE
     // alias-CLARIFY before the planner runs — the union would never be reached. Same
     // rewrite class as dietary-posture.e2e (the F-1 family); "bovina" is the gazetteer's
     // own disambiguatedBy surface.
+    //
+    // F-2 IS CLOSED. This utterance used to build the parse surface
+    //   "quanto custa a costela-bovina-defumada bovina? e qual o horário de domingo?"
+    // — the rewrite spent "bovina" selecting the reading and left it in the text.
+    // It now builds
+    //   "quanto custa a costela-bovina-defumada? e qual o horário de domingo?"
+    // (`ALIAS_CANONICALIZATION_VERSION` 2). The price span and the schedule span are
+    // decomposed from that text, so the change is upstream of everything this case
+    // measures — and it moved NOTHING: the assertions below are unedited across the
+    // fix. The parse surface itself is pinned in `F-2 — the parse surface these cases
+    // are decomposed from` at the foot of this file.
     const text = "quanto custa a costela bovina? e qual o horário de domingo?";
     const sunday = dateOf(text);
     const reply = await drive({
@@ -738,5 +749,46 @@ describe("R2-S8 — the §O#15 union still parameterizes this type off the LEDGE
     expect(reply).not.toContain(hoursFor(bogus));
     // The backend was never asked for the model's day.
     expect(st.dateReads).not.toContain(bogus);
+  });
+});
+
+// ── F-2 · THE PARSE SURFACE THESE CASES ARE DECOMPOSED FROM ─────────────────
+//
+// Three cases above drive "quanto custa a costela bovina? …". The disambiguated
+// phrasing arrived in the R2-S8 cascade fix for a REASON — bare "costela"
+// alias-CLARIFIES and the union under test never runs — and while F-2 was open the
+// text it canonicalized into carried a dangling "bovina". Nothing in this file ever
+// asserted that surface, so the wart could neither red a case nor be seen changing.
+// This pins it, so the day the canonicalizer moves again the change is visible where
+// the utterances live rather than only in the canonicalizer's own suite.
+
+describe("F-2 — the parse surface these cases are decomposed from", () => {
+  it("the compound price+hours ask canonicalizes with the modifier CONSUMED", async () => {
+    const { canonicalizeAliases } = await import("../claustrum/alias-canonicalization.js");
+    const r = canonicalizeAliases("quanto custa a costela bovina? e qual o horário de domingo?");
+    expect(r.text).toBe("quanto custa a costela-bovina-defumada? e qual o horário de domingo?");
+    // Not a CLARIFY — the whole point of the disambiguated phrasing.
+    expect(r.ambiguous).toEqual([]);
+    expect(r.resolutions).toEqual([
+      {
+        surface: "costela",
+        canonical: "costela-bovina-defumada",
+        disambiguatedBy: "bovina",
+        disambiguatorConsumed: true,
+      },
+    ]);
+  });
+
+  it("…and so does the today's-weekday sibling, whose text is built at run time", async () => {
+    // The third case interpolates `todayWeekdayPt()`, so its literal cannot be
+    // pinned. Build it the same way and pin the ALIAS half, which is the part F-2
+    // touches; the weekday half varies by design.
+    const { canonicalizeAliases } = await import("../claustrum/alias-canonicalization.js");
+    const text = `quanto custa a costela bovina? e que horas vocês abrem ${todayWeekdayPt()}?`;
+    const r = canonicalizeAliases(text);
+    expect(r.text).toContain("quanto custa a costela-bovina-defumada?");
+    expect(r.text).not.toMatch(/costela-bovina-defumada\s+bovina/i);
+    expect(r.text.endsWith(`e que horas vocês abrem ${todayWeekdayPt()}?`)).toBe(true);
+    expect(r.ambiguous).toEqual([]);
   });
 });

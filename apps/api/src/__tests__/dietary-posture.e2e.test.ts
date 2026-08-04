@@ -270,29 +270,55 @@ beforeEach(() => {
 // Defumada", so the fresh cut is each case's original product intent. The
 // diet/medical phrasing is untouched, so every ask-net still fires.
 //
-// MEASURED, per utterance: zero ambiguity (no CLARIFY) and exactly one resolution —
-// but the canonicalized parse text carries a DUPLICATED MODIFIER, e.g.
-//   "qual é o preço da costela bovina?"
-//     -> "qual é o preço da costela-bovina-defumada bovina?"
-// The alias rewrite consumes "costela" and leaves the "bovina" that selected it. That
-// is the F-2 canonicalizer wart, and pinning it here is DELIBERATE: it is the parse
-// surface production actually builds for this utterance today, so certifying the
-// posture over it is certifying production truth rather than a cleaner surface nobody
-// runs. Naming the product in full ("costela bovina defumada") would dodge the wart
-// via the idempotence pre-pass, and the kebab handle would dodge it too, but both
-// trade the real customer phrasing for one chosen to avoid a bug.
+// ── F-2 IS CLOSED · THE R1-S2 WART NO LONGER EXISTS ──────────────────────────
 //
-// ⚠ THESE STRINGS ARE DOWNSTREAM OF TWO OPEN TICKETS:
-//   F-2 — the duplicated modifier above. When it is fixed, the canonicalized text
-//         these turns produce changes; re-measure rather than assuming.
+// R1-S2 recorded, and this header used to PIN, a duplicated modifier in the parse
+// text these utterances build:
+//
+//   "qual é o preço da costela bovina?"
+//     v1 -> "qual é o preço da costela-bovina-defumada bovina?"   ← the wart
+//     v2 -> "qual é o preço da costela-bovina-defumada?"          ← today
+//
+// The rewrite consumed "costela" to select the reading and left behind the "bovina"
+// that selected it. It is fixed in `claustrum/alias-canonicalization.ts`
+// (`ALIAS_CANONICALIZATION_VERSION` 1 -> 2): a disambiguator ADJACENT to the surface
+// is now spliced out with it. Pinning the warted string was deliberate while the
+// defect was live — it was production's real parse surface, and certifying a posture
+// over a cleaner surface nobody ran would have certified nothing. That reason is now
+// spent, so the record below is the FIXED surface, and `THE F-1 RE-MEASURE` at the
+// foot of this file makes it an executable pin rather than a comment.
+//
+// ── THE F-1 RE-MEASURE (measured, not assumed) ───────────────────────────────
+//
+// Per driven utterance: raw -> canonicalized parse text, v1 vs v2. 14 utterances,
+// 5 changed, 9 byte-identical. NO span or candidate outcome moved — every posture
+// assertion in this file passed unedited across the change, which is the actual
+// claim: the fix removed a dangling token from the parse INPUT and changed nothing
+// about what the customer hears.
+//
+//  1. "qual é o preço da costela bovina sem lactose?"
+//       v1: "…da costela-bovina-defumada bovina sem lactose?"   v2: "…da costela-bovina-defumada sem lactose?"      CHANGED
+//  2. "sou diabético, qual é o preço da costela bovina?"
+//       v1: "…preço da costela-bovina-defumada bovina?"          v2: "…preço da costela-bovina-defumada?"            CHANGED
+//  3. "sou celíaco, qual é o preço da costela bovina?"
+//       v1: "…preço da costela-bovina-defumada bovina?"          v2: "…preço da costela-bovina-defumada?"            CHANGED
+//  4. "qual é o preço da costela bovina?"
+//       v1: "…preço da costela-bovina-defumada bovina?"          v2: "…preço da costela-bovina-defumada?"            CHANGED
+//  5. "a costela bovina tem amendoim?"
+//       v1: "a costela-bovina-defumada bovina tem amendoim?"     v2: "a costela-bovina-defumada tem amendoim?"       CHANGED
+//  6–14. "sou diabético, vocês estão abertos agora?" · "sou celíaco, qual o horário
+//       de vocês no domingo?" · "sou alérgico a amendoim, em que etapa está o meu
+//       pedido?" · "sou diabético, o meu carrinho tem alguma coisa?" · "sou celíaco,
+//       quais itens estão no meu carrinho agora?" · "sou alérgico a amendoim, quais
+//       itens estão no meu carrinho agora?" · "quais itens estão no meu carrinho
+//       agora?" · "sou diabético, quais itens estão no meu carrinho agora?" · "minha
+//       reserva está de pé? e preciso de algo sem glúten"
+//       — no alias surface, so BYTE-IDENTICAL under both revisions.  unchanged
+//
+// ⚠ ONE OPEN TICKET REMAINS UPSTREAM OF THESE STRINGS:
 //   F-3 — whether alias ambiguity should outrank a declared dietary/medical marker
 //         at all. This suite pins NEITHER answer; it asks only "does a
 //         diet-qualified ask get the ratified posture?", which is separable.
-//
-// WHETHER alias ambiguity SHOULD outrank a declared dietary/medical marker is a
-// live product question with its own ticket (F-3). This suite deliberately pins
-// neither answer — it asks only "does a diet-qualified ask get the ratified
-// posture?", which is separable from it.
 
 describe("BKL-270 e2e — `abstain` (MENU_ITEM_PRICE, newly gated by this ticket)", () => {
   const CLAIMS = [{ type: "MENU_ITEM_PRICE", subject: "prod_costela" }] as const;
@@ -301,27 +327,31 @@ describe("BKL-270 e2e — `abstain` (MENU_ITEM_PRICE, newly gated by this ticket
     // The failure this closes is not mere implicature: the resolver resolves
     // "costela sem lactose" to the ORDINARY costela and prices THAT, so answering
     // both invents a variant and misprices it.
-    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3), and
-    // the resulting parse text duplicates the modifier (F-2).
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3).
+    // F-2 is CLOSED: the parse text is now "…da costela-bovina-defumada…", with the
+    // selecting modifier consumed. See the header's re-measure record.
     expectAbstain(await drive("qual é o preço da costela bovina sem lactose?", [...CLAIMS]));
   });
 
   it("a 'sou diabético' price ask abstains — the vocabulary that bypassed every gate", async () => {
-    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3), and
-    // the resulting parse text duplicates the modifier (F-2).
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3).
+    // F-2 is CLOSED: the parse text is now "…da costela-bovina-defumada…", with the
+    // selecting modifier consumed. See the header's re-measure record.
     expectAbstain(await drive("sou diabético, qual é o preço da costela bovina?", [...CLAIMS]));
   });
 
   it("a 'sou celíaco' price ask abstains — the gap the audit never named", async () => {
-    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3), and
-    // the resulting parse text duplicates the modifier (F-2).
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3).
+    // F-2 is CLOSED: the parse text is now "…da costela-bovina-defumada…", with the
+    // selecting modifier consumed. See the header's re-measure record.
     expectAbstain(await drive("sou celíaco, qual é o preço da costela bovina?", [...CLAIMS]));
   });
 
   it("THE CONTROL: the same ask with no dietary marker still renders the price", async () => {
     // Without this, every assertion above would pass on a family that simply broke.
-    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3), and
-    // the resulting parse text duplicates the modifier (F-2).
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3).
+    // F-2 is CLOSED: the parse text is now "…da costela-bovina-defumada…", with the
+    // selecting modifier consumed. See the header's re-measure record.
     const response = await drive("qual é o preço da costela bovina?", [...CLAIMS]);
     expect(response).toContain("Costela Bovina Defumada");
     expect(response).toContain("89,00");
@@ -459,12 +489,119 @@ describe("BKL-270 e2e — MENU_ITEM_ALLERGENS (never driven by the audit)", () =
     // `abstain` posture declaration is documentation of a property that already
     // holds; this test is what makes that property observable rather than asserted.
     // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies before the
-    // allergen ask is read at all (F-3), and the parse text duplicates the
-    // modifier (F-2).
+    // allergen ask is read at all (F-3). F-2 is CLOSED: the parse text is now
+    // "a costela-bovina-defumada tem amendoim?".
     const response = await drive("a costela bovina tem amendoim?", [
       { type: "MENU_ITEM_ALLERGENS", subject: "prod_costela" },
     ]);
     expect(response).toBe(ABSTAIN);
     expect(response).not.toMatch(/n[ãa]o cont[ée]m|n[ãa]o tem amendoim|pode comer/i);
+  });
+});
+
+// ── THE F-1 RE-MEASURE, AS A PIN ────────────────────────────────────────────
+//
+// The header's re-measure record used to be prose, and prose is what let the F-2
+// wart sit in this file certified-and-green: nothing in the suite ever asserted
+// what parse surface these utterances build, so the defect could neither red a
+// test nor be noticed drifting. This turns the record into a change-detector.
+//
+// It pins the PARSE SURFACE only. What the customer hears is every other case in
+// this file, and the F-1 claim — "no span or candidate outcome moved" — is
+// discharged by those cases passing unedited, not by anything asserted here.
+
+describe("F-1 re-measure — the canonicalized parse surface of every driven utterance", () => {
+  // HAND-WRITTEN, in this file's own drive order. Deriving it from the suite would
+  // make a deleted case delete its own coverage; the roll-call count below is a
+  // NAME-level guard against a case being driven that nobody re-measured.
+  const RE_MEASURE: ReadonlyArray<readonly [string, string]> = [
+    // ── alias-bearing (5): the F-2 fire set ──
+    [
+      "qual é o preço da costela bovina sem lactose?",
+      "qual é o preço da costela-bovina-defumada sem lactose?",
+    ],
+    [
+      "sou diabético, qual é o preço da costela bovina?",
+      "sou diabético, qual é o preço da costela-bovina-defumada?",
+    ],
+    [
+      "sou celíaco, qual é o preço da costela bovina?",
+      "sou celíaco, qual é o preço da costela-bovina-defumada?",
+    ],
+    ["qual é o preço da costela bovina?", "qual é o preço da costela-bovina-defumada?"],
+    ["a costela bovina tem amendoim?", "a costela-bovina-defumada tem amendoim?"],
+    // ── alias-free (9): byte-identical under both revisions ──
+    ["sou diabético, vocês estão abertos agora?", "sou diabético, vocês estão abertos agora?"],
+    [
+      "sou celíaco, qual o horário de vocês no domingo?",
+      "sou celíaco, qual o horário de vocês no domingo?",
+    ],
+    [
+      "sou alérgico a amendoim, em que etapa está o meu pedido?",
+      "sou alérgico a amendoim, em que etapa está o meu pedido?",
+    ],
+    [
+      "sou diabético, o meu carrinho tem alguma coisa?",
+      "sou diabético, o meu carrinho tem alguma coisa?",
+    ],
+    [
+      "sou celíaco, quais itens estão no meu carrinho agora?",
+      "sou celíaco, quais itens estão no meu carrinho agora?",
+    ],
+    [
+      "sou alérgico a amendoim, quais itens estão no meu carrinho agora?",
+      "sou alérgico a amendoim, quais itens estão no meu carrinho agora?",
+    ],
+    ["quais itens estão no meu carrinho agora?", "quais itens estão no meu carrinho agora?"],
+    [
+      "sou diabético, quais itens estão no meu carrinho agora?",
+      "sou diabético, quais itens estão no meu carrinho agora?",
+    ],
+    [
+      "minha reserva está de pé? e preciso de algo sem glúten",
+      "minha reserva está de pé? e preciso de algo sem glúten",
+    ],
+  ];
+
+  it("covers every utterance this file drives — no case is re-measured by omission", () => {
+    const driven = new Set(RE_MEASURE.map(([raw]) => raw));
+    expect(driven.size).toBe(RE_MEASURE.length);
+    expect(RE_MEASURE).toHaveLength(14);
+  });
+
+  it.each(RE_MEASURE)("%s", async (raw, expected) => {
+    const { canonicalizeAliases } = await import("../claustrum/alias-canonicalization.js");
+    const r = canonicalizeAliases(raw);
+    expect(r.text).toBe(expected);
+    // None of these may CLARIFY — a clarify would short-circuit the turn before any
+    // dietary logic ran, which is the R1-S2 failure this file's phrasing exists to
+    // avoid, and it would make every posture assertion above vacuous.
+    expect(r.ambiguous).toEqual([]);
+  });
+
+  it("the alias-bearing asks resolve, and NONE leaves a residual modifier", async () => {
+    // Asserts against the LIVE canonicalizer, never against the table above — a
+    // check that read `RE_MEASURE`'s own right-hand column would be a statement
+    // about this file's literals and would hold with the fix reverted.
+    //
+    // Two halves, and the first is what stops the second being vacuous: without it,
+    // "no residual modifier" would also be satisfied by a canonicalizer that stopped
+    // resolving "costela bovina" at all.
+    const { canonicalizeAliases } = await import("../claustrum/alias-canonicalization.js");
+    const aliasBearing = RE_MEASURE.filter(([raw]) => /costela/.test(raw));
+    expect(aliasBearing).toHaveLength(5);
+    for (const [raw] of aliasBearing) {
+      const r = canonicalizeAliases(raw);
+      expect(r.resolutions).toEqual([
+        {
+          surface: "costela",
+          canonical: "costela-bovina-defumada",
+          disambiguatedBy: "bovina",
+          disambiguatorConsumed: true,
+        },
+      ]);
+      expect(r.text).toContain("costela-bovina-defumada");
+      expect(r.text).not.toMatch(/costela-bovina-defumada\s+bovina/i);
+    }
   });
 });
