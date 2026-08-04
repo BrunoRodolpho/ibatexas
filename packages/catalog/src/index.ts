@@ -99,6 +99,7 @@ export type {
 
 export {
   CAPABILITY_DEFINITIONS,
+  EXPECTED_CAPABILITY_COUNT,
   generateAdminLabels,
   generateCapabilityDescriptions,
   generateChatCapabilityAuthLevels,

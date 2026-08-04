@@ -8,14 +8,17 @@
  * See `types.ts` for the field contract, `definitions.ts` for the authored
  * data, and the `generate-*.ts` modules for the generated families.
  *
- * The registry is currently 62 capabilities — 20 chat-tier, 42 identity-tier.
- * (The pre-move barrel's doc said "18 chat-tier + 48 identity-tier"; that was
- * the FE-T19/T20 authoring-time count and had gone stale; 59/20/39 was
- * ratified by the LE2 spec's own "count corrections" note and then went stale
- * itself when LE2-021 and LE2-023 added their workflow anchors. It is what
- * `CAPABILITY_DEFINITIONS.length` actually reports. Counts in prose drift —
- * the array is the source of truth, and this line is a courtesy, not a gate;
- * the gates live in `packages/packs-composed/src/__tests__/`.)
+ * The registry's size is pinned by `EXPECTED_CAPABILITY_COUNT` in
+ * `definitions.ts` — R6-S4's single count tripwire, which every gate that
+ * states the number now reads. Deliberately NOT restated here: this doc line
+ * carried "20 chat-tier, 42 identity-tier" long after the real split became
+ * 19/43, which is the third time a count in this prose went stale (the pre-move
+ * barrel said "18 chat-tier + 48 identity-tier" from FE-T19/T20; the LE2 spec's
+ * "count corrections" note then ratified 59/20/39, which LE2-021 and LE2-023
+ * invalidated by adding their workflow anchors). A number nothing gates on
+ * rots, so the pointer replaces it — see that constant for the count and for
+ * why it is a hand-written literal rather than `CAPABILITY_DEFINITIONS.length`.
+ * The gates themselves live in `packages/packs-composed/src/__tests__/`.
  *
  * The generated families:
  *   - Intent-identity (FE-T20): `generate-chat-drivable-tool-kinds.ts`
@@ -82,7 +85,7 @@ export type {
   IdentityCapabilityDefinition,
 } from "./types.js"
 
-export { CAPABILITY_DEFINITIONS } from "./definitions.js"
+export { CAPABILITY_DEFINITIONS, EXPECTED_CAPABILITY_COUNT } from "./definitions.js"
 
 export {
   generateConversationTriggers,
