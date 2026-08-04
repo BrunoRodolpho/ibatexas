@@ -258,13 +258,6 @@ export function ownershipFromActiveResources(
 /** Construction opts for the ibatexas claims renderer. */
 export interface IbatexasClaimsRendererOptions {
   /**
-   * BKL-152-edge — set `true` ONLY where the adopter wired the RenderCarriersForTurn
-   * seam (claustrum-bootstrap), so the completeness gate can read the seam's
-   * clock-resolved `resolvedQueryDate` for the EXACT weekday==today STORE_OPEN_NOW
-   * decision. Default (unset / tests) → the pure #301 date-anchor rule, byte-identical.
-   */
-  readonly renderCarriersActive?: boolean;
-  /**
    * BKL-209 — a best-effort, fire-and-forget SAFETY sink invoked when the render
    * resolves to a medical-EMERGENCY ESCALATE (deterministic net + ESCALATE
    * terminal). The adapter never awaits it and swallows nothing of the returned
@@ -309,7 +302,6 @@ export interface IbatexasClaimsRendererOptions {
 export function createIbatexasClaimsRenderer(
   opts?: IbatexasClaimsRendererOptions,
 ): ClaimsRendererPort {
-  const renderCarriersActive = opts?.renderCarriersActive === true;
   const onSafetyEmergency = opts?.onSafetyEmergency;
   const templates = opts?.templates;
   const customerScopedCompanionsApply = opts?.customerScopedCompanionsApply !== false;
@@ -322,18 +314,14 @@ export function createIbatexasClaimsRenderer(
       // the #8 ownership signal (provable-empty sentinels on `activeResources`) drops
       // an ownership-gated companion the customer PROVABLY cannot have; undefined
       // (seam unwired) keeps the pre-#8 over-including behavior byte-identical.
-      // BKL-152-edge: the dateAnchor signal (seam-active + the 0.8.0 clock-resolved
-      // resolvedQueryDate) makes the date-anchor STORE_OPEN_NOW suppression exact on
-      // weekday==today; seam-inactive falls back to the pure #301 rule.
+      // F-12: this gate takes NO clock. It calls the same 2-arg decomposition the
+      // claim planner and the classify-only gate call, so the required set it checks
+      // completeness against is the same set the other two built candidates for — by
+      // construction, not by convention. See `decomposeRequiredClaims`'s header for
+      // the weekday==today degrade the old clock-aware third argument caused.
       const decomposed = decomposeRequiredClaims(
         classifyRequestSpans(context?.requestText ?? ""),
         ownershipFromActiveResources(context?.activeResources),
-        {
-          seamActive: renderCarriersActive,
-          ...(context?.resolvedQueryDate === undefined
-            ? {}
-            : { resolvedQueryDate: context.resolvedQueryDate }),
-        },
       );
       // LE2-012 — on a plane whose actor owns no customer resources (ops), drop the
       // CUSTOMER-SCOPED companions the customer span classifier force-required. See

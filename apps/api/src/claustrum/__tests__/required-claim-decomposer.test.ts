@@ -222,57 +222,79 @@ describe("required-claim decomposer — BKL-152 date-anchor STORE_OPEN_NOW suppr
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BKL-152-EDGE — EXACT weekday==today suppression (@claustrum/core 0.8.0
-// `resolvedQueryDate` carrier / `DateAnchorSignal`). The pure #301 rule above
-// suppresses STORE_OPEN_NOW for ANY date-anchored hours question — including a
-// named weekday that resolves to TODAY, where the open-now companion IS relevant.
-// When the carrier seam is ACTIVE the decomposer reads the clock-resolved date:
-// SUPPRESS only for a CONFIRMED NON-TODAY day (resolvedQueryDate PRESENT); KEEP when
-// the resolved day is TODAY (resolvedQueryDate ABSENT under an active seam). Seam
-// INACTIVE (or no dateAnchor arg at all) → the pure #301 rule, byte-identical.
+// F-12 — THE DECOMPOSITION IS CLOCK-FREE, AND THAT IS THE PARITY CONTRACT.
+//
+// THIS BLOCK PREVIOUSLY PINNED THE DEFECT. Under BKL-152-edge (@claustrum/core
+// 0.8.0) this function took an OPTIONAL `DateAnchorSignal`, and these cases pinned
+// its arms: seam ACTIVE + a resolved non-today date → SUPPRESS, seam ACTIVE +
+// ABSENT date (⇒ the named weekday IS today) → KEEP STORE_OPEN_NOW. The KEEP arm
+// is what F-12 removed. It was the only input on which two callers of this ONE
+// shared function could compute two DIFFERENT required sets for the same
+// utterance — the claim planner called it clock-free (always suppress) while the
+// renderer's §O#15 gate called it clock-aware (keep, on the day the weekday is
+// today), so the gate demanded a companion the planner had already dropped, found
+// it ABSENT, and degraded a fully answerable hours turn to a proposition-free
+// UNKNOWN once a week. The parameter is gone; the arms below are what replaces it.
+//
+// WHY THIS IS A PARITY PIN AND NOT JUST A BEHAVIOUR PIN: the required set for a
+// date-anchored ask is now a function of the SPAN CLASSES ALONE. Every caller
+// passes the same spans for the same utterance, so all three necessarily agree —
+// there is no argument left to disagree about. An RTR that re-splits them (adding
+// back a clock-ish input that one caller passes and another does not) has to
+// change this function's signature, and the two-caller identity case below is
+// what reds when the answer stops being caller-independent.
 // ─────────────────────────────────────────────────────────────────────────────
-describe("required-claim decomposer — BKL-152-edge exact date-anchor (0.8.0 carrier)", () => {
+describe("required-claim decomposer — F-12 clock-free date-anchor decomposition", () => {
   const dateSpans = ["STORE_OPEN_NOW_Q", "STORE_HOURS_FOR_DATE_Q"] as const;
 
-  it("seam ACTIVE + resolvedQueryDate PRESENT (confirmed non-today) → SUPPRESS STORE_OPEN_NOW", () => {
-    const required = decomposeRequiredClaims([...dateSpans], undefined, {
-      seamActive: true,
-      resolvedQueryDate: "2026-07-25",
-    });
-    expect([...required]).toEqual(["STORE_HOURS_FOR_DATE"]);
-    expect(required.has("STORE_OPEN_NOW")).toBe(false);
-  });
-
-  it("seam ACTIVE + resolvedQueryDate ABSENT (weekday==today) → KEEP STORE_OPEN_NOW", () => {
-    const required = decomposeRequiredClaims([...dateSpans], undefined, {
-      seamActive: true,
-    });
-    expect(required.has("STORE_OPEN_NOW")).toBe(true);
-    expect(required.has("STORE_HOURS_FOR_DATE")).toBe(true);
-  });
-
-  it("seam INACTIVE ({seamActive:false}) → pure #301 SUPPRESS (byte-identical fallback)", () => {
-    expect([
-      ...decomposeRequiredClaims([...dateSpans], undefined, { seamActive: false }),
-    ]).toEqual(["STORE_HOURS_FOR_DATE"]);
-  });
-
-  it("no dateAnchor arg (1-arg call) → pure #301 SUPPRESS (existing callers unchanged)", () => {
+  it("a date-anchored hours ask SUPPRESSES STORE_OPEN_NOW — unconditionally", () => {
     expect([...decomposeRequiredClaims([...dateSpans])]).toEqual([
       "STORE_HOURS_FOR_DATE",
     ]);
   });
 
-  it("PICKUP wins over the date suppression regardless of the seam (today OR non-today)", () => {
-    const today = decomposeRequiredClaims(["PICKUP_Q", ...dateSpans], undefined, {
-      seamActive: true,
+  it("THE FIX: the answer does not depend on WHICH day is named — no clock input exists", () => {
+    // The old KEEP arm was reachable ONLY by passing a third argument. There is no
+    // longer any way to express "the named day is today" to this function, so the
+    // weekday==today utterance and the tomorrow utterance decompose IDENTICALLY.
+    // Driven through the real classifier on two REAL utterances rather than on
+    // hand-built span arrays, so a classifier change cannot make this vacuous.
+    const todayish = decomposeRequiredClaims(
+      classifyRequestSpans("que horas vocês abrem segunda?"),
+    );
+    const tomorrow = decomposeRequiredClaims(
+      classifyRequestSpans("que horas vocês abrem amanhã?"),
+    );
+    expect([...todayish].sort()).toEqual([...tomorrow].sort());
+    expect([...todayish]).toEqual(["STORE_HOURS_FOR_DATE"]);
+  });
+
+  it("PARITY: every caller decomposing the SAME utterance gets the SAME set (arity is the contract)", () => {
+    // The three production callers — the claim planner, the classify-only
+    // eligibility gate and the renderer's §O#15 completeness gate — differ ONLY in
+    // whether they supply the `ownership` argument. Ownership cannot touch the
+    // schedule cluster (STORE_OPEN_NOW / STORE_HOURS_FOR_DATE are PUBLIC and appear
+    // in no OWNERSHIP_GATED_TYPES row), so on a schedule ask all three agree even
+    // across that difference. This is the pin that reds if a clock-ish input is
+    // reintroduced on one side.
+    const spans = classifyRequestSpans("que horas vocês abrem segunda?");
+    const plannerSide = decomposeRequiredClaims(spans);
+    const gateSideOwnsNothing = decomposeRequiredClaims(spans, {
+      hasActiveOrder: false,
+      hasActivePayment: false,
     });
-    const nonToday = decomposeRequiredClaims(["PICKUP_Q", ...dateSpans], undefined, {
-      seamActive: true,
-      resolvedQueryDate: "2026-07-25",
+    const gateSideOwnsBoth = decomposeRequiredClaims(spans, {
+      hasActiveOrder: true,
+      hasActivePayment: true,
     });
-    expect(today.has("STORE_OPEN_NOW")).toBe(true);
-    expect(nonToday.has("STORE_OPEN_NOW")).toBe(true);
+    expect([...gateSideOwnsNothing].sort()).toEqual([...plannerSide].sort());
+    expect([...gateSideOwnsBoth].sort()).toEqual([...plannerSide].sort());
+  });
+
+  it("PICKUP still wins over the date suppression (the companion is a real half there)", () => {
+    const required = decomposeRequiredClaims(["PICKUP_Q", ...dateSpans]);
+    expect(required.has("STORE_OPEN_NOW")).toBe(true);
+    expect(required.has("STORE_HOURS_FOR_DATE")).toBe(true);
   });
 });
 

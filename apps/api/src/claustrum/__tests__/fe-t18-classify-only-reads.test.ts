@@ -157,28 +157,37 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     }
   });
 
-  // BKL-222 — the SUPERSET property that keeps this gate from disagreeing with the
-  // renderer's §O#15 completeness gate. That gate re-decomposes with a LIVE CLOCK,
-  // and on the day the named weekday IS today the BKL-152 suppression does NOT
-  // delete the open-now companion. If this gate decomposed seam-inactively it would
-  // build only the date claim, completeness would find STORE_OPEN_NOW ABSENT, and
-  // the turn would degrade to a proposition-free UNKNOWN — on one day of the week.
-  // So the required set here must CONTAIN the companion on every day.
-  it("BKL-222 — the date family's required set INCLUDES the open-now companion (superset of the seam-aware gate)", () => {
-    const required = classifyOnlyRequiredTypes("qual o horário de domingo?");
+  // F-12 — THE PARITY PIN, and it REPLACES a SUPERSET pin. This case used to assert
+  // that this gate's required set CONTAINED the open-now companion, because the
+  // renderer's §O#15 gate re-decomposed with a LIVE CLOCK and would KEEP that
+  // companion on the day the named weekday IS today; building a subset would have
+  // degraded the turn once a week. That whole hazard was the clock argument, and
+  // F-12 removed it. Superset is now EQUALITY: both gates call the same clock-free
+  // decomposition, so the set this gate builds candidates for IS the set
+  // completeness will check. Asserted as an identity rather than a containment —
+  // containment would still pass if one side started over-building.
+  it("F-12 (was: a SUPERSET pin) — this gate's required set EQUALS the §O#15 gate's, exactly", () => {
+    const text = "qual o horário de domingo?";
+    const required = classifyOnlyRequiredTypes(text);
     expect(required).toBeDefined();
-    expect([...(required ?? [])].sort()).toEqual([
-      "STORE_HOURS_FOR_DATE",
-      "STORE_OPEN_NOW",
+    // The open-now companion is no longer built OR required for a date-anchored ask.
+    expect([...(required ?? [])].sort()).toEqual(["STORE_HOURS_FOR_DATE"]);
+    // The renderer's gate decomposes the same text the same way — same function,
+    // same single argument, therefore the same answer under any clock.
+    const gateSide = decomposeRequiredClaims(classifyRequestSpans(text));
+    expect([...gateSide].sort()).toEqual([...(required ?? [])].sort());
+  });
+
+  it("F-12 — and the equality holds on the utterance that used to degrade (weekday == today)", () => {
+    // The defect only ever showed itself when the named weekday resolved to TODAY.
+    // No clock reaches either gate now, so "segunda" behaves like every other day —
+    // this is the unit-level companion to the r2s8 turn-seam fixed-behaviour cases.
+    const text = "que horas vocês abrem segunda?";
+    const required = classifyOnlyRequiredTypes(text);
+    expect([...(required ?? [])].sort()).toEqual(["STORE_HOURS_FOR_DATE"]);
+    expect([...decomposeRequiredClaims(classifyRequestSpans(text))].sort()).toEqual([
+      ...(required ?? []),
     ]);
-    // The seam-AWARE decomposition on the weekday==today branch (seamActive with NO
-    // resolved date) asks for exactly this set — nothing this gate did not build.
-    const seamAware = decomposeRequiredClaims(
-      classifyRequestSpans("qual o horário de domingo?"),
-      undefined,
-      { seamActive: true },
-    );
-    for (const type of seamAware) expect([...(required ?? [])]).toContain(type);
   });
 
   it("FE-D12 pin — an ELIGIBLE span co-occurring with an INELIGIBLE span in ONE message → undefined (declined wholesale, never a half-deterministic mix)", () => {

@@ -996,13 +996,13 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       }
 
       const spanClasses = classifyRequestSpans(matched.content);
-      // The seam-active, ownership-free projection — the same call the
-      // classify-only gate makes. Ownership/date-anchor signals are per-turn
-      // runtime state this replay does not have; the set shown is the
-      // OVER-INCLUDING one (demote-only signals could only shrink it).
-      const requiredTypes = [
-        ...decomposeRequiredClaims(spanClasses, undefined, { seamActive: true }),
-      ];
+      // The ownership-free projection — the same call the classify-only gate and
+      // the renderer's §O#15 gate both make (F-12: the decomposition takes no
+      // clock, so this replay reproduces the live required set exactly for any
+      // schedule ask). Ownership is per-turn runtime state this replay does not
+      // have; the set shown is the OVER-INCLUDING one (that demote-only signal
+      // could only shrink it).
+      const requiredTypes = [...decomposeRequiredClaims(spanClasses)];
       const classifyOnlyEligible = classifyOnlyRequiredTypes(matched.content) !== undefined;
 
       return {

@@ -48,10 +48,6 @@ import {
 import { CUSTOMER_CLAIM_SCOPE, type ClaimPlaneScope } from "./claim-registry.js";
 import { assertDietaryPostureDeclared } from "./dietary-posture.js";
 import type { Template } from "./slot-grammar.js";
-import {
-  localDateParts,
-  resolveQueriedScheduleDate,
-} from "./schedule-date-resolver.js";
 import type { ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 
 /** Env flag that opts a boot into the claims pipeline (default off). */
@@ -74,16 +70,18 @@ export function claimsPipelineEnabled(
  * so a partial wiring can never render from an absent claim set.
  */
 /**
- * BKL-152-edge (ibatexas rider / @claustrum/core 0.8.0 `renderCarriersForTurn`
- * carrier seam) — thread the RESOLVED queried schedule date so the required-claim
- * decomposer's STORE_OPEN_NOW suppression is EXACT on `weekday == today` (see
- * `required-claim-decomposer.ts` `DateAnchorSignal`). `resolvedQueryDate` is
- * PRESENT ⟺ the request resolves to a CONFIRMED NON-TODAY day; a today/unresolvable
- * anchor OMITS it, and the decomposer — told the seam is ACTIVE via
- * `createIbatexasClaimsRenderer({ renderCarriersActive: true })` — reads
- * absent-under-active as "today → KEEP STORE_OPEN_NOW". Clock-pure boundary: THIS
- * callback owns the clock (`new Date()`) and the tz (`RESTAURANT_TIMEZONE`);
- * @claustrum/core threads the result verbatim (no clock/RNG/IO crosses the seam).
+ * The @claustrum/core `renderCarriersForTurn` carrier seam.
+ *
+ * F-12 REMOVED the `resolvedQueryDate` half of this carrier. It existed for ONE
+ * consumer — the required-claim decomposer's clock-aware weekday==today
+ * STORE_OPEN_NOW branch — and that branch is deleted, because it let the
+ * renderer's §O#15 gate require a companion the claim planner had already
+ * suppressed and so degraded an answerable hours turn once a week (see
+ * `required-claim-decomposer.ts`'s header). With the sole reader gone the field
+ * would have been dead data crossing a seam, and a dead input that once drove a
+ * decision is an invitation to re-wire it; the honest removal is the deletion.
+ * A welcome consequence: no clock reaches the render path from here any more,
+ * which is what `createIbatexasClaimsRenderer`'s purity contract already claimed.
  *
  * `disambiguationCandidates` (BKL-170/BKL-189) IS sourced here — via the per-turn
  * stash: the classify-only ambiguous branch cannot reach this ledger+text callback
@@ -102,20 +100,11 @@ export function createIbatexasRenderCarriersForTurn(
     ledger: EvidenceLedger,
   ) => readonly DisambiguationCandidate[] | undefined,
 ): RenderCarriersForTurn {
-  return ({ ledger, requestText }) => {
-    const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-    const now = new Date();
-    const resolved = resolveQueriedScheduleDate(requestText, tz, now);
-    const dateCarrier =
-      resolved === null || resolved.isoDate === localDateParts(tz, now).isoDate
-        ? {}
-        : { resolvedQueryDate: resolved.isoDate };
+  return ({ ledger }) => {
     const candidates = readDisambiguationCandidates?.(ledger);
-    const candidateCarrier =
-      candidates !== undefined && candidates.length > 0
-        ? { disambiguationCandidates: candidates }
-        : {};
-    return { ...dateCarrier, ...candidateCarrier };
+    return candidates !== undefined && candidates.length > 0
+      ? { disambiguationCandidates: candidates }
+      : {};
   };
 }
 
@@ -416,11 +405,11 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // present-only IDOR filter as `buildPerTurnOwnsFromLedger`. Inert while the
     // flag is OFF (this whole seam set is only wired when ENABLE_CLAIMS_PIPELINE).
     activeResourcesForTurn: activeResourcesFromLedger,
-    // BKL-152-edge (@claustrum/core 0.8.0 carrier seam) — thread the resolved
-    // queried schedule date into `ClaimsRenderContext.resolvedQueryDate` so the
-    // decomposer's STORE_OPEN_NOW suppression is EXACT on weekday==today. Pure
-    // passthrough on claustrum's side; the clock lives in this callback. Absent
-    // (unwired) → the decomposer keeps its pure #301 rule (byte-identical).
+    // The @claustrum/core carrier seam. F-12 REMOVED this seam's date half: it
+    // used to thread a clock-resolved `resolvedQueryDate` for the decomposer's
+    // weekday==today STORE_OPEN_NOW branch, and that branch is gone (the required
+    // set no longer depends on a clock at all). What remains is the BKL-170/189
+    // `disambiguationCandidates` carrier. Pure passthrough on claustrum's side.
     renderCarriersForTurn: createIbatexasRenderCarriersForTurn((ledger) =>
       disambiguationStash.get(ledger),
     ),
@@ -432,7 +421,6 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // falls back to the operational responder draft (never raw model prose as a
     // confident fact; never silence). Inert while the flag is COMMITTED OFF.
     claimsRenderer: createIbatexasClaimsRenderer({
-      renderCarriersActive: true,
       // BKL-209 — the emergency staff-surface sink (support.handoff_requested),
       // wired by the boot root; unset on the per-trigger factory → no surface.
       ...(deps.onSafetyEmergency === undefined
