@@ -253,6 +253,47 @@ beforeEach(() => {
 
 // ── POSTURE 1: abstain ──────────────────────────────────────────────────────
 
+// ── R1-S2 · WHY THESE UTTERANCES NAME THE PRODUCT IN FULL ────────────────────
+//
+// Every ask below used to say the bare word "costela". That word is a
+// DECLARED-AMBIGUOUS alias surface (the store sells two: `costela-bovina-defumada`
+// and `costela-defumada-congelada`), and the customer plane arms alias
+// canonicalization unconditionally — so in PRODUCTION a bare-"costela" ask is
+// short-circuited into the alias CLARIFY question ("a bovina ou a congelada?")
+// BEFORE any dietary logic runs. These tests were green only because the e2e
+// harness had no alias seam; once it became the production composer's second
+// adapter, they were measuring a parse path production never takes.
+//
+// The fix keeps each case's product question intact and only disambiguates the
+// product word: bare "costela" becomes `"costela bovina"`. Bovina, not congelada, in
+// all five — the claims name `prod_costela` and the control expects "Costela Bovina
+// Defumada", so the fresh cut is each case's original product intent. The
+// diet/medical phrasing is untouched, so every ask-net still fires.
+//
+// MEASURED, per utterance: zero ambiguity (no CLARIFY) and exactly one resolution —
+// but the canonicalized parse text carries a DUPLICATED MODIFIER, e.g.
+//   "qual é o preço da costela bovina?"
+//     -> "qual é o preço da costela-bovina-defumada bovina?"
+// The alias rewrite consumes "costela" and leaves the "bovina" that selected it. That
+// is the F-2 canonicalizer wart, and pinning it here is DELIBERATE: it is the parse
+// surface production actually builds for this utterance today, so certifying the
+// posture over it is certifying production truth rather than a cleaner surface nobody
+// runs. Naming the product in full ("costela bovina defumada") would dodge the wart
+// via the idempotence pre-pass, and the kebab handle would dodge it too, but both
+// trade the real customer phrasing for one chosen to avoid a bug.
+//
+// ⚠ THESE STRINGS ARE DOWNSTREAM OF TWO OPEN TICKETS:
+//   F-2 — the duplicated modifier above. When it is fixed, the canonicalized text
+//         these turns produce changes; re-measure rather than assuming.
+//   F-3 — whether alias ambiguity should outrank a declared dietary/medical marker
+//         at all. This suite pins NEITHER answer; it asks only "does a
+//         diet-qualified ask get the ratified posture?", which is separable.
+//
+// WHETHER alias ambiguity SHOULD outrank a declared dietary/medical marker is a
+// live product question with its own ticket (F-3). This suite deliberately pins
+// neither answer — it asks only "does a diet-qualified ask get the ratified
+// posture?", which is separable from it.
+
 describe("BKL-270 e2e — `abstain` (MENU_ITEM_PRICE, newly gated by this ticket)", () => {
   const CLAIMS = [{ type: "MENU_ITEM_PRICE", subject: "prod_costela" }] as const;
 
@@ -260,20 +301,28 @@ describe("BKL-270 e2e — `abstain` (MENU_ITEM_PRICE, newly gated by this ticket
     // The failure this closes is not mere implicature: the resolver resolves
     // "costela sem lactose" to the ORDINARY costela and prices THAT, so answering
     // both invents a variant and misprices it.
-    expectAbstain(await drive("qual é o preço da costela sem lactose?", [...CLAIMS]));
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3), and
+    // the resulting parse text duplicates the modifier (F-2).
+    expectAbstain(await drive("qual é o preço da costela bovina sem lactose?", [...CLAIMS]));
   });
 
   it("a 'sou diabético' price ask abstains — the vocabulary that bypassed every gate", async () => {
-    expectAbstain(await drive("sou diabético, qual é o preço da costela?", [...CLAIMS]));
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3), and
+    // the resulting parse text duplicates the modifier (F-2).
+    expectAbstain(await drive("sou diabético, qual é o preço da costela bovina?", [...CLAIMS]));
   });
 
   it("a 'sou celíaco' price ask abstains — the gap the audit never named", async () => {
-    expectAbstain(await drive("sou celíaco, qual é o preço da costela?", [...CLAIMS]));
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3), and
+    // the resulting parse text duplicates the modifier (F-2).
+    expectAbstain(await drive("sou celíaco, qual é o preço da costela bovina?", [...CLAIMS]));
   });
 
   it("THE CONTROL: the same ask with no dietary marker still renders the price", async () => {
     // Without this, every assertion above would pass on a family that simply broke.
-    const response = await drive("qual é o preço da costela?", [...CLAIMS]);
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies first (F-3), and
+    // the resulting parse text duplicates the modifier (F-2).
+    const response = await drive("qual é o preço da costela bovina?", [...CLAIMS]);
     expect(response).toContain("Costela Bovina Defumada");
     expect(response).toContain("89,00");
     expect(response).not.toBe(ABSTAIN);
@@ -409,7 +458,10 @@ describe("BKL-270 e2e — MENU_ITEM_ALLERGENS (never driven by the audit)", () =
     // It has no VALIDATED_TEMPLATES entry, so even a validated claim abstains. The
     // `abstain` posture declaration is documentation of a property that already
     // holds; this test is what makes that property observable rather than asserted.
-    const response = await drive("a costela tem amendoim?", [
+    // R1-S2 — "bovina" disambiguates; bare "costela" alias-clarifies before the
+    // allergen ask is read at all (F-3), and the parse text duplicates the
+    // modifier (F-2).
+    const response = await drive("a costela bovina tem amendoim?", [
       { type: "MENU_ITEM_ALLERGENS", subject: "prod_costela" },
     ]);
     expect(response).toBe(ABSTAIN);

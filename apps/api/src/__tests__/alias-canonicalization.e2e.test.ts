@@ -20,7 +20,12 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CompletionRequest, TelemetryPort } from "@claustrum/core";
+import type {
+  CognitiveState,
+  CompletionRequest,
+  ModelProvider,
+  TelemetryPort,
+} from "@claustrum/core";
 import "./setup.js";
 
 const { redisFake } = vi.hoisted(() => ({
@@ -69,6 +74,12 @@ const {
 const { createParseFunnel, funnelStage } = await import("../claustrum/funnel-tier.js");
 const { createRedisParseCacheStore } = await import("../claustrum/parse-memo.js");
 const { createCapabilityRetriever } = await import("../claustrum/capability-retrieval.js");
+// R1-S2 — the opt-out case below drives the PLANNER directly (see its describe).
+const { createIbatexasPlanner } = await import("../claustrum/ibatexas-planner.js");
+const { deriveIbatexasPlannerContext } = await import(
+  "../claustrum/compose-customer-conductor.js"
+);
+const { IBATEXAS_COMPOSED_CAPABILITY_PLANNERS } = await import("@ibatexas/packs-composed");
 
 const CUSTOMER = "cus_le2025b";
 
@@ -332,27 +343,78 @@ describe("LE2-025b — an ambiguous surface clarifies, never guesses", () => {
   });
 });
 
-describe("LE2-025b — opt-out", () => {
-  it("without the alias seam the planner is byte-identical to its pre-alias behaviour", async () => {
-    const funnel = createParseFunnel();
-    const model = scriptedModel(NOTE_CALL);
-    vi.stubGlobal("fetch", async () => {
-      throw new Error("no Medusa egress expected");
-    });
-    const harness = composeCustomerConductor({
-      model,
-      session: makeStatefulCustomerSession(),
-      adjudicator: makeAuditedAdjudicator({ sink: makeCapturingAuditSink() }),
-      funnel,
-      // aliasSeam deliberately omitted
-    });
-    await runCustomerTurn(harness, {
-      customerId: CUSTOMER,
+// ── R1-S2 · THE OPT-OUT MOVED DOWN TO THE SEAM THAT OWNS IT ──────────────────
+//
+// This case used to compose a harness with `funnel` and omit `aliasSeam`. That
+// composition no longer exists: the customer conductor is now composed by the ONE
+// production composer, which fans a single funnel instance into every tier seam and
+// wires `aliasSeam` UNCONDITIONALLY — deliberately, because canonicalization is
+// deterministic catalog data with nothing to degrade to. So a customer plane with a
+// funnel but no alias layer is not a state production can be in, and asserting it
+// through the harness was asserting a divergence rather than a property.
+//
+// The opt-out is REAL, though — it is a PLANNER property (`aliasSeam === undefined`
+// ⟹ `canonicalizeAliases` is never called), and the OPS plane relies on it. So the
+// coverage moves to the seam that owns it: `createIbatexasPlanner` driven directly,
+// over the same composed capability planners and the same context derivation the
+// customer composition uses, so the surface the planner sees is production's.
+//
+// The two cases are a PAIR, and the pairing is what makes the negative meaningful: a
+// "text reached the model untouched" assertion passes trivially if canonicalization
+// is broken, absent, or never reached in this construction. The control proves the
+// mechanism is live on the very same planner build.
+describe("LE2-025b — opt-out (planner seam)", () => {
+  const COLLOQUIAL = "adiciona uma farofa ao carrinho";
+  const CANONICAL = "adiciona uma farofa-de-bacon-defumado ao carrinho";
+
+  function plannerState(text: string): CognitiveState {
+    return {
+      perception: { text, channel: "web", receivedAt: "2026-07-25T12:00:00.000Z" },
+      // The ONE field `deriveIbatexasPlannerContext` reads to decide the actor, and
+      // therefore what is proposable — without a real customer the authenticated
+      // kinds vanish, the tool surface can empty out, and the planner would return
+      // before ever reaching the model. That would make BOTH cases vacuous.
+      memory: { customerId: CUSTOMER } as unknown as CognitiveState["memory"],
+      retrieval: {} as CognitiveState["retrieval"],
+      tenantId: "ibatexas",
+      locale: "pt-BR",
       conversationId: "conv_alias_optout",
-      text: "adiciona uma farofa ao carrinho",
+      turnId: "turn_alias_optout",
+    };
+  }
+
+  function buildPlanner(opts: { model: ModelProvider; withAliasSeam: boolean }) {
+    const funnel = createParseFunnel();
+    const planner = createIbatexasPlanner({
+      model: opts.model,
+      modelId: "mock-model",
+      capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
+      deriveContext: deriveIbatexasPlannerContext,
+      ...(opts.withAliasSeam ? { aliasSeam: funnel } : {}),
     });
-    // The colloquial reached the model untouched.
-    expect(sentUserMessage(model)).toBe("adiciona uma farofa ao carrinho");
-    expect(funnel.aliasCounters()).toMatchObject({ canonicalized: 0 });
+    return { planner, funnel };
+  }
+
+  it("WITHOUT the alias seam the utterance reaches the model byte-identically", async () => {
+    const model = scriptedModel(NOTE_CALL);
+    const { planner, funnel } = buildPlanner({ model, withAliasSeam: false });
+
+    await planner.propose(plannerState(COLLOQUIAL));
+
+    // Anti-vacuity: the model must actually have been asked to parse. Without this a
+    // planner that returned early (empty tool surface) would satisfy the assertion
+    // below with an empty string.
+    expect(sentUserMessage(model)).toBe(COLLOQUIAL);
+    expect(funnel.aliasCounters()).toMatchObject({ canonicalized: 0, resolutions: 0 });
+  });
+
+  it("THE CONTROL: the SAME planner build WITH the seam does canonicalize", async () => {
+    const model = scriptedModel(NOTE_CALL);
+    const { planner, funnel } = buildPlanner({ model, withAliasSeam: true });
+
+    await planner.propose(plannerState(COLLOQUIAL));
+
+    expect(sentUserMessage(model)).toBe(CANONICAL);
+    expect(funnel.aliasCounters()).toMatchObject({ canonicalized: 1, resolutions: 1 });
   });
 });

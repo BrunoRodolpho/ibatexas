@@ -14,10 +14,20 @@
 // it: the executor's third argument was simply never passed.
 //
 // WHAT IS REAL HERE (the point of the harness):
-//   - `handleTurn` + `createConductor` from @claustrum/core
-//   - the production planner `createIbatexasPlanner` over the REAL composed
-//     capability planners (so `order.checkout.create` proposability is genuinely
-//     gated on an authenticated customer)
+//   - `handleTurn` from @claustrum/core
+//   - THE PRODUCTION COMPOSITION ITSELF (R1-S2). This harness no longer composes a
+//     conductor; it builds a `CustomerConductorDeps` bag and calls
+//     `composeCustomerConductor` from `claustrum/compose-customer-conductor.ts` —
+//     the same function `claustrum-bootstrap.ts` calls. So the planner, the
+//     responder, the claims-seam planner identity, the workflow decision observer
+//     and the one-funnel-instance invariant are not merely "like production", they
+//     ARE production. Before this, the composition below was a hand copy, and it
+//     had drifted (no safe-unknown gate, no prompt composer, opt-in readAnswer).
+//     Divergences now have to be DECLARED as deps to exist; see
+//     `composeCustomerConductor` below for the full list.
+//   - the production planner over the REAL composed capability planners (so
+//     `order.checkout.create` proposability is genuinely gated on an
+//     authenticated customer)
 //   - the production RESOLVE stage `createIbatexasResolver` → `resolveAndAssemble`
 //     (so the snake_case wire keys `payment_method`/`delivery_type` are renamed
 //     and `cartId` is hydrated from the session's active-cart Redis key exactly
@@ -70,12 +80,10 @@ import {
   type IntentEnvelope,
 } from "@adjudicate/core";
 import {
-  createConductor,
   createToolRegistry,
   handleTurn,
   type Adjudicator,
   type ChannelMessage,
-  type CognitiveState,
   type Completion,
   type CompletionRequest,
   type Conductor,
@@ -91,19 +99,26 @@ import {
   type TelemetryPort,
   type TenantResolver,
 } from "@claustrum/core";
-import {
-  IBATEXAS_COMPOSED_PACKS,
-  IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-} from "@ibatexas/packs-composed";
+import { IBATEXAS_COMPOSED_PACKS } from "@ibatexas/packs-composed";
 import { WhatsAppChannel } from "@claustrum/channel-whatsapp";
 import { buildIbatexasPolicyPacks, type ErasedPack } from "../claustrum/compose-policy-packs.js";
 import { composePolicyRouter } from "../claustrum/capability-policy.js";
-import { createIbatexasPlanner } from "../claustrum/ibatexas-planner.js";
-import { buildClaimsSeams } from "../claustrum/claims-pipeline.js";
-import { createIbatexasResponder } from "../claustrum/ibatexas-responder.js";
+// R1-S2 — THE PRODUCTION COMPOSER. This harness is its SECOND ADAPTER: everything
+// below builds a production `CustomerConductorDeps` bag out of this harness's
+// doubles and delegates. Aliased on import so the harness keeps its own export
+// names (24 test files consume them) while it is unambiguous at every use site
+// which of the two `composeCustomerConductor`s is meant.
+import {
+  composeCustomerConductor as composeProductionCustomerConductor,
+  type CustomerConductorDeps as ProductionCustomerConductorDeps,
+} from "../claustrum/compose-customer-conductor.js";
+import { buildClaimsSeams, claimsPipelineEnabled } from "../claustrum/claims-pipeline.js";
+import { createSafeUnknownGate } from "../claustrum/safe-unknown-gate.js";
+import { createIbatexasPromptComposer } from "../claustrum/prompts/ibatexas-prompts.js";
 import { createIbatexasResolver } from "../claustrum/ibatexas-resolver.js";
 import {
   closeFunnelTurn,
+  createParseFunnel,
   openFunnelTurn,
   type FunnelParseMemoSeam,
   type FunnelPlannerSeam,
@@ -118,17 +133,10 @@ import { buildLanguageEngineAuditMetadata } from "../claustrum/language-engine/a
 import { registerIbatexasToolPacks } from "../tools/register-ibatexas-tool-packs.js";
 import { registerWorkflowAnchorTools } from "../tools/register-workflow-anchor-tools.js";
 import { registerWorkflowScopedTools } from "../tools/register-workflow-scoped-tools.js";
-import { isGuestCustomerId } from "../tools/guest-identity.js";
 import type { WorkflowRuntime } from "../claustrum/workflow/workflow-runtime.js";
-import {
-  installWorkflowRuntime,
-  observeWorkflowDecisions,
-} from "../claustrum/workflow/workflow-install.js";
+import { installWorkflowRuntime } from "../claustrum/workflow/workflow-install.js";
 import { closeWorkflowTurn } from "../claustrum/workflow/workflow-trace.js";
-import {
-  beginWorkflowTurn,
-  currentWorkflowTurnId,
-} from "../claustrum/workflow/workflow-turn.js";
+import { beginWorkflowTurn } from "../claustrum/workflow/workflow-turn.js";
 
 /** Fixed instant every park is stamped with, so park shapes are deterministic. */
 export const HARNESS_NOW = "2026-07-25T12:00:00.000Z";
@@ -545,40 +553,15 @@ export function makeStatefulCustomerSession(
   };
 }
 
-// ── Planner context (faithful copy of the production derivation) ───────────────
-
-/**
- * Byte-equivalent to `deriveIbatexasPlannerContext` (claustrum-bootstrap.ts),
- * inlined rather than imported because importing that module would drag the whole
- * production composition root (pg pool, env `requireEnv` gates) into a unit test.
- * Reads the customerId from the recalled memory snapshot and reuses the SAME
- * `isGuestCustomerId` predicate, so the planner's willingness to propose
- * `order.checkout.create` is gated exactly as in production.
- */
-export function deriveCustomerPlannerContext(state: CognitiveState): {
-  readonly state: unknown;
-  readonly context: unknown;
-} {
-  const raw = (state.memory as { customerId?: unknown } | undefined)?.customerId;
-  const id = typeof raw === "string" ? raw.trim() : "";
-  const customerId = id !== "" && !isGuestCustomerId(id) ? id : null;
-  return {
-    state: {
-      ctx: {
-        tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
-        channel: state.perception.channel,
-        customerId,
-        staffId: null,
-        isAuthenticated: customerId !== null,
-        cartId: null,
-        orderId: null,
-      },
-    },
-    context: {},
-  };
-}
-
 // ── Conductor composition ─────────────────────────────────────────────────────
+//
+// R1-S2 — the hand-copied `deriveCustomerPlannerContext` that used to live here is
+// GONE. It existed because importing the derivation meant importing the production
+// composition root (pg pool, env `requireEnv` gates); R1-S1 moved the derivation
+// into the import-pure composer module, so the production
+// `deriveIbatexasPlannerContext` is now reachable without dragging any
+// infrastructure — and the composer applies it itself, which is why this harness no
+// longer names it at all.
 
 export const noopTelemetry: TelemetryPort = {
   emitTurn: async () => {},
@@ -682,8 +665,14 @@ export interface CustomerConductorDeps {
   readonly withClaims?: boolean;
   /**
    * LE2-007 — the parse funnel's tier seam, wired into BOTH real seams (planner +
-   * responder) exactly as `bootstrapClaustrum` wires one instance into both. Omitted ⟹
-   * no funnel ⟹ every pre-existing harness turn is byte-identical.
+   * responder) exactly as `bootstrapClaustrum` wires one instance into both.
+   *
+   * R1-S2 — OMITTING IT IS NO LONGER "NO FUNNEL". The production composition
+   * requires one instance and fans it into every tier seam, so an omitted funnel
+   * becomes a bare `createParseFunnel({})`: L1 and L2 stay absent (no parse-cache
+   * store, no retriever), but L0 and the ALIAS layer become ARMED, because the
+   * planner arms alias canonicalization on the seam's mere PRESENCE. Pass a funnel
+   * explicitly whenever a suite cares which tiers are live.
    */
   readonly funnel?: FunnelPlannerSeam & FunnelResponderSeam;
   /**
@@ -715,7 +704,13 @@ export interface CustomerConductorDeps {
    * SAME object passed as `funnel` (`createParseFunnel` returns both seams when a
    * parse cache store is wired); kept a separate option for the same reason the
    * planner takes it separately — L0 and L1 run at different points in `propose`.
-   * Omitted ⟹ no cache ⟹ every pre-existing harness turn is byte-identical.
+   *
+   * R1-S2 — DERIVED, NOT FORWARDED. The production composition takes no separate
+   * tier-seam deps: it derives L1 from the one funnel instance
+   * (`funnel.lookupParse !== undefined`), which is the same guard every caller here
+   * already applied. So this option's only remaining job is to DECLARE the intent —
+   * passing anything that is not the identical `funnel` object throws at compose
+   * time rather than being silently ignored.
    */
   readonly parseMemo?: FunnelParseMemoSeam;
   /**
@@ -726,8 +721,13 @@ export interface CustomerConductorDeps {
    * It is what makes a funnel turn provably zero-model-call END TO END rather
    * than merely zero-EXTRACTION-call: with it, a committed mutation's reply is
    * rendered from the tool's own outcome, so the responder never needs to author
-   * prose and a `throwingModel` can stand as the wire proof. Omitted ⟹ both hooks
-   * are absent ⟹ byte-identical to every pre-LE2-009 caller.
+   * prose and a `throwingModel` can stand as the wire proof.
+   *
+   * R1-S2 — NOW ALWAYS WIRED, AND NO LONGER READ. Production wires its own
+   * `readAnswer` (the `renderCustomerActionAnswer` action render, with an empty
+   * customer READ half) unconditionally, so this option is inert. Kept declared only
+   * so the five suites that pass it still compile: all five pass exactly the
+   * production shape, which is why converging on production's is a no-op for them.
    */
   readonly readAnswer?: {
     render: (turnId: string) => string | undefined;
@@ -738,13 +738,22 @@ export interface CustomerConductorDeps {
    * turn's advertised roster, and the seam that stamps its decision on the trace.
    * Normally the retriever plus the SAME funnel instance passed as `funnel`.
    * Omitted ⟹ no retrieval ⟹ the full roster, byte-identical to pre-L2.
+   *
+   * R1-S2 — `retriever` is forwarded (as the production `capabilityRetriever`);
+   * `scopeSeam` is DERIVED from the funnel, exactly like `parseMemo`, and is
+   * guarded for identity rather than ignored.
    */
   readonly retriever?: CapabilityRetriever;
   readonly scopeSeam?: FunnelScopeSeam;
   /**
    * LE2-025b — the alias layer's seam (resolutions for the trace + the CLARIFY
-   * short-circuit). Normally the SAME funnel instance as `funnel`. Omitted ⟹ no
-   * canonicalization ⟹ byte-identical to every pre-alias caller.
+   * short-circuit). Normally the SAME funnel instance as `funnel`.
+   *
+   * R1-S2 — DERIVED AND UNCONDITIONAL. Production wires `aliasSeam: funnel` with no
+   * flag ("deterministic catalog data with no external dependency, so there is
+   * nothing to degrade to"), so ANY suite with a funnel now has the alias layer
+   * armed whether or not it passes this option. Omitting it no longer means "no
+   * canonicalization" — see the `funnel` option.
    */
   readonly aliasSeam?: FunnelAliasSeam;
   /**
@@ -830,64 +839,87 @@ function buildHarnessTools(
 }
 
 /**
- * The RESPONDER for a composition: the real production one when a test opts in
- * (`realResponder`), else the inert stub this harness shipped with. See the
- * file header on why the default is inert.
+ * An INERT {@link WorkflowRuntime} — the double a composition without a workflow
+ * gets, because the production composer requires one.
+ *
+ * Inert by CONSTRUCTION, not by configuration: it advertises nothing, so no
+ * workflow reaches the wire; it selects nothing, so `run` and `renderOutcome` are
+ * unreachable; it renders no confirm and no notice, so the responder's two workflow
+ * seams both fall through exactly as they did when the harness omitted them; and
+ * `recordSelectionDecision` is a no-op, which is what makes the composer's
+ * unconditional `observeWorkflowDecisions` wrap behaviourally invisible (the
+ * observer's only side effect IS that call, and it returns the inner decision
+ * unchanged — see workflow-install.ts).
+ *
+ * Every member of the interface is implemented rather than cast in, so adding a
+ * member to `WorkflowRuntime` is a compile error here instead of a runtime
+ * `undefined is not a function` on whichever suite happens to reach it first.
  */
-function buildHarnessResponder(deps: CustomerConductorDeps): ResponderPort {
-  if (deps.realResponder !== true) return inertResponder();
-  // Composed like the customer plane's `buildResponder`: the same explainer
-  // shape, the same funnel instance the planner got, and the schedule signal
-  // (when the test wires one) so the closed-hours layers are armed.
-  return createIbatexasResponder({
-    model: deps.model,
-    modelId: "mock-model",
-    explainer: { render: (r) => r.userFacing },
-    ...(deps.funnel ? { funnel: deps.funnel } : {}),
-    ...(deps.scheduleSignal !== undefined
-      ? { resolveScheduleSignal: () => deps.scheduleSignal }
-      : {}),
-    ...(deps.readAnswer !== undefined ? { readAnswer: deps.readAnswer } : {}),
-    // LE2-021 — PARITY with `buildResponder`'s own wiring, not an opt-in: a test
-    // that supplies a `workflowRuntime` and a real responder gets the production
-    // confirm seam automatically, so the authored confirm is proved at
-    // `turn.response.text` rather than by calling `renderConfirm` directly (the
-    // LE2-002 class — a renderer-level assertion that passes while the feature is
-    // dead through the gate). No existing test is affected: none combines
-    // `realResponder` with a `workflowRuntime`, and without one the dep is absent
-    // and the branch is byte-identical.
-    ...(deps.workflowRuntime !== undefined
-      ? {
-          workflowConfirm: (turnId: string) => deps.workflowRuntime?.renderConfirm(turnId),
-          // LE2-022 — PARITY with `buildResponder`, same as the confirm seam
-          // above and for the same reason: the feasibility notice has to be
-          // proved at `turn.response.text`, through the real responder branch,
-          // rather than by calling `renderNotice` directly (the LE2-002 class —
-          // a renderer-level assertion that passes while the seam is dead
-          // through the gate).
-          workflowNotice: (turnId: string) => deps.workflowRuntime?.renderNotice(turnId),
-        }
-      : {}),
-  });
+function inertWorkflowRuntime(): WorkflowRuntime {
+  return {
+    advertise: () => [],
+    select: () => undefined,
+    instanceFor: () => undefined,
+    instanceById: () => undefined,
+    checkFeasibility: async () => undefined,
+    renderNotice: () => undefined,
+    recordSelectionDecision: () => {},
+    renderConfirm: () => undefined,
+    renderOutcome: () => "",
+    run: async () => undefined,
+    selectionCapabilities: () => new Set<string>(),
+    activityCapabilities: () => new Set<string>(),
+    close: () => {},
+  };
 }
 
+/**
+ * THE ADAPTER SWAP (R1-S2). Builds a production `CustomerConductorDeps` bag from
+ * this harness's doubles and delegates to the ONE composition
+ * (`claustrum/compose-customer-conductor.ts`). Production's
+ * `bootstrapClaustrum` is adapter #1; this is adapter #2.
+ *
+ * WHAT THIS DELETED, and why that is the point: the harness used to hold its own
+ * `createIbatexasPlanner` call, its own responder builder, a byte-copy of the
+ * planner-context derivation, its own `observeWorkflowDecisions` wrap and its own
+ * `createConductor` call — a second composition root that nothing forced to agree
+ * with the first, kept in sync by hand through comments that said "PARITY with
+ * buildResponder". Those comments are gone because the parity is now structural:
+ * there is one composition, and a divergence has to be DECLARED as a dep to exist
+ * at all (today exactly one is — `responderOverride`).
+ *
+ * THE DECLARED DIVERGENCES, all of them:
+ *   - `responderOverride` — the inert responder, unless `realResponder: true`.
+ *   - `explainer` — this harness's `{ render: (r) => r.userFacing }` rather than
+ *     production's; changing reply-shaping for every suite at once is a different
+ *     change from deleting a twin.
+ *   - `readToolExecutors: {}` — the real registry drags bootstrap infrastructure.
+ *   - `chatModelId: "mock-model"`, and the memory/grounding/telemetry/lock doubles.
+ */
 export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerHarness {
+  // The ORIGINAL dep, deliberately — NOT the inert double below. Workflow tooling
+  // must be installed only when a test actually wired a runtime; installing it over
+  // the inert double would register anchor/activity handlers for an empty corpus and
+  // make `buildHarnessTools`'s last-write-wins ordering observable on every suite.
   const tools = buildHarnessTools(deps.workflowRuntime);
 
-  const planner = createIbatexasPlanner({
-    model: deps.model,
-    modelId: "mock-model",
-    capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-    deriveContext: deriveCustomerPlannerContext,
-    ...(deps.funnel ? { funnel: deps.funnel } : {}),
-    ...(deps.parseMemo ? { parseMemo: deps.parseMemo } : {}),
-    ...(deps.retriever ? { retriever: deps.retriever } : {}),
-    ...(deps.scopeSeam ? { scopeSeam: deps.scopeSeam } : {}),
-    ...(deps.aliasSeam ? { aliasSeam: deps.aliasSeam } : {}),
-    ...(deps.workflowRuntime ? { workflowRuntime: deps.workflowRuntime } : {}),
-  });
-
-  const responder = buildHarnessResponder(deps);
+  // A funnel-derived option must be the SAME INSTANCE as `funnel` — the production
+  // composer fans ONE instance into every tier seam (planner L0/L1/L2/ALIAS +
+  // responder), so it takes no separate seam deps. Every caller already passes the
+  // same object; this turns a future mismatch into a loud failure at compose time
+  // instead of a suite that silently measures the wrong instance.
+  for (const [name, seam] of [
+    ["parseMemo", deps.parseMemo],
+    ["scopeSeam", deps.scopeSeam],
+    ["aliasSeam", deps.aliasSeam],
+  ] as const) {
+    if (seam !== undefined && seam !== (deps.funnel as unknown)) {
+      throw new Error(
+        `[customer-e2e-harness] \`${name}\` must be the SAME object as \`funnel\` — ` +
+          "the production composition derives every tier seam from one funnel instance",
+      );
+    }
+  }
 
   const webChannel = new WebConfirmChannel({
     gatewaySigningKey: "harness-web-signing-key",
@@ -913,43 +945,64 @@ export function composeCustomerConductor(deps: CustomerConductorDeps): CustomerH
         })
       : undefined;
 
-  // BKL-234 — the REAL customer claims seams, opt-in. Same builder the customer
-  // composition root uses, parameterized only by this harness's planner; `{}`
-  // both when not requested and when ENABLE_CLAIMS_PIPELINE is off.
-  const claimsSeams = deps.withClaims === true ? buildClaimsSeams({ planner }) : {};
-
-  // LE2-020 — the decision observer, reading the turn from the SAME
-  // AsyncLocalStorage binding production reads (LE2-021). The harness used to
-  // carry a module-scope `let` here, sound only because it drives one turn at a
-  // time; `beginWorkflowTurn` removes that caveat, so this composition and the
-  // production one now resolve the turn identically.
-  const adjudicator =
-    deps.workflowRuntime === undefined
-      ? deps.adjudicator
-      : observeWorkflowDecisions(
-          deps.adjudicator,
-          deps.workflowRuntime,
-          currentWorkflowTurnId,
-        );
-
-  const conductor = createConductor({
-    adjudicator,
+  const productionDeps: ProductionCustomerConductorDeps = {
+    // RAW. The composer applies `observeWorkflowDecisions` itself (that observer is
+    // part of what "the customer conductor" means), and with an inert runtime the
+    // wrap is behaviourally inert — so unlike the deleted inline version there is no
+    // branch here on whether a workflow was wired.
+    adjudicator: deps.adjudicator,
+    workflowRuntime: deps.workflowRuntime ?? inertWorkflowRuntime(),
+    model: deps.model,
+    chatModelId: "mock-model",
     memory: customerMemory(),
     grounding: emptyGrounding(),
-    planner,
-    responder,
-    explainer: { render: (r) => r.userFacing },
-    handoff: deps.handoff ?? { async queue() {} },
+    channels: whatsAppChannel === undefined ? [webChannel] : [webChannel, whatsAppChannel],
     telemetry: deps.telemetry ?? noopTelemetry,
     session: deps.session,
     tools,
-    channels: whatsAppChannel === undefined ? [webChannel] : [webChannel, whatsAppChannel],
     tenantResolver: singleTenant,
+    // A DEP now, not a call inside the composition — the composer is import-pure and
+    // takes the resolver from whoever composes it.
     resolver: createIbatexasResolver(),
     sessionLock: inMemoryLock,
-    ...claimsSeams,
-  });
+    handoff: deps.handoff ?? { async queue() {} },
+    // The REAL composer: pure (a registry plus a synthesizer, no infrastructure), and
+    // the single inviolable persona fragment makes `composed.system ===
+    // DEFAULT_SYSTEM_PROMPT`, which is the system prompt the harness's planner got
+    // when it passed no composer at all.
+    promptComposer: createIbatexasPromptComposer(),
+    // DECLARED VALUE DIVERGENCE — this harness's explainer, not production's. Every
+    // suite that asserts on reply text was written against `r.userFacing`, and
+    // converting all of them to production reply-shaping at once is out of scope.
+    explainer: { render: (r) => r.userFacing },
+    // `undefined` when the test wired no schedule, which is what the responder's
+    // closed-hours layers read as "no schedule".
+    resolveScheduleSignal: () => deps.scheduleSignal,
+    // ── THE FUNNEL (see this option's doc on `CustomerConductorDeps.funnel`) ─────
+    // Production requires ONE instance and fans it into every tier seam. The cast is
+    // the harness option being NARROWER than the production seam union
+    // (`FunnelPlannerSeam & FunnelResponderSeam` vs. what `createParseFunnel`
+    // returns); every caller in fact passes a `createParseFunnel` product, and the
+    // same-instance guard above is what keeps that true.
+    funnel: (deps.funnel ?? createParseFunnel({})) as ProductionCustomerConductorDeps["funnel"],
+    ...(deps.retriever === undefined ? {} : { capabilityRetriever: deps.retriever }),
+    // DECLARED VALUE DIVERGENCE — importing the real one-hop read-tool registry would
+    // drag bootstrap infrastructure. Empty behaves as the option's absence did: the
+    // planner's enrichment loop finds no executor for any capability.
+    readToolExecutors: {},
+    // BKL-234 — the REAL seams, opt-in, over whichever planner instance the composer
+    // hands the conductor (that identity is the Q6b invariant the composer owns).
+    // `{}` both when not requested and when ENABLE_CLAIMS_PIPELINE is off.
+    claimsSeamsFor: (planner) => (deps.withClaims === true ? buildClaimsSeams({ planner }) : {}),
+    // PRODUCTION PARITY, deliberately: the harness never wired safeUnknown before, and
+    // that was drift rather than a decision. Reading the SAME flag production reads
+    // means a default-mode suite (flag off ⟹ undefined) sees no change, and a suite
+    // that turns the flag on now gets the gate production would have given it.
+    safeUnknownGateFor: () => (claimsPipelineEnabled() ? createSafeUnknownGate() : undefined),
+    ...(deps.realResponder === true ? {} : { responderOverride: inertResponder() }),
+  };
 
+  const { conductor } = composeProductionCustomerConductor(productionDeps);
   return { conductor, tools };
 }
 
@@ -1045,9 +1098,11 @@ export async function runCustomerTurn(
     // LE2-007 — publish the turn's FUNNEL CONTEXT exactly as the production customer
     // ingresses do (routes/chat.ts, routes/whatsapp-webhook.ts): the confirm-window
     // fact read from the authoritative `capsule.loadedSession`, keyed on this turn's
-    // id. Inlined here for the same reason `deriveCustomerPlannerContext` is —
-    // importing the route would drag the whole composition root into a unit test —
-    // and it is what makes the FE-D32 confirm-window gate reachable through the REAL
+    // id. Inlined here because importing the route would drag the whole
+    // composition root into a unit test (the ingress is the one production seam
+    // R1-S2 did NOT extract — `composeCustomerConductor` composes the conductor,
+    // not the per-turn context publication around `handleTurn`) — and it is what
+    // makes the FE-D32 confirm-window gate reachable through the REAL
     // seam instead of a synthetic probe. Harmless when no funnel is wired: nothing
     // reads the context.
     openFunnelTurn(capsule.turnId, {
