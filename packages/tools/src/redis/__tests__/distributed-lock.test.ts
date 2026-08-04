@@ -95,9 +95,23 @@ describe("acquireLockAtKey", () => {
   })
 
   it("honours the ttlSeconds argument", async () => {
+    // A remaining-TTL read is a DECAYING value: against the suite's real-clock
+    // adapter, exact equality is a flake by construction (dev CI measured 41999
+    // when 1ms elapsed between the SET and the read). The adapter's clock is
+    // INJECTABLE, so this case runs on its own frozen clock and keeps the exact
+    // pin — the sharpest form of "the TTL was set FROM ttlSeconds".
+    const frozen = createInMemoryRedis({ now: () => 1_700_000_000_000 })
+    mockGetRedisClient.mockResolvedValue({
+      get: (key: string) => frozen.client.get(key),
+      set: (key: string, value: string, opts?: unknown) =>
+        (frozen.client.set as (k: string, v: string, o?: unknown) => unknown)(key, value, opts),
+      del: (key: string) => frozen.client.del(key),
+      eval: async () => 1,
+    })
+
     await acquireLockAtKey(rk("res:ttl"), 42)
 
-    expect(mem.ttlMs(rk("res:ttl"))).toBe(42_000)
+    expect(frozen.ttlMs(rk("res:ttl"))).toBe(42_000)
   })
 
   it("returns null when the key is already held", async () => {
