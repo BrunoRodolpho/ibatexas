@@ -5,6 +5,7 @@
 // integration of `checkObservabilityLiveness` (probe → debounce counter → govern
 // raise/AUTO-resolve through the OpsAlertService), plus the start() disable gate.
 
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 
 // Fake BullMQ queue/worker so start()/stop() need no Redis (integration tests
@@ -199,18 +200,26 @@ function makeFetch(byUrl: Record<string, FetchResult>) {
   }) as unknown as typeof fetch;
 }
 
+// R5-S7 — the counter store is the canonical in-memory adapter, not an ad-hoc
+// number map. What was fiction before: `expire` answered a constant 1 for every
+// call, including on keys that do not exist (real EXPIRE reports false), so the
+// TTL pin below asserted only that an ARGUMENT was passed to a function that
+// did nothing with it. INCR now enforces real integer semantics too.
+//
+// The commands stay `vi.fn()` DELEGATES rather than the raw client: the spy is
+// pure observation (every call runs the adapter's real implementation), which
+// keeps this file's call-shaped assertions and its one failure injection
+// working unedited. It is also how you spy on this adapter at all — the client
+// is a Proxy with no own properties, so `vi.spyOn` has nothing to replace.
 function makeRedis(initial: Record<string, number> = {}) {
-  const counts: Record<string, number> = { ...initial };
+  const mem = createInMemoryRedis({
+    seed: Object.fromEntries(Object.entries(initial).map(([k, v]) => [k, String(v)])),
+  });
   return {
-    incr: vi.fn(async (key: string) => {
-      counts[key] = (counts[key] ?? 0) + 1;
-      return counts[key];
-    }),
-    expire: vi.fn(async () => 1),
-    del: vi.fn(async (key: string) => {
-      delete counts[key];
-      return 1;
-    }),
+    mem,
+    incr: vi.fn((key: string) => mem.client.incr(key)),
+    expire: vi.fn((key: string, seconds: number) => mem.client.expire(key, seconds)),
+    del: vi.fn((key: string) => mem.client.del(key)),
   };
 }
 

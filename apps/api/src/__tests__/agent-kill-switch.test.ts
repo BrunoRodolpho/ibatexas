@@ -16,6 +16,7 @@
 // EXECUTEs again (plan-v2 §5 T3-5 acceptance: "flip stops the next trigger").
 
 import { afterEach, describe, expect, it } from "vitest";
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
 import { buildEnvelope } from "@adjudicate/core";
 import { adjudicate, type PolicyBundle } from "@adjudicate/core/kernel";
 import { paymentsPack } from "@ibatexas/pack-payments";
@@ -41,23 +42,18 @@ const AGENT_SESSION = agentSessionId(PIX_REMEDIATION_AGENT, "ord_001");
 
 // ── In-memory Redis (read/write) + pub/sub fakes ─────────────────────────────
 
-function fakeRedis(): RedisLedgerClient & { store: Map<string, string> } {
-  const store = new Map<string, string>();
-  return {
-    store,
-    async set(key, value, opts) {
-      if (opts?.NX === true && store.has(key)) return null;
-      store.set(key, value);
-      return "OK";
-    },
-    async get(key) {
-      return store.get(key) ?? null;
-    },
-    async del(key) {
-      return store.delete(key) ? 1 : 0;
-    },
-  };
-}
+// R5-S7 — the canonical in-memory adapter. The hand-rolled RedisLedgerClient it
+// replaces implemented SET NX by hand and modelled no TTL at all, so an EX the
+// kill-switch passes was silently discarded.
+//
+// The client is typed as node-redis' full `RedisClientType`, whose `set` carries
+// the overload taking a leading CommandOptions; that does not structurally
+// satisfy the narrow hand-written `RedisLedgerClient`. The cast is confined to
+// this one view rather than repeated at each injection site.
+const fakeRedis = () => {
+  const mem = createInMemoryRedis();
+  return { ...mem, client: mem.client as unknown as RedisLedgerClient };
+};
 
 function fakePubSub(): RedisPubSubClient & {
   handlers: Map<string, Set<(m: string) => void>>;
@@ -133,7 +129,7 @@ describe("AgentKillSwitchManager", () => {
   it("starts not-killed, then trip()/clear() flip isKilled via pub/sub", async () => {
     const manager = createAgentKillSwitchManager({
       registry: [PIX_REMEDIATION_AGENT],
-      redis: fakeRedis(),
+      redis: fakeRedis().client,
       pubsub: fakePubSub(),
       pollMs: 60_000, // rely on pub/sub for immediacy; large poll = no interference
     });
@@ -157,7 +153,7 @@ describe("AgentKillSwitchManager", () => {
     const redis = fakeRedis();
     const manager = createAgentKillSwitchManager({
       registry: [PIX_REMEDIATION_AGENT],
-      redis,
+      redis: redis.client,
       pubsub: fakePubSub(),
       pollMs: 60_000,
     });
@@ -165,11 +161,11 @@ describe("AgentKillSwitchManager", () => {
     try {
       await manager.trip(PIX_REMEDIATION_AGENT.id, "ops");
       // The Redis payload carries the kernel-readable {active:true,...}.
-      const written = [...redis.store.entries()].find(([k]) =>
-        k.includes("agent:pix-payment-failure-remediation"),
-      );
-      expect(written).toBeDefined();
-      expect(written![1]).toContain('"active":true');
+      const key = redis
+        .keys()
+        .find((k) => k.includes("agent:pix-payment-failure-remediation"));
+      expect(key).toBeDefined();
+      expect(redis.peek(key!)).toContain('"active":true');
     } finally {
       await manager.stop();
     }
@@ -178,7 +174,7 @@ describe("AgentKillSwitchManager", () => {
   it("trip() on an unknown agent id throws (fail-closed)", async () => {
     const manager = createAgentKillSwitchManager({
       registry: [PIX_REMEDIATION_AGENT],
-      redis: fakeRedis(),
+      redis: fakeRedis().client,
       pubsub: fakePubSub(),
       pollMs: 60_000,
     });
@@ -220,7 +216,7 @@ describe("T3-5 acceptance — flipping the switch stops the next agent turn", ()
   it("not-killed regenerate EXECUTEs; trip → REFUSE(kill); clear → EXECUTE again", async () => {
     const manager = createAgentKillSwitchManager({
       registry: [PIX_REMEDIATION_AGENT],
-      redis: fakeRedis(),
+      redis: fakeRedis().client,
       pubsub: fakePubSub(),
       pollMs: 60_000,
     });

@@ -5,6 +5,8 @@
 // `checkDlqDepth` (SCAN depths → govern raise/resolve through the OpsAlertService).
 
 import { describe, it, expect, vi } from "vitest";
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
+import { rk } from "@ibatexas/tools";
 import {
   dlqDepthSeverity,
   parseDlqEventName,
@@ -86,16 +88,28 @@ describe("planDlqAlertActions — pure raise/resolve decision", () => {
 });
 
 describe("checkDlqDepth — injected-deps integration", () => {
-  function makeRedis(lists: Record<string, number>) {
-    return {
-      async *scanIterator(_opts: { MATCH: string; COUNT: number }) {
-        for (const event of Object.keys(lists)) yield `development:dlq:${event}`;
-      },
-      lLen: vi.fn(async (key: string) => {
-        const event = key.slice(key.indexOf(":dlq:") + ":dlq:".length);
-        return lists[event] ?? 0;
-      }),
-    };
+  // R5-S7 — the canonical in-memory adapter replaces a hand-rolled double whose
+  // `scanIterator` IGNORED MATCH (it yielded whatever it was constructed with)
+  // and whose `lLen` re-derived the event from the key instead of measuring a
+  // list. Both halves of the job's Redis contract — "scan only MY prefix" and
+  // "depth is the list's length" — were therefore asserted by nothing. Here the
+  // keyspace is real: `rk()` runs unstubbed, DLQs are seeded with the same LPUSH
+  // production writes them with (`subscribers/dlq.ts`), and depth is counted.
+  async function seedDlqs(lists: Record<string, number>) {
+    const redis = createInMemoryRedis();
+    for (const [event, depth] of Object.entries(lists)) {
+      if (depth > 0) {
+        await redis.client.lPush(
+          rk(`dlq:${event}`),
+          Array.from({ length: depth }, (_, i) => `msg-${i}`),
+        );
+      }
+    }
+    // A non-DLQ key sharing the env prefix. The old double could not have held
+    // one, so nothing proved the job SCOPES its scan; now MATCH is load-bearing
+    // and this key must never reach parseDlqEventName.
+    await redis.client.set(rk("outbox:order.placed"), "not-a-dlq");
+    return redis;
   }
 
   it("raises an ops.alert.open for an over-threshold DLQ", async () => {
@@ -107,7 +121,7 @@ describe("checkDlqDepth — injected-deps integration", () => {
       list: vi.fn().mockResolvedValue({ alerts: [], openCount: 0 }),
     } as unknown as Parameters<typeof checkDlqDepth>[1] extends { svc?: infer S } ? S : never;
 
-    await checkDlqDepth(null, { redis: makeRedis({ "order.placed": 100 }), svc });
+    await checkDlqDepth(null, { redis: (await seedDlqs({ "order.placed": 100 })).client, svc });
 
     expect(openAlert).toHaveBeenCalledTimes(1);
     const env = openAlert.mock.calls[0]![0] as { kind: string; payload: Record<string, unknown> };
@@ -134,7 +148,7 @@ describe("checkDlqDepth — injected-deps integration", () => {
     } as unknown as Parameters<typeof checkDlqDepth>[1] extends { svc?: infer S } ? S : never;
 
     // No DLQ lists present → order.placed drained.
-    await checkDlqDepth(null, { redis: makeRedis({}), svc });
+    await checkDlqDepth(null, { redis: (await seedDlqs({})).client, svc });
 
     expect(openAlert).not.toHaveBeenCalled();
     expect(resolveAlert).toHaveBeenCalledTimes(1);
@@ -152,7 +166,7 @@ describe("checkDlqDepth — injected-deps integration", () => {
       list: vi.fn().mockResolvedValue({ alerts: [], openCount: 0 }),
     } as unknown as Parameters<typeof checkDlqDepth>[1] extends { svc?: infer S } ? S : never;
 
-    await checkDlqDepth(null, { redis: makeRedis({ "order.placed": 3 }), svc });
+    await checkDlqDepth(null, { redis: (await seedDlqs({ "order.placed": 3 })).client, svc });
 
     expect(openAlert).not.toHaveBeenCalled();
     expect(resolveAlert).not.toHaveBeenCalled();

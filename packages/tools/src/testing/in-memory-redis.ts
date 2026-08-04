@@ -16,6 +16,12 @@
 // (`hGet` `hSet` `hGetAll` `hDel`), sets (`sAdd` `sMembers` `sRem`) and sorted
 // sets (`zAdd`). Later slices EXTEND this file — they do not fork it.
 //
+// R5-S7 adds exactly what the first apps/api consumers issue: `scanIterator`
+// (the `for await` form of SCAN) and lists (`lPush` `lLen`). Deliberately NOT
+// added: `getDel` `hScan` `zRangeByScore` `zRem`. They were candidates, but no
+// migrated caller issues them — an unused command has no real caller pattern to
+// model, so it would be guesswork validated by nothing.
+//
 // ── rk() runs REAL through this adapter ───────────────────────────────────────
 //
 // This adapter knows nothing about key prefixes and rewrites no key. Callers
@@ -125,12 +131,16 @@ export class NotAnIntegerError extends Error {
 
 // ── Keyspace ─────────────────────────────────────────────────────────────────
 
-type EntryKind = "string" | "hash" | "set" | "zset"
+type EntryKind = "string" | "hash" | "set" | "zset" | "list"
 
 interface Entry {
   kind: EntryKind
-  /** `string` → the value; `hash` → field→value; `set` → members; `zset` → member→score. */
-  value: string | Map<string, string> | Set<string> | Map<string, number>
+  /**
+   * `string` → the value; `hash` → field→value; `set` → members;
+   * `zset` → member→score; `list` → elements, HEAD FIRST (index 0 is the head,
+   * which is what `lPush` prepends to).
+   */
+  value: string | Map<string, string> | Set<string> | Map<string, number> | string[]
   /** Absolute expiry in ms, or `null` for no TTL. */
   expiresAtMs: number | null
 }
@@ -327,6 +337,51 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
     calls.push({ command, args })
   }
 
+  // ── SCAN internals, shared by `scan` and `scanIterator` ────────────────────
+  //
+  // ONE implementation on purpose: `scanIterator` is SCAN in node-redis too, and
+  // a second copy of the filter/snapshot rules is a place for the two to drift
+  // into disagreeing about MATCH.
+
+  interface ScanOptions {
+    readonly match?: string
+    readonly count: number
+    readonly type?: string
+  }
+
+  /** Validates MATCH/COUNT/TYPE. Runs BEFORE any keyspace access — see the header. */
+  function assertScanOptions(command: string, opts: unknown): ScanOptions {
+    assertKnownOptions(command, opts, ["MATCH", "COUNT", "TYPE"])
+    const o = (opts ?? {}) as { MATCH?: unknown; COUNT?: unknown; TYPE?: unknown }
+    if (o.MATCH !== undefined && typeof o.MATCH !== "string") {
+      throw new UnroutedRedisCall(command, `MATCH must be a string, got ${describe(o.MATCH)}`)
+    }
+    if (
+      o.COUNT !== undefined &&
+      (typeof o.COUNT !== "number" || !Number.isInteger(o.COUNT) || o.COUNT <= 0)
+    ) {
+      throw new UnroutedRedisCall(command, `COUNT must be a positive integer, got ${describe(o.COUNT)}`)
+    }
+    if (o.TYPE !== undefined && typeof o.TYPE !== "string") {
+      throw new UnroutedRedisCall(command, `TYPE must be a string, got ${describe(o.TYPE)}`)
+    }
+    return {
+      match: o.MATCH as string | undefined,
+      count: (o.COUNT as number | undefined) ?? 10,
+      type: o.TYPE as string | undefined,
+    }
+  }
+
+  /** The cursor-0 snapshot: every live key passing MATCH and TYPE. */
+  function buildScanSnapshot(o: ScanOptions): string[] {
+    const matcher = o.match === undefined ? null : globToRegExp(o.match)
+    return liveKeys().filter((k) => {
+      if (matcher !== null && !matcher.test(k)) return false
+      if (o.type !== undefined && live(k)?.kind !== o.type) return false
+      return true
+    })
+  }
+
   // ── Commands ───────────────────────────────────────────────────────────────
   //
   // Every handler validates its arguments COMPLETELY before touching `store`.
@@ -480,23 +535,7 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
           `cursor must be a non-negative integer, got ${describe(cursor)}`,
         )
       }
-      assertKnownOptions("scan", opts, ["MATCH", "COUNT", "TYPE"])
-      const o = (opts ?? {}) as { MATCH?: unknown; COUNT?: unknown; TYPE?: unknown }
-      if (o.MATCH !== undefined && typeof o.MATCH !== "string") {
-        throw new UnroutedRedisCall("scan", `MATCH must be a string, got ${describe(o.MATCH)}`)
-      }
-      if (
-        o.COUNT !== undefined &&
-        (typeof o.COUNT !== "number" || !Number.isInteger(o.COUNT) || o.COUNT <= 0)
-      ) {
-        throw new UnroutedRedisCall(
-          "scan",
-          `COUNT must be a positive integer, got ${describe(o.COUNT)}`,
-        )
-      }
-      if (o.TYPE !== undefined && typeof o.TYPE !== "string") {
-        throw new UnroutedRedisCall("scan", `TYPE must be a string, got ${describe(o.TYPE)}`)
-      }
+      const o = assertScanOptions("scan", opts)
       if (cursor !== 0 && !scanSessions.has(cursor)) {
         throw new UnroutedRedisCall(
           "scan",
@@ -505,15 +544,10 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       }
       record("scan", [cursor, opts])
 
-      const count = (o.COUNT as number | undefined) ?? 10
+      const count = o.count
       let remaining: string[]
       if (cursor === 0) {
-        const matcher = o.MATCH === undefined ? null : globToRegExp(o.MATCH as string)
-        remaining = liveKeys().filter((k) => {
-          if (matcher !== null && !matcher.test(k)) return false
-          if (o.TYPE !== undefined && live(k)?.kind !== o.TYPE) return false
-          return true
-        })
+        remaining = buildScanSnapshot(o)
       } else {
         remaining = scanSessions.get(cursor)!
         scanSessions.delete(cursor)
@@ -530,6 +564,63 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       const next = ++nextScanCursor
       scanSessions.set(next, rest)
       return { cursor: next, keys: batch }
+    },
+
+    /**
+     * `for await (const key of client.scanIterator({ MATCH, COUNT }))`.
+     *
+     * NOT an `async function*`. A generator body does not run until the first
+     * `next()`, so writing it that way would defer argument validation until
+     * iteration — a malformed MATCH would sail through the CALL and only
+     * surface (or not, if the caller never iterates) later. Validating eagerly
+     * and returning the generator keeps the header's validate-before-keyspace
+     * -access rule true for this command too; the sibling suite pins it.
+     *
+     * Yields keys one at a time over the same cursor-0 snapshot `scan` uses, so
+     * the package's scan-then-DELETE callers keep SCAN's real guarantee: a key
+     * deleted mid-iteration is never handed back.
+     */
+    scanIterator(opts?: unknown): AsyncIterable<string> {
+      const o = assertScanOptions("scanIterator", opts)
+      record("scanIterator", [opts])
+      const snapshot = buildScanSnapshot(o)
+      return {
+        async *[Symbol.asyncIterator](): AsyncGenerator<string> {
+          for (const key of snapshot) {
+            if (live(key) === undefined) continue
+            yield key
+          }
+        },
+      }
+    },
+
+    /**
+     * Prepend to a list (real LPUSH: index 0 is the head). This is the seeding
+     * path for list-reading tests BY DESIGN — production writes these lists with
+     * LPUSH (`apps/api/src/subscribers/dlq.ts`), so a test seeds a DLQ exactly
+     * the way the real producer does rather than through a test-only affordance
+     * that no production code path can reach.
+     */
+    async lPush(key: unknown, values: unknown): Promise<number> {
+      assertKey("lPush", key)
+      const list = Array.isArray(values) ? values : [values]
+      if (list.length === 0) throw new UnroutedRedisCall("lPush", "requires at least one value")
+      for (const v of list) assertValue("lPush", v)
+      record("lPush", [key, values])
+      const entry = typed(key, "list")
+      const arr = entry === undefined ? [] : (entry.value as string[])
+      // Real LPUSH pushes each value in turn, so a multi-value push lands
+      // REVERSED relative to the argument order.
+      for (const v of list) arr.unshift(String(v))
+      if (entry === undefined) store.set(key, { kind: "list", value: arr, expiresAtMs: null })
+      return arr.length
+    },
+
+    async lLen(key: unknown): Promise<number> {
+      assertKey("lLen", key)
+      record("lLen", [key])
+      const entry = typed(key, "list")
+      return entry === undefined ? 0 : (entry.value as string[]).length
     },
 
     async hGet(key: unknown, field: unknown): Promise<string | undefined> {

@@ -3,48 +3,22 @@
 // idempotent handoff, and the open-queue self-heal.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import {
-  createEscalationStore,
-  type EscalationRedis,
-} from "../escalation-store.js";
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
+import { rk } from "@ibatexas/tools";
+import { createEscalationStore } from "../escalation-store.js";
 
-function fakeRedis(): EscalationRedis & { _kv: Map<string, string>; _sets: Map<string, Set<string>> } {
-  const kv = new Map<string, string>();
-  const sets = new Map<string, Set<string>>();
-  return {
-    _kv: kv,
-    _sets: sets,
-    async get(k) {
-      return kv.get(k) ?? null;
-    },
-    async set(k, v) {
-      kv.set(k, v);
-    },
-    async del(k) {
-      kv.delete(k);
-    },
-    async sAdd(k, m) {
-      const s = sets.get(k) ?? new Set<string>();
-      s.add(m);
-      sets.set(k, s);
-    },
-    async sRem(k, m) {
-      sets.get(k)?.delete(m);
-    },
-    async sMembers(k) {
-      return [...(sets.get(k) ?? [])];
-    },
-  };
-}
 
 describe("escalation store (D2)", () => {
-  let redis: ReturnType<typeof fakeRedis>;
+  // R5-S7 — the canonical in-memory adapter. The hand-rolled EscalationRedis it
+  // replaces answered sAdd/sRem/del with a bare mutation and no return, so a
+  // caller reading a reply saw `undefined` where real Redis reports a count.
+  let redis: ReturnType<typeof createInMemoryRedis>;
   beforeEach(() => {
-    redis = fakeRedis();
+    redis = createInMemoryRedis();
   });
 
   it("recordHandoff opens an escalation and pauses the session", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     const rec = await store.recordHandoff({
       sessionId: "s1",
       customerId: "cust-1",
@@ -58,7 +32,7 @@ describe("escalation store (D2)", () => {
   });
 
   it("recordHandoff persists the caller's customerId when known (D2 — not dropped to null)", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     const rec = await store.recordHandoff({
       sessionId: "s1",
       customerId: "cust-42",
@@ -70,13 +44,13 @@ describe("escalation store (D2)", () => {
   });
 
   it("recordHandoff defaults customerId to null when the caller has none", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     const rec = await store.recordHandoff({ sessionId: "s2", at: "2026-06-14T10:00:00.000Z" });
     expect(rec.customerId).toBeNull();
   });
 
   it("recordHandoff is idempotent — preserves the original handoffAt + reason", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", reason: "first", at: "2026-06-14T10:00:00.000Z" });
     const second = await store.recordHandoff({
       sessionId: "s1",
@@ -88,7 +62,7 @@ describe("escalation store (D2)", () => {
   });
 
   it("resolve un-pauses the session and drops it from the open queue", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", at: "2026-06-14T10:00:00.000Z" });
     const resolved = await store.resolve("s1", "staff:alice", "2026-06-14T10:05:00.000Z");
     expect(resolved?.status).toBe("resolved");
@@ -98,22 +72,25 @@ describe("escalation store (D2)", () => {
   });
 
   it("isPaused is false for an unknown session", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     expect(await store.isPaused("never")).toBe(false);
   });
 
   it("listOpen sorts newest-first and self-heals stale set members", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "old", at: "2026-06-14T09:00:00.000Z" });
     await store.recordHandoff({ sessionId: "new", at: "2026-06-14T12:00:00.000Z" });
     // Plant a stale member whose record was evicted (TTL/manual delete).
-    await redis.sAdd(redis._sets.has("ibx:escalation:open") ? "ibx:escalation:open" : [...redis._sets.keys()][0]!, "ghost");
+    // The open-queue SET key, built the way the store builds it. The double this
+    // replaces was probed for "ibx:escalation:open" — a prefix production has
+    // never written — so that branch was dead and the test fell back to "the
+    // first set key that happens to exist". rk() runs real now, so this is the key.
+    await redis.client.sAdd(rk("escalation:open"), "ghost");
 
     const open = await store.listOpen();
     expect(open.map((r) => r.sessionId)).toEqual(["new", "old"]);
     // The ghost (no record) was healed out of the set.
-    const setKey = [...redis._sets.keys()][0]!;
-    expect(redis._sets.get(setKey)!.has("ghost")).toBe(false);
+    expect(await redis.client.sMembers(rk("escalation:open"))).not.toContain("ghost");
   });
 
   // ── AUT-017 — pending-intent projection ────────────────────────────────────
@@ -128,7 +105,7 @@ describe("escalation store (D2)", () => {
   };
 
   it("appendPendingIntent adds a pending intent to an OPEN escalation record", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
     const rec = await store.appendPendingIntent("s1", PENDING);
     expect(rec?.pendingIntents).toHaveLength(1);
@@ -138,7 +115,7 @@ describe("escalation store (D2)", () => {
   });
 
   it("appendPendingIntent is idempotent on intentHash (NATS redelivery does not duplicate)", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
     await store.appendPendingIntent("s1", PENDING);
     const rec = await store.appendPendingIntent("s1", { ...PENDING, token: "tok-2" });
@@ -146,12 +123,12 @@ describe("escalation store (D2)", () => {
   });
 
   it("appendPendingIntent is a no-op (null) when the record is absent", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     expect(await store.appendPendingIntent("nope", PENDING)).toBeNull();
   });
 
   it("markIntentResolved flips a pending intent's status (idempotent on intentHash)", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
     await store.appendPendingIntent("s1", PENDING);
     const rec = await store.markIntentResolved(
@@ -168,7 +145,7 @@ describe("escalation store (D2)", () => {
   });
 
   it("markIntentResolved is a no-op (null) when the intent is absent", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
     expect(
       await store.markIntentResolved("s1", "sha256:missing", "approved", "x", "t"),
@@ -178,7 +155,7 @@ describe("escalation store (D2)", () => {
   // ── BKL-114 — markIntentExpired (CAS-on-pending) ───────────────────────────
 
   it("markIntentExpired flips a pending intent → expired, stamping system provenance", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
     await store.appendPendingIntent("s1", PENDING);
     const rec = await store.markIntentExpired(
@@ -195,7 +172,7 @@ describe("escalation store (D2)", () => {
   });
 
   it("markIntentExpired is a NO-OP (null) when the intent is no longer pending — the CAS guard", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
     // The intent raced to `approved` (a successful resolve — which also DEL'd the
     // park, so the sweeper would see the park "gone"). markIntentExpired MUST NOT
@@ -212,7 +189,7 @@ describe("escalation store (D2)", () => {
   });
 
   it("markIntentExpired is a no-op (null) when the intent is absent", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     await store.recordHandoff({ sessionId: "s1", at: "2026-07-04T12:00:00.000Z" });
     expect(
       await store.markIntentExpired("s1", "sha256:missing", "2026-07-04T13:00:00.000Z"),
@@ -220,7 +197,7 @@ describe("escalation store (D2)", () => {
   });
 
   it("markIntentExpired is a no-op (null) when the record is absent", async () => {
-    const store = createEscalationStore(redis);
+    const store = createEscalationStore(redis.client);
     expect(
       await store.markIntentExpired("nope", "sha256:abc", "2026-07-04T13:00:00.000Z"),
     ).toBeNull();
