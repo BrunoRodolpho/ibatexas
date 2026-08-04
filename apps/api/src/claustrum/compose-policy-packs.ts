@@ -59,6 +59,16 @@ import {
   readResolutionSignal,
   resolutionSignalIsSet,
 } from "./resolution-signals.js";
+// R3-S3 — the per-kind profile table. `AUTORESOLVE_CONFIRM_KINDS` is a DERIVED
+// view of it (the rows with `confirmOnAutoResolve: true`), replacing the
+// hand-written set this file used to carry. Imported rather than re-exported
+// straight through, because `confirmOnAutoResolveGuard` below needs the local
+// binding; the `export` beside the guard keeps every existing importer working.
+// The table module deliberately has no runtime dependency on the 2.8k-line
+// resolver, so importing it here does not pull the resolver's domain services /
+// Redis / Medusa graph into policy composition — the same discipline
+// `resolution-signals.ts` was built with.
+import { AUTORESOLVE_CONFIRM_KINDS } from "./kind-resolution-profiles.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -114,32 +124,19 @@ export const sessionTokenBudgetGuard = nameGuard(
 // until then — both sides were module-private, so no test could compare them
 // and the mirror had already drifted in a hand-copied replica. Not a runtime
 // API: production reads it only through `confirmOnAutoResolveGuard` below.
-export const AUTORESOLVE_CONFIRM_KINDS = new Set([
-  "order.cancel",
-  "payment.pix.regenerate",
-  "reservation.cancel",
-  // BKL-038 — same NL→id targeting → same confirm gate, so an auto-resolved
-  // "meu pedido" is surfaced before the in-flight modify executes.
-  "order.amend.request",
-  // FE-T09 (D-a) — the granular amend kinds now auto-resolve orderId too
-  // (resolve-and-assemble.ts's ORDER_AUTORESOLVE_KINDS), so they need the
-  // same confirm gate as order.amend.request.
-  "order.amend.add_item",
-  "order.amend.update_qty",
-  "order.amend.remove_item",
-  "order.note.add",
-  "order.address.change",
-  "order.type.switch",
-  // FE-D28 — order.review.submit auto-resolves its reviewed order too
-  // (resolve-and-assemble.ts's ORDER_AUTORESOLVE_KINDS), so it needs the same
-  // confirm gate: the customer sees the resolved order + product before a
-  // public review posts.
-  "order.review.submit",
-  // FE-T14 — reservation.modify now auto-resolves reservationId too
-  // (resolve-and-assemble.ts's RESERVATION_AUTORESOLVE_KINDS), so it needs
-  // the same confirm gate as reservation.cancel.
-  "reservation.modify",
-]);
+//
+// R3-S3 — and now there is nothing left to mirror. This was a HAND-WRITTEN set
+// whose eleven comments each explained that some kind had joined an auto-resolve
+// set in another file; it is DERIVED from the `confirmOnAutoResolve` field of
+// `KIND_RESOLUTION_PROFILES`, so the fact is written once, on the row, next to
+// the strategy that makes the confirm necessary. The lockstep contract does not
+// become vacuous: confirm and auto-resolve derive from DIFFERENT FIELDS, so a row
+// declaring a strategy without a confirm still breaks it — see the derivation's
+// docblock in kind-resolution-profiles.ts.
+//
+// Re-exported (not re-declared) so every existing importer of
+// `AUTORESOLVE_CONFIRM_KINDS` from this module keeps working unchanged.
+export { AUTORESOLVE_CONFIRM_KINDS };
 export const confirmOnAutoResolveGuard = nameGuard(
   "confirmOnAutoResolvedRef",
   createConfirmGuard<string, unknown, unknown>({
