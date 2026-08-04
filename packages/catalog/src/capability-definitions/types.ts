@@ -88,13 +88,19 @@ export type CapabilityAuthLevel = "guest" | "customer" | "staff" | "system"
  * How richly a capability's metadata is authored — FE-T20. The
  * discriminator on the {@link CapabilityDefinition} union.
  *
- * `"chat"` — the 18 chat-drivable instances FE-T19 authored (20 today —
- * FE-T09 (D-a) moved `order.amend.request` out and its three granular
- * successors in, see `definitions.ts`'s FE-T09 addendum): every chat-facing
- * field is REQUIRED (see {@link ChatCapabilityDefinition}) and
+ * `"chat"` — the chat-drivable tier, 18 instances as FE-T19 authored it.
+ * That figure is FE-T19's and stays frozen at it; for the CURRENT count read
+ * `CHAT_DRIVABLE_TOOL_KINDS`, whose doc in `packs-composed/src/index.ts` is
+ * the single source of truth and the only count claim carrying a freshness
+ * gate — a number restated here would drift silently instead (F-17). The
+ * roster has moved twice since: FE-T09 (D-a) took `order.amend.request` out
+ * and put its three granular successors in (see `definitions.ts`'s FE-T09
+ * addendum), and LE2-024 moved `order.cancel` to the identity tier. Every
+ * chat-facing field is REQUIRED (see {@link ChatCapabilityDefinition}) and
  * cross-checked against a real source (docs, registries, planner code).
  * `"identity"` — the FE-T20 identity-tier instances covering the remaining
- * 48 kinds across the 6 packs (46 today, post-FE-T09) (see
+ * kinds across the 6 packs, 48 of them as FE-T20 authored the tier (same
+ * treatment as the chat figure above — historical, not a live count) (see
  * {@link IdentityCapabilityDefinition}): ONLY `kind` / `pack` / `mutating` /
  * `tier` (+ `plannerAdvertisedBy` / `legacyNames` where grounded) exist —
  * there is usually no chat tool, no docs entry, and no legacy name to
@@ -368,7 +374,7 @@ interface CapabilityDefinitionCommon {
 }
 
 /**
- * A chat-drivable capability (18 instances, FE-T19). Every chat-facing
+ * A chat-drivable capability (the tier FE-T19 authored). Every chat-facing
  * field is REQUIRED — restores FE-T19's original completeness guarantee
  * STRUCTURALLY: a `tier: "chat"` literal omitting any of these six fields
  * is a compile error, not a value that silently sails through the guard-ref
