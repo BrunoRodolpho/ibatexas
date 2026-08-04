@@ -919,8 +919,16 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     );
     expect(COUPON_VALID_CLOSURE.markers).toHaveLength(1);
     // The load-bearing half of byte-identity here is the QUALIFICATION of `código`: a bare
-    // "código" is deliberately NOT a coupon noun. Asserted behaviourally too, since the
-    // string alone does not make the consequence visible.
+    // "código" is deliberately NOT a coupon noun IN THIS NET. Asserted behaviourally too,
+    // since the string alone does not make the consequence visible.
+    //
+    // F-13 did NOT touch this arm, and that is the point of leaving this pin exactly as it
+    // stood: the bare-`código` phrasing is reached by a hand-written BRIDGE conjunct
+    // (`código` IMMEDIATELY followed by the extracted code), never by widening the DECLARED
+    // net — a `markers` array is disjunctive, so an added bare arm would have made the
+    // declared net assert that "qual o código do meu pedido?" is coupon-topical. The bridge
+    // therefore carries behavioural pins of its own (see the F-13 describe below); this
+    // value is blind to it by construction, exactly as it is blind to the three guards.
     expect(isCouponValidityAsk("qual o código do meu pedido?")).toBe(false);
     expect(isCouponValidityAsk("o código de desconto BEMVINDO15 vale?")).toBe(true);
   });
@@ -1714,60 +1722,140 @@ describe("R2-S9 — COUPON: the generated NOUN fires, the HAND-WRITTEN guards di
     expect(isCouponValidityAsk("ganhei um cupom, que legal")).toBe(false);
   });
 
-  // ── F-13 — a PRE-EXISTING defect, found while writing the must-fire list, PINNED
-  //    DIRECTIONALLY rather than fixed here ─────────────────────────────────────────
+  // ── F-13 — the two halves of the coupon span-net defect, FIXED TOGETHER ──────────
   //
-  // BYTE-IDENTICAL BEFORE AND AFTER THIS SLICE (verified by the runtime dump: the whole
-  // span/predicate/required-set section is unchanged for every probe below). R2-S9 is an
-  // ADOPTION — it may not widen a span net — so this records the defect where the next
-  // author will meet it instead of quietly freezing it as intended behaviour.
+  // These pins were written by R2-S9 as CHANGE-DETECTORS documenting a pre-existing
+  // defect it was not allowed to fix (an ADOPTION may not widen a span net). They are
+  // UPDATED here, not routed around: each one now asserts the FIXED behaviour of the
+  // half it used to describe, and the joint constraint they were designed to enforce
+  // is asserted directly by the third test below.
   //
-  // (a) LE2-019's OWN documented example utterance has an EMPTY true-positive set.
+  // (a) LE2-019's OWN documented example utterance had an EMPTY true-positive set.
   //     `claim-registry.ts`'s SpanClass comment advertises the family as fired by
-  //     `"o cupom X1234 vale?"` AND `"esse código BEMVINDO15 ainda funciona?"`. The second
-  //     one never fires: the coupon NOUN deliberately requires `código` to be QUALIFIED
-  //     ("código DE DESCONTO/promoção/promocional"), because a bare "código" would swallow
-  //     "qual o código do meu pedido?" — an ORDER question, and the exclusion is correct.
-  //     But nothing bridges the gap for a bare `código` FOLLOWED BY AN EXTRACTABLE CODE,
-  //     which is the phrasing the doc itself uses. This is the BKL-205/BKL-270/BKL-271
-  //     lesson recurring in a new dress: a stem whose documented true positive is
-  //     unreachable, invisible to every false-positive sweep.
+  //     `"o cupom X1234 vale?"` AND `"esse código BEMVINDO15 ainda funciona?"`. The
+  //     second one never fired: the coupon NOUN requires `código` to be QUALIFIED
+  //     ("código DE DESCONTO/promoção/promocional"), because a bare "código" would
+  //     swallow "qual o código do meu pedido?" — an ORDER question, and that exclusion
+  //     is CORRECT and is kept. What was missing was a bridge for a bare `código`
+  //     FOLLOWED BY AN EXTRACTABLE CODE, the phrasing the doc itself uses. Measured
+  //     before the fix, the advertised utterance did not merely miss the coupon family:
+  //     it classified as `[STORE_OPEN_NOW_Q]` and required `STORE_OPEN_NOW` — a coupon
+  //     question answered as a question about opening hours.
   //
-  // (b) The SHARPER half, and it bites a phrasing that DOES fire. `funciona` is a
-  //     STORE_OPEN_NOW marker ("vocês funcionam?"), so a coupon question phrased with the
-  //     most natural pt-BR validity verb ALSO fires STORE_OPEN_NOW_Q and force-requires
-  //     STORE_OPEN_NOW as a §O#15 companion. The coupon answer is then hostage to a
-  //     schedule read it has nothing to do with: if that read fails, an otherwise-VALIDATED
-  //     coupon answer is completeness-degraded to UNKNOWN. Same cross-family coupling shape
-  //     as BKL-152's date-anchor suppression, on a pair with no suppression rule.
+  // (b) `funciona` is a STORE_OPEN_NOW marker ("vocês funcionam?"), so a coupon question
+  //     phrased with the most natural pt-BR validity verb ALSO fired STORE_OPEN_NOW_Q
+  //     and force-required STORE_OPEN_NOW as a §O#15 companion — the coupon answer held
+  //     hostage to a schedule read it has nothing to do with (the BKL-152 coupling shape
+  //     on a pair that had no suppression rule).
   //
-  // A FIX belongs in its own change and must decide both halves together — widening the
-  // noun to `código\s+<CODE>` without touching (b) would make the doc's example fire AND
-  // immediately inherit the spurious STORE_OPEN_NOW companion.
-  it("F-13 (pre-existing): the doc's own 'código <CODE>' example does NOT fire the coupon span", () => {
-    expect(isCouponValidityAsk("esse código BEMVINDO15 ainda funciona?")).toBe(false);
-    // …and the qualification rule this is a consequence of is CORRECT on its own terms.
+  // WHY THEY SHIPPED TOGETHER, which is the property the third test pins: fixing (a)
+  // alone would have made the advertised phrasing fire AND immediately inherit (b)'s
+  // spurious companion, converting a silently-dead phrasing into one whose answer is
+  // hostage. Neither half is sufficient, and the joint assertion is the only one that
+  // says so.
+  it("F-13(a): the doc's own 'código <CODE>' example FIRES the coupon span", () => {
+    expect(isCouponValidityAsk("esse código BEMVINDO15 ainda funciona?")).toBe(true);
+    expect(classifyRequestSpans("esse código BEMVINDO15 ainda funciona?")).toContain(
+      "COUPON_VALIDITY_Q",
+    );
+    // …and the QUALIFICATION rule the gap was a consequence of is untouched and still
+    // CORRECT on its own terms: a bare `código` belonging to something ELSE always says
+    // so BETWEEN the noun and the identifier, so the bridge's adjacency requirement —
+    // not a blacklist of foreign resource nouns — is what keeps these out.
     expect(isCouponValidityAsk("qual o código do meu pedido?")).toBe(false);
+    expect(isCouponValidityAsk("qual o código do meu pedido ABC123?")).toBe(false);
+    expect(isCouponValidityAsk("me manda o código de rastreio BR123456")).toBe(false);
+    expect(isCouponValidityAsk("o código da minha reserva R1234 ainda vale?")).toBe(false);
     expect(isCouponValidityAsk("código de desconto BEMVINDO15 funciona?")).toBe(true);
+    // The bridge does NOT hand an apply IMPERATIVE a read span — the SCN-046 guard is
+    // downstream of the topic gate and still bites on the newly-reachable phrasing.
+    expect(isCouponValidityAsk("coloca o código BEMVINDO15")).toBe(false);
   });
 
-  it("F-13 (pre-existing): 'funciona' drags STORE_OPEN_NOW into a coupon turn's required set", () => {
+  it("F-13(b): 'funciona' no longer drags STORE_OPEN_NOW into a coupon turn's required set", () => {
     const spans = classifyRequestSpans("esse cupom BEMVINDO15 ainda funciona?");
     expect(spans).toContain("COUPON_VALIDITY_Q");
-    // The spurious companion. Nothing about a coupon's validity depends on the store being
-    // open, and no suppression rule removes it (contrast BKL-152, which removes
-    // STORE_OPEN_NOW from a date-anchored hours turn).
-    expect(spans).toContain("STORE_OPEN_NOW_Q");
-    expect([...decomposeRequiredClaims(spans)]).toEqual([
-      "STORE_OPEN_NOW",
-      "COUPON_VALID",
-      "COUPON_INVALID",
-    ]);
+    // The spurious companion is GONE. Nothing about a coupon's validity depends on the
+    // store being open, and the schedule span's only evidence here was a token the coupon
+    // validity vocabulary also owns.
+    expect(spans).not.toContain("STORE_OPEN_NOW_Q");
+    expect([...decomposeRequiredClaims(spans)]).toEqual(["COUPON_VALID", "COUPON_INVALID"]);
     // THE CONTROL that makes this a statement about `funciona` and not about coupons: the
-    // same question with a different validity verb requires only the pair.
+    // same question with a different validity verb requires the same pair, as it always did.
     expect([...decomposeRequiredClaims(classifyRequestSpans("o cupom X1234 vale?"))]).toEqual([
       "COUPON_VALID",
       "COUPON_INVALID",
+    ]);
+  });
+
+  // THE JOINT CONSTRAINT, asserted as one statement about ONE utterance. Reverting
+  // EITHER half moves this assertion: without (a) the utterance is not a coupon ask at
+  // all (and, worse, is a schedule ask); without (b) it is a coupon ask whose answer is
+  // hostage to STORE_OPEN_NOW. Only both together produce this row.
+  it("F-13: the advertised phrasing fires the COUPON family and drags NOTHING with it", () => {
+    const spans = classifyRequestSpans("esse código BEMVINDO15 ainda funciona?");
+    expect(spans).toEqual(["COUPON_VALIDITY_Q"]);
+    expect([...decomposeRequiredClaims(spans)]).toEqual(["COUPON_VALID", "COUPON_INVALID"]);
+  });
+
+  // ── F-13 — THE DIRECTIONAL CONTROLS ─────────────────────────────────────────────
+  //
+  // A suppression is only worth its risk if it leaves the thing it suppresses working
+  // everywhere else. These are the cases that must be UNCHANGED, and they are what
+  // separates "the schedule reading is spurious HERE" from "coupons switch off hours".
+  it.each([
+    "funciona a loja?",
+    "vocês funcionam?",
+    "vocês funcionam hoje?",
+    "que horas funciona?",
+    "qual o horário de funcionamento?",
+    "vocês estão abertos?",
+  ])("F-13 CONTROL: a genuine schedule ask keeps STORE_OPEN_NOW — %j", (text) => {
+    const spans = classifyRequestSpans(text);
+    expect(spans).toContain("STORE_OPEN_NOW_Q");
+    expect(spans).not.toContain("COUPON_VALIDITY_Q");
+    expect([...decomposeRequiredClaims(spans)]).toContain("STORE_OPEN_NOW");
+  });
+
+  // THE CONTROL THE COARSE RULE WOULD HAVE FAILED, and the reason the suppression is
+  // conditioned on the MATCHED MARKER rather than on "a coupon span is present". A
+  // genuine TWO-question utterance still owes both answers: dropping the schedule half
+  // because a coupon was also asked about is the P4 silent-drop direction — nothing
+  // untrue is said, but half the question is answered as though it were the whole.
+  it("F-13 CONTROL: a genuine BOTH-ask keeps its schedule companion", () => {
+    const spans = classifyRequestSpans(
+      "esse código BEMVINDO15 ainda funciona? vocês estão abertos?",
+    );
+    expect(spans).toContain("COUPON_VALIDITY_Q");
+    expect(spans).toContain("STORE_OPEN_NOW_Q");
+    expect([...decomposeRequiredClaims(spans)].sort()).toEqual([
+      "COUPON_INVALID",
+      "COUPON_VALID",
+      "STORE_OPEN_NOW",
+    ]);
+  });
+
+  // The BKL-152 sibling suppression is untouched — the two are DISJOINT (that one keys
+  // on a date-for span, this one on the coupon reading), and a date-anchored hours
+  // question is not a coupon question in either direction.
+  it("F-13: the BKL-152 date-anchor suppression is unaffected", () => {
+    const spans = classifyRequestSpans("que horas vocês abrem amanhã?");
+    expect(spans).toContain("STORE_HOURS_FOR_DATE_Q");
+    expect(spans).not.toContain("COUPON_VALIDITY_Q");
+    expect([...decomposeRequiredClaims(spans)]).toEqual(["STORE_HOURS_FOR_DATE"]);
+  });
+
+  // F-13 — the SPAN/RENDER divergence the raw-text call closed. `isCodeShapedToken`
+  // accepts an ALL-CAPS token with no digit ("FRETEGRATIS"), a rule a pre-lowercased
+  // argument silently deletes. `classifyRequestSpans` used to pass its lowercased copy
+  // while `claims-renderer-adapter.ts` passed the raw `requestText`, so ONE predicate
+  // returned TWO answers for the same utterance, selected by the caller (measured:
+  // `couponAsk=true` / `spans=[]`). Both call sites now pass the raw text.
+  it("F-13: an ALL-CAPS code reaches the SPAN, not only the render seam", () => {
+    expect(isCouponValidityAsk("cupom FRETEGRATIS?")).toBe(true);
+    expect(classifyRequestSpans("cupom FRETEGRATIS?")).toContain("COUPON_VALIDITY_Q");
+    expect(classifyRequestSpans("esse código FRETEGRATIS ainda funciona?")).toEqual([
+      "COUPON_VALIDITY_Q",
     ]);
   });
 });
