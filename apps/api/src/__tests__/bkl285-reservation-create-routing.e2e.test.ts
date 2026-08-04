@@ -118,43 +118,40 @@ vi.mock("@ibatexas/domain", async (importOriginal) => {
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  // Dynamic import: a `vi.mock` factory is hoisted above this file's static imports,
+  // so it cannot close over one. The builder is type-only against turn-reads.js, so
+  // this drags no infrastructure into the factory (see the helper's header).
+  const { buildTriadReadBackend } = await import("./helpers/triad-backend-builder.js");
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      // The owner-scoped reservation read the STATUS span resolves from. Its
-      // `statusLine` is the enriched scalar the renderer fills its slot with
-      // (BKL-185), so an assertion on that string is an assertion that the READ
-      // render — and nothing else — took the turn.
-      readReservation: async (reservationId: string) => ({
-        reservationId,
-        status: "CONFIRMED",
-        partySize: 2,
-        statusLine: EXISTING.statusLine,
+    // Every read NOT declared below defaults to a `notUsed` thrower naming itself, so
+    // an unexpected read fails loudly instead of returning a fabricated value.
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        // The owner-scoped reservation read the STATUS span resolves from. Its
+        // `statusLine` is the enriched scalar the renderer fills its slot with
+        // (BKL-185), so an assertion on that string is an assertion that the READ
+        // render — and nothing else — took the turn.
+        readReservation: async (reservationId) => ({
+          reservationId,
+          status: "CONFIRMED",
+          partySize: 2,
+          statusLine: EXISTING.statusLine,
+        }),
+        listActiveOrderIds: async () => [],
+        // The customer ALREADY holds a booking — which is what makes the pre-fix
+        // reply a confident, validated answer about the wrong reservation rather
+        // than a harmless "not found".
+        listActiveReservationIds: async () => [EXISTING.id],
+        countActivePayments: async () => 0,
       }),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      listActiveOrderIds: async () => [],
-      // The customer ALREADY holds a booking — which is what makes the pre-fix
-      // reply a confident, validated answer about the wrong reservation rather
-      // than a harmless "not found".
-      listActiveReservationIds: async () => [EXISTING.id],
-      countActivePayments: async () => 0,
-    }),
   };
 });
 

@@ -102,56 +102,54 @@ const backend = vi.hoisted(() => ({
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  // Dynamic import: a `vi.mock` factory is hoisted above this file's static imports,
+  // so it cannot close over one. The builder is type-only against turn-reads.js, so
+  // this drags no infrastructure into the factory (see the helper's header).
+  const { buildTriadReadBackend } = await import("./helpers/triad-backend-builder.js");
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: notUsed("readOrderFulfillment"),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readReservation: notUsed("readReservation"),
+    // Every read NOT declared below defaults to a `notUsed` thrower naming itself, so
+    // an unexpected read fails loudly instead of returning a fabricated value.
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
 
-      // THE OWNER-SCOPED HISTORY READS. Keyed ONLY by the customerId the investigator
-      // passes — which is the authenticated one, never the model's proposed subject. That
-      // is the wall these negatives measure. An empty history returns `hasHistory: false`
-      // (the key stays ABSENT → honest UNKNOWN), matching turn-reads.ts.
-      readOrderHistory: async (customerId: string) => {
-        backend.orderReads.push(customerId);
-        const rows = ORDER_ROWS[customerId] ?? [];
-        return {
-          hasHistory: rows.length > 0,
-          // The REAL composer — the C6-bound scalar is production's, not the test's.
-          historySummaryText:
-            rows.length > 0 ? actual.composeOrderHistorySummary(rows) : "",
-        };
-      },
-      readPaymentHistory: async (customerId: string) => {
-        backend.paymentReads.push(customerId);
-        const rows = PAYMENT_ROWS[customerId] ?? [];
-        return {
-          hasHistory: rows.length > 0,
-          historySummaryText:
-            rows.length > 0 ? actual.composePaymentHistorySummary(rows) : "",
-        };
-      },
+        // THE OWNER-SCOPED HISTORY READS. Keyed ONLY by the customerId the investigator
+        // passes — which is the authenticated one, never the model's proposed subject. That
+        // is the wall these negatives measure. An empty history returns `hasHistory: false`
+        // (the key stays ABSENT → honest UNKNOWN), matching turn-reads.ts.
+        readOrderHistory: async (customerId) => {
+          backend.orderReads.push(customerId);
+          const rows = ORDER_ROWS[customerId] ?? [];
+          return {
+            hasHistory: rows.length > 0,
+            // The REAL composer — the C6-bound scalar is production's, not the test's.
+            historySummaryText:
+              rows.length > 0 ? actual.composeOrderHistorySummary(rows) : "",
+          };
+        },
+        readPaymentHistory: async (customerId) => {
+          backend.paymentReads.push(customerId);
+          const rows = PAYMENT_ROWS[customerId] ?? [];
+          return {
+            hasHistory: rows.length > 0,
+            historySummaryText:
+              rows.length > 0 ? actual.composePaymentHistorySummary(rows) : "",
+          };
+        },
 
-      // A history question owns no in-flight order/payment/reservation; present-with-0
-      // keeps §O#15 from force-requiring a singular companion.
-      listActiveOrderIds: async () => [],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
+        // A history question owns no in-flight order/payment/reservation; present-with-0
+        // keeps §O#15 from force-requiring a singular companion.
+        listActiveOrderIds: async () => [],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
+      }),
   };
 });
 

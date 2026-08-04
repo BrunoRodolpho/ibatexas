@@ -94,38 +94,35 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
-  const notUsed = (name: string) => async (): Promise<never> => {
-    throw new Error(`turn-reads.${name} must not run in this suite`);
-  };
+  // Dynamic import: a `vi.mock` factory is hoisted above this file's static imports,
+  // so it cannot close over one. The builder is type-only against turn-reads.js, so
+  // this drags no infrastructure into the factory (see the helper's header).
+  const { buildTriadReadBackend } = await import("./helpers/triad-backend-builder.js");
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHoliday: async () => null,
-      // Deliberately DIFFERENT from readStoreHours: an assertion on this string
-      // cannot be satisfied by the today-hours read, so "the DATE claim rendered"
-      // is distinguishable from "some hours claim rendered".
-      readHoursForDate: async () => ({ hoursText: "12h–16h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: async (orderId: string) => ({
-        orderId,
-        displayId: orderId === "order-2" ? 12346 : 12345,
-        fulfillmentStatus: "preparing",
+    // Every read NOT declared below defaults to a `notUsed` thrower naming itself, so
+    // an unexpected read fails loudly instead of returning a fabricated value.
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHoliday: async () => null,
+        // Deliberately DIFFERENT from readStoreHours: an assertion on this string
+        // cannot be satisfied by the today-hours read, so "the DATE claim rendered"
+        // is distinguishable from "some hours claim rendered".
+        readHoursForDate: async () => ({ hoursText: "12h–16h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        readOrderFulfillment: async (orderId) => ({
+          orderId,
+          displayId: orderId === "order-2" ? 12346 : 12345,
+          fulfillmentStatus: "preparing",
+        }),
+        listActiveOrderIds: async () => [...st.orderIds],
+        listActiveReservationIds: async () => [],
+        countActivePayments: async () => 0,
       }),
-      readPaymentStatus: notUsed("readPaymentStatus"),
-      readReservation: notUsed("readReservation"),
-      readPaymentRefund: notUsed("readPaymentRefund"),
-      readPaymentChargeback: notUsed("readPaymentChargeback"),
-      readCartContents: notUsed("readCartContents"),
-      readOrderHistory: notUsed("readOrderHistory"),
-      readPaymentHistory: notUsed("readPaymentHistory"),
-      listActiveOrderIds: async () => [...st.orderIds],
-      listActiveReservationIds: async () => [],
-      countActivePayments: async () => 0,
-    }),
   };
 });
 

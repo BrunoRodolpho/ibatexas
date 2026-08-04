@@ -77,60 +77,68 @@ vi.mock("@ibatexas/tools", async (importOriginal) => {
 
 vi.mock("../claustrum/turn-reads.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../claustrum/turn-reads.js")>();
+  // Dynamic import: a `vi.mock` factory is hoisted above this file's static imports,
+  // so it cannot close over one. The builder is type-only against turn-reads.js, so
+  // this drags no infrastructure into the factory (see the helper's header).
+  const { buildTriadReadBackend } = await import("./helpers/triad-backend-builder.js");
   return {
     ...actual,
-    createDomainTriadReadBackend: () => ({
-      readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
-      readScheduleOverride: async () => null,
-      readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
-      readHoliday: async () => null,
-      readHoursForDate: async () => ({ hoursText: "12h–16h" }),
-      readHolidayForDate: async () => null,
-      readScheduleOverrideForDate: async () => null,
-      readOrderFulfillment: async (orderId: string) => ({
-        orderId,
-        displayId: 12345,
-        fulfillmentStatus: "preparing",
+    // This suite deliberately declares ALL 18 reads: a dietary question can route to
+    // almost any span, so no read is provably unreachable here and none may default
+    // to the builder's `notUsed` thrower.
+    createDomainTriadReadBackend: () =>
+      buildTriadReadBackend({
+        readSchedule: async () => ({ isClosed: false, mealPeriod: "dinner" }),
+        readScheduleOverride: async () => null,
+        readStoreHours: async () => ({ hoursText: "11h–15h / 18h–23h" }),
+        readHoliday: async () => null,
+        readHoursForDate: async () => ({ hoursText: "12h–16h" }),
+        readHolidayForDate: async () => null,
+        readScheduleOverrideForDate: async () => null,
+        readOrderFulfillment: async (orderId) => ({
+          orderId,
+          displayId: 12345,
+          fulfillmentStatus: "preparing",
+        }),
+        readPaymentStatus: async (orderId) => ({
+          orderId,
+          displayId: 12345,
+          status: "paid",
+          method: "pix",
+        }),
+        readPaymentRefund: async (orderId) => ({
+          orderId,
+          refunded: false,
+          refundedAmountCentavos: 0,
+          status: "",
+        }),
+        readPaymentChargeback: async (orderId) => ({
+          orderId,
+          disputed: false,
+          status: "",
+        }),
+        readReservation: async (reservationId) => ({
+          reservationId,
+          status: "confirmed",
+          partySize: 4,
+          statusLine: "confirmada — 20/07 às 19:30, para 4 pessoas",
+        }),
+        readCartContents: async () => ({
+          itemsSummaryText: "2x Costela Bovina Defumada — total R$ 178,00",
+          hasItems: st.hasCartItems,
+        }),
+        readOrderHistory: async () => ({
+          historySummaryText: "pedido 12345 — R$ 178,00, entregue",
+          hasHistory: true,
+        }),
+        readPaymentHistory: async () => ({
+          historySummaryText: "pagamento de R$ 178,00 via PIX, aprovado",
+          hasHistory: true,
+        }),
+        listActiveOrderIds: async () => [...st.orderIds],
+        listActiveReservationIds: async () => [...st.reservationIds],
+        countActivePayments: async () => st.activePayments,
       }),
-      readPaymentStatus: async (orderId: string) => ({
-        orderId,
-        displayId: 12345,
-        status: "paid",
-        method: "pix",
-      }),
-      readPaymentRefund: async (orderId: string) => ({
-        orderId,
-        refunded: false,
-        refundedAmountCentavos: 0,
-        status: "",
-      }),
-      readPaymentChargeback: async (orderId: string) => ({
-        orderId,
-        disputed: false,
-        status: "",
-      }),
-      readReservation: async (reservationId: string) => ({
-        reservationId,
-        status: "confirmed",
-        partySize: 4,
-        statusLine: "confirmada — 20/07 às 19:30, para 4 pessoas",
-      }),
-      readCartContents: async () => ({
-        itemsSummaryText: "2x Costela Bovina Defumada — total R$ 178,00",
-        hasItems: st.hasCartItems,
-      }),
-      readOrderHistory: async () => ({
-        historySummaryText: "pedido 12345 — R$ 178,00, entregue",
-        hasHistory: true,
-      }),
-      readPaymentHistory: async () => ({
-        historySummaryText: "pagamento de R$ 178,00 via PIX, aprovado",
-        hasHistory: true,
-      }),
-      listActiveOrderIds: async () => [...st.orderIds],
-      listActiveReservationIds: async () => [...st.reservationIds],
-      countActivePayments: async () => st.activePayments,
-    }),
   };
 });
 
