@@ -90,7 +90,7 @@ jobs:
       #
       # It re-runs those suites rather than parsing `turbo test`'s output on
       # purpose: `test` is a CACHEABLE turbo task, so a report from a cache HIT
-      # would certify suites that did not run in this job. ~8s wall for all 8.
+      # would certify suites that did not run in this job. ~10s wall for all 9.
       #
       # Placed BEFORE `turbo test`, not after, for two reasons: it reports in
       # seconds instead of behind an ~8-minute fan-out, and — the real one — a
