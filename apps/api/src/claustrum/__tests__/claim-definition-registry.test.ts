@@ -21,8 +21,10 @@ import { CART_EMPTY_DEFINITION } from "../claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_DEFINITION } from "../claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "../claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "../claimdefs/menu-item-price.generated.js";
+import { ORDER_FULFILLMENT_STAGE_DEFINITION } from "../claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_DEFINITION } from "../claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_DEFINITION } from "../claimdefs/payment-history.generated.js";
+import { PAYMENT_STATUS_DEFINITION } from "../claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_DEFINITION } from "../claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_DEFINITION } from "../claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "../claimdefs/store-info.generated.js";
@@ -222,6 +224,16 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
     // it would no longer be pinned to what `cart-empty.claim.ts` declares.
     ["CART_CONTENTS", CART_CONTENTS_DEFINITION, true],
     ["CART_EMPTY", CART_EMPTY_DEFINITION, true],
+    // R2-S7 — the STATUS SIBLINGS. Same loophole, and these are the last two rows for which
+    // TRIAD_SCOPED_TYPES still lists the type: with them adopted, EVERY member of that set is
+    // source-declared, so a silent fallback to `buildClaimDefinition` would still produce a
+    // deep-equal object with the RIGHT `triadScoped` flag for either one. Reference identity
+    // is the only guard that sees it — and for PAYMENT_STATUS it is also what pins the three
+    // registry firsts (the `first_party_verified` floor, `first_party_only` provenance, and
+    // the TWO-falsifier set) to the compiler's own output rather than to a hand-reassembly
+    // that happens to agree today.
+    ["ORDER_FULFILLMENT_STAGE", ORDER_FULFILLMENT_STAGE_DEFINITION, true],
+    ["PAYMENT_STATUS", PAYMENT_STATUS_DEFINITION, true],
   ] as const)(
     "CLAIM_DEFINITIONS.%s IS the generated definition (reference identity)",
     (type, generated, triadScoped) => {
@@ -266,16 +278,82 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
     // R2-S6 — the cart pair joins the same table (fourth and fifth owner-scoped rows).
     ["CART_CONTENTS", CART_CONTENTS_DEFINITION],
     ["CART_EMPTY", CART_EMPTY_DEFINITION],
+    // R2-S7 — the STATUS SIBLINGS (sixth and seventh owner-scoped rows).
+    ["ORDER_FULFILLMENT_STAGE", ORDER_FULFILLMENT_STAGE_DEFINITION],
+    ["PAYMENT_STATUS", PAYMENT_STATUS_DEFINITION],
   ] as const)(
     "the generated %s definition carries ownershipPolicy: required on its evidence",
     (type, generated) => {
       expect(generated.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual(["required"]);
-      expect(generated.falsifiers?.map((f) => f.ownershipPolicy)).toEqual(["required"]);
+      // R2-S7 — quantified over the falsifier SET rather than asserted as a single row.
+      // PAYMENT_STATUS is the first adopted type with TWO falsifiers, and a hardcoded
+      // `["required"]` would have forced either excluding it (leaving the ownership axis
+      // unpinned at the definition seam for the MONEY read) or weakening the assertion for
+      // the five single-falsifier rows. Per-arity is strictly tighter than both.
+      const falsifiers = generated.falsifiers ?? [];
+      expect(falsifiers.length).toBeGreaterThan(0);
+      expect(falsifiers.map((f) => f.ownershipPolicy)).toEqual(
+        falsifiers.map(() => "required"),
+      );
       // Reference identity one level down: boot must run the validator over the SAME
       // evidence rows the compiler emitted, not a structural copy.
       expect(CLAIM_DEFINITIONS[type].requiredEvidence).toBe(generated.requiredEvidence);
+      expect(CLAIM_DEFINITIONS[type].falsifiers).toBe(generated.falsifiers);
     },
   );
+
+  // R2-S7 — THE MONEY READ's §5 conjuncts at the BOOT seam. The compiler-level proofs live in
+  // `claimdefs/__tests__/per-resource-claim.test.ts`; what belongs HERE is that the object the
+  // fail-closed boot validator actually runs over carries them — the C2 floor and the C3
+  // provenance ride the DEFINITION (they are published `EvidenceRequirement` fields), unlike
+  // `perResourceKey`, so a fallback to `buildClaimDefinition` is the shape that could have
+  // quietly served a weaker predicate to INV-5.
+  it("the generated PAYMENT_STATUS definition carries the money floor + first_party_only on EVERY row", () => {
+    expect(PAYMENT_STATUS_DEFINITION.minSourceIntegrity).toBe("first_party_verified");
+    expect(PAYMENT_STATUS_DEFINITION.requiredEvidence.map((e) => e.provenancePolicy)).toEqual([
+      "first_party_only",
+    ]);
+    expect(PAYMENT_STATUS_DEFINITION.falsifiers?.map((f) => f.key)).toEqual([
+      "payment_refund",
+      "payment_chargeback",
+    ]);
+    expect(PAYMENT_STATUS_DEFINITION.falsifiers?.map((f) => f.provenancePolicy)).toEqual([
+      "first_party_only",
+      "first_party_only",
+    ]);
+    // …and it is the object boot validates, not a copy.
+    expect(CLAIM_DEFINITIONS.PAYMENT_STATUS).toBe(PAYMENT_STATUS_DEFINITION);
+    // THE CONTRAST that keeps this from reading as a registry-wide rule: its ORDER sibling
+    // declares `preserve` at floor `structured`. The registry is deliberately not uniform,
+    // and a "tidy the pair to match" edit must fail here.
+    expect(ORDER_FULFILLMENT_STAGE_DEFINITION.minSourceIntegrity).toBe("structured");
+    expect(
+      ORDER_FULFILLMENT_STAGE_DEFINITION.requiredEvidence.map((e) => e.provenancePolicy),
+    ).toEqual(["preserve"]);
+  });
+
+  // R2-S7 — the TWO-ROW closure situation at the BOOT seam. R2-S6's counterpart below proves
+  // CART_EMPTY is reachable through EXACTLY ONE row (its twin's). This is the opposite shape,
+  // and it is asserted here because the boot context is where the difference is observable:
+  // ORDER_FULFILLMENT_STAGE is reachable through TWO rows, one GENERATED and one HAND-WRITTEN,
+  // which is what masks INV-4's forward direction for it.
+  it("ORDER_FULFILLMENT_STAGE is reachable through TWO rows; PAYMENT_STATUS through ONE", () => {
+    const rowsNaming = (type: string) =>
+      Object.entries(CLAIM_DEFINITION_CONTEXT.closures ?? {})
+        .filter(([, types]) => types.includes(type))
+        .map(([span]) => span)
+        .sort();
+    // The generated self-only row PLUS the hand-written §O#15 worked example.
+    expect(rowsNaming("ORDER_FULFILLMENT_STAGE")).toEqual(["ORDER_STATUS_Q", "PICKUP_Q"]);
+    // Its sibling has one row, so for PAYMENT_STATUS the forward direction is a live de-sync
+    // detector exactly as it is for every R2-S1..R2-S5 type.
+    expect(rowsNaming("PAYMENT_STATUS")).toEqual(["PAYMENT_STATUS_Q"]);
+    // Both obligations are real (both Triad-scoped), or the reachability claim is vacuous.
+    expect(ORDER_FULFILLMENT_STAGE_DEFINITION.triadScoped).toBe(true);
+    expect(PAYMENT_STATUS_DEFINITION.triadScoped).toBe(true);
+    // And the real registry validates at the seam production boots through.
+    expect(validateClaimDefinitionRegistry()).toEqual({ ok: true });
+  });
 
   // R2-S6 — THE SHARED CLOSURE ROW at the BOOT seam. The compiler-level proof that INV-4
   // rejects a de-synced pair lives in `claimdefs/__tests__/per-resource-claim.test.ts` over

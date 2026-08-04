@@ -26,8 +26,10 @@ import { CART_EMPTY_SOURCE } from "./cart-empty.claim.js";
 import { MENU_DIETARY_SOURCE } from "./menu-dietary.claim.js";
 import { MENU_ITEM_CONTENTS_SOURCE } from "./menu-item-contents.claim.js";
 import { MENU_ITEM_PRICE_SOURCE } from "./menu-item-price.claim.js";
+import { ORDER_FULFILLMENT_STAGE_SOURCE } from "./order-fulfillment-stage.claim.js";
 import { ORDER_HISTORY_SOURCE } from "./order-history.claim.js";
 import { PAYMENT_HISTORY_SOURCE } from "./payment-history.claim.js";
+import { PAYMENT_STATUS_SOURCE } from "./payment-status.claim.js";
 import {
   compilePerResourceClaimDefinition,
   type RepoCompiledArtifacts,
@@ -142,6 +144,35 @@ const UNITS: readonly GenUnit[] = [
     slug: "cart-empty",
     sourceFile: "cart-empty.claim.ts",
     artifacts: compilePerResourceClaimDefinition(CART_EMPTY_SOURCE),
+  },
+  // R2-S7 — the STATUS SIBLINGS, the sixth and seventh owner-scoped units. Same widening and
+  // the same `ownershipPolicy: "required"` evidence rows as their five owner-scoped
+  // predecessors; both are subjected by the ORDER id (the RESERVATION_STATUS shape, not the
+  // histories' customerId). Two things are new, and neither needed a compiler change:
+  //
+  //   - ORDER_FULFILLMENT_STAGE owns a SELF-ONLY `ORDER_STATUS_Q` row while ALSO being
+  //     required by `PICKUP_Q`, a span NO type owns (its net is its own and it requires two
+  //     types, neither named after it). Per R2-S6's shared-row rule that row stays
+  //     HAND-WRITTEN beside the closure table. INV-4 stays green with both rows — MEASURED —
+  //     but its forward direction is consequently MASKED as a de-sync detector for this one
+  //     type; see order-fulfillment-stage.claim.ts's header.
+  //   - PAYMENT_STATUS carries three REGISTRY FIRSTS: TWO falsifiers, the
+  //     `first_party_verified` integrity floor, and `first_party_only` provenance on all
+  //     three rows. All three survive the published projection by the SAME reference-pass
+  //     mechanism R2-S4 proved for `ownershipPolicy` (`toRegistrySpec` spreads the whole
+  //     falsifier tuple by reference and passes the floor through as a scalar), so
+  //     per-resource-claim.ts is UNCHANGED by this slice — the only facet the published
+  //     compiler cannot express remains R2-S2's `perResourceKey`. Each field is asserted
+  //     individually in __tests__/per-resource-claim.test.ts.
+  {
+    slug: "order-fulfillment-stage",
+    sourceFile: "order-fulfillment-stage.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(ORDER_FULFILLMENT_STAGE_SOURCE),
+  },
+  {
+    slug: "payment-status",
+    sourceFile: "payment-status.claim.ts",
+    artifacts: compilePerResourceClaimDefinition(PAYMENT_STATUS_SOURCE),
   },
 ];
 

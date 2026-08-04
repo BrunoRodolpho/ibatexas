@@ -61,8 +61,10 @@ import { CART_EMPTY_DEFINITION } from "./claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_DEFINITION } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "./claimdefs/menu-item-price.generated.js";
+import { ORDER_FULFILLMENT_STAGE_DEFINITION } from "./claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_DEFINITION } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_DEFINITION } from "./claimdefs/payment-history.generated.js";
+import { PAYMENT_STATUS_DEFINITION } from "./claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_DEFINITION } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_DEFINITION } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "./claimdefs/store-info.generated.js";
@@ -89,6 +91,10 @@ import { VALIDATED_TEMPLATES } from "./slot-grammar.js";
  */
 const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaimType>([
   "STORE_OPEN_NOW",
+  // R2-S7 — `triadScoped: true` is now DECLARED in order-fulfillment-stage.claim.ts /
+  // payment-status.claim.ts, so both memberships are documentation/fail-safe only (the
+  // STORE_OPEN_NOW disposition). With these two, EVERY member of this set is source-declared
+  // and the set decides `triadScoped` for no type — see GENERATED_DEFINITIONS below.
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
   // R2-S4 — `triadScoped: true` is DECLARED in reservation-status.claim.ts, so this
@@ -196,6 +202,37 @@ const GENERATED_DEFINITIONS: Readonly<
   // boot consumes here is shape-for-shape what it hand-assembled before.
   CART_CONTENTS: CART_CONTENTS_DEFINITION,
   CART_EMPTY: CART_EMPTY_DEFINITION,
+  // R2-S7 — the STATUS SIBLINGS, the sixth and seventh owner-scoped types to compile from
+  // source. `triadScoped: true` is DECLARED in each source, so each type's INV-4 closure
+  // obligation is discharged against its own GENERATED row (ORDER_STATUS_Q /
+  // PAYMENT_STATUS_Q) rather than by its membership in TRIAD_SCOPED_TYPES above.
+  //
+  // WITH THESE TWO, EVERY MEMBER of TRIAD_SCOPED_TYPES is now source-declared: the set
+  // decides `triadScoped` for NO type any more. It is retained as documentation + the
+  // fail-safe should a generated consumption ever be removed (the STORE_OPEN_NOW
+  // disposition), and `buildClaimDefinition` still consults it for the remaining
+  // hand-assembled types — all of which are non-Triad, so it correctly answers `false`.
+  // Deleting it is a separate, deliberate act, not an adoption slice's business.
+  //
+  // ASYMMETRY WORTH KNOWING WHEN READING INV-4 FAILURES HERE: PAYMENT_STATUS is named by
+  // exactly ONE closure row, so the forward direction is a live de-sync detector for it, as
+  // it is for every R2-S1..R2-S5 type. ORDER_FULFILLMENT_STAGE is named by TWO — its own
+  // generated ORDER_STATUS_Q row AND the hand-written PICKUP_Q row — and the forward check
+  // quantifies over the UNION of all closure values, so it is reachable via either. INV-4
+  // therefore stays green (measured), but cannot catch a de-sync of one row alone for that
+  // type; the drift harness's derived closure CLUSTER is what covers the generated half. See
+  // ./claimdefs/order-fulfillment-stage.claim.ts's header.
+  //
+  // `perResourceKey` and the per-row `ownershipPolicy` / `provenancePolicy` / integrity floor
+  // are REGISTRY-SPEC facets that `selectCandidateClaim` / `ownerScopedBaseKey` and the
+  // kernel's §5 conjuncts read, not fields of the generic `ClaimDefinition` the inv.18
+  // validator quantifies over — with the exception of `requiredEvidence` / `falsifiers`
+  // themselves, which the definition carries verbatim, so PAYMENT_STATUS's TWO falsifiers and
+  // its `first_party_only` rows travel into the validated definition unchanged.
+  // `assembleClaimDefinition` never propagated anything else either, so what boot consumes
+  // here is shape-for-shape what it hand-assembled before.
+  ORDER_FULFILLMENT_STAGE: ORDER_FULFILLMENT_STAGE_DEFINITION,
+  PAYMENT_STATUS: PAYMENT_STATUS_DEFINITION,
 };
 
 /**

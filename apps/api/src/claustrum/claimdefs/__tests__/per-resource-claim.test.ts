@@ -52,6 +52,11 @@ import {
   MENU_ITEM_PRICE_ID,
   MENU_ITEM_PRICE_REGISTRY_SPEC,
 } from "../menu-item-price.generated.js";
+import { ORDER_FULFILLMENT_STAGE_SOURCE } from "../order-fulfillment-stage.claim.js";
+import {
+  ORDER_FULFILLMENT_STAGE_ID,
+  ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC,
+} from "../order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_SOURCE } from "../order-history.claim.js";
 import {
   ORDER_HISTORY_ID,
@@ -62,11 +67,19 @@ import {
   PAYMENT_HISTORY_ID,
   PAYMENT_HISTORY_REGISTRY_SPEC,
 } from "../payment-history.generated.js";
+import { PAYMENT_STATUS_SOURCE } from "../payment-status.claim.js";
+import {
+  PAYMENT_STATUS_ID,
+  PAYMENT_STATUS_REGISTRY_SPEC,
+} from "../payment-status.generated.js";
 import { RESERVATION_STATUS_SOURCE } from "../reservation-status.claim.js";
 import {
   RESERVATION_STATUS_ID,
   RESERVATION_STATUS_REGISTRY_SPEC,
 } from "../reservation-status.generated.js";
+// R2-S7 — STORE_OPEN_NOW is the OTHER member of the hand-written PICKUP_Q row, so the two-row
+// INV-4 measurements need a real second definition to build a well-formed world with.
+import { STORE_OPEN_NOW_SOURCE } from "../store-open-now.claim.js";
 import {
   compilePerResourceClaimDefinition,
   FLAG_ANCHOR_FIELD,
@@ -931,6 +944,131 @@ describe("R2-S6 — the SHARED closure row lives on the SPAN-OWNING source", () 
     }
   });
 
+  // ── R2-S7 — INV-4 WITH TWO ROWS NAMING ONE TYPE (the brief's entanglement 1) ────────
+  //
+  // R2-S6's rule leaves PICKUP_Q hand-written, so ORDER_FULFILLMENT_STAGE is named by a
+  // GENERATED row AND a hand-written one. Two things had to be MEASURED rather than inferred,
+  // and they do not point the same way — which is why both are pinned here.
+  it("R2-S7 — INV-4 stays GREEN with a generated row and a hand-written row naming one type", () => {
+    const order = compilePerResourceClaimDefinition(ORDER_FULFILLMENT_STAGE_SOURCE);
+    const openNow = compileClaimDefinition(STORE_OPEN_NOW_SOURCE);
+    const world = (rows: Readonly<Record<string, readonly string[]>>) =>
+      validateClaimDefinitions(
+        {
+          ORDER_FULFILLMENT_STAGE: order.definition,
+          STORE_OPEN_NOW: openNow.definition,
+        },
+        {
+          templates: {
+            ORDER_FULFILLMENT_STAGE: order.renderTemplate,
+            STORE_OPEN_NOW: openNow.renderTemplate,
+          },
+          closures: rows,
+          registryEnum: ["ORDER_FULFILLMENT_STAGE", "STORE_OPEN_NOW"],
+        },
+      );
+
+    // The REAL two-row shape: the generated self-only row PLUS the hand-written PICKUP_Q.
+    // Nothing about a generated row sitting beside a hand-written one is treated specially.
+    expect(
+      world({
+        ORDER_STATUS_Q: ["ORDER_FULFILLMENT_STAGE"],
+        STORE_OPEN_NOW_Q: ["STORE_OPEN_NOW"],
+        PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it("R2-S7 — the FORWARD direction is MASKED for the two-row type, and NOT for its sibling", () => {
+    // THE MEASUREMENT THAT DIFFERS FROM R2-S6, recorded because a future reader debugging an
+    // INV-4 failure will otherwise assume the cart pair's behaviour generalizes.
+    //
+    // The forward check accumulates `closureTypes` across ALL rows before testing any def, so a
+    // Triad-scoped type named by TWO rows is reachable through EITHER. Dropping it from ONE row
+    // therefore does NOT fail — the guarantee CART_EMPTY gets from the shared row does not
+    // extend to ORDER_FULFILLMENT_STAGE, and pretending otherwise would be a comment asserting
+    // a safety property the measurement denies.
+    const order = compilePerResourceClaimDefinition(ORDER_FULFILLMENT_STAGE_SOURCE);
+    const openNow = compileClaimDefinition(STORE_OPEN_NOW_SOURCE);
+    const world = (rows: Readonly<Record<string, readonly string[]>>) =>
+      validateClaimDefinitions(
+        {
+          ORDER_FULFILLMENT_STAGE: order.definition,
+          STORE_OPEN_NOW: openNow.definition,
+        },
+        {
+          templates: {
+            ORDER_FULFILLMENT_STAGE: order.renderTemplate,
+            STORE_OPEN_NOW: openNow.renderTemplate,
+          },
+          closures: rows,
+          registryEnum: ["ORDER_FULFILLMENT_STAGE", "STORE_OPEN_NOW"],
+        },
+      );
+
+    // MASKED: the generated row stops naming the type, PICKUP_Q still does → GREEN.
+    expect(
+      world({
+        ORDER_STATUS_Q: ["STORE_OPEN_NOW"],
+        PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"],
+      }),
+    ).toEqual({ ok: true });
+
+    // UNMASKED: with BOTH rows silent the forward direction fires, so the check itself is not
+    // broken — it is the redundancy that hides a single-row de-sync.
+    const both = world({ ORDER_STATUS_Q: ["STORE_OPEN_NOW"], PICKUP_Q: ["STORE_OPEN_NOW"] });
+    expect(both.ok).toBe(false);
+    if (!both.ok) {
+      expect(both.code).toBe("DECOMPOSITION_UNREACHABLE");
+      expect(both.reason).toContain("ORDER_FULFILLMENT_STAGE");
+    }
+
+    // THE CONTRAST — the sibling has ONE row, so for PAYMENT_STATUS the forward direction is a
+    // live de-sync detector exactly as it is for every R2-S1..R2-S5 type. Same treatment shape,
+    // opposite outcome, which is what makes the masking a property of the ROW COUNT rather than
+    // of adoption.
+    const payment = compilePerResourceClaimDefinition(PAYMENT_STATUS_SOURCE);
+    const paymentWorld = (rows: Readonly<Record<string, readonly string[]>>) =>
+      validateClaimDefinitions(
+        { PAYMENT_STATUS: payment.definition, STORE_OPEN_NOW: openNow.definition },
+        {
+          templates: {
+            PAYMENT_STATUS: payment.renderTemplate,
+            STORE_OPEN_NOW: openNow.renderTemplate,
+          },
+          closures: rows,
+          registryEnum: ["PAYMENT_STATUS", "STORE_OPEN_NOW"],
+        },
+      );
+    // Control: the real row validates.
+    expect(
+      paymentWorld({ PAYMENT_STATUS_Q: ["PAYMENT_STATUS"], STORE_OPEN_NOW_Q: ["STORE_OPEN_NOW"] }),
+    ).toEqual({ ok: true });
+    // Treatment: its ONE row stops naming it → the forward direction fires immediately.
+    const paymentDesync = paymentWorld({ PAYMENT_STATUS_Q: ["STORE_OPEN_NOW"] });
+    expect(paymentDesync.ok).toBe(false);
+    if (!paymentDesync.ok) {
+      expect(paymentDesync.code).toBe("DECOMPOSITION_UNREACHABLE");
+      expect(paymentDesync.reason).toContain("PAYMENT_STATUS");
+    }
+
+    // The REVERSE direction still covers the hand-written row for BOTH types: a PICKUP_Q that
+    // named an unregistered type is rejected, which is what keeps the hand-written row honest.
+    const reverse = validateClaimDefinitions(
+      { STORE_OPEN_NOW: openNow.definition },
+      {
+        templates: { STORE_OPEN_NOW: openNow.renderTemplate },
+        closures: { PICKUP_Q: ["STORE_OPEN_NOW", "ORDER_FULFILLMENT_STAGE"] },
+        registryEnum: ["STORE_OPEN_NOW"],
+      },
+    );
+    expect(reverse.ok).toBe(false);
+    if (!reverse.ok) {
+      expect(reverse.code).toBe("DECOMPOSITION_UNREACHABLE");
+      expect(reverse.reason).toContain("ORDER_FULFILLMENT_STAGE");
+    }
+  });
+
   it("the REAL boot validator accepts the real registry with the shared row", () => {
     // The end of the chain: the two treatments above are synthetic worlds; this is the
     // function `claims-pipeline.ts` calls, over the REAL 23-type registry and the REAL
@@ -966,4 +1104,374 @@ it("R2-S6 — the two cart specs differ ONLY in their key names and C6 field", (
         "answer-with-abstention",
     ),
   ).toEqual(["CART_CONTENTS"]);
+});
+
+// ── R2-S7 — THE STATUS SIBLINGS: the ownership axis, quantified over BOTH. ─────────────
+//
+// The R2-S4/R2-S5 table shape, re-run on the two status types. Their SUBJECT is the ORDER id
+// (the RESERVATION_STATUS shape, not the histories' customerId), so the discrimination axis
+// that matters is TWO RESOURCES OF ONE OWNER — asserted below at the kernel seam and at the
+// turn seam in `../../__tests__/r2s7-status-siblings-claims.e2e.test.ts`.
+const STATUS_CASES = [
+  {
+    type: "ORDER_FULFILLMENT_STAGE",
+    source: ORDER_FULFILLMENT_STAGE_SOURCE,
+    spec: ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC,
+    id: ORDER_FULFILLMENT_STAGE_ID,
+    baseKey: "order_fulfillment_stage",
+    falsifierKeys: ["order_cancelled"],
+    boundField: "fulfillmentStatus",
+    floor: "structured",
+    provenance: "preserve",
+    spanClass: "ORDER_STATUS_Q",
+    armCount: 8,
+  },
+  {
+    type: "PAYMENT_STATUS",
+    source: PAYMENT_STATUS_SOURCE,
+    spec: PAYMENT_STATUS_REGISTRY_SPEC,
+    id: PAYMENT_STATUS_ID,
+    baseKey: "payment_status",
+    // THE FIRST TWO-FALSIFIER TYPE in the adopted corpus.
+    falsifierKeys: ["payment_refund", "payment_chargeback"],
+    boundField: "status",
+    // THE FIRST non-`structured` FLOOR and the FIRST `first_party_only` PROVENANCE.
+    floor: "first_party_verified",
+    provenance: "first_party_only",
+    spanClass: "PAYMENT_STATUS_Q",
+    armCount: 5,
+  },
+] as const;
+
+describe.each(STATUS_CASES)(
+  "R2-S7 — the generated $type spec preserves the OWNERSHIP axis",
+  ({ type, source, spec, id, baseKey, falsifierKeys, boundField, floor, provenance, spanClass, armCount }) => {
+    it("ownershipPolicy: required survives the compile, on evidence AND every falsifier", () => {
+      expect(spec.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual(["required"]);
+      expect(spec.falsifiers.map((f) => f.ownershipPolicy)).toEqual(
+        falsifierKeys.map(() => "required"),
+      );
+      // The R2-S4 mechanism assertion, re-made per type: in the COMPILER's output the spec's
+      // evidence array IS the source's array (`toRegistrySpec` does `requiredEvidence:
+      // def.requiredEvidence`, not a field-by-field rebuild), so there is no copy step in
+      // which any per-row policy could be dropped the way `perResourceKey` is.
+      const compiled = compilePerResourceClaimDefinition(source);
+      expect(compiled.registrySpec.requiredEvidence).toBe(source.requiredEvidence);
+      expect(compiled.registrySpec.falsifiers).toBe(source.falsifiers);
+      expect(spec.requiredEvidence).toEqual(source.requiredEvidence);
+      expect(spec.falsifiers).toEqual(source.falsifiers);
+    });
+
+    // ── THE THREE REGISTRY FIRSTS, asserted PER FIELD (the brief's entanglement 3) ─────
+    //
+    // R2-S4 proved the reference-pass argument for `ownershipPolicy`. These are the three
+    // facets no prior source carried, each checked against the PUBLISHED projection rather
+    // than assumed to extend: a dropped or reshaped floor/provenance/falsifier-row is a
+    // SILENT weakening of the §5 predicate on the MONEY read.
+    it("the INTEGRITY FLOOR survives the compile as the declared scalar", () => {
+      expect(spec.minSourceIntegrity).toBe(floor);
+      expect(source.minSourceIntegrity).toBe(floor);
+      // Projected as a plain scalar, so the assertion that matters is that the published
+      // compiler — not the repo-local wrapper — is what carries it.
+      expect(compileClaimDefinition(source).registrySpec.minSourceIntegrity).toBe(floor);
+      // …and it reaches the object the BOOT VALIDATOR quantifies over, which is a different
+      // artifact from the registry spec.
+      expect(compilePerResourceClaimDefinition(source).definition.minSourceIntegrity).toBe(
+        floor,
+      );
+      // Every evidence row must MEET its own type's floor, or the claim can never validate.
+      for (const e of spec.requiredEvidence) expect(e.sourceIntegrity).toBe(floor);
+    });
+
+    it("the PROVENANCE POLICY survives on EVERY row (evidence + falsifiers)", () => {
+      // C3 is a SEPARATE axis from the C2 floor above (origin trust vs evidence quality), so
+      // it is asserted separately even though both happen to be uniform per type here.
+      expect(spec.requiredEvidence.map((e) => e.provenancePolicy)).toEqual([provenance]);
+      expect(spec.falsifiers.map((f) => f.provenancePolicy)).toEqual(
+        falsifierKeys.map(() => provenance),
+      );
+      // Through the PUBLISHED compiler, on both artifacts.
+      const published = compileClaimDefinition(source);
+      expect(published.registrySpec.requiredEvidence.map((e) => e.provenancePolicy)).toEqual([
+        provenance,
+      ]);
+      expect(published.definition.requiredEvidence.map((e) => e.provenancePolicy)).toEqual([
+        provenance,
+      ]);
+    });
+
+    it("the FALSIFIER SET survives at full ARITY, in order, keys intact", () => {
+      // The two-row set is the registry first. `toRegistrySpec` spreads the whole tuple by
+      // reference with no arity assumption — asserted by identity above; asserted here by
+      // KEYS AND ORDER, which is what a re-materializing projection would disturb.
+      expect(spec.falsifierComplete).toBe(true);
+      expect(spec.falsifiers.map((f) => f.key)).toEqual(falsifierKeys);
+      expect(compileClaimDefinition(source).registrySpec.falsifiers?.map((f) => f.key)).toEqual(
+        falsifierKeys,
+      );
+      // The boot-validated definition carries them too (INV-2 quantifies over this array).
+      expect(
+        compilePerResourceClaimDefinition(source).definition.falsifiers?.map((f) => f.key),
+      ).toEqual(falsifierKeys);
+      // Every falsifier is `must_read_this_turn` — a cached falsifier could not demote a live
+      // base read.
+      for (const f of spec.falsifiers) expect(f.freshnessPolicy).toBe("must_read_this_turn");
+    });
+
+    it("ownerScopedBaseKey resolves the UNSUFFIXED base key, joined to a DECLARED ledger prefix", () => {
+      expect(ownerScopedBaseKey(type)).toBe(baseKey);
+      expect(baseKey).not.toContain(":");
+      expect(OWNER_SCOPED_KEY_PREFIXES).toContain(`${baseKey}:`);
+    });
+
+    it("publicPerItemBaseKey stays undefined — the complement holds after adoption", () => {
+      expect(publicPerItemBaseKey(type)).toBeUndefined();
+      expect(REGISTRY_SPECS[type].customerScoped).toBe(true);
+      expect((REGISTRY_SPECS[type] as { perResourceKey?: boolean }).perResourceKey).toBe(true);
+    });
+
+    it("selectCandidateClaim suffixes EVERY key by the ORDER id AND derives the C1 binding", () => {
+      const candidate = selectCandidateClaim({
+        type,
+        subject: "ord_42",
+        actor: { principal: "cus_owner" },
+        value: undefined,
+      });
+      expect(candidate).toBeDefined();
+      const s = candidate!.soundness;
+      expect(s.requiredEvidence.map((e) => e.key)).toEqual([`${baseKey}:ord_42`]);
+      // The arity point again, this time at the RUNTIME seam: BOTH falsifier keys must be
+      // suffixed, in lockstep. A parameterizer that suffixed only `falsifiers[0]` would leave
+      // the chargeback arm resolving a bare key that is never present — a falsifier that can
+      // never fire, i.e. a silently WEAKER §5 predicate on the money read.
+      expect(s.falsifiers?.map((f) => f.key)).toEqual(
+        falsifierKeys.map((k) => `${k}:ord_42`),
+      );
+      expect(s.valueBinding?.key).toBe(`${baseKey}:ord_42`);
+      expect(s.requiredEvidence.map((e) => e.key)).toContain(s.valueBinding?.key);
+      expect(s.resources).toEqual({ [`${baseKey}:ord_42`]: "ord_42" });
+    });
+
+    it("TWO ORDERS of ONE owner get DISJOINT suffixed keys — the discrimination axis", () => {
+      // The failure this pins is specific to an order-subjected type: a dropped flag leaves
+      // BOTH of one customer's orders resolving the SAME bare key, so whichever order was read
+      // last answers for both — the customer is told about the wrong order, with correct-looking
+      // provenance. Two candidates, same actor, every key distinct.
+      const a = selectCandidateClaim({
+        type,
+        subject: "ord_a",
+        actor: { principal: "cus_owner" },
+        value: undefined,
+      })!;
+      const b = selectCandidateClaim({
+        type,
+        subject: "ord_b",
+        actor: { principal: "cus_owner" },
+        value: undefined,
+      })!;
+      expect(a.soundness.requiredEvidence[0]!.key).toBe(`${baseKey}:ord_a`);
+      expect(b.soundness.requiredEvidence[0]!.key).toBe(`${baseKey}:ord_b`);
+      expect(a.soundness.valueBinding?.key).not.toBe(b.soundness.valueBinding?.key);
+      expect(a.soundness.resources).not.toEqual(b.soundness.resources);
+      // …and each falsifier partitions too (the two-row case again).
+      expect(a.soundness.falsifiers?.map((f) => f.key)).not.toEqual(
+        b.soundness.falsifiers?.map((f) => f.key),
+      );
+    });
+
+    it("the REGISTRY_SPECS row is the generated spec + the spliced owner posture, nothing else", () => {
+      expect(REGISTRY_SPECS[type]).toEqual({ ...spec, dietaryPosture: "answer-anyway" });
+      expect(id).toBe(`${type}@1`);
+      // triadScoped is source-declared and is NOT a registry-spec field — it must not leak.
+      expect("triadScoped" in REGISTRY_SPECS[type]).toBe(false);
+    });
+
+    it("the compiled closure is SELF-ONLY and the LIVE table row IS it", () => {
+      const closure = compilePerResourceClaimDefinition(source).closure!;
+      expect(closure.spanClass).toBe(spanClass);
+      expect(closure.requires).toEqual([type]);
+      // Passed through BY REFERENCE (the R2-S6 mechanism), so the row cannot be edited at the
+      // table without editing the source.
+      expect(closure.requires).toBe(source.decomposition.requires);
+      expect(closure.markers).toBe(source.decomposition.markers);
+      expect(closure.markers).toHaveLength(armCount);
+      expect(
+        (REQUIRED_CLAIM_CLOSURE as Record<string, readonly string[]>)[spanClass],
+      ).toEqual([type]);
+    });
+
+    it("C1 is the ONLY difference between a VALIDATED owner and a REFUSED non-owner", () => {
+      // The control/treatment pair R2-S4 established, on the status row. The CONTROL must
+      // VALIDATE, which proves C6/freshness/integrity/provenance are all satisfied and
+      // therefore cannot be what fails the treatment arm.
+      const ORD = "ord_c1_probe";
+      const SUFFIXED = `${baseKey}:${ORD}`;
+      const VALUE = "paid_or_ready";
+
+      const candidate = selectCandidateClaim({
+        type,
+        subject: ORD,
+        actor: "cus_owner",
+        value: { [boundField]: VALUE },
+      })!;
+
+      const ledgerFor = (): EvidenceLedger => {
+        const l = new EvidenceLedger("turn-c1-status");
+        l.record({
+          key: SUFFIXED,
+          value: { [boundField]: VALUE, orderId: ORD },
+          source: "order.getById",
+          fetchedAt: NOW,
+          sourceMode: "live",
+          taint: "TRUSTED",
+          // FIRST_PARTY is required for PAYMENT_STATUS's `first_party_only` conjunct and
+          // acceptable for the ORDER type's `preserve` — so one ledger serves both arms and
+          // the ONLY varying input stays ownership.
+          originProvenance: "FIRST_PARTY",
+        });
+        return l;
+      };
+      const depsWith = (owned: readonly string[]) =>
+        createPerTurnClaimsKernelDeps({
+          now: NOW,
+          ownership: { principal: "cus_owner", ownedResources: new Set(owned) },
+          outcomes: [],
+        });
+
+      const owner = runClaimsKernel(ledgerFor(), [candidate], depsWith([ORD]));
+      expect(owner.perClaim[0]?.verdict).toBe("VALIDATED");
+      expect(owner.renderable).toHaveLength(1);
+
+      const nonOwner = runClaimsKernel(ledgerFor(), [candidate], depsWith(["ord_someone_else"]));
+      expect(nonOwner.perClaim[0]?.verdict).not.toBe("VALIDATED");
+      expect(nonOwner.renderable).toHaveLength(0);
+
+      expect(candidate.soundness.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual([
+        "required",
+      ]);
+    });
+
+    it("the PUBLISHED compiler on the SAME source still drops only perResourceKey", () => {
+      // The R2-S2 control, re-run here — and it is what proves the three registry firsts above
+      // are the PUBLISHED compiler's own output rather than something the repo-local wrapper
+      // is quietly supplying.
+      const published = compileClaimDefinition(source);
+      expect("perResourceKey" in published.registrySpec).toBe(false);
+      expect({ ...published.registrySpec, perResourceKey: true }).toEqual(spec);
+    });
+  },
+);
+
+// THE `first_party_only` CONJUNCT ITSELF, non-vacuously — the one registry first that is a
+// RUNTIME wall rather than a projected field, so a reference-identity assertion cannot reach
+// it. Control/treatment over ONE correctly-bound, correctly-owned, fresh value: the arms differ
+// in exactly the ledger entry's `originProvenance`.
+//
+// WHY THIS IS NOT SKIPPABLE: every other assertion in this file would stay green if the
+// published kernel stopped enforcing C3, and so would the whole apps/api suite — the policy is
+// only ever a string on a row until something makes a TRUSTED_THIRD_PARTY origin fail.
+it("R2-S7 — first_party_only REFUSES a TRUSTED_THIRD_PARTY origin the money read must not accept", () => {
+  const ORD = "ord_fp_probe";
+  const SUFFIXED = `payment_status:${ORD}`;
+  const candidate = selectCandidateClaim({
+    type: "PAYMENT_STATUS",
+    subject: ORD,
+    actor: "cus_owner",
+    value: { status: "paid" },
+  })!;
+  const ledgerWith = (origin: "FIRST_PARTY" | "TRUSTED_THIRD_PARTY"): EvidenceLedger => {
+    const l = new EvidenceLedger("turn-fp");
+    l.record({
+      key: SUFFIXED,
+      value: { status: "paid", orderId: ORD },
+      source: "payment.getByOrder",
+      fetchedAt: NOW,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: origin,
+    });
+    return l;
+  };
+  const deps = () =>
+    createPerTurnClaimsKernelDeps({
+      now: NOW,
+      ownership: { principal: "cus_owner", ownedResources: new Set([ORD]) },
+      outcomes: [],
+    });
+
+  // CONTROL — a first-party origin VALIDATES, so nothing else can be what fails the treatment.
+  const firstParty = runClaimsKernel(ledgerWith("FIRST_PARTY"), [candidate], deps());
+  expect(firstParty.perClaim[0]?.verdict).toBe("VALIDATED");
+
+  // TREATMENT — a TRUSTED THIRD PARTY is *trusted* (it is not UNTRUSTED_DATA) and would satisfy
+  // `preserve`. It must still fail here: a PSP echo is not a first-party money fact (Inv 3).
+  const thirdParty = runClaimsKernel(ledgerWith("TRUSTED_THIRD_PARTY"), [candidate], deps());
+  expect(thirdParty.perClaim[0]?.verdict).not.toBe("VALIDATED");
+  expect(thirdParty.renderable).toHaveLength(0);
+
+  // The wall is reached through the GENERATED spec's own rows — neuter the source to
+  // `preserve`, regenerate, and the treatment arm validates.
+  expect(candidate.soundness.requiredEvidence.map((e) => e.provenancePolicy)).toEqual([
+    "first_party_only",
+  ]);
+  // …and the ORDER sibling is the contrast that keeps this from reading as a global rule:
+  // `preserve` is what its rows declare, and the registry is not uniform.
+  expect(
+    ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC.requiredEvidence.map((e) => e.provenancePolicy),
+  ).toEqual(["preserve"]);
+});
+
+// The status siblings are NOT structural twins the way the cart pair is — and unlike that pair,
+// the DIFFERENCES are the interesting part, so they are pinned directly rather than normalized
+// away. A future edit that homogenized them (raising the ORDER floor to match, or dropping a
+// PAYMENT falsifier) should have to say so here.
+it("R2-S7 — the two status specs differ in exactly the four declared facets", () => {
+  expect([
+    ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC.minSourceIntegrity,
+    PAYMENT_STATUS_REGISTRY_SPEC.minSourceIntegrity,
+  ]).toEqual(["structured", "first_party_verified"]);
+  expect([
+    ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC.falsifiers.length,
+    PAYMENT_STATUS_REGISTRY_SPEC.falsifiers.length,
+  ]).toEqual([1, 2]);
+  expect([
+    ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC.requiredEvidence[0]!.provenancePolicy,
+    PAYMENT_STATUS_REGISTRY_SPEC.requiredEvidence[0]!.provenancePolicy,
+  ]).toEqual(["preserve", "first_party_only"]);
+  expect([
+    ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC.valueBinding.path,
+    PAYMENT_STATUS_REGISTRY_SPEC.valueBinding.path,
+  ]).toEqual([["fulfillmentStatus"], ["status"]]);
+  // Everything else about them IS the same shape, which is why one slice adopts both.
+  for (const spec of [ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC, PAYMENT_STATUS_REGISTRY_SPEC]) {
+    expect(spec.kind).toBe("read_claim");
+    expect(spec.customerScoped).toBe(true);
+    expect(spec.perResourceKey).toBe(true);
+    expect(spec.falsifierComplete).toBe(true);
+    expect(spec.requiredEvidence[0]!.freshnessPolicy).toBe("must_read_this_turn");
+    expect(spec.requiredEvidence[0]!.ownershipPolicy).toBe("required");
+  }
+});
+
+// PAYMENT_STATUS is the only registry type whose floor is not `structured`/`trusted_service`,
+// and ORDER_FULFILLMENT_STAGE + PAYMENT_STATUS are the only two types named by more than one
+// closure row between them. Both are quantified over the WHOLE registry rather than spot-checked,
+// so a future adoption cannot satisfy its own case while moving one of these properties.
+it("R2-S7 — the money floor and the two-row situation are registry-wide facts", () => {
+  expect(
+    CLAIM_REGISTRY.filter(
+      (t) => REGISTRY_SPECS[t].minSourceIntegrity === "first_party_verified",
+    ),
+  ).toEqual(["PAYMENT_STATUS"]);
+  const rowCount = (type: string) =>
+    Object.values(REQUIRED_CLAIM_CLOSURE).filter((v) =>
+      (v as readonly string[]).includes(type),
+    ).length;
+  // The masking fact, quantified: exactly TWO types are named by 2+ rows, and both are
+  // reachable through the hand-written PICKUP_Q worked example.
+  expect(CLAIM_REGISTRY.filter((t) => rowCount(t) > 1).sort()).toEqual([
+    "ORDER_FULFILLMENT_STAGE",
+    "STORE_OPEN_NOW",
+  ]);
+  expect(rowCount("PAYMENT_STATUS")).toBe(1);
 });
