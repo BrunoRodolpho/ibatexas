@@ -59,6 +59,7 @@ import {
 import { MENU_DIETARY_DEFINITION } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "./claimdefs/menu-item-price.generated.js";
+import { RESERVATION_STATUS_DEFINITION } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_DEFINITION } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_DEFINITION } from "./claimdefs/store-open-now.generated.js";
@@ -76,15 +77,18 @@ import { VALIDATED_TEMPLATES } from "./slot-grammar.js";
  * marked, so INV-4 imposes no closure obligation on them.
  *
  * This set drives `triadScoped` only for the HAND-ASSEMBLED types (see
- * {@link buildClaimDefinition}). STORE_OPEN_NOW is still listed for documentation +
- * as the fail-safe should its generated consumption ever be removed, but its
- * `triadScoped` flag is now sourced from the generated {@link STORE_OPEN_NOW_DEFINITION}
- * (a compile-time constant in its `.claim.ts` source), not from this set.
+ * {@link buildClaimDefinition}). STORE_OPEN_NOW and (R2-S4) RESERVATION_STATUS are still
+ * listed for documentation + as the fail-safe should their generated consumption ever be
+ * removed, but their `triadScoped` flags are now sourced from the generated
+ * {@link STORE_OPEN_NOW_DEFINITION} / {@link RESERVATION_STATUS_DEFINITION} (a
+ * compile-time constant in each `.claim.ts` source), not from this set.
  */
 const TRIAD_SCOPED_TYPES: ReadonlySet<RegistryClaimType> = new Set<RegistryClaimType>([
   "STORE_OPEN_NOW",
   "ORDER_FULFILLMENT_STAGE",
   "PAYMENT_STATUS",
+  // R2-S4 — `triadScoped: true` is DECLARED in reservation-status.claim.ts, so this
+  // membership is documentation/fail-safe only (the STORE_OPEN_NOW disposition).
   "RESERVATION_STATUS",
   // BKL-139 — CART_CONTENTS is an owner-scoped live read; INV-4 REQUIRES it to appear
   // in some REQUIRED_CLAIM_CLOSURE row (the CART_CONTENTS_Q closure), or boot rejects
@@ -140,6 +144,17 @@ const GENERATED_DEFINITIONS: Readonly<
   // sources.
   MENU_ITEM_CONTENTS: MENU_ITEM_CONTENTS_DEFINITION,
   MENU_DIETARY: MENU_DIETARY_DEFINITION,
+  // R2-S4 — the FIRST OWNER-SCOPED type to compile from source, and the first generated
+  // definition with `triadScoped: TRUE`. That flag is DECLARED in the source, so this
+  // type's INV-4 closure obligation is now discharged by the generated
+  // RESERVATION_STATUS_Q row rather than by its membership in TRIAD_SCOPED_TYPES below
+  // (which no longer decides anything for it — see that set's note). `perResourceKey`
+  // and the per-row `ownershipPolicy` are REGISTRY-SPEC facets that
+  // `selectCandidateClaim` / `ownerScopedBaseKey` read, not fields of the generic
+  // `ClaimDefinition` the inv.18 validator quantifies over — `assembleClaimDefinition`
+  // never propagated either, so what boot consumes here is shape-for-shape what it
+  // hand-assembled before.
+  RESERVATION_STATUS: RESERVATION_STATUS_DEFINITION,
 };
 
 /**

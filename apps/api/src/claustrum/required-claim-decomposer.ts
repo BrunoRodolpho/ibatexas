@@ -45,6 +45,7 @@ import {
 import { MENU_DIETARY_CLOSURE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_CLOSURE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_CLOSURE } from "./claimdefs/menu-item-price.generated.js";
+import { RESERVATION_STATUS_CLOSURE } from "./claimdefs/reservation-status.generated.js";
 import { STORE_INFO_CLOSURE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_CLOSURE } from "./claimdefs/store-open-now.generated.js";
 // LE2-019 — the PURE coupon-code extractor (no IO; see promotion-validity.ts's
@@ -134,12 +135,14 @@ export const REQUIRED_CLAIM_CLOSURE = {
   STORE_HOURS_FOR_DATE_Q: ["STORE_HOURS_FOR_DATE"],
   ORDER_STATUS_Q: ["ORDER_FULFILLMENT_STAGE"],
   PAYMENT_STATUS_Q: ["PAYMENT_STATUS"],
-  // FE-T17 — a reservation-status question requires the reservation claim. This row
-  // ALSO auto-enrols RESERVATION_STATUS into the claim-planner's
-  // RELEVANCE_GOVERNED_TYPES (ibatexas-claim-planner.ts BKL-110) via the closure-value
-  // union, so an over-proposed reservation claim is DEMOTED on a turn whose
-  // reservation span did not fire, yet KEPT when it did.
-  RESERVATION_STATUS_Q: ["RESERVATION_STATUS"],
+  // inv.18 v2 / R2-S4 — RESERVATION_STATUS_Q's row is GENERATED (span class + required
+  // set); the FE-T17 rationale for requiring ONLY the reservation claim, and for this row
+  // being what auto-enrols RESERVATION_STATUS into the claim-planner's
+  // RELEVANCE_GOVERNED_TYPES, moved verbatim into
+  // `./claimdefs/reservation-status.claim.ts`. It is the FIRST generated row for an
+  // OWNER-SCOPED type; the row shape is identical either way (a span class mapped to a
+  // non-empty required set), since ownership lives on the SPEC's evidence rows, not here.
+  [RESERVATION_STATUS_CLOSURE.spanClass]: RESERVATION_STATUS_CLOSURE.requires,
   // BKL-139 — a cart-contents question requires the cart claim. Like
   // RESERVATION_STATUS_Q, CART_CONTENTS is required ONLY by its own span (no unrelated
   // span force-requires it), so it also auto-enrols CART_CONTENTS into the claim-planner's
@@ -1003,6 +1006,29 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
    * that anchored both would silently narrow the net.
    */
   menuDietary: MENU_DIETARY_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S4 — the RESERVATION_STATUS_Q markers, now GENERATED as TWO arms from
+   * `reservation-status.claim.ts`, rejoined in declaration order. Unlike its four
+   * predecessors this is NOT a split of one pre-existing alternation: the two arms were
+   * ALREADY separate regex literals `||`-ed in `classifyRequestSpans`, so the migration
+   * relocated them verbatim and `markers.some((m) => m.test(t))` is the SAME predicate
+   * the classifier ran before.
+   *
+   * Byte-identity here holds the ANCHORING ASYMMETRY the FE-T17 review fix installed:
+   * arm 1 is anchored on the LEFT only (`(?<![a-z])reserv(?!at)…` — it must still match
+   * "reservas"/"reservado" with their trailing letters, while the lookbehind closes the
+   * preserv* family and the `(?!at)` lookahead closes "reservatório"), arm 2 on BOTH
+   * sides (`(?<![a-z])mesas?(?![a-z])` — standalone "mesa"/"mesas" only, never "mesada").
+   * An "equivalent" rewrite that anchored both alike would silently narrow the net on the
+   * real phrasing while every false-positive sweep still passed.
+   *
+   * NOTE for the reader of the joined value: arm 1 contains top-level-looking `|`s
+   * INSIDE its `(a|ar|ad|…)` group, so a joined string alone cannot witness where the
+   * arm boundary is. The test therefore pins each arm's source INDIVIDUALLY off
+   * `RESERVATION_STATUS_CLOSURE.markers` as well — this entry exists so the shared
+   * non-empty / well-formed backstop below covers this net too.
+   */
+  reservationStatus: RESERVATION_STATUS_CLOSURE.markers.map((m) => m.source).join("|"),
 } as const;
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -1365,54 +1391,40 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   if (orderPhrasing && !mutationImperative) classes.push("ORDER_STATUS_Q");
   if (paymentPhrasing && !mutationImperative) classes.push("PAYMENT_STATUS_Q");
 
-  // FE-T17 — reservation-bearing phrasing. An explicit marker (not folded into the
+  // FE-T17 — reservation-bearing phrasing. An explicit marker set (not folded into the
   // bare-"status" polysemy resolution below — reservation questions name "reserva"
   // directly, unlike the order/payment "status" ambiguity this file's F2 fix
   // disambiguates).
   //
-  // ANCHORED, not a bare substring test (review fix — the original unanchored
-  // `/reserva/` false-fired on the unrelated preserv* family — "preservar" /
-  // "preservam" / "preservação" / "preservativo" all contain "reserva" as a
-  // substring — and, via the completeness gate, a false span match can degrade an
-  // otherwise-valid answer to a DIFFERENT question to UNKNOWN. It also did NOT
-  // actually match "reservei" / "reservou" despite the old comment claiming it did
-  // — `/reserva/` requires the literal substring "reserva", which neither verb form
-  // contains). The negative lookbehind `(?<![a-z])` requires the match start at a
-  // word boundary (never mid-word, closing the preserv* false-positive); the
-  // alternation covers the verb forms this domain actually sees: reserva(s)
-  // (noun/verb), reservar (infinitive), reservad-o/a (participle), reservam
-  // (3p-pl present), reservando (gerund), reservei / reservou (1s/3s preterite).
-  // The `(?!at)` lookahead right after "reserv" excludes "reservatório" (reservoir/
-  // tank) — a real word sharing the "reserva-" prefix but never the domain this
-  // decomposer models (a restaurant table reservation) — cheaply, since no verb
-  // form in the alternation is ever followed by "at". Verified empirically against
-  // both a must-fire and a must-not-fire word list (RESERVATION_STATUS_Q tests
-  // below).
+  // inv.18 v2 / R2-S4 — the two marker regexes are GENERATED from
+  // `./claimdefs/reservation-status.claim.ts`, and the FE-T17 / BKL-219/224 anchoring
+  // rationale (the preserv* and "reservatório" false-positive closes on arm 1; the
+  // both-sides anchoring of the `mesa` synonym on arm 2) moved verbatim into that
+  // source. This is the one marker migration with NO alternation-splitting step: the two
+  // arms were ALREADY separate regex literals combined with `||`, and
+  // `markers.some((m) => m.test(t))` is that same predicate. Both arms stay pinned
+  // byte-for-byte by `__SPAN_NET_SOURCES_FOR_TEST.reservationStatus`.
   //
   // BKL-217 — EXCLUDE reservation MUTATIONS via the shared `mutationImperative`
   // net (the same read-vs-mutation split #349/BKL-201 applied to the cart span
-  // and BKL-206 to the order/payment status spans). RESERVATION_STATUS is
-  // classify-only-eligible, so without this gate "cancela minha reserva" / "muda
-  // minha reserva para 20h" fire RESERVATION_STATUS_Q → classify-only answers the
-  // READ and SILENTLY DROPS the reservation.cancel / reservation.modify (the
-  // reservation sibling of the BKL-201 hole — live-caught: a seeded-reservation
-  // "cancelar minha reserva das 18:30" degraded to "não encontrei" with zero
-  // adjudication). Gating on `!mutationImperative` routes those to the model /
-  // mutation path; a genuine reservation QUESTION ("minha reserva está
-  // confirmada?", "qual minha reserva?") has no mutation verb and still fires.
-  // A how-to interrogative ("como cancelo minha reserva?") also routes to the
-  // model for a helpful answer — the fail-SAFE direction (never a wrong read).
+  // and BKL-206 to the order/payment status spans). This GUARD is NOT part of the
+  // generated contribution — the compiler models markers, not suppression contexts —
+  // and stays here. RESERVATION_STATUS is classify-only-eligible, so without this gate
+  // "cancela minha reserva" / "muda minha reserva para 20h" fire RESERVATION_STATUS_Q →
+  // classify-only answers the READ and SILENTLY DROPS the reservation.cancel /
+  // reservation.modify (the reservation sibling of the BKL-201 hole — live-caught: a
+  // seeded-reservation "cancelar minha reserva das 18:30" degraded to "não encontrei"
+  // with zero adjudication). Gating on `!mutationImperative` routes those to the model /
+  // mutation path; a genuine reservation QUESTION ("minha reserva está confirmada?",
+  // "qual minha reserva?") has no mutation verb and still fires. A how-to interrogative
+  // ("como cancelo minha reserva?") also routes to the model for a helpful answer — the
+  // fail-SAFE direction (never a wrong read).
   //
-  // BKL-219/224 — the `mesa` (table) synonym: a customer asks about their booking
-  // by "mesa" as often as "reserva" ("minha mesa está confirmada?"). Anchored on
-  // BOTH sides (`(?<![a-z])mesas?(?![a-z])`) so it matches standalone "mesa"/"mesas"
-  // only — never mid-word ("mesada" allowance, "mesas" is fine). Hoisted to a const
-  // so the bare-"status" fallback below can de-shadow a reservation-status ask.
-  const reservationRef =
-    /(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)/.test(t) ||
-    /(?<![a-z])mesas?(?![a-z])/.test(t);
+  // Hoisted to a const so the bare-"status" fallback below can de-shadow a
+  // reservation-status ask (BKL-224) off the SAME predicate.
+  const reservationRef = RESERVATION_STATUS_CLOSURE.markers.some((m) => m.test(t));
   if (!mutationImperative && reservationRef) {
-    classes.push("RESERVATION_STATUS_Q");
+    classes.push(RESERVATION_STATUS_CLOSURE.spanClass);
   }
 
   // BKL-139 — a cart-CONTENTS question ("o que tem no meu carrinho?", "minha sacola").

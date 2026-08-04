@@ -19,6 +19,7 @@ import { CLAIM_REGISTRY } from "../claim-registry.js";
 import { MENU_DIETARY_DEFINITION } from "../claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "../claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "../claimdefs/menu-item-price.generated.js";
+import { RESERVATION_STATUS_DEFINITION } from "../claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_DEFINITION } from "../claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "../claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_DEFINITION } from "../claimdefs/store-open-now.generated.js";
@@ -170,32 +171,68 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
   });
 
   // R2-S1 — the same reference-identity guard for the two types adopted in that
-  // batch, plus R2-S2's MENU_ITEM_PRICE and R2-S3's two menu siblings. Written as a table
-  // over the adopted set so a further adoption is one row, and so the guard cannot hold
-  // for the first-migrated type while quietly lapsing for a later one.
+  // batch, plus R2-S2's MENU_ITEM_PRICE, R2-S3's two menu siblings and R2-S4's
+  // RESERVATION_STATUS. Written as a table over the adopted set so a further adoption is
+  // one row, and so the guard cannot hold for the first-migrated type while quietly
+  // lapsing for a later one.
+  //
+  // R2-S4 — `triadScoped` is now a COLUMN rather than a shared `false` expectation. It
+  // has to be: the first owner-scoped adoption is the first generated definition with
+  // `triadScoped: TRUE`, and a table that kept asserting `false` for every row would
+  // have forced either excluding it (leaving the reference-identity loophole open for
+  // exactly the riskiest type) or weakening the assertion for the five that legitimately
+  // are public. Per-row is strictly tighter than both.
   it.each([
-    ["STORE_HOURS", STORE_HOURS_DEFINITION],
-    ["STORE_INFO", STORE_INFO_DEFINITION],
+    ["STORE_HOURS", STORE_HOURS_DEFINITION, false],
+    ["STORE_INFO", STORE_INFO_DEFINITION, false],
     // R2-S2 — the first PARAMETERIZED adoption. Its `perResourceKey` facet lives on the
     // REGISTRY SPEC, not here, so the definition boot consumes is the published
     // projection unchanged (asserted in claimdefs/__tests__/per-resource-claim.test.ts).
-    ["MENU_ITEM_PRICE", MENU_ITEM_PRICE_DEFINITION],
+    ["MENU_ITEM_PRICE", MENU_ITEM_PRICE_DEFINITION, false],
     // R2-S3 — the two PUBLIC per-item siblings, on the same footing. This is the
     // GENERATED_DEFINITIONS loophole the table exists to close: a type whose spec/template/
     // closure are spliced from its generated module but whose DEFINITION is still
     // hand-reassembled by `buildClaimDefinition` would validate deep-equal and pass every
     // other assertion in this file, while boot ran the fail-closed validator over an
     // object the compiler never produced.
-    ["MENU_ITEM_CONTENTS", MENU_ITEM_CONTENTS_DEFINITION],
-    ["MENU_DIETARY", MENU_DIETARY_DEFINITION],
+    ["MENU_ITEM_CONTENTS", MENU_ITEM_CONTENTS_DEFINITION, false],
+    ["MENU_DIETARY", MENU_DIETARY_DEFINITION, false],
+    // R2-S4 — the first OWNER-SCOPED adoption, and the row this table's loophole matters
+    // most for: RESERVATION_STATUS is Triad-scoped, so if boot ever fell back to
+    // `buildClaimDefinition` for it the flag would come from TRIAD_SCOPED_TYPES (which
+    // still lists it) and the deep shape would still match — the fallback would be
+    // INVISIBLE to every value assertion. Only reference identity catches it.
+    ["RESERVATION_STATUS", RESERVATION_STATUS_DEFINITION, true],
   ] as const)(
     "CLAIM_DEFINITIONS.%s IS the generated definition (reference identity)",
-    (type, generated) => {
+    (type, generated, triadScoped) => {
       expect(CLAIM_DEFINITIONS[type]).toBe(generated);
-      // All five are PUBLIC reads: `triadScoped: false` is DECLARED in the source, so
-      // the value no longer depends on their absence from TRIAD_SCOPED_TYPES (an absence
-      // proves nothing on its own).
-      expect(generated.triadScoped).toBe(false);
+      // `triadScoped` is DECLARED in each source, so the value no longer depends on the
+      // type's presence/absence in TRIAD_SCOPED_TYPES (neither proves anything on its
+      // own — an absence least of all).
+      expect(generated.triadScoped).toBe(triadScoped);
+      expect(CLAIM_DEFINITIONS[type].triadScoped).toBe(triadScoped);
     },
   );
+
+  // R2-S4 — the OWNERSHIP axis at the DEFINITION seam. `perResourceKey` is a
+  // registry-spec facet and deliberately absent from the generic `ClaimDefinition`
+  // (per-resource-claim.ts), but `ownershipPolicy` is NOT: it is a field of the published
+  // `EvidenceRequirement`, so it rides the definition too and the inv.18 validator's
+  // INV-5 provenance/ownership checks run over it. Pinned here because this is the first
+  // adopted type for which the value is `"required"` — the conjunct that makes §5 C1
+  // (`owns(actor, e.resource)`) fire at all.
+  it("the generated owner-scoped definition carries ownershipPolicy: required on its evidence", () => {
+    expect(RESERVATION_STATUS_DEFINITION.requiredEvidence.map((e) => e.ownershipPolicy)).toEqual([
+      "required",
+    ]);
+    expect(RESERVATION_STATUS_DEFINITION.falsifiers?.map((f) => f.ownershipPolicy)).toEqual([
+      "required",
+    ]);
+    // Reference identity again, one level down: boot must run the validator over the
+    // SAME evidence rows the compiler emitted, not a structural copy of them.
+    expect(CLAIM_DEFINITIONS.RESERVATION_STATUS.requiredEvidence).toBe(
+      RESERVATION_STATUS_DEFINITION.requiredEvidence,
+    );
+  });
 });

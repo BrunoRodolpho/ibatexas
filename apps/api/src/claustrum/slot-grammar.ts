@@ -45,6 +45,7 @@
 import { MENU_DIETARY_TEMPLATE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_TEMPLATE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_TEMPLATE } from "./claimdefs/menu-item-price.generated.js";
+import { RESERVATION_STATUS_TEMPLATE } from "./claimdefs/reservation-status.generated.js";
 import { STORE_HOURS_TEMPLATE } from "./claimdefs/store-hours.generated.js";
 import { STORE_INFO_TEMPLATE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_TEMPLATE } from "./claimdefs/store-open-now.generated.js";
@@ -258,30 +259,17 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
       lit("."),
     ],
   },
-  // FE-T17 — the reservation-status validated template. ONE proposition slot
-  // (self-type, "status"), mirroring PAYMENT_STATUS / ORDER_FULFILLMENT_STAGE
-  // exactly. NOT multi-field: the linked kernel's mint step (SDD §5 C6 / the
-  // published `runClaimsKernel` "F2" narrowing — `kernels.js`) reconstructs the
-  // CanonicalClaim's value carrying ONLY the C6-`valueBinding.path`-proven slice
-  // and drops every sibling field of the read as unvalidated content (by design —
-  // only the bound path was ever compared against the ledger). A second
-  // proposition slot reading a sibling field (e.g. `partySize`) would therefore
-  // ALWAYS be UNFILLABLE post-mint, aborting the whole template to UNKNOWN (Inv 6
-  // is all-or-nothing per template) — so this template, like every other Triad
-  // type here, renders exactly the one C6-bound field.
-  // BKL-185 — the ONE proposition slot binds the pre-composed `statusLine`
-  // (status + optional "— DD/MM às HH:MM, para N pessoa(s)" detail; see the
-  // registry's valueBinding note). Detail-absent → statusLine === status → the
-  // render is byte-identical to the pre-BKL-185 status-only form.
-  [RESERVATION_STATUS]: {
-    claimType: RESERVATION_STATUS,
-    posture: "validated",
-    slots: [
-      lit("O status da sua reserva é: "),
-      prop(RESERVATION_STATUS, "statusLine"),
-      lit("."),
-    ],
-  },
+  // inv.18 v2 / R2-S4 — the reservation-status validated template is GENERATED from its
+  // ClaimDefinition source (./claimdefs/reservation-status.generated.ts — DO NOT EDIT).
+  // Its single proposition slot is derived from the source's `prop("statusLine")` with
+  // claimType filled = self, and the compiler binds it to the SAME source's C6
+  // `valueBinding.path` — so the 1:1 slot↔field alignment (Inv 6) is true BY
+  // CONSTRUCTION rather than by two files agreeing. The FE-T17 single-C6-field rationale
+  // (a second slot reading a sibling read field would be UNFILLABLE post-mint) and the
+  // BKL-185 `statusLine` note moved verbatim into that source. UNAFFECTED by the type's
+  // `perResourceKey` facet: a slot names a FIELD of the validated value, never a ledger
+  // key, so the runtime `:{subject}` suffixing never reaches here.
+  [RESERVATION_STATUS]: RESERVATION_STATUS_TEMPLATE,
   // BKL-139 — the cart-contents validated template. ONE proposition slot binding 1:1
   // to the C6 valueBinding FIELD (`itemsSummaryText`, claim-registry.ts
   // `valueBinding.path = ["itemsSummaryText"]`). The value is a DETERMINISTICALLY

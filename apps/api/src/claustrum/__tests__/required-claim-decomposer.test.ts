@@ -10,6 +10,10 @@
 import type { ClaimVerdict } from "@adjudicate/core";
 import { describe, expect, it } from "vitest";
 import { isRegistryClaimType, type RegistryClaimType } from "../claim-registry.js";
+// inv.18 v2 / R2-S4 — the GENERATED reservation closure, asserted directly (per-arm
+// marker pins) rather than only through the reassembled `__SPAN_NET_SOURCES_FOR_TEST`
+// string, which cannot witness where the arm boundary sits.
+import { RESERVATION_STATUS_CLOSURE } from "../claimdefs/reservation-status.generated.js";
 // BKL-285 — the classify-only ROUTE gate. Imported here so the reservation
 // create/read split can be asserted on the decision that actually costs the
 // customer their booking, not merely on the span label one step upstream.
@@ -867,6 +871,51 @@ describe("span nets — the S5843 restructure is source-identical to the literal
     expect(__SPAN_NET_SOURCES_FOR_TEST.menuDietary).toBe(
       String.raw`vegetarian[ao]?|\bvegan[ao]?\b`,
     );
+  });
+
+  // inv.18 v2 / R2-S4 — the RESERVATION_STATUS_Q net moved into
+  // `reservation-status.claim.ts` as TWO marker regexes, consumed the same
+  // `markers.some((m) => m.test(t))` way. This is the ONLY net in this file that was
+  // never a single alternation: the two arms were already separate regex literals `||`-ed
+  // in `classifyRequestSpans`, so they are pinned PER ARM rather than as a reassembled
+  // whole. Per-arm is strictly tighter here, and it has to be: arm 1 contains top-level-
+  // looking `|`s INSIDE its `(a|ar|ad|…)` group, so a joined string could not witness
+  // where the arm boundary sits — a re-split at one of those inner `|`s would leave the
+  // joined value byte-identical while producing two DIFFERENT (indeed invalid-in-spirit)
+  // regexes that `.some()` no longer evaluates as the original predicate.
+  it("RESERVATION_STATUS: each generated marker arm is byte-identical to its pre-migration literal", () => {
+    // Arm 1 — LEFT-anchored only. The `(?<![a-z])` lookbehind is what closes the
+    // preserv* family ("preservar"/"preservam"/"preservação"/"preservativo" all contain
+    // "reserva" as a substring), and `(?!at)` is what closes "reservatório". Both are
+    // invisible in a match/no-match sweep of ordinary phrasings, so byte-identity is the
+    // only guard: dropping either lookaround still fires on every true positive.
+    // Deliberately NOT right-anchored — it must keep matching "reservas"/"reservado".
+    expect(RESERVATION_STATUS_CLOSURE.markers[0]!.source).toBe(
+      String.raw`(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)`,
+    );
+    // Arm 2 (BKL-219/224) — the `mesa` synonym, anchored on BOTH sides so it never
+    // matches mid-word ("mesada").
+    expect(RESERVATION_STATUS_CLOSURE.markers[1]!.source).toBe(
+      String.raw`(?<![a-z])mesas?(?![a-z])`,
+    );
+    // Exactly two arms — a third would be new net surface smuggled in as a "move".
+    expect(RESERVATION_STATUS_CLOSURE.markers).toHaveLength(2);
+    // …and the joined form, so the shared non-empty/well-formed backstop below covers
+    // this net too and the ORDER of the two arms is pinned.
+    expect(__SPAN_NET_SOURCES_FOR_TEST.reservationStatus).toBe(
+      String.raw`(?<![a-z])reserv(?!at)(a|ar|ad|am|as|ando|ei|ou)|(?<![a-z])mesas?(?![a-z])`,
+    );
+  });
+
+  // The generated closure row itself — span class + required set — is what discharges
+  // INV-4 for this Triad-scoped type. A generated row that named a DIFFERENT span class
+  // would silently orphan the classifier arm (which now pushes
+  // `RESERVATION_STATUS_CLOSURE.spanClass`, so both sides would move together and no
+  // other assertion in this file would notice).
+  it("RESERVATION_STATUS: the generated closure row is the pre-migration row", () => {
+    expect(RESERVATION_STATUS_CLOSURE.spanClass).toBe("RESERVATION_STATUS_Q");
+    expect(RESERVATION_STATUS_CLOSURE.requires).toEqual(["RESERVATION_STATUS"]);
+    expect(REQUIRED_CLAIM_CLOSURE.RESERVATION_STATUS_Q).toEqual(["RESERVATION_STATUS"]);
   });
 
   // Guards the guard: a typo that emptied a part would make the assertions above
