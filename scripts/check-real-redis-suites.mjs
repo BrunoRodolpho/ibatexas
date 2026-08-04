@@ -88,6 +88,17 @@ const ROLL_CALL = [
   // release; the pre-F-22 control. Enrolled at merge time by the governor —
   // exactly the arrival class the discovery alarm below exists to catch.
   { file: "src/__tests__/park-nx-release-failure-mode.test.ts", minExecuted: 9, realRedis: 9 },
+  // Phase 5 — the first of the two F-22-deferred migrations. The T5
+  // audit-chain suite came off its hand-rolled in-memory stub: it parks
+  // through `createParkRedisCapabilities()` (so the framework's ATOMIC quota
+  // branch runs) and resumes through the resolver, whose `defer:resuming:*`
+  // release is a real Lua compare-and-delete. Its 3 audit-chain cases now
+  // assert over bytes Redis actually stored.
+  {
+    file: "src/__tests__/audit-2026-05-24/defer-resume-integrity.test.ts",
+    minExecuted: 3,
+    realRedis: 3,
+  },
   // 3 cases, of which 1 is inside the RUN_REAL_REDIS describe.
   { file: "src/__tests__/ledger-replay-suppression.test.ts", minExecuted: 3, realRedis: 1 },
   { file: "src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts", minExecuted: 3, realRedis: 3 },

@@ -17,85 +17,108 @@
 // (throws `ParkVerificationFieldsMissingError`) at park time whenever any
 // of the five fields cannot be sourced.
 //
-// These tests stub Redis (just enough to satisfy the framework primitive's
-// happy path) so they run without a Docker testcontainer — the goal is to
-// exercise the THROW path, not the actual SET semantics.
+// ── Why this file stays a UNIT test, and what its Redis argument is ─────────
+//
+// Phase 5 ruling (the second of the two F-22-deferred migrations). The
+// property under test is `hoistAndValidateVerificationFields`, and that
+// function runs to completion BEFORE the wrapper issues a single Redis
+// command — `park-nx.ts` calls it on line 1 of the wrapper, and the SETNX
+// placeholder is the next statement. So the property is Redis-INDEPENDENT and
+// belongs at the unit layer; putting it behind a testcontainer would buy no
+// signal and would spend a container on seven cases that provably never reach
+// the socket (the ruling's Q2: coverage is organized by script shape, "8
+// container suites, not 20").
+//
+// What DID have to change is the double. Before Phase 5 this file handed the
+// wrapper a plain-object stub that deliberately omitted `evalIncrCheck` and
+// `compareAndDelete`, so the two happy-path cases ran the framework's
+// NON-ATOMIC quota fallback inside a unit test — the dead branch F-22's
+// composition guarantee exists to close. That is gone. The `redis` argument is
+// now typed as the real `ParkRedisCapabilities` and every member is a
+// TRIPWIRE: it throws `RedisTouchedSentinel`. Nothing here emulates a Redis
+// command, least of all a Lua one (W4 RULE 3), and no code path in this file
+// reaches `parkDeferredIntent` at all.
+//
+// The tripwire is what makes the negative cases non-vacuous in BOTH
+// directions:
+//
+//   • treatment (cases 3–8) — a missing field must throw
+//     `ParkVerificationFieldsMissingError`, and case 9 pins that no Redis
+//     command was issued on the way there.
+//   • control (cases 1–2) — a COMPLETE envelope must get PAST validation and
+//     touch Redis, surfacing as `RedisTouchedSentinel`. Without this pair a
+//     validator rewritten to throw unconditionally would keep all seven
+//     negative cases green (F-14).
+//
+// The control's reach is exactly what the retired happy-path cases asserted
+// (`result.parked === true` proved "the wrapper did not refuse", nothing
+// more). The STRONGER statement — that the hoist actually populates
+// `actorPrincipal` on the blob Redis stores, and that the stored blob
+// hash-verifies — is proven on real Redis by
+// `park-deferred-intent-nx-hash.test.ts` ("hoist auto-corrects: caller passes
+// envelope WITHOUT explicit top-level actorPrincipal"), which reads the raw
+// bytes back and runs `verifyParkedEnvelopeHash` over them.
 
 import { describe, it, expect, vi } from "vitest"
 import { buildEnvelope } from "@adjudicate/core"
+import { deferParkKey } from "@adjudicate/runtime"
 import {
   parkDeferredIntentWithNxGuard,
   ParkVerificationFieldsMissingError,
 } from "../park-deferred-intent-nx.js"
+import type { ParkRedisCapabilities } from "../park-redis-capabilities.js"
 
 function rk(key: string): string {
   return `unit-q2:${key}`
 }
 
-// In-memory Redis stub that satisfies the framework's ParkRedis interface
-// just enough for the happy-path tests (SET NX, INCR, EXPIRE NX, DECR, DEL).
-// We do NOT need to model exact semantics — the wrapper either throws BEFORE
-// touching Redis (fail-loud paths) or succeeds against the stub.
-//
-// F-22: this stub deliberately does NOT carry `evalIncrCheck` or
-// `compareAndDelete`, so inside THIS file the framework takes its non-atomic
-// quota branch. That is intentional. Faking those two members here would be
-// Lua-emulation theater (W4 RULE 3) — an in-process `eval` decides the very
-// comparison the script exists to make atomic, and hands back green on a path
-// with no real coverage. Production cannot reach that branch: every park call
-// site is composed through `createParkRedisCapabilities()`, where both members
-// are REQUIRED. The atomicity claims live at the testcontainer layer, in
-// `apps/api/src/__tests__/park-nx-release-failure-mode.test.ts`.
-function makeRedisStub(): {
-  get: (key: string) => Promise<string | null>
-  set: (
-    key: string,
-    value: string,
-    options: { EX?: number; NX?: boolean },
-  ) => Promise<string | null>
-  del: (key: string) => Promise<unknown>
-  incr: (key: string) => Promise<number>
-  decr: (key: string) => Promise<number>
-  expire: (key: string, seconds: number) => Promise<unknown>
-} {
-  const store = new Map<string, string>()
-  const counters = new Map<string, number>()
-  return {
-    async get(key) {
-      return store.get(key) ?? null
-    },
-    async set(key, value, options) {
-      if (options.NX && store.has(key)) return null
-      store.set(key, value)
-      return "OK"
-    },
-    async del(key) {
-      const had = store.delete(key)
-      return had ? 1 : 0
-    },
-    async incr(key) {
-      const n = (counters.get(key) ?? 0) + 1
-      counters.set(key, n)
-      return n
-    },
-    async decr(key) {
-      const n = (counters.get(key) ?? 0) - 1
-      counters.set(key, n)
-      return n
-    },
-    async expire(_key, _seconds) {
-      return 1
-    },
+/**
+ * Raised by every member of the tripwire below. Reaching Redis is not a
+ * failure of this file's subject — it is this file's CONTROL: it proves the
+ * wrapper got past `hoistAndValidateVerificationFields` rather than refusing.
+ */
+class RedisTouchedSentinel extends Error {
+  constructor(command: string) {
+    super(`[unit-q2 tripwire] the wrapper issued redis.${command}()`)
+    this.name = "RedisTouchedSentinel"
   }
 }
 
-function buildArgs(envelopeOverrides: Record<string, unknown>): {
+/**
+ * A `ParkRedisCapabilities` whose every command REFUSES.
+ *
+ * Typed as the production contract (F-22) rather than cast into it, so the
+ * atomic members are declared — but declared as refusals, never as JS
+ * re-implementations. `evalIncrCheck` and `compareAndDelete` are Lua; an
+ * in-process version of either decides in our own process the very comparison
+ * the script exists to make atomic, which is the theater W4 RULE 3 forbids and
+ * `createInMemoryRedis` refuses outright. Their semantics are proven on real
+ * Redis in `src/__tests__/park-nx-release-failure-mode.test.ts` (F-22), and
+ * nothing in this file needs them: validation either refuses before the first
+ * command, or the first command trips this wire.
+ */
+function makeRedisTripwire(): ParkRedisCapabilities {
+  return {
+    set: () => Promise.reject(new RedisTouchedSentinel("set")),
+    incr: () => Promise.reject(new RedisTouchedSentinel("incr")),
+    decr: () => Promise.reject(new RedisTouchedSentinel("decr")),
+    expire: () => Promise.reject(new RedisTouchedSentinel("expire")),
+    evalIncrCheck: () =>
+      Promise.reject(new RedisTouchedSentinel("evalIncrCheck")),
+    compareAndDelete: () =>
+      Promise.reject(new RedisTouchedSentinel("compareAndDelete")),
+  }
+}
+
+interface TestArgs {
   envelope: Record<string, unknown>
   signal: string
   ttlSeconds: number
-  redis: ReturnType<typeof makeRedisStub>
+  redis: ParkRedisCapabilities
   rk: (raw: string) => string
-} {
+}
+
+function buildArgs(envelopeOverrides: Record<string, unknown>): TestArgs {
   const base = buildEnvelope({
     kind: "order.cancel",
     payload: { orderId: "ord_q2" },
@@ -118,116 +141,102 @@ function buildArgs(envelopeOverrides: Record<string, unknown>): {
     },
     signal: "payment.confirmed",
     ttlSeconds: 60,
-    redis: makeRedisStub(),
+    redis: makeRedisTripwire(),
     rk,
   }
 }
 
+/** The single cast in this file: the envelope is deliberately malformed. */
+function park(args: TestArgs): Promise<unknown> {
+  return parkDeferredIntentWithNxGuard(
+    args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
+  )
+}
+
 describe("W8-Q2 — hoistAndValidateVerificationFields", () => {
-  // ── Happy path: all four top-level fields present ────────────────────────
-  it("parks successfully when all four verification fields are present at top level", async () => {
-    const result = await parkDeferredIntentWithNxGuard(
-      buildArgs({}) as unknown as Parameters<
-        typeof parkDeferredIntentWithNxGuard
-      >[0],
-    )
-    expect(result.parked).toBe(true)
+  // ── CONTROL: a complete envelope gets PAST validation ────────────────────
+  // The pair-mate of every negative case below. If this stops reaching Redis,
+  // the negatives are passing because the validator refuses everything.
+  it("a complete envelope passes validation and reaches Redis (SETNX placeholder)", async () => {
+    const args = buildArgs({})
+    const setSpy = vi.spyOn(args.redis, "set")
+
+    await expect(park(args)).rejects.toBeInstanceOf(RedisTouchedSentinel)
+
+    // Validation passed, and the FIRST thing the wrapper did was claim the
+    // park slot for this session.
+    expect(setSpy).toHaveBeenCalledTimes(1)
+    expect(setSpy.mock.calls[0]![0]).toBe(rk(deferParkKey("sess_q2")))
   })
 
-  // ── Hoist behaviour: actor.principal → actorPrincipal ────────────────────
+  // ── CONTROL: hoist behaviour — actor.principal → actorPrincipal ──────────
   it("auto-hoists actor.principal → actorPrincipal when the top-level field is omitted", async () => {
-    const args = buildArgs({}) as unknown as {
-      envelope: Record<string, unknown>
-      signal: string
-      ttlSeconds: number
-      redis: ReturnType<typeof makeRedisStub>
-      rk: (raw: string) => string
-    }
+    const args = buildArgs({})
     // Caller forgot to copy principal up, but kept actor.principal nested.
     args.envelope.actor = { sessionId: "sess_q2", principal: "llm" }
     delete args.envelope.actorPrincipal
+    const setSpy = vi.spyOn(args.redis, "set")
 
-    const result = await parkDeferredIntentWithNxGuard(
-      args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
-    )
-    expect(result.parked).toBe(true)
+    // The hoist sourced actorPrincipal from the nested actor, so validation
+    // passed and the wrapper proceeded. Without the hoist this would be the
+    // `ParkVerificationFieldsMissingError` of the "nothing to hoist from"
+    // case below. (That the hoisted value LANDS on the stored blob is proven
+    // against real Redis in park-deferred-intent-nx-hash.test.ts.)
+    await expect(park(args)).rejects.toBeInstanceOf(RedisTouchedSentinel)
+    expect(setSpy).toHaveBeenCalledTimes(1)
   })
 
   // ── Fail-loud: each of the four required fields, exercised individually ──
   it("throws when `version` is missing at top level", async () => {
-    const args = buildArgs({}) as unknown as {
-      envelope: Record<string, unknown>
-    }
+    const args = buildArgs({})
     delete args.envelope.version
-    await expect(
-      parkDeferredIntentWithNxGuard(
-        args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
-      ),
-    ).rejects.toBeInstanceOf(ParkVerificationFieldsMissingError)
+    await expect(park(args)).rejects.toBeInstanceOf(
+      ParkVerificationFieldsMissingError,
+    )
   })
 
   it("throws when `nonce` is missing at top level", async () => {
-    const args = buildArgs({}) as unknown as {
-      envelope: Record<string, unknown>
-    }
+    const args = buildArgs({})
     delete args.envelope.nonce
-    await expect(
-      parkDeferredIntentWithNxGuard(
-        args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
-      ),
-    ).rejects.toBeInstanceOf(ParkVerificationFieldsMissingError)
+    await expect(park(args)).rejects.toBeInstanceOf(
+      ParkVerificationFieldsMissingError,
+    )
   })
 
   it("throws when `taint` is missing at top level", async () => {
-    const args = buildArgs({}) as unknown as {
-      envelope: Record<string, unknown>
-    }
+    const args = buildArgs({})
     delete args.envelope.taint
-    await expect(
-      parkDeferredIntentWithNxGuard(
-        args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
-      ),
-    ).rejects.toBeInstanceOf(ParkVerificationFieldsMissingError)
+    await expect(park(args)).rejects.toBeInstanceOf(
+      ParkVerificationFieldsMissingError,
+    )
   })
 
   it("throws when both `actorPrincipal` and nested `actor.principal` are missing (nothing to hoist from)", async () => {
-    const args = buildArgs({}) as unknown as {
-      envelope: Record<string, unknown>
-    }
+    const args = buildArgs({})
     delete args.envelope.actorPrincipal
     // No nested actor.principal either.
     args.envelope.actor = { sessionId: "sess_q2" }
-    await expect(
-      parkDeferredIntentWithNxGuard(
-        args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
-      ),
-    ).rejects.toBeInstanceOf(ParkVerificationFieldsMissingError)
+    await expect(park(args)).rejects.toBeInstanceOf(
+      ParkVerificationFieldsMissingError,
+    )
   })
 
   it("throws when `origin` is missing at top level (041 — part of the hash recipe)", async () => {
-    const args = buildArgs({}) as unknown as {
-      envelope: Record<string, unknown>
-    }
+    const args = buildArgs({})
     delete args.envelope.origin
-    await expect(
-      parkDeferredIntentWithNxGuard(
-        args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
-      ),
-    ).rejects.toBeInstanceOf(ParkVerificationFieldsMissingError)
+    await expect(park(args)).rejects.toBeInstanceOf(
+      ParkVerificationFieldsMissingError,
+    )
   })
 
   // ── Error carries the diagnostic payload ─────────────────────────────────
   it("the thrown error lists ALL missing fields and the intentHash for triage", async () => {
-    const args = buildArgs({}) as unknown as {
-      envelope: Record<string, unknown>
-    }
+    const args = buildArgs({})
     delete args.envelope.version
     delete args.envelope.nonce
     let caught: unknown = null
     try {
-      await parkDeferredIntentWithNxGuard(
-        args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
-      )
+      await park(args)
     } catch (err) {
       caught = err
     }
@@ -244,17 +253,15 @@ describe("W8-Q2 — hoistAndValidateVerificationFields", () => {
 
   // ── Fail-loud refuses BEFORE any Redis write ─────────────────────────────
   it("does not touch Redis when validation throws — no placeholder, no SET", async () => {
-    const args = buildArgs({}) as unknown as {
-      envelope: Record<string, unknown>
-      redis: ReturnType<typeof makeRedisStub>
-    }
+    const args = buildArgs({})
     delete args.envelope.taint
     const redisSetSpy = vi.spyOn(args.redis, "set")
-    await expect(
-      parkDeferredIntentWithNxGuard(
-        args as unknown as Parameters<typeof parkDeferredIntentWithNxGuard>[0],
-      ),
-    ).rejects.toBeInstanceOf(ParkVerificationFieldsMissingError)
+    await expect(park(args)).rejects.toBeInstanceOf(
+      ParkVerificationFieldsMissingError,
+    )
     expect(redisSetSpy).not.toHaveBeenCalled()
+    // Belt and braces: the tripwire would have surfaced as
+    // RedisTouchedSentinel (not ParkVerificationFieldsMissingError) had ANY
+    // command been issued, including one this spy does not watch.
   })
 })
