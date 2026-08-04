@@ -97,7 +97,14 @@ describe("acquireLockAtKey", () => {
   it("honours the ttlSeconds argument", async () => {
     await acquireLockAtKey(rk("res:ttl"), 42)
 
-    expect(mem.ttlMs(rk("res:ttl"))).toBe(42_000)
+    // The TTL is a DECAYING value — the adapter models it off the real clock, so
+    // milliseconds elapse between the SET and this read. Exact equality is a
+    // flake by construction (CI measured 41999); the property is "the TTL was
+    // set FROM ttlSeconds", pinned as a tight bound: above what any smaller
+    // whole-second argument could produce, and never above the argument itself.
+    const ttl = mem.ttlMs(rk("res:ttl"))
+    expect(ttl).toBeGreaterThan(41_000)
+    expect(ttl).toBeLessThanOrEqual(42_000)
   })
 
   it("returns null when the key is already held", async () => {
