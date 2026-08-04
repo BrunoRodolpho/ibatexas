@@ -43,7 +43,17 @@ import {
   COLLECTION,
 } from "@ibatexas/tools";
 import { Channel, COUPON_REJECTED_CODE, type UserType } from "@ibatexas/types";
-import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma, type CustomerService } from "@ibatexas/domain";
+import {
+  createCustomerService,
+  createOrderCommandService,
+  createOrderQueryService,
+  createPaymentQueryService,
+  prisma,
+  type CustomerService,
+  type OrderCommandService,
+  type OrderQueryService,
+  type PaymentQueryService,
+} from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCartSyncPayload, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
 import {
@@ -136,23 +146,23 @@ type PaymentMethod = "pix" | "card" | "cash";
 //     throwing `prisma` proxy: the reachability it was defending against no
 //     longer type-checks.
 //
-// Only the CustomerService behind the `customer.pix.details.save` persist is
-// injected in this slice — it is the one the migrated route test needs. Every
-// other domain access in this module still constructs internally, exactly as
-// before, and is a rollout target for a later slice:
+// R5-S5 completed the rollout R5-S2 enumerated: every SERVICE-FACTORY call in
+// this module now resolves through `CartRouteDeps`, and the one dynamic-import
+// site (`computeOrderStatus`) has its import hoisted to the static block above.
 //
-//   • createCustomerService()            — loadCachedPixDetails (PIX pre-fill read)
-//   • createCustomerService()            — resolveCustomerCartBody (medusaId lookup)
-//   • createCustomerService()            — POST /api/cart handler (medusaId lookup)
-//   • createOrderCommandService(undefined, { auditSink }) — persistCheckoutOrderNote
-//   • createPaymentQueryService()        — computeOrderStatus, GET order-details
-//   • createOrderQueryService()          — computeOrderStatus, via `await import`
+// What REMAINS internally constructed, and why it is not a mechanical move:
+//
 //   • prisma.orderProjection.findFirst   — 3 direct singleton reads
 //                                          (persistCheckoutOrderNote,
 //                                           resolveDisplayIdOrder, resolveStatusOrderId)
 //
-// Adding a member to `CartRouteDeps` is the mechanical move for each; the
-// `prisma.orderProjection` reads need an owning service first.
+// These are raw `prisma` delegate reads, not service constructions: there is no
+// factory to swap and no service that owns `orderProjection` reads with the
+// shapes these three need (a `displayId` lookup selecting five columns, and two
+// id/displayId resolutions). Injecting the raw client here would widen the seam
+// to a PrismaClient — the exact coupling R5-S1 narrowed `CustomerService` away
+// from — so the honest move is an owning query service first, then a factory
+// member like the ones below. Out of scope for this slice.
 
 /** The domain services `cart.ts`'s checkout chain resolves through the seam. */
 export interface CartRouteDeps {
@@ -162,6 +172,33 @@ export interface CartRouteDeps {
    * request rather than at registration.
    */
   readonly customerService: () => CustomerService;
+  /**
+   * Builds the UNAUDITED CustomerService used by the three read-only customer
+   * lookups (PIX pre-fill in `loadCachedPixDetails`, and the `medusaId` binding
+   * in `resolveCustomerCartBody` + the POST /api/cart handler). Deliberately a
+   * SEPARATE member from `customerService` above: those sites called bare
+   * `createCustomerService()` with no audit sink, and collapsing them onto the
+   * audited factory would add an audit-sink resolution to three read paths that
+   * never had one. Called per site, so each still gets its own instance.
+   */
+  readonly customerLookupService: () => CustomerService;
+  /**
+   * Builds the OrderCommandService behind `persistCheckoutOrderNote`'s
+   * kernel-adjudicated `order.note.add`. Called once per persist so the audit
+   * sink resolves on the request, matching the inline construction it replaces.
+   */
+  readonly orderCommandService: () => OrderCommandService;
+  /**
+   * Builds the OrderQueryService for `computeOrderStatus`'s projection read.
+   * R5-S2 flagged this site as needing its `await import("@ibatexas/domain")`
+   * hoisted first; the import is now static, so the factory is ordinary.
+   */
+  readonly orderQueryService: () => OrderQueryService;
+  /**
+   * Builds the PaymentQueryService for the two active-payment reads
+   * (`computeOrderStatus` and the GET order-details handler).
+   */
+  readonly paymentQueryService: () => PaymentQueryService;
 }
 
 /**
@@ -179,6 +216,11 @@ export interface CartRoutesOptions {
 function defaultCartRouteDeps(): CartRouteDeps {
   return {
     customerService: () => createCustomerService({ auditSink: getAuditSink() }),
+    customerLookupService: () => createCustomerService(),
+    orderCommandService: () =>
+      createOrderCommandService(undefined, { auditSink: getAuditSink() }),
+    orderQueryService: () => createOrderQueryService(),
+    paymentQueryService: () => createPaymentQueryService(),
   };
 }
 
@@ -213,8 +255,13 @@ function resolveCartIdempotencyKey(
 
 const PIX_CACHE_TTL = 90 * 86400; // 90 days
 
+/** `deps` is REQUIRED and has no default — same rule as
+ *  `cachePixDetailsForCustomer`: the swallowing `catch` below would turn a
+ *  singleton-bound read into a silent `null`, so reachability is a compile
+ *  error rather than a live connection. */
 async function loadCachedPixDetails(
   customerId: string,
+  deps: CartRouteDeps,
 ): Promise<{ name?: string; email?: string; cpf?: string } | null> {
   try {
     const redis = await getRedisClient();
@@ -228,7 +275,7 @@ async function loadCachedPixDetails(
         cpf: hash.cpf || undefined,
       };
     }
-    const svc = createCustomerService();
+    const svc = deps.customerLookupService();
     const customer = await svc.getById(customerId);
     const cpf = (customer as Record<string, unknown>).cpf as string | null | undefined;
     if (customer.email || cpf) {
@@ -472,7 +519,7 @@ async function finalizeCheckout(args: {
   // is kernel-adjudicated and audit-emitted. The Wave-6 finding flagged the
   // direct prisma.orderNote.create as a parallel/duplicate surface bypass.
   if (notes && result.orderId) {
-    await persistCheckoutOrderNote({ notes, orderId: result.orderId, customerId, cartId });
+    await persistCheckoutOrderNote({ notes, orderId: result.orderId, customerId, cartId, deps });
   }
 
   // R0a — mint a signed per-order access token so a GUEST (null-owner order)
@@ -542,8 +589,10 @@ async function persistCheckoutOrderNote(args: {
   orderId: string;
   customerId: string | undefined;
   cartId: string;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: CartRouteDeps;
 }): Promise<void> {
-  const { notes, orderId, customerId, cartId } = args;
+  const { notes, orderId, customerId, cartId, deps } = args;
   try {
     const displayIdMatch = /^IBX-(\d+)$/i.exec(orderId);
     if (!displayIdMatch) return;
@@ -588,9 +637,7 @@ async function persistCheckoutOrderNote(args: {
         totalInCentavos: projection.totalInCentavos,
       },
     };
-    const orderCmdSvc = createOrderCommandService(undefined, {
-      auditSink: getAuditSink(),
-    });
+    const orderCmdSvc = deps.orderCommandService();
     await orderCmdSvc.addNoteFromEnvelope(
       noteEnvelope,
       noteOrderState,
@@ -625,10 +672,11 @@ function mintOrderAccessToken(
  *  failure the cart is created as a guest cart. */
 async function resolveCustomerCartBody(
   customerId: string | undefined,
+  deps: CartRouteDeps,
 ): Promise<Record<string, unknown>> {
   if (!customerId) return {};
   try {
-    const customerSvc = createCustomerService();
+    const customerSvc = deps.customerLookupService();
     const customer = await customerSvc.getById(customerId);
     if (customer.medusaId) {
       return { customer_id: customer.medusaId };
@@ -801,15 +849,17 @@ async function syncLocalCartForCheckout(args: {
   localItems: Array<{ variantId: string; quantity: number; productType?: string }>;
   customerId: string | undefined;
   log: RouteLog;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: CartRouteDeps;
 }): Promise<{ cartId: string } | { rejection: CheckoutRejection }> {
-  const { localItems, customerId, log } = args;
+  const { localItems, customerId, log, deps } = args;
   let cartId = args.cartId;
 
   const needsNewCart = await checkoutCartNeedsReplacement({ cartId, customerId, log });
 
   if (needsNewCart) {
     // Bind customer to new cart so the order is linked to their account
-    const newCartBody = await resolveCustomerCartBody(customerId);
+    const newCartBody = await resolveCustomerCartBody(customerId, deps);
     const newCart = await medusaAdjudicated<Record<string, unknown>, { cart?: { id: string } }>({
       scope: "store",
       method: "POST",
@@ -1018,11 +1068,13 @@ async function resolvePixBillingDetails(args: {
   pixEmail?: string;
   pixCpf?: string;
   customerId: string | undefined;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: CartRouteDeps;
 }): Promise<
   | { rejection: CheckoutRejection }
   | { pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } }
 > {
-  const { pixName, pixEmail, pixCpf, customerId } = args;
+  const { pixName, pixEmail, pixCpf, customerId, deps } = args;
 
   // P1-DATA-CPF: validate the CPF checksum before it flows to Stripe + Prisma.
   let normalizedFormCpf: string | undefined;
@@ -1047,7 +1099,7 @@ async function resolvePixBillingDetails(args: {
   // Try loading cached PIX details for authenticated customers
   let cached: { name?: string; email?: string; cpf?: string } | null = null;
   if (customerId) {
-    cached = await loadCachedPixDetails(customerId);
+    cached = await loadCachedPixDetails(customerId, deps);
   }
 
   return {
@@ -1282,12 +1334,16 @@ async function computeOrderStatus(args: {
   accessToken: string | undefined;
   customerId: string | undefined;
   log: RouteLog;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: CartRouteDeps;
 }): Promise<StatusReadOutcome> {
-  const { orderId, orderIdParam, accessToken, customerId, log } = args;
+  const { orderId, orderIdParam, accessToken, customerId, log, deps } = args;
   try {
-    // Primary: read from projection
-    const { createOrderQueryService: createQS } = await import("@ibatexas/domain");
-    const querySvc = createQS();
+    // Primary: read from projection. R5-S5 hoisted the former
+    // `await import("@ibatexas/domain")` here into the static import block —
+    // the module is already statically imported by this file, so the dynamic
+    // form deferred nothing and only hid the factory from the seam.
+    const querySvc = deps.orderQueryService();
     const projection = await querySvc.getById(orderId);
 
     if (projection) {
@@ -1300,7 +1356,7 @@ async function computeOrderStatus(args: {
       })) {
         return { status: 404, body: { error: "Pedido não encontrado." }, noStore: false };
       }
-      const pqs = createPaymentQueryService();
+      const pqs = deps.paymentQueryService();
       const cp = await pqs.getActiveByOrderId(orderId).catch(() => null);
       return {
         status: 200,
@@ -1394,7 +1450,7 @@ export async function cartRoutes(
       let cartBody: Record<string, unknown> = {};
       if (request.customerId) {
         try {
-          const customerSvc = createCustomerService();
+          const customerSvc = deps.customerLookupService();
           const customer = await customerSvc.getById(request.customerId);
           if (customer.medusaId) {
             cartBody = { customer_id: customer.medusaId };
@@ -1738,6 +1794,7 @@ export async function cartRoutes(
           localItems,
           customerId: request.customerId,
           log: server.log,
+          deps,
         });
         if ("rejection" in syncResult) {
           return reply.status(syncResult.rejection.status).send(syncResult.rejection.body);
@@ -1753,6 +1810,7 @@ export async function cartRoutes(
           pixEmail: request.body.pixEmail,
           pixCpf: request.body.pixCpf,
           customerId: request.customerId,
+          deps,
         });
         if ("rejection" in pixResult) {
           return reply.status(pixResult.rejection.status).send(pixResult.rejection.body);
@@ -2011,7 +2069,7 @@ export async function cartRoutes(
       preHandler: requireAuth,
     },
     async (request, reply) => {
-      const cached = await loadCachedPixDetails(request.customerId!);
+      const cached = await loadCachedPixDetails(request.customerId!, deps);
       if (cached) {
         // Return full CPF — this is the customer's own data behind requireAuth,
         // and the checkout form needs the real value for Stripe PIX validation.
@@ -2083,7 +2141,7 @@ export async function cartRoutes(
       }
 
       // Medusa v2 returns prices in reais — convert to centavos for frontend
-      const pqs = createPaymentQueryService();
+      const pqs = deps.paymentQueryService();
       const cp = await pqs.getActiveByOrderId(order.id).catch(() => null);
 
       const orderResponse = {
@@ -2142,6 +2200,7 @@ export async function cartRoutes(
         accessToken,
         customerId: request.customerId,
         log: server.log,
+        deps,
       });
       if (outcome.noStore) {
         reply.header("Cache-Control", "no-store");

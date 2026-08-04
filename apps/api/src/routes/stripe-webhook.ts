@@ -59,6 +59,10 @@ import {
   type PaymentDisputeOpenPayload,
   createOrderEventLogService,
   type PaymentStatusReconcilePayload,
+  type OrderService,
+  type OrderEventLogService,
+  type PaymentCommandService,
+  type PaymentQueryService,
 } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { buildEnvelope } from "@adjudicate/core";
@@ -90,6 +94,82 @@ type WebhookLogger = {
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
 };
+
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// This file's shape differs from every other route in the rollout, and the
+// difference is structural rather than stylistic. Elsewhere the plugin body
+// both resolves the deps AND owns the handlers that use them. Here it does
+// not: `stripeWebhookRoutes` only verifies the signature and ENQUEUES, then
+// hands `dispatchStripeWebhookEvent` to the BullMQ processor. The service
+// constructions all live under that exported dispatch entry point, on a job
+// worker, on the far side of a queue — so a dep set resolved in the plugin
+// body could never reach them by closure alone.
+//
+// So the seam is threaded through `dispatchStripeWebhookEvent` itself, whose
+// `deps` parameter is OPTIONAL and defaults to the production set. Two
+// consequences worth stating plainly:
+//
+//   • The plugin still owns the production composition: it resolves the set
+//     once per registration and closes over it in the callback it hands the
+//     processor, so a `server.register(stripeWebhookRoutes, { deps })` does
+//     reach the handlers for every event that arrives through the queue.
+//
+//   • The parameter is optional rather than required (the opposite of
+//     `cachePixDetailsForCustomer`'s no-fallback rule) because
+//     `dispatchStripeWebhookEvent` is a PUBLIC entry point with an existing
+//     3-argument contract — the processor calls it, and so do the route's
+//     tests. Making it required would be a test migration, which this slice
+//     deliberately does not do. The default is the same expression the
+//     handlers constructed inline, so the fallback is not a silent path to a
+//     different service; it is the identical one.
+//
+// Unlike the other files, three members take ARGUMENTS: these constructions
+// genuinely bind per-event values (the job's `logger`, and the Stripe event id
+// that stamps `buildWebhookOrderService`'s audit `sourceSubject`). They are
+// still factories — nothing is constructed until a handler calls one.
+
+/** The domain services `stripe-webhook.ts`'s handlers resolve through the seam. */
+export interface StripeWebhookRouteDeps {
+  /** Builds the PaymentQueryService behind the PI/order payment lookups. */
+  readonly paymentQueryService: () => PaymentQueryService;
+  /** Builds the audit-wired PaymentCommandService bound to the job's logger. */
+  readonly paymentCommandService: (logger: WebhookLogger) => PaymentCommandService;
+  /** Builds the OrderEventLogService for the reconcile audit trail. */
+  readonly orderEventLogService: (logger: WebhookLogger) => OrderEventLogService;
+  /**
+   * Builds the kernel-gated Medusa OrderService for the capture path. Takes
+   * the event because the adjudicated `sourceSubject` embeds `event.id`.
+   */
+  readonly orderService: (event: Stripe.Event, logger: WebhookLogger) => OrderService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface StripeWebhookRoutesOptions {
+  readonly deps?: Partial<StripeWebhookRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction this file did inline. */
+function defaultStripeWebhookRouteDeps(): StripeWebhookRouteDeps {
+  return {
+    paymentQueryService: () => createPaymentQueryService(),
+    paymentCommandService: (logger) =>
+      createPaymentCommandService(logger, { auditSink: getAuditSink() }),
+    orderEventLogService: (logger) => createOrderEventLogService(logger),
+    orderService: (event, logger) => buildWebhookOrderService(event, logger),
+  };
+}
+
+function resolveStripeWebhookRouteDeps(
+  options?: StripeWebhookRoutesOptions,
+): StripeWebhookRouteDeps {
+  return { ...defaultStripeWebhookRouteDeps(), ...(options?.deps ?? {}) };
+}
 
 // ── Reconcile payment status from Stripe event ──────────────────────────────
 
@@ -215,12 +295,11 @@ async function reconcilePaymentFromStripe(
    * (the handler that already resolved an orderId); a payment that already
    * carries a DIFFERENT PI id is never adopted (stale/foreign PI).
    */
+  deps: StripeWebhookRouteDeps,
   fallbackOrderId?: string,
 ): Promise<void> {
-  const paymentQuerySvc = createPaymentQueryService();
-  const paymentCmdSvc = createPaymentCommandService(logger, {
-    auditSink: getAuditSink(),
-  });
+  const paymentQuerySvc = deps.paymentQueryService();
+  const paymentCmdSvc = deps.paymentCommandService(logger);
 
   const payment = await resolvePaymentForReconcile(
     paymentQuerySvc,
@@ -340,7 +419,7 @@ async function reconcilePaymentFromStripe(
   } satisfies PaymentStatusChangedEvent & { eventType: string });
 
   // Audit trail
-  const eventLogSvc = createOrderEventLogService(logger);
+  const eventLogSvc = deps.orderEventLogService(logger);
   await eventLogSvc.append({
     orderId: payment.orderId,
     eventType: "payment.status_changed",
@@ -541,6 +620,7 @@ async function handlePaymentSucceeded(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: StripeWebhookRouteDeps,
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const processingMs = Date.now() - startMs;
@@ -562,7 +642,7 @@ async function handlePaymentSucceeded(
     return;
   }
 
-  const svc = buildWebhookOrderService(event, logger);
+  const svc = deps.orderService(event, logger);
   // Serialize capture per order (P0-PAY-2). Two distinct payment_intent.succeeded
   // events for one order (realistic after amend_order/regenerate_pix mints a 2nd PI)
   // would otherwise both pass capturePayment's metadata guard and both capture +
@@ -594,7 +674,7 @@ async function handlePaymentSucceeded(
   if (!result) {
     logger.info({ event_id: event.id, order_id: orderId }, "Order already processed — no-op");
     // Still reconcile payment status even if order was already processed
-    await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, orderId);
+    await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, deps, orderId);
     return;
   }
 
@@ -619,7 +699,7 @@ async function handlePaymentSucceeded(
   });
 
   // Reconcile payment status → paid
-  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, orderId);
+  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, deps, orderId);
 
   // Clean up pending-order entry now that the Medusa order exists
   const domainCustomerId = paymentIntent.metadata?.["customerId"];
@@ -656,6 +736,7 @@ async function handlePaymentFailed(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: StripeWebhookRouteDeps,
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const orderId = paymentIntent.metadata?.["medusaOrderId"];
@@ -666,7 +747,7 @@ async function handlePaymentFailed(
   );
 
   // Reconcile payment status → payment_failed
-  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAYMENT_FAILED, event, logger);
+  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAYMENT_FAILED, event, logger, deps);
 
   if (orderId) {
     await publishNatsEvent("order.payment_failed", {
@@ -682,6 +763,7 @@ async function handleChargeRefunded(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: StripeWebhookRouteDeps,
 ): Promise<void> {
   const charge = event.data.object as Stripe.Charge;
   const orderId = charge.metadata?.["medusaOrderId"];
@@ -701,7 +783,7 @@ async function handleChargeRefunded(
     ? charge.payment_intent
     : charge.payment_intent?.id;
   if (piId) {
-    await reconcilePaymentFromStripe(piId, targetStatus, event, logger);
+    await reconcilePaymentFromStripe(piId, targetStatus, event, logger, deps);
   }
 
   if (!orderId) {
@@ -738,8 +820,9 @@ async function escalateDisputeOpen(
   orderId: string | undefined,
   event: Stripe.Event,
   logger: WebhookLogger,
+  deps: StripeWebhookRouteDeps,
 ): Promise<void> {
-  const paymentQuerySvc = createPaymentQueryService();
+  const paymentQuerySvc = deps.paymentQueryService();
   const payment = await resolvePaymentForReconcile(
     paymentQuerySvc,
     piId,
@@ -758,9 +841,7 @@ async function escalateDisputeOpen(
     return;
   }
 
-  const paymentCmdSvc = createPaymentCommandService(logger, {
-    auditSink: getAuditSink(),
-  });
+  const paymentCmdSvc = deps.paymentCommandService(logger);
   const envelope = buildDisputeOpenEnvelope({
     paymentId: payment.id,
     disputeAmountCentavos: dispute.amount,
@@ -802,6 +883,7 @@ async function handleChargeDisputeCreated(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: StripeWebhookRouteDeps,
 ): Promise<void> {
   const dispute = event.data.object as Stripe.Dispute;
   const orderId = dispute.metadata?.["medusaOrderId"];
@@ -817,12 +899,12 @@ async function handleChargeDisputeCreated(
     ? dispute.payment_intent
     : dispute.payment_intent?.id;
   if (piId) {
-    await reconcilePaymentFromStripe(piId, PaymentStatus.DISPUTED, event, logger);
+    await reconcilePaymentFromStripe(piId, PaymentStatus.DISPUTED, event, logger, deps);
     // BKL-178 — governed dispute escalation: mint + adjudicate a system-actor
     // payment.dispute.open envelope (always ESCALATEs) and, on ESCALATE, surface
     // it to the owner escalation queue via support.handoff_requested. Runs after
     // the reconcile so the resolved Payment row is authoritative.
-    await escalateDisputeOpen(dispute, piId, orderId, event, logger);
+    await escalateDisputeOpen(dispute, piId, orderId, event, logger, deps);
   }
 
   await publishNatsEvent("order.disputed", {
@@ -843,6 +925,7 @@ async function handlePaymentIntentCanceled(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: StripeWebhookRouteDeps,
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const orderId = paymentIntent.metadata?.["medusaOrderId"];
@@ -854,7 +937,7 @@ async function handlePaymentIntentCanceled(
   );
 
   // Reconcile payment → canceled
-  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.CANCELED, event, logger);
+  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.CANCELED, event, logger, deps);
 
   if (!orderId) {
     logger.warn({ event_id: event.id }, "payment_intent.canceled missing medusaOrderId metadata");
@@ -887,22 +970,30 @@ export async function dispatchStripeWebhookEvent(
   event: Stripe.Event,
   receivedAtMs: number,
   logger: WebhookLogger,
+  /**
+   * The resolved service set. OPTIONAL, defaulting to the production one —
+   * see the StripeWebhookRouteDeps block for why this entry point takes a
+   * default where `cachePixDetailsForCustomer` refuses one. `stripeWebhookRoutes`
+   * passes its registration-resolved set; a caller that omits it gets the same
+   * expressions the handlers used to construct inline.
+   */
+  deps: StripeWebhookRouteDeps = defaultStripeWebhookRouteDeps(),
 ): Promise<void> {
   switch (event.type) {
     case "payment_intent.succeeded":
-      await handlePaymentSucceeded(event, receivedAtMs, logger);
+      await handlePaymentSucceeded(event, receivedAtMs, logger, deps);
       break;
     case "payment_intent.payment_failed":
-      await handlePaymentFailed(event, receivedAtMs, logger);
+      await handlePaymentFailed(event, receivedAtMs, logger, deps);
       break;
     case "charge.refunded":
-      await handleChargeRefunded(event, receivedAtMs, logger);
+      await handleChargeRefunded(event, receivedAtMs, logger, deps);
       break;
     case "charge.dispute.created":
-      await handleChargeDisputeCreated(event, receivedAtMs, logger);
+      await handleChargeDisputeCreated(event, receivedAtMs, logger, deps);
       break;
     case "payment_intent.canceled":
-      await handlePaymentIntentCanceled(event, receivedAtMs, logger);
+      await handlePaymentIntentCanceled(event, receivedAtMs, logger, deps);
       break;
     default:
       logger.info({ event_id: event.id, type: event.type }, "Unhandled Stripe event type — ignoring");
@@ -911,7 +1002,16 @@ export async function dispatchStripeWebhookEvent(
 
 // ── Route registration ──────────────────────────────────────────────────────
 
-export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
+export async function stripeWebhookRoutes(
+  server: FastifyInstance,
+  options?: StripeWebhookRoutesOptions,
+): Promise<void> {
+  // Resolved ONCE per registration. The members are factories, so nothing is
+  // constructed here — see the StripeWebhookRouteDeps block above. The
+  // processor callback below closes over this set, which is how a registration
+  // override reaches handlers that run on the job worker.
+  const deps = resolveStripeWebhookRouteDeps(options);
+
   // Self-register the durable processor so queued jobs drain on (re)start.
   // Guarded out of the UNIT-test env (no BullMQ/Redis worker in vitest); the
   // handlers themselves are exercised via dispatchStripeWebhookEvent.
@@ -922,7 +1022,11 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
   // it MUST drain webhook jobs or the signed paid-state fixture's events would
   // be acked-then-stranded. Mirrors apps/api/src/index.ts:133.
   if (process.env.NODE_ENV !== "test" || process.env.IBX_TEST_FINGERPRINT) {
-    startStripeWebhookProcessor(dispatchStripeWebhookEvent);
+    // Closure rather than a bare reference: this is what carries the
+    // registration-resolved dep set across the queue to the job worker.
+    startStripeWebhookProcessor((event, receivedAtMs, logger) =>
+      dispatchStripeWebhookEvent(event, receivedAtMs, logger, deps),
+    );
   }
 
   // Scope raw body parser to this route only (Fastify encapsulated plugin)

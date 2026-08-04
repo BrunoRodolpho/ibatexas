@@ -63,6 +63,9 @@ import {
   exportCustomerData,
   anonymizeCustomer,
   anonymizeCustomerFromEnvelope,
+  type CustomerService,
+  type OrderQueryService,
+  type LoyaltyService,
 } from "@ibatexas/domain";
 import {
   customerOnboardingPolicyBundle,
@@ -194,10 +197,66 @@ function epochHour(): number {
   return Math.floor(Date.now() / (60 * 60 * 1000));
 }
 
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Every construction in this file was PER-REQUEST, inline in a handler
+// (`await createCustomerService().updateProfile(...)` and friends). The
+// members are therefore factories called at each of those same sites, so each
+// handler still builds its own instance on the request that needs it — no
+// service is hoisted to registration and nothing becomes shared across
+// requests. That is the R5-S2 factories-not-instances rule doing its actual
+// job here rather than as a formality.
+//
+// All three defaults are BARE constructions (no audit sink), matching the
+// inline calls they replace: the audited writes in this file go through
+// `runCustomerIntent` / the customer-intent gateway, not through these.
+
+/** The domain services `me.ts` resolves through the seam. */
+export interface MeRouteDeps {
+  /**
+   * Builds the CustomerService behind the profile, preferences and address
+   * handlers. Called per handler invocation, as the inline construction was.
+   */
+  readonly customerService: () => CustomerService;
+  /** Builds the OrderQueryService behind the single-order read. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the LoyaltyService behind the balance read. */
+  readonly loyaltyService: () => LoyaltyService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface MeRoutesOptions {
+  readonly deps?: Partial<MeRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction this file did inline. */
+function defaultMeRouteDeps(): MeRouteDeps {
+  return {
+    customerService: () => createCustomerService(),
+    orderQueryService: () => createOrderQueryService(),
+    loyaltyService: () => createLoyaltyService(),
+  };
+}
+
+function resolveMeRouteDeps(options?: MeRoutesOptions): MeRouteDeps {
+  return { ...defaultMeRouteDeps(), ...(options?.deps ?? {}) };
+}
+
 // ── Plugin ─────────────────────────────────────────────────────────────────────
 
-export async function meRoutes(server: FastifyInstance): Promise<void> {
+export async function meRoutes(
+  server: FastifyInstance,
+  options?: MeRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so nothing is
+  // constructed here — see the MeRouteDeps block above.
+  const deps = resolveMeRouteDeps(options);
 
   // ── GET /api/me/data ────────────────────────────────────────────────────────
 
@@ -263,7 +322,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const customerId = request.customerId!;
-      const balance = await createLoyaltyService().getBalance(customerId);
+      const balance = await deps.loyaltyService().getBalance(customerId);
       return reply.send({
         stamps: balance.stamps,
         stampsNeeded: balance.stampsNeeded,
@@ -338,7 +397,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         executor: async () => {
           // EXECUTE: persist via the bare service method (the sanctioned executor
           // for the envelope wrapper). Adjudication already ran in runCustomerIntent.
-          persistedPrefs = await createCustomerService().updatePreferences(customerId, {
+          persistedPrefs = await deps.customerService().updatePreferences(customerId, {
             allergenExclusions: [...body.allergenExclusions],
             ...(body.dietaryFlags ? { dietaryRestrictions: [...body.dietaryFlags] } : {}),
             ...(body.favoriteCategories ? { favoriteCategories: [...body.favoriteCategories] } : {}),
@@ -427,7 +486,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         reply.code(403).send({ statusCode: 403, error: "Forbidden", message });
 
       // Owner-scoped read: null for a non-owner / unattributed order (Inv 2).
-      const order = await createOrderQueryService().getById(orderId, { customerId });
+      const order = await deps.orderQueryService().getById(orderId, { customerId });
       if (!order) {
         return refuse403("Pedido não encontrado para esta conta.");
       }
@@ -540,7 +599,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         state,
         policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
         executor: async () => {
-          await createCustomerService().updateProfile(customerId, {
+          await deps.customerService().updateProfile(customerId, {
             ...(body.name === undefined ? {} : { name: body.name }),
             ...(body.email === undefined ? {} : { email: body.email }),
           });
@@ -608,7 +667,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const customerId = request.customerId!;
-      const addresses = await createCustomerService().listAddresses(customerId);
+      const addresses = await deps.customerService().listAddresses(customerId);
       return reply.send({ addresses });
     },
   );
@@ -657,7 +716,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         nonce: deriveMeNonce(idempotencyKey),
         customerId,
       });
-      const svc = createCustomerService();
+      const svc = deps.customerService();
       let created: Awaited<ReturnType<typeof svc.addAddress>> | undefined;
       const out = await runCustomerIntent({
         envelope,
@@ -724,7 +783,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         state: buildCustomerAuthState(customerId),
         policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
         executor: async () => {
-          const r = await createCustomerService().removeAddress(customerId, addressId);
+          const r = await deps.customerService().removeAddress(customerId, addressId);
           removedCount = r.count;
           return r;
         },
@@ -794,7 +853,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
 
       // Load the customer's phone for Twilio. We do this AFTER auth so
       // the JWT cookie has been validated upstream.
-      const customerSvc = createCustomerService();
+      const customerSvc = deps.customerService();
       let phone: string;
       try {
         const customer = await customerSvc.getById(customerId);
@@ -901,7 +960,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Look up phone for Twilio Verify.
-      const customerSvc = createCustomerService();
+      const customerSvc = deps.customerService();
       let phone: string;
       try {
         const customer = await customerSvc.getById(customerId);

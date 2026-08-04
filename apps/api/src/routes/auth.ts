@@ -11,7 +11,13 @@ import type { FastifyInstance } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import twilio from "twilio";
-import { createCustomerService, createStaffService, prisma } from "@ibatexas/domain";
+import {
+  createCustomerService,
+  createStaffService,
+  prisma,
+  type CustomerService,
+  type StaffService,
+} from "@ibatexas/domain";
 import { getRedisClient, rk, atomicIncr } from "@ibatexas/tools";
 import { parseBoolEnv } from "@ibatexas/types";
 import { buildEnvelope } from "@adjudicate/core";
@@ -374,10 +380,62 @@ async function performCustomerOtpVerification(
   return { ok: true };
 }
 
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Both constructions were PER-REQUEST, inline in an OTP handler, so both
+// members are factories called at those same sites — each handler still
+// builds its own instance on the request that needs it, and neither service
+// is hoisted to registration or shared across requests.
+//
+// NOT injected, and deliberately so: the `prisma.customer.findUniqueOrThrow`
+// read in the verify-OTP handler. It is a raw delegate read, not a service
+// construction — there is no factory to swap, and injecting the raw client
+// would widen this seam to a PrismaClient, the exact coupling R5-S1 narrowed
+// `CustomerService` away from. It needs an owning service method first.
+
+/** The domain services `auth.ts` resolves through the seam. */
+export interface AuthRouteDeps {
+  /**
+   * Builds the CustomerService behind the customer OTP verify + refresh
+   * paths. Called per handler invocation, as the inline construction was.
+   */
+  readonly customerService: () => CustomerService;
+  /** Builds the StaffService behind the three staff OTP/session paths. */
+  readonly staffService: () => StaffService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface AuthRoutesOptions {
+  readonly deps?: Partial<AuthRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction this file did inline. */
+function defaultAuthRouteDeps(): AuthRouteDeps {
+  return {
+    customerService: () => createCustomerService(),
+    staffService: () => createStaffService(),
+  };
+}
+
+function resolveAuthRouteDeps(options?: AuthRoutesOptions): AuthRouteDeps {
+  return { ...defaultAuthRouteDeps(), ...(options?.deps ?? {}) };
+}
+
 // ── Plugin ─────────────────────────────────────────────────────────────────────
 
-export async function authRoutes(server: FastifyInstance): Promise<void> {
+export async function authRoutes(
+  server: FastifyInstance,
+  options?: AuthRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so nothing is
+  // constructed here — see the AuthRouteDeps block above.
+  const deps = resolveAuthRouteDeps(options);
 
   // ── POST /api/auth/send-otp ─────────────────────────────────────────────────
 
@@ -514,7 +572,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
         // `nonce` is keyed on the phone hash so re-delivery of the same
         // verified phone within a session produces a deterministic
         // intentHash (replay-safe per the audit ledger).
-        const customerSvc = createCustomerService();
+        const customerSvc = deps.customerService();
         const envelope = buildEnvelope<"customer.create", CustomerCreatePayload>({
           kind: "customer.create",
           payload: { phoneHash: hash, source: "otp" },
@@ -739,7 +797,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       preHandler: requireAuth,
     },
     async (request, reply) => {
-      const customerSvc = createCustomerService();
+      const customerSvc = deps.customerService();
       const customer = await customerSvc.getById(request.customerId!);
       return reply.send({
         id: customer.id,
@@ -772,7 +830,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       preHandler: [optionalAuth, requireStaff],
     },
     async (request, reply) => {
-      const staffSvc = createStaffService();
+      const staffSvc = deps.staffService();
       const staff = await staffSvc.getById(request.staffId!);
       return reply.send({
         staffId: request.staffId,
@@ -823,7 +881,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Verify this phone belongs to an active staff member
-      const staffSvc = createStaffService();
+      const staffSvc = deps.staffService();
       const staff = await staffSvc.findByPhone(phone);
 
       if (!staff) {
@@ -900,7 +958,7 @@ export async function authRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Verify staff exists and is active
-      const staffSvc = createStaffService();
+      const staffSvc = deps.staffService();
       const staff = await staffSvc.findByPhone(phone);
 
       if (!staff) {

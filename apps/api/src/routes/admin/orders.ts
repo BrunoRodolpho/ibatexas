@@ -17,6 +17,10 @@ import {
   prisma,
   type OrderStatusTransitionPayload,
   type FiscalDocumentRecord,
+  type OrderCommandService,
+  type OrderQueryService,
+  type PaymentQueryService,
+  type FiscalDocumentService,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
@@ -379,23 +383,92 @@ async function loadUpdatedOrderResponse(querySvc: OrderQuerySvc, id: string) {
   }
 }
 
-export async function orderRoutes(server: FastifyInstance): Promise<void> {
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Factories, not instances (the R5-S2 rule), and here that property is
+// load-bearing rather than stylistic: `orderCommandService` closes over a
+// `getAuditSink()` call that MUST NOT run until the onReady hook. Because the
+// member is a factory, resolving the dep set in the plugin body constructs
+// nothing and calls nothing — the sink is still resolved inside onReady, after
+// bootstrapAuditSinkDI(). The T8 conformance gate
+// (src/__tests__/bypass-detection/audit-sink-bootstrap-order-conformance.test.ts)
+// pins that: it scans the plugin-body prefix with onReady bodies blotted out,
+// and this block lives at MODULE level, outside that prefix.
+//
+// The other three keep their registration-time construction timing exactly.
+
+/** The domain services `admin/orders.ts` resolves through the seam. */
+export interface AdminOrderRouteDeps {
+  /**
+   * Builds the audit-wired, staff-role-guarded OrderCommandService behind
+   * `order.status.transition`. Invoked from the onReady hook ONLY — calling it
+   * during plugin-body execution would throw AuditSinkNotInitializedError and
+   * crash production boot.
+   */
+  readonly orderCommandService: () => OrderCommandService;
+  /** Builds the OrderQueryService behind the list + detail projection reads. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the PaymentQueryService for the active-payment batch + detail read. */
+  readonly paymentQueryService: () => PaymentQueryService;
+  /** Builds the FiscalDocumentService for the detail view's fiscal section. */
+  readonly fiscalDocumentService: () => FiscalDocumentService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/admin/index.ts is unchanged.
+ */
+export interface AdminOrderRoutesOptions {
+  readonly deps?: Partial<AdminOrderRouteDeps>;
+}
+
+/**
+ * The production set — byte-for-byte the construction this file did inline.
+ * Takes `server` because two of the four constructions bind `server.log`.
+ */
+function defaultAdminOrderRouteDeps(server: FastifyInstance): AdminOrderRouteDeps {
+  return {
+    orderCommandService: () =>
+      createOrderCommandService(server.log, {
+        auditSink: getAuditSink(),
+        // BKL-074 — kernel role backstop: staffRoleGuard gates the admin
+        // order.status.transition path (inert unless an `admin:` envelope).
+        authGuards: [staffRoleGuard],
+      }),
+    orderQueryService: () => createOrderQueryService(),
+    paymentQueryService: () => createPaymentQueryService(),
+    fiscalDocumentService: () => createFiscalDocumentService(),
+  };
+}
+
+function resolveAdminOrderRouteDeps(
+  server: FastifyInstance,
+  options?: AdminOrderRoutesOptions,
+): AdminOrderRouteDeps {
+  return { ...defaultAdminOrderRouteDeps(server), ...(options?.deps ?? {}) };
+}
+
+export async function orderRoutes(
+  server: FastifyInstance,
+  options?: AdminOrderRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so NOTHING is
+  // constructed here — which is what keeps `commandSvc`'s `getAuditSink()`
+  // inside the onReady hook below. See the AdminOrderRouteDeps block above.
+  const deps = resolveAdminOrderRouteDeps(server, options);
   // Defer audit-sink resolution to onReady (see adminPaymentRoutes for
   // the full rationale — boot-order race between plugin-body execution
   // during buildServer() and bootstrapAuditSinkDI() in index.ts).
-  let commandSvc!: ReturnType<typeof createOrderCommandService>;
+  let commandSvc!: OrderCommandService;
   server.addHook("onReady", async () => {
-    commandSvc = createOrderCommandService(server.log, {
-      auditSink: getAuditSink(),
-      // BKL-074 — kernel role backstop: staffRoleGuard gates the admin
-      // order.status.transition path (inert unless an `admin:` envelope).
-      authGuards: [staffRoleGuard],
-    });
+    commandSvc = deps.orderCommandService();
   });
-  const querySvc = createOrderQueryService();
-  const paymentQuerySvc = createPaymentQueryService();
-  const fiscalSvc = createFiscalDocumentService();
+  const querySvc = deps.orderQueryService();
+  const paymentQuerySvc = deps.paymentQueryService();
+  const fiscalSvc = deps.fiscalDocumentService();
 
   // ── GET /api/admin/orders ──────────────────────────────────────────────────
   // INTENTIONALLY open to any authenticated staff (no requireManagerRole),
