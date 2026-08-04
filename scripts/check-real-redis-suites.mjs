@@ -83,6 +83,11 @@ const ROLL_CALL = [
   // because the completeness alarm below flagged it in CI — the first live
   // catch, and the reason that alarm exists.
   { file: "src/__tests__/cart-create-lock-ownership.test.ts", minExecuted: 6, realRedis: 6 },
+  // F-22 (#519, merged after this branch's last rebase) — the park-nx release
+  // failure-mode suite: CAD-failure leaves the key to TTL; ownership-checked
+  // release; the pre-F-22 control. Enrolled at merge time by the governor —
+  // exactly the arrival class the discovery alarm below exists to catch.
+  { file: "src/__tests__/park-nx-release-failure-mode.test.ts", minExecuted: 9, realRedis: 9 },
   // 3 cases, of which 1 is inside the RUN_REAL_REDIS describe.
   { file: "src/__tests__/ledger-replay-suppression.test.ts", minExecuted: 3, realRedis: 1 },
   { file: "src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts", minExecuted: 3, realRedis: 3 },
