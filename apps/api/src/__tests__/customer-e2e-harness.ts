@@ -868,6 +868,7 @@ function inertWorkflowRuntime(): WorkflowRuntime {
     renderOutcome: () => "",
     run: async () => undefined,
     selectionCapabilities: () => new Set<string>(),
+    selectionAnchors: () => [],
     activityCapabilities: () => new Set<string>(),
     close: () => {},
   };
