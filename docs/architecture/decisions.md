@@ -55,6 +55,11 @@ maintained (and drift-guarded by tests) next to the code they govern:
   auth level, inputs/outputs (realizes ADR #9 at the tool layer).
 - [`design/order-billing-decision-matrix.md`](design/order-billing-decision-matrix.md) —
   order/billing state decisions.
+- [`redis-lua-testing-decision.md`](redis-lua-testing-decision.md) — the
+  multi()/eval ruling: testcontainers are the mandatory home for Lua-invariant
+  coverage (8 script-shape contract suites; CI loud-skip precondition; W4 RULE 3
+  stands). Evidence in the test-side census
+  (`apps/api/src/__tests__/helpers/redis-double-census.md`).
 - [`convergence-2026-07-28-review.md`](convergence-2026-07-28-review.md) — status
   record for the 2026-07-28 Architecture Review program (R1–R7): per-recommendation
   terminal disposition, evidence pointers, and the explicit prerequisites gating the
