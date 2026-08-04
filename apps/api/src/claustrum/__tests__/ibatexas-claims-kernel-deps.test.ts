@@ -32,6 +32,7 @@ import {
   IBATEXAS_CONSISTENCY_TABLE,
   PROVABLY_EMPTY_KIND,
   SCHEDULE_CLUSTER_COMPATIBLE,
+  STATUS_COMPANIONS_COMPATIBLE,
 } from "../ibatexas-claims-kernel-deps.js";
 
 // ── Fail-closed defaults ─────────────────────────────────────────────────────
@@ -53,13 +54,17 @@ describe("ibatexas-claims-kernel-deps — fail-closed defaults", () => {
 
   // BKL-234 — the repo table EXTENDS the published one; it never edits or drops a
   // published constraint (that would silently re-relate a pair the kernel foundation
-  // already reviewed).
-  it("carries every published constraint VERBATIM, plus the schedule-cluster additions", () => {
+  // already reviewed). F-10 adds the second repo declaration; the length is the CLOSURE
+  // half — the repo table is the published table plus EXACTLY the two reviewed
+  // declarations and nothing else, so an unreviewed third row cannot arrive unnoticed.
+  it("carries every published constraint VERBATIM, plus exactly the repo declarations", () => {
     for (const published of DEFAULT_CONSISTENCY_TABLE) {
       expect(IBATEXAS_CONSISTENCY_TABLE).toContainEqual(published);
     }
     expect(IBATEXAS_CONSISTENCY_TABLE).toHaveLength(
-      DEFAULT_CONSISTENCY_TABLE.length + SCHEDULE_CLUSTER_COMPATIBLE.length,
+      DEFAULT_CONSISTENCY_TABLE.length +
+        SCHEDULE_CLUSTER_COMPATIBLE.length +
+        STATUS_COMPANIONS_COMPATIBLE.length,
     );
   });
 });
@@ -672,5 +677,143 @@ describe("BKL-234 — same-subject schedule claims co-render under the repo tabl
 
     expect(result.terminal).toBe("ESCALATE");
     expect(result.suppressions[0]?.reason).toBe("UNMODELLED_SAME_SUBJECT");
+  });
+});
+
+// ── F-10 — the STATUS-COMPANION pair, at the table and at the kernel ──────────
+//
+// The turn-seam proof that a bare "qual o status?" now RENDERS lives in
+// `../../__tests__/f10-status-corender-pair.e2e.test.ts`. These cases prove the
+// property the table itself owns — that the declaration says exactly what it means and
+// is exactly as narrow as its justification — which is plane-independent (both
+// conductors compose these deps) and therefore belongs here, not in one plane's seam.
+
+describe("F-10 — STATUS_COMPANIONS_COMPATIBLE", () => {
+  it("declares EXACTLY the one reviewed pair, COMPATIBLE", () => {
+    // The roll call is HAND-WRITTEN, never derived from the constant under test: an
+    // expectation projected out of `STATUS_COMPANIONS_COMPATIBLE` would agree with any
+    // row the constant happened to hold, including a wrong one. Length is pinned too, so
+    // an EXTRA undeclared-pair row cannot ride along unnoticed.
+    expect(STATUS_COMPANIONS_COMPATIBLE).toHaveLength(1);
+    const [row] = STATUS_COMPANIONS_COMPATIBLE;
+    expect([row?.typeA, row?.typeB].sort()).toEqual([
+      "ORDER_FULFILLMENT_STAGE",
+      "PAYMENT_STATUS",
+    ]);
+    expect(row?.relation).toBe("COMPATIBLE");
+  });
+
+  it("is COMPOSED INTO the repo table (the declaration actually reaches the kernel)", () => {
+    // Writing the constant but forgetting to spread it into IBATEXAS_CONSISTENCY_TABLE is
+    // the silent-no-op failure: every assertion above still passes while the live table is
+    // unchanged and the bare-status turn still escalates.
+    const declared = new Set(
+      IBATEXAS_CONSISTENCY_TABLE.map((c) => [c.typeA, c.typeB].sort().join("|")),
+    );
+    expect(declared).toContain("ORDER_FULFILLMENT_STAGE|PAYMENT_STATUS");
+  });
+});
+
+describe("F-10 — the P2 verdict the declaration changes, proven both ways", () => {
+  /** The two VALIDATED status companions on ONE subject — what a bare "qual o status?"
+   *  turn produces for a customer with a single owned order (both types are
+   *  `perResourceKey`, subjected by that orderId). */
+  const statusClaims = [
+    {
+      subject: "ord_f10",
+      type: "ORDER_FULFILLMENT_STAGE",
+      verdict: "VALIDATED" as const,
+      value: { fulfillmentStatus: "preparing" },
+    },
+    {
+      subject: "ord_f10",
+      type: "PAYMENT_STATUS",
+      verdict: "VALIDATED" as const,
+      value: { status: "paid" },
+    },
+  ];
+
+  it("BEFORE (published table): §O#1 default-deny suppresses BOTH → ESCALATE", () => {
+    const result = checkConsistency(statusClaims, { table: DEFAULT_CONSISTENCY_TABLE });
+
+    // The exact live symptom F-10 records: an answerable question annihilates itself and
+    // the customer gets a staff handoff.
+    expect(result.terminal).toBe("ESCALATE");
+    expect(result.renderable).toHaveLength(0);
+    expect(result.suppressions.length).toBeGreaterThan(0);
+    expect(result.suppressions[0]?.reason).toBe("UNMODELLED_SAME_SUBJECT");
+  });
+
+  it("AFTER (repo table): both render, no suppression", () => {
+    const result = checkConsistency(statusClaims, { table: IBATEXAS_CONSISTENCY_TABLE });
+
+    expect(result.terminal).not.toBe("ESCALATE");
+    expect(result.renderable).toHaveLength(2);
+    expect(result.suppressions).toHaveLength(0);
+  });
+
+  // The declaration must not become "status claims never conflict": two VALIDATED claims
+  // of the SAME type with DIFFERENT values are still a P2 violation, decided by the
+  // kernel's SAME_TYPE_VALUE_CONFLICT arm that no table can relax.
+  it("still suppresses two CONTRADICTORY same-type PAYMENT_STATUS claims", () => {
+    const result = checkConsistency(
+      [
+        { subject: "ord_f10", type: "PAYMENT_STATUS", verdict: "VALIDATED", value: { status: "paid" } },
+        { subject: "ord_f10", type: "PAYMENT_STATUS", verdict: "VALIDATED", value: { status: "payment_pending" } },
+      ],
+      { table: IBATEXAS_CONSISTENCY_TABLE },
+    );
+
+    expect(result.terminal).toBe("ESCALATE");
+    expect(result.suppressions[0]?.reason).toBe("SAME_TYPE_VALUE_CONFLICT");
+  });
+
+  // THE DIRECTIONAL CONTROL. Declaring one pair must not relieve §O#1 for the two types
+  // generally — without this, the fix is indistinguishable from having widened the gate.
+  // Both cases pair a NEWLY-DECLARED type with an UNDECLARED partner, one per side, so a
+  // one-sided over-widening cannot hide behind the other's negative.
+  it("still default-denies ORDER_FULFILLMENT_STAGE paired with an UNDECLARED type", () => {
+    const result = checkConsistency(
+      [
+        { subject: "ord_f10", type: "ORDER_FULFILLMENT_STAGE", verdict: "VALIDATED", value: { fulfillmentStatus: "preparing" } },
+        { subject: "ord_f10", type: "RESERVATION_STATUS", verdict: "VALIDATED", value: { statusLine: "confirmada" } },
+      ],
+      { table: IBATEXAS_CONSISTENCY_TABLE },
+    );
+
+    expect(result.terminal).toBe("ESCALATE");
+    expect(result.suppressions[0]?.reason).toBe("UNMODELLED_SAME_SUBJECT");
+  });
+
+  it("still default-denies PAYMENT_STATUS paired with an UNDECLARED type", () => {
+    const result = checkConsistency(
+      [
+        { subject: "ord_f10", type: "PAYMENT_STATUS", verdict: "VALIDATED", value: { status: "paid" } },
+        { subject: "ord_f10", type: "CART_CONTENTS", verdict: "VALIDATED", value: { itemsText: "..." } },
+      ],
+      { table: IBATEXAS_CONSISTENCY_TABLE },
+    );
+
+    expect(result.terminal).toBe("ESCALATE");
+    expect(result.suppressions[0]?.reason).toBe("UNMODELLED_SAME_SUBJECT");
+  });
+
+  // …and the pair is SUBJECT-partitioned, exactly like every other P2 relation: the
+  // declaration relieves §O#1 for two facts about ONE order, and says nothing about a
+  // co-render spanning two different orders (which P2 never groups in the first place).
+  it("leaves the published MUTUAL_EXCLUSION on ORDER_FULFILLMENT_STAGE intact", () => {
+    // The stage type is still excluded from ORDER_ESTIMATED_ARRIVAL in the published
+    // table. If this row had been declared by widening the stage type's relations rather
+    // than by adding one pair, this exclusion is where it would show.
+    const result = checkConsistency(
+      [
+        { subject: "ord_f10", type: "ORDER_FULFILLMENT_STAGE", verdict: "VALIDATED", value: { fulfillmentStatus: "delivered" } },
+        { subject: "ord_f10", type: "ORDER_ESTIMATED_ARRIVAL", verdict: "VALIDATED", value: { etaText: "15 min" } },
+      ],
+      { table: IBATEXAS_CONSISTENCY_TABLE },
+    );
+
+    expect(result.terminal).toBe("ESCALATE");
+    expect(result.suppressions[0]?.reason).toBe("MUTUAL_EXCLUSION_CONFLICT");
   });
 });
