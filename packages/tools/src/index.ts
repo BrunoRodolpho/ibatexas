@@ -28,7 +28,11 @@ export { withOrderOwnership, withReservationOwnership } from "./guards/with-owne
 
 // ── Cart tools ─────────────────────────────────────────────────────────────────
 export { assertCartOwnership } from "./cart/assert-cart-ownership.js"
-export { getOrCreateCart, GetOrCreateCartTool } from "./cart/get-or-create-cart.js"
+export {
+  getOrCreateCart,
+  GetOrCreateCartTool,
+  acquireCartCreationLock,
+} from "./cart/get-or-create-cart.js"
 export { getCart, GetCartTool } from "./cart/get-cart.js"
 export { addToCart, AddToCartTool } from "./cart/add-to-cart.js"
 export { updateCart, UpdateCartTool } from "./cart/update-cart.js"
@@ -111,7 +115,12 @@ export {
   type CircuitBreakerOptions,
 } from "./redis/circuit-breaker.js"
 export { safeRedis } from "./redis/safe-redis.js"
-export { acquireLock, withLock, type LockHandle } from "./redis/distributed-lock.js"
+export {
+  acquireLock,
+  acquireLockAtKey,
+  withLock,
+  type LockHandle,
+} from "./redis/distributed-lock.js"
 
 // ── Tracing ──────────────────────────────────────────────────────────────────
 export {

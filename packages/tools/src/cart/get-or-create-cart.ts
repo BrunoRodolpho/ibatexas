@@ -16,10 +16,52 @@ import { getAuditSink } from "@ibatexas/audit-sink";
 import { reaisToCentavos } from "../medusa/client.js";
 import { medusaStoreAdjudicated } from "../medusa/store-adjudicated.js";
 import { getRedisClient } from "../redis/client.js";
+import { acquireLockAtKey, type LockHandle } from "../redis/distributed-lock.js";
 import { rk } from "../redis/key.js";
 import { medusaStoreFetch } from "./_shared.js";
 
 const CART_TTL_SECONDS = 24 * 60 * 60; // 24h — matches session TTL
+
+/** TTL of the cart-creation lock, seconds. Unchanged by F-21 (was inline `EX: 10`). */
+const CART_CREATE_LOCK_TTL_SECONDS = 10;
+
+/**
+ * Acquire the cart-creation lock for a session — ownership-safe (F-21).
+ *
+ * ── The defect this replaces ─────────────────────────────────────────────────
+ * This lock used to be taken with a CONSTANT value (`set(lockKey, "1", {NX,
+ * EX:10})`) and released with an unconditional `del(lockKey)` in `finally`.
+ * That is a Hard Rule #10 violation, and it was live: the `finally` ran even on
+ * the branch where the SET returned null — i.e. a caller that never held the
+ * lock still deleted it. Combined with the 10s TTL lapsing during a slow Medusa
+ * POST, caller A's `del` destroyed caller B's FRESH lock, both proceeded, and
+ * two carts were created against `rk("cart:active:session:<conversationId>")` —
+ * the key that decides what a checkout BUYS.
+ *
+ * ── The fix ──────────────────────────────────────────────────────────────────
+ * A per-acquisition UUID token plus a Lua compare-and-delete release, which is
+ * the pattern Hard Rule #10 names and `apps/api/src/whatsapp/session.ts`
+ * (`RELEASE_LOCK_SCRIPT` / `acquireAgentLock` / `releaseAgentLock`) is the
+ * reference for. The implementation is NOT re-inlined here: it is the shared
+ * `acquireLockAtKey` in `../redis/distributed-lock.js`, so there is exactly one
+ * release script in this package.
+ *
+ * Exported so the real-Redis testcontainer harness can drive the PRODUCTION
+ * lock (`apps/api/src/__tests__/cart-create-lock-ownership.test.ts`). The
+ * ownership property is Redis server-side atomicity; per W4 RULE 3 an in-memory
+ * double cannot prove it, so the proof has to reach this function for real.
+ *
+ * @returns A handle whose `release()` deletes ONLY if the stored value is still
+ *   this caller's token, or `null` when another caller holds the lock.
+ */
+export async function acquireCartCreationLock(
+  sessionId: string,
+): Promise<LockHandle | null> {
+  return acquireLockAtKey(
+    rk(`cart:create:lock:${sessionId}`),
+    CART_CREATE_LOCK_TTL_SECONDS,
+  );
+}
 
 interface CartSummary {
   cartId: string;
@@ -122,9 +164,9 @@ export async function getOrCreateCart(
 
   // 2. Acquire creation lock to prevent TOCTOU race (two concurrent calls
   //    both see null → both POST to Medusa → duplicate carts).
-  const lockKey = rk(`cart:create:lock:${ctx.sessionId}`);
-  const locked = await redis.set(lockKey, "1", { NX: true, EX: 10 });
-  if (!locked) {
+  //    F-21: ownership-safe — see `acquireCartCreationLock` above.
+  const lock = await acquireCartCreationLock(ctx.sessionId);
+  if (!lock) {
     // Another call is creating the cart — wait briefly and retry reading
     await new Promise((r) => setTimeout(r, 500));
     const racedCartId = await redis.get(key);
@@ -175,7 +217,13 @@ export async function getOrCreateCart(
       message: `Carrinho criado (${cartId}). Pronto para adicionar itens.`,
     };
   } finally {
-    await redis.del(lockKey).catch(() => {});
+    // F-21: release ONLY the lock we actually own. `lock` is null on the
+    // acquisition-failure branch above, where the pre-fix `del` deleted a lock
+    // belonging to whoever DID win — and even when we did win, the release is
+    // now a compare-and-delete, so a token that expired mid-Medusa-POST and was
+    // re-taken by another caller is left alone. Failure to release stays
+    // non-fatal (the TTL is the backstop), exactly as before.
+    await lock?.release().catch(() => {});
   }
 }
 

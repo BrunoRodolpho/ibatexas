@@ -49,7 +49,7 @@ Example: `production:customer:profile:cust_123`
 |---------|------|-----|-------------|--------|
 | `active:carts` | Hash | 48 h | Active cart IDs with metadata `{cartId, sessionType, lastActivity}`, polled by the abandoned-cart checker. | `apps/api/src/routes/cart.ts` |
 | `cart:active:session:{sessionId}` | String | — | Session → active cartId mapping. | `packages/tools/src/cart/get-or-create-cart.ts` |
-| `cart:create:lock:{sessionId}` | String | 10 s | Cart creation lock (prevents TOCTOU double-create race). | `packages/tools/src/cart/get-or-create-cart.ts` |
+| `cart:create:lock:{sessionId}` | String (UUID) | 10 s | Cart creation lock (prevents TOCTOU double-create race). UUID value, Lua conditional release (F-21 — was a constant value + unconditional `DEL`). | `packages/tools/src/cart/get-or-create-cart.ts` |
 | `cart:owner:{cartId}` | String | 24 h | Cart ownership mapping (IDOR prevention). | `apps/api/src/routes/cart.ts` |
 | `cart:nudge:{cartId}` | String (JSON) | 48 h | Recovery tier sent for an abandoned cart `{tier, sentAt}`. | `apps/api/src/subscribers/cart-intelligence.ts` |
 | `checkout:idem:{idemToken}` | String | 120 s | Checkout single-flight gate (NX) — blocks concurrent/duplicate checkout submits. | `apps/api/src/routes/cart.ts` |
@@ -273,7 +273,7 @@ ibx intel global-score-rebuild --reset
 - Redis `maxmemory` policy should be `allkeys-lru` in production.
 - The 30-day caches (embedding, customer profiles, co-purchase/score sorted sets) dominate memory — monitor with `ibx svc health redis`.
 - `APP_ENV` prefix isolates multi-tenant / staging keys (no bleed).
-- Agent locks and payment/anonymize mutexes use UUID values with Lua conditional release — no cascading lock breaches.
+- Agent locks, payment/anonymize mutexes and the cart-creation lock use UUID values with Lua conditional release — no cascading lock breaches.
 - `welcome:credit:{customerId}` uses atomic `GETDEL` to prevent double-apply.
 - Metrics counters use the `atomicIncr()` Lua script — no immortal keys from INCR/EXPIRE races.
 - All keys have TTLs except a small set of intentional caches/markers: `wa:optin:*` (residual — should be 365 d), `site:banner:text`, and single keys like `metrics:avg_messages_to_checkout`. (`restaurant:schedule` gained a bounded TTL in BKL-124.)
