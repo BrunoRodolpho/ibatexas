@@ -150,6 +150,7 @@ export const paymentsPack = {
   version: "1.0.0",
   contract: "v0",
   intents: [
+    // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
     // BKL-176 — the 5 dead `payment.charge.*` kinds were retired (governance-
     // only shadow of payment.create / payment.status.*; zero emitters).
     "payment.create",
@@ -164,6 +165,7 @@ export const paymentsPack = {
     "payment.status.force",
     "payment.status.transition",
     "payment.status.reconcile",
+    // ═══ END GENERATED REGION ═══
   ],
   policy: paymentsPolicyBundle,
   planner: paymentsCapabilityPlanner,

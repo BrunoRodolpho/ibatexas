@@ -141,6 +141,15 @@ describe("codegen-freshness gate — per-pack type-union mirror (FE-T20 family 2
 })
 
 // ── Family 3: per-pack runtime intents[] (each Pack's own PackV0.intents) ──
+//
+// R6 leg 1a made those six arrays GENERATED regions, so they now have a SECOND
+// gate — regen-pack-intents-freshness.test.ts, which diffs each pack's
+// committed SOURCE TEXT against a fresh `buildPackIntentsRegion()`. This
+// describe block is KEPT, not superseded: it reads the RUNTIME-LOADED
+// `xxxPack.intents` value the application actually imports, which is the only
+// side that can catch the array arriving from somewhere other than the spliced
+// region (a stale dist, a re-export, a filtered copy). The source-text gate
+// records the same reasoning from its own end.
 
 describe("codegen-freshness gate — per-pack runtime intents[] (FE-T20 family 3)", () => {
   it("ibatexas/pack-orders: reproduces ordersPack.intents byte-for-byte", async () => {

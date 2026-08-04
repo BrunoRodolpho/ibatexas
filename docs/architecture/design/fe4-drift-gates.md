@@ -251,6 +251,9 @@ graph does not distinguish `dependencies` from `devDependencies`).
   `buildGeneratedRegion()` output between the committed `GENERATED_BEGIN`/
   `GENERATED_END` markers, and writes the file back. Idempotent — a no-op
   regen logs "already up to date" and produces a zero-diff write.
+  **R6 leg 1a extended this same script to SEVEN target files** — it now also
+  splices each of the six packs' own `xxxPack.intents` arrays (family member 3,
+  below). One command, one marker pair, one CI gate per target.
 - `packages/packs-composed/src/__tests__/regen-intent-kinds-freshness.test.ts`
   — the CI freshness gate: (1) the committed `GENERATED_BEGIN`..`GENERATED_END`
   region is byte-identical to a fresh in-memory `buildGeneratedRegion()` call,
@@ -273,6 +276,47 @@ consumer's import path — is unchanged, per the explicit design goal of "makes
 a stale hand-edit impossible" without an "expect wide but mechanical diffs"
 across 12+ leaf-package consumer files that a full deletion-and-inline-call
 approach would have forced.
+
+## R6 leg 1a — the same region pattern applied to the packs' own `intents[]`
+
+Family member 3 (each Pack's own `xxxPack.intents` literal) was, until R6 leg
+1a, still hand-authored and guarded only by an array-equality freshness test:
+adding a kind meant hand-editing a mirror a generator could write. It is now a
+GENERATED region in each of the six `packages/pack-*/src/index.ts` files, using
+the identical marker pair and the identical relative-filesystem-path,
+no-new-dependency-edge design proved above — the packs gain no dependency on
+`@ibatexas/packs-composed`; markers are comments and generation is offline.
+
+- `packages/packs-composed/src/codegen/build-pack-intents-region.ts` —
+  `buildPackIntentsRegion(target)`, plus `PACK_INTENTS_TARGETS` (the six packs)
+  and the per-kind **annotations table**.
+- `packages/packs-composed/src/__tests__/regen-pack-intents-freshness.test.ts`
+  — the CI gate: byte-identity per pack, markers exactly once, plus STRUCTURAL
+  bracket-adjacency assertions (the region begins immediately after
+  `intents: [` and ends immediately before `],`), because the region is spliced
+  inside a live object literal next to hand-maintained `basisCodes`/`policy`/
+  `planner` members and byte-identity alone would not prove it still covers the
+  right bytes.
+
+Two findings worth carrying forward:
+
+1. **"Structurally identical data" is not "identical source text."**
+   `generate-pack-intent-kinds.ts`'s doc claim (verified byte-for-byte for the
+   KIND LISTS) does not extend to the files' text: `pack-payments` carries a
+   2-line BKL-176 note explaining an ABSENCE, and `pack-ops` carries FOUR notes
+   genuinely INTERLEAVED between elements (NEW-004, SCN-114, BKL-088, SCN-127).
+   None of that text exists in `CAPABILITY_DEFINITIONS`, so a generator emitting
+   bare `"kind",` lines would have silently DELETED five blocks of rationale.
+   They live in the annotations table now, and the gate asserts each note is
+   still attached to its own kind — position, not mere presence.
+2. **The array-equality test in `capability-definitions.intent-identity-family.test.ts`
+   is KEPT, not superseded.** It reads the RUNTIME-LOADED `xxxPack.intents`
+   value; the new gate reads committed SOURCE TEXT. Measured during the
+   revert-to-red proof: corrupting a kind in `pack-orders/src/index.ts` left the
+   runtime test GREEN (it resolves `@ibatexas/pack-orders` to `dist/`, which was
+   stale) while the source-text gate went red. The complement holds in reverse —
+   a `dist` that disagrees with the registry fails the runtime test and is
+   invisible to the source-text one. Neither gate subsumes the other.
 
 ## Tautological-gate retirements (FE-4.3's own named risk)
 

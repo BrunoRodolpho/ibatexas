@@ -185,6 +185,7 @@ export const ordersPack = {
   version: "1.1.0",
   contract: "v0",
   intents: [
+    // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
     "order.cart.ensure",
     "order.item.add",
     "order.item.update",
@@ -211,6 +212,7 @@ export const ordersPack = {
     "order.status.transition",
     "order.status.reconcile",
     "order.fiscal.emit",
+    // ═══ END GENERATED REGION ═══
   ],
   policy: ordersPolicyBundle,
   planner: ordersCapabilityPlanner,

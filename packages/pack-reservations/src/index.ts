@@ -182,6 +182,7 @@ export const reservationsPack = {
   version: "1.0.0",
   contract: "v0",
   intents: [
+    // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
     "reservation.create",
     "reservation.modify",
     "reservation.cancel",
@@ -189,6 +190,7 @@ export const reservationsPack = {
     "reservation.complete",
     "reservation.no_show.mark",
     "reservation.waitlist.join",
+    // ═══ END GENERATED REGION ═══
   ],
   policy: reservationsPolicyBundle,
   planner: reservationsCapabilityPlanner,
