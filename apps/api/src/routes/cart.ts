@@ -261,7 +261,7 @@ const PIX_CACHE_TTL = 90 * 86400; // 90 days
  *  error rather than a live connection. */
 async function loadCachedPixDetails(
   customerId: string,
-  deps: CartRouteDeps,
+  deps: Pick<CartRouteDeps, "customerLookupService">,
 ): Promise<{ name?: string; email?: string; cpf?: string } | null> {
   try {
     const redis = await getRedisClient();
@@ -302,7 +302,7 @@ async function loadCachedPixDetails(
 export async function cachePixDetailsForCustomer(
   customerId: string,
   data: { name?: string; email?: string; cpf?: string },
-  deps: CartRouteDeps,
+  deps: Pick<CartRouteDeps, "customerService">,
 ): Promise<void> {
   try {
     const redis = await getRedisClient();
@@ -473,7 +473,7 @@ async function finalizeCheckout(args: {
    */
   onFixableFailure?: () => Promise<void>;
   /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: CartRouteDeps;
+  deps: Pick<CartRouteDeps, "customerService" | "orderCommandService">;
 }): Promise<FastifyReply> {
   const { reply, result, cartId, paymentMethod, customerId, pixExtra, notes, onFixableFailure, deps } = args;
 
@@ -590,7 +590,7 @@ async function persistCheckoutOrderNote(args: {
   customerId: string | undefined;
   cartId: string;
   /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: CartRouteDeps;
+  deps: Pick<CartRouteDeps, "orderCommandService">;
 }): Promise<void> {
   const { notes, orderId, customerId, cartId, deps } = args;
   try {
@@ -672,7 +672,7 @@ function mintOrderAccessToken(
  *  failure the cart is created as a guest cart. */
 async function resolveCustomerCartBody(
   customerId: string | undefined,
-  deps: CartRouteDeps,
+  deps: Pick<CartRouteDeps, "customerLookupService">,
 ): Promise<Record<string, unknown>> {
   if (!customerId) return {};
   try {
@@ -850,7 +850,7 @@ async function syncLocalCartForCheckout(args: {
   customerId: string | undefined;
   log: RouteLog;
   /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: CartRouteDeps;
+  deps: Pick<CartRouteDeps, "customerLookupService">;
 }): Promise<{ cartId: string } | { rejection: CheckoutRejection }> {
   const { localItems, customerId, log, deps } = args;
   let cartId = args.cartId;
@@ -1069,7 +1069,7 @@ async function resolvePixBillingDetails(args: {
   pixCpf?: string;
   customerId: string | undefined;
   /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: CartRouteDeps;
+  deps: Pick<CartRouteDeps, "customerLookupService">;
 }): Promise<
   | { rejection: CheckoutRejection }
   | { pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } }
@@ -1175,7 +1175,7 @@ async function respondToCheckoutDecision(args: {
   notes: string | undefined;
   releaseGate: () => Promise<void>;
   /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: CartRouteDeps;
+  deps: Pick<CartRouteDeps, "customerService" | "orderCommandService">;
 }): Promise<FastifyReply> {
   const {
     reply, out, checkoutPayload, checkoutIdempotencyKey, cartId, sessionId,
@@ -1335,7 +1335,7 @@ async function computeOrderStatus(args: {
   customerId: string | undefined;
   log: RouteLog;
   /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
-  deps: CartRouteDeps;
+  deps: Pick<CartRouteDeps, "orderQueryService" | "paymentQueryService">;
 }): Promise<StatusReadOutcome> {
   const { orderId, orderIdParam, accessToken, customerId, log, deps } = args;
   try {

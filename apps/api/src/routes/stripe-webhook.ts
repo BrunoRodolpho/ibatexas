@@ -279,6 +279,18 @@ async function resolvePaymentForReconcile(
   return payment;
 }
 
+/**
+ * The privilege every reconcile-reaching handler needs, named once because the
+ * five callers below need it for the SAME reason: they all funnel into
+ * `reconcilePaymentFromStripe`. `orderService` is deliberately absent — only the
+ * capture path (`handlePaymentSucceeded`) holds it, so a reconcile-only handler
+ * that reached for it is a compile error rather than a review question.
+ */
+type ReconcileDeps = Pick<
+  StripeWebhookRouteDeps,
+  "paymentQueryService" | "paymentCommandService" | "orderEventLogService"
+>;
+
 async function reconcilePaymentFromStripe(
   stripePaymentIntentId: string,
   newStatus: (typeof PaymentStatus)[keyof typeof PaymentStatus],
@@ -295,7 +307,7 @@ async function reconcilePaymentFromStripe(
    * (the handler that already resolved an orderId); a payment that already
    * carries a DIFFERENT PI id is never adopted (stale/foreign PI).
    */
-  deps: StripeWebhookRouteDeps,
+  deps: ReconcileDeps,
   fallbackOrderId?: string,
 ): Promise<void> {
   const paymentQuerySvc = deps.paymentQueryService();
@@ -736,7 +748,7 @@ async function handlePaymentFailed(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
-  deps: StripeWebhookRouteDeps,
+  deps: ReconcileDeps,
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const orderId = paymentIntent.metadata?.["medusaOrderId"];
@@ -763,7 +775,7 @@ async function handleChargeRefunded(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
-  deps: StripeWebhookRouteDeps,
+  deps: ReconcileDeps,
 ): Promise<void> {
   const charge = event.data.object as Stripe.Charge;
   const orderId = charge.metadata?.["medusaOrderId"];
@@ -820,7 +832,7 @@ async function escalateDisputeOpen(
   orderId: string | undefined,
   event: Stripe.Event,
   logger: WebhookLogger,
-  deps: StripeWebhookRouteDeps,
+  deps: Pick<StripeWebhookRouteDeps, "paymentQueryService" | "paymentCommandService">,
 ): Promise<void> {
   const paymentQuerySvc = deps.paymentQueryService();
   const payment = await resolvePaymentForReconcile(
@@ -883,7 +895,7 @@ async function handleChargeDisputeCreated(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
-  deps: StripeWebhookRouteDeps,
+  deps: ReconcileDeps,
 ): Promise<void> {
   const dispute = event.data.object as Stripe.Dispute;
   const orderId = dispute.metadata?.["medusaOrderId"];
@@ -925,7 +937,7 @@ async function handlePaymentIntentCanceled(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
-  deps: StripeWebhookRouteDeps,
+  deps: ReconcileDeps,
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const orderId = paymentIntent.metadata?.["medusaOrderId"];
