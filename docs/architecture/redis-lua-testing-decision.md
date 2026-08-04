@@ -44,6 +44,20 @@ consume, both rate limiters.
   validated Docker on the runner), and the skip becomes LOUD — a gate that
   fails when the real-Redis suite count is zero. Routing coverage through real
   Redis without this ships theater at the CI boundary.
+
+  > **SATISFIED by M0.** Mechanism: *validated Docker*, not a service
+  > container — the shared harness starts its own `redis:7-alpine` per test
+  > file, so a `services: redis:` block would sit unused; `ci.yml`'s existing
+  > `docker info` probe is the provisioning, and the harness suites were in
+  > fact already executing on it. The real gap was narrower and larger than
+  > the census said: **five** files, not one, gated on their own
+  > `REDIS_TEST_URL`, losing **12** real-Redis cases per CI run behind a green
+  > ✓ (measured on dev @ `2f5c4979`; table in the census). All five are on the
+  > shared harness now, leaving one knob — `IBX_SKIP_REAL_REDIS=1`, local-dev
+  > only. The loud half is `scripts/check-real-redis-suites.mjs`, wired as its
+  > own `ci.yml` step: a hand-written roll call of 8 suites / 21 cases that
+  > drives them itself (a cached `turbo test` cannot certify them) and fails
+  > when any executes fewer cases than enumerated — zero included.
 - **Q2 — coverage is organized by SCRIPT SHAPE, not by file.** The 8 shapes in
   the census inventory each get ONE contract suite on the shared harness
   proving the shape's invariant against real Redis (CAD never releases a
@@ -76,7 +90,7 @@ measured cost of that blind spot. Rejected.
 
 | Phase | Content | Est. slices |
 |---|---|---|
-| M0 | Q1: CI Redis service + loud-skip gate | 1 |
+| M0 | Q1: CI Redis service + loud-skip gate — **DONE** | 1 |
 | M1 | The 8 script-shape contract suites | 2–3 |
 | M2 | Class (i): the 7 eval-emulating doubles retired onto shape suites + unit observation | 2 |
 | M3 | Class (i-b) bound cases + the two F-22-deferred migrations (after the F-22 ruling lands) | 1–2 |

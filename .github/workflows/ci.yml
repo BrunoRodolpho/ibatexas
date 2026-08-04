@@ -51,6 +51,17 @@ jobs:
       # Redis testcontainers. ubuntu-latest ships with Docker preinstalled, but
       # we probe `docker info` first so an unavailable daemon surfaces as a
       # clear error rather than a cryptic mid-suite testcontainer-boot failure.
+      #
+      # This probe IS the Redis provisioning for this job, and deliberately so
+      # (M0 / the multi()/eval ruling Q1). The shared harness
+      # `apps/api/src/__tests__/helpers/redis-testcontainer.ts` starts its OWN
+      # `redis:7-alpine` per test file on a host-ephemeral port, and runs
+      # whenever `IBX_SKIP_REAL_REDIS` is unset — which it is here. A GitHub
+      # `services: redis:` container would therefore be dead weight: no suite
+      # would connect to it. Validated Docker is what makes the EXISTING
+      # harness run unchanged, and it already does — measured on dev @
+      # 2f5c4979, sweeper-resolver-race.test.ts ran 3 tests in 6654ms in this
+      # job. What was missing was the loud-skip gate below.
       - name: Verify Docker is available (testcontainer prerequisite)
         run: docker info
       # BKL-249 — process-compose is the validator behind the dev-stack profile
@@ -87,6 +98,18 @@ jobs:
       # CI cores; the default 5s timeout flakes under that load (e.g. pack-payments).
       # 60s is ample headroom for unit tests and keeps this required `check` job green.
       - run: pnpm exec turbo test -- --coverage --coverage.reporter=lcov --coverage.reporter=text --testTimeout=60000
+      # M0 loud-skip gate (multi()/eval ruling Q1). `turbo test` above reports
+      # a skipped suite as PASSED: on dev @ 2f5c4979 this job printed
+      # "✓ park-deferred-intent-nx.test.ts (4 tests | 3 skipped)" and twelve
+      # real-Redis cases across five files never ran. This step drives the
+      # hand-enumerated real-Redis suites itself and fails when any of them
+      # executes fewer cases than the roll call names — zero included.
+      #
+      # It re-runs those suites rather than parsing the output above on
+      # purpose: `test` is a CACHEABLE turbo task, so a report from a cache HIT
+      # would certify suites that did not run in this job. ~8s wall for all 8.
+      - name: Real-Redis loud-skip gate (M0 / ruling Q1)
+        run: node scripts/check-real-redis-suites.mjs
       # Bypass-detection CI gate (task 20). Fails the build if any direct
       # prisma write, direct medusa write, executeToolDirect re-introduction,
       # or setMetricsSink(undefined) reset enters the codebase. The vitest

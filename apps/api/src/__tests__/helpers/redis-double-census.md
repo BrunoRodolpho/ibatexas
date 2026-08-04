@@ -156,7 +156,7 @@ its SUT documents most loudly.
 | `apps/api/src/__tests__/chat-integration.test.ts` | **Not a hand-rolled double.** Constant-answering `vi.fn()` stub (the `mockRedis` class under another name). Its constants are load-bearing *by design* and documented: `get` returns `null` so the SSE GET-not-found case falls through the ownership/secret checks to the empty-replay path. Migrating would change behaviour, not remove a fiction. |
 | `apps/api/src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts` | **Already real Redis** (`setupRedisTestContainer`). |
 | `apps/api/src/adapters/__tests__/park-deferred-intent-nx-hash.test.ts` | **Already real Redis** (`setupRedisTestContainer`). |
-| `apps/api/src/__tests__/park-deferred-intent-nx.test.ts` | **Already real Redis**, but gated on its **own** `REDIS_URL` check rather than the shared harness — so it skips wherever `REDIS_URL` is unset, which includes CI. |
+| `apps/api/src/__tests__/park-deferred-intent-nx.test.ts` | ~~**Already real Redis**, but gated on its **own** `REDIS_URL` check rather than the shared harness — so it skips wherever `REDIS_URL` is unset, which includes CI.~~ **FIXED in M0** — migrated onto `setupRedisTestContainer`. See the correction immediately below: this row named ONE file; there were FIVE. |
 
 ### The remaining map, over this enumeration
 
@@ -267,13 +267,52 @@ and already green.
 
 1. **`sweeper-resolver-race.test.ts` runs 100 iterations of a race.** Multiplying
    that shape across seven more files is the real cost question, not the harness.
-2. **CI has no Redis service and sets no `REDIS_URL`.** `ci.yml` runs
-   `pnpm exec turbo test` with neither. Files using the shared harness default to
-   running (the flag is unset, so `RUN_REAL_REDIS` is `true`) and depend on the
-   runner's Docker; files using their own `REDIS_URL` gate — item 21 above —
-   **skip silently and report green**. Any decision that routes coverage through
-   real Redis should also make the skip loud, or the gate will report success on
-   an empty run.
+2. ~~**CI has no Redis service and sets no `REDIS_URL`.**~~ **CLOSED by M0.**
+   The original text read: *"`ci.yml` runs `pnpm exec turbo test` with neither.
+   Files using the shared harness default to running (the flag is unset, so
+   `RUN_REAL_REDIS` is `true`) and depend on the runner's Docker; files using
+   their own `REDIS_URL` gate — item 21 above — skip silently and report
+   green."* Both halves were right; the count in the second was not. See the
+   correction below.
+
+### Population correction (M0) — the silent-skip class was FIVE files, not one
+
+The class-(iii) row above named `park-deferred-intent-nx.test.ts` as *the*
+file gated on its own env check. The env var is `REDIS_TEST_URL` (not
+`REDIS_URL`), and grepping for it returns **five** apps/api test files, all
+with the identical shape — an own-env `RUN_REAL_REDIS` const, a
+`describe.skipIf`, and a trailing non-skipped "synthetic guard" describe whose
+stated purpose was *"so vitest reports the file as ran"*. That last part is
+what made the skip quiet: the file always had one passing case, so it printed
+a ✓.
+
+Measured in the required `check` job on dev @ `2f5c4979` — not inferred:
+
+| File | CI reported | Real-Redis cases lost |
+|---|---|---|
+| `__tests__/park-deferred-intent-nx.test.ts` | `✓ (4 tests \| 3 skipped)` | 3 |
+| `__tests__/otp-brute-force-atomic.test.ts` | `✓ (5 tests \| 4 skipped)` | 4 |
+| `__tests__/otp-brute-force-before.test.ts` | `✓ (2 tests \| 1 skipped)` | 1 |
+| `__tests__/refund-drip-cap-atomic.test.ts` | `✓ (4 tests \| 3 skipped)` | 3 |
+| `__tests__/refund-drip-cap-before.test.ts` | `✓ (2 tests \| 1 skipped)` | 1 |
+| **Total** | five green files | **12** |
+
+Those 12 cover the refund drip-cap Lua (`routes/admin/payments.ts:182`), the
+OTP-lockout Lua (`routes/me/anonymize-otp-gate.ts:404`) and the NX park guard
+— i.e. two of the eight production script shapes had *zero* executing CI
+coverage while the census recorded them as "already real Redis".
+
+M0 migrated all five onto `setupRedisTestContainer` and deleted the synthetic
+guards. There is now exactly one real-Redis knob, `IBX_SKIP_REAL_REDIS=1`
+(local-dev only), and `scripts/check-real-redis-suites.mjs` — a hand-written
+roll call of 8 suites / 21 cases, run as its own `ci.yml` step — fails the
+build if any enumerated suite executes fewer cases than it names.
+
+Still standing, and worth reading before M1: the harness suites
+(`sweeper-resolver-race`, `park-deferred-intent-nx-hash`,
+`ledger-replay-suppression`) *were* running in CI all along, on the runner's
+preinstalled Docker. Validated Docker, not a `services:` container, is what
+this repo's harness needs — it starts its own `redis:7-alpine` per file.
 
 ### The full production Lua inventory (20 sites, 8 script shapes)
 

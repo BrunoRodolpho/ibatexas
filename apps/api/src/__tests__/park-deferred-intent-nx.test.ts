@@ -12,28 +12,31 @@
 //   2. The blob preserved in Redis belongs to the WINNER (first writer),
 //      not the loser — verifying no overwrite occurred.
 //
-// Uses a REAL Redis client against a testcontainer. Gate matches the rest
-// of the apps/api Redis-backed tests (otp-brute-force, refund-drip-cap, …):
-// set `REDIS_TEST_URL=redis://localhost:6380` and run
-// `docker run --rm -d -p 6380:6379 --name w1c-redis redis:7-alpine` first.
-// Suite is skipped when REDIS_TEST_URL is not set (was previously defaulting
-// to localhost:6379 which surfaces `NOAUTH Authentication required` on dev
-// machines that run a system Redis with auth — this masked the real intent
-// that the suite is a containerised concurrency probe, not a unit test).
+// Uses a REAL Redis against the SHARED testcontainer harness
+// (`helpers/redis-testcontainer.ts`), same as the rest of the real-Redis
+// suites. It previously gated on its OWN `REDIS_TEST_URL` env check, which
+// is unset in CI — so the three cases below skipped silently and the file
+// still reported green (measured on dev @ 2f5c4979: "park-deferred-intent-
+// nx.test.ts (4 tests | 3 skipped)"). M0 of the multi()/eval ruling
+// (docs/architecture/redis-lua-testing-decision.md, Q1) retired that gate:
+// there is now exactly ONE real-Redis knob, `IBX_SKIP_REAL_REDIS=1`, it is
+// local-dev-only, and `scripts/check-real-redis-suites.mjs` fails CI if the
+// cases below do not actually execute.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { createClient } from "redis"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import { deferParkKey } from "@adjudicate/runtime"
 import {
   parkDeferredIntentWithNxGuard,
   type ParkDeferredIntentNxResult,
 } from "../adapters/park-deferred-intent-nx.js"
+import {
+  RUN_REAL_REDIS,
+  setupRedisTestContainer,
+  type RedisTestHarness,
+} from "./helpers/redis-testcontainer.js"
 
-type RedisClient = ReturnType<typeof createClient>
-
-const REDIS_URL = process.env.REDIS_TEST_URL
-const RUN_REAL_REDIS = REDIS_URL !== undefined && REDIS_URL.length > 0
+type RedisClient = RedisTestHarness["client"]
 
 function rk(key: string): string {
   return `test-park-nx:${key}`
@@ -83,18 +86,19 @@ function buildTestEnvelope(args: {
 }
 
 describe.skipIf(!RUN_REAL_REDIS)("P0-7-TRUE — parkDeferredIntentWithNxGuard", () => {
+  let harness: RedisTestHarness
   let client: RedisClient
 
+  // 120s: a COLD `redis:7-alpine` pull on a CI runner can outlast the
+  // package-wide 30s hookTimeout (apps/api/vitest.config.ts). The harness
+  // itself allows 60s for container startup alone.
   beforeAll(async () => {
-    client = createClient({ url: REDIS_URL })
-    client.on("error", () => {
-      /* swallow */
-    })
-    await client.connect()
-  })
+    harness = await setupRedisTestContainer()
+    client = harness.client
+  }, 120_000)
 
   afterAll(async () => {
-    await client.quit().catch(() => {})
+    await harness?.teardown()
   })
 
   beforeEach(async () => {
@@ -310,19 +314,5 @@ describe.skipIf(!RUN_REAL_REDIS)("P0-7-TRUE — parkDeferredIntentWithNxGuard", 
       rk,
     })
     expect(resultB.parked).toBe(true)
-  })
-})
-
-describe("P0-7-TRUE — synthetic guard", () => {
-  it("documents the real-Redis test gating", () => {
-    if (!RUN_REAL_REDIS) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[P0-7-TRUE] REDIS_TEST_URL not set; skipping real-Redis park-NX concurrency tests. " +
-          "Run docker run --rm -d -p 6380:6379 --name w1c-redis redis:7-alpine " +
-          "and REDIS_TEST_URL=redis://localhost:6380 pnpm vitest to exercise.",
-      )
-    }
-    expect(typeof RUN_REAL_REDIS).toBe("boolean")
   })
 })
