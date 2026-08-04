@@ -23,9 +23,17 @@ import { fileURLToPath } from "node:url";
 import { compileClaimDefinition } from "@adjudicate/core";
 import { CART_CONTENTS_SOURCE } from "./cart-contents.claim.js";
 import { CART_EMPTY_SOURCE } from "./cart-empty.claim.js";
+import { COUPON_INVALID_SOURCE } from "./coupon-invalid.claim.js";
+import { COUPON_VALID_SOURCE } from "./coupon-valid.claim.js";
+import { DELIVERY_COVERAGE_SOURCE } from "./delivery-coverage.claim.js";
+import { DELIVERY_NO_COVERAGE_SOURCE } from "./delivery-no-coverage.claim.js";
 import { MENU_DIETARY_SOURCE } from "./menu-dietary.claim.js";
+import { MENU_ITEM_ALLERGENS_SOURCE } from "./menu-item-allergens.claim.js";
 import { MENU_ITEM_CONTENTS_SOURCE } from "./menu-item-contents.claim.js";
 import { MENU_ITEM_PRICE_SOURCE } from "./menu-item-price.claim.js";
+import { MENU_OVERVIEW_SOURCE } from "./menu-overview.claim.js";
+import { MENU_PAIRINGS_SOURCE } from "./menu-pairings.claim.js";
+import { MENU_SUBSTITUTIONS_SOURCE } from "./menu-substitutions.claim.js";
 import { ORDER_FULFILLMENT_STAGE_SOURCE } from "./order-fulfillment-stage.claim.js";
 import { ORDER_HISTORY_SOURCE } from "./order-history.claim.js";
 import { PAYMENT_HISTORY_SOURCE } from "./payment-history.claim.js";
@@ -191,7 +199,132 @@ const UNITS: readonly GenUnit[] = [
     sourceFile: "store-hours-for-date.claim.ts",
     artifacts: compilePerResourceClaimDefinition(STORE_HOURS_FOR_DATE_SOURCE),
   },
+  // R2-S9 — the FIXED-SUBJECT BATCH: the last eight compilable types, and the first eight
+  // since R2-S1 to reach the compiler through the PUBLISHED `compileClaimDefinition`
+  // rather than R2-S2's per-resource wrapper. None of them is `perResourceKey` (each is a
+  // single-key store-policy or whole-catalog read), which is verified per type in
+  // `./__tests__/per-resource-claim.test.ts`'s base-key axis rather than assumed from the
+  // absence of a flag.
+  //
+  // THE THREE PRESENCE-COMPLEMENT PAIRS, all under R2-S6's shared-row rule (the span owner
+  // declares the row naming BOTH members; the twin declares no `decomposition` and so emits
+  // no closure export). What does NOT carry over from the cart pair is the ENFORCEMENT:
+  // both members of all three pairs are PUBLIC (`triadScoped: false`), so INV-4's forward
+  // direction obliges neither and CANNOT see a `requires` that stopped naming the twin.
+  // MEASURED against the real validator — CART_CONTENTS_Q losing CART_EMPTY is
+  // DECOMPOSITION_UNREACHABLE, while each of the three rows below losing its twin is
+  // `{ ok: true }`. The explicit structural pin that stands in for it lives in
+  // `./__tests__/generated-drift.test.ts`; the full derivation is in
+  // `./delivery-coverage.claim.ts`'s header.
+  {
+    slug: "delivery-coverage",
+    sourceFile: "delivery-coverage.claim.ts",
+    artifacts: compileClaimDefinition(DELIVERY_COVERAGE_SOURCE),
+  },
+  {
+    slug: "delivery-no-coverage",
+    sourceFile: "delivery-no-coverage.claim.ts",
+    artifacts: compileClaimDefinition(DELIVERY_NO_COVERAGE_SOURCE),
+  },
+  // COUPON — the first pair whose span (`COUPON_VALIDITY_Q`) is named after NEITHER type,
+  // so ownership needed a stated TIE-BREAK rather than the naming settlement the cart and
+  // delivery pairs had. The positive member declares the row; see
+  // `./coupon-valid.claim.ts`'s header for the three reasons and for why the marker net is
+  // the coupon NOUN alone (no conjunct of this span's predicate splits into rejoinable
+  // arms — every one is a single lookbehind-anchored literal — so the choice is WHICH
+  // conjunct is the marker net, and the compiler's own semantics answer it).
+  {
+    slug: "coupon-valid",
+    sourceFile: "coupon-valid.claim.ts",
+    artifacts: compileClaimDefinition(COUPON_VALID_SOURCE),
+  },
+  {
+    slug: "coupon-invalid",
+    sourceFile: "coupon-invalid.claim.ts",
+    artifacts: compileClaimDefinition(COUPON_INVALID_SOURCE),
+  },
+  // PAIRING — the family the compiler was built for (LE2-029 registered it across SIX
+  // files / +430 lines pre-compiler). It is also the ONLY unit whose generated `markers`
+  // ORDER a RUNTIME branch reads: the two arms are the relation discriminator
+  // `classifyPairingAsk` tests in sequence, so `menu-pairings.claim.ts` declares them in
+  // that order and the decomposer reads them through NAMED index constants, with each arm
+  // pinned byte-for-byte and INDIVIDUALLY.
+  {
+    slug: "menu-pairings",
+    sourceFile: "menu-pairings.claim.ts",
+    artifacts: compileClaimDefinition(MENU_PAIRINGS_SOURCE),
+  },
+  {
+    slug: "menu-substitutions",
+    sourceFile: "menu-substitutions.claim.ts",
+    artifacts: compileClaimDefinition(MENU_SUBSTITUTIONS_SOURCE),
+  },
+  // MENU_OVERVIEW — the composed net. Its three arms were ALREADY separate literals
+  // `||`-ed at the use site, so the migration is the R2-S4 relocation-with-no-splitting
+  // case and the byte pin it rejoins to (`__SPAN_NET_SOURCES_FOR_TEST.menuOverview`)
+  // PRE-DATES this slice with its value unchanged. The BKL-205 negative lookahead travels
+  // INSIDE arm 2; the BKL-205 SPECIFICITY ORDERING (this span's verdict suppressing the
+  // per-ITEM contents span) is sequencing between two DIFFERENT types and stays
+  // hand-written, byte-pin-blind, with behavioural pins.
+  {
+    slug: "menu-overview",
+    sourceFile: "menu-overview.claim.ts",
+    artifacts: compileClaimDefinition(MENU_OVERVIEW_SOURCE),
+  },
+  // MENU_ITEM_ALLERGENS — the DEGENERATE unit, and the one R2-S1 rejected as proving
+  // nothing. It is here for the CENSUS (see the exclusion note below): no falsifiers, no
+  // valueBinding, no render, no decomposition. It is what made the emitter's template block
+  // conditional — a type whose un-renderability is a ratified safety decision (BKL-123)
+  // must not ship an empty-slot `_TEMPLATE` export a consumer could splice — and what
+  // turned the drift harness's hardcoded `>= 4` mutation floor into a DERIVED exact count,
+  // since it is the only unit generating exactly TWO.
+  {
+    slug: "menu-item-allergens",
+    sourceFile: "menu-item-allergens.claim.ts",
+    artifacts: compileClaimDefinition(MENU_ITEM_ALLERGENS_SOURCE),
+  },
 ];
+
+/**
+ * PURCHASE_COMPLETED — EXCLUDED BY DESIGN. It is the 23rd registry type and the ONLY one
+ * with no `GenUnit` above, and this note is half of the census pin
+ * (`22 generated + 1 documented exclusion = 23`, asserted in
+ * `./__tests__/generated-drift.test.ts`); the other half is the matching ruling in
+ * `../claim-registry.ts`'s header. The pin is what forces a future type ADDITION to
+ * declare itself as one or the other instead of quietly becoming a second undocumented
+ * hand-written row.
+ *
+ * WHY EXCLUDED, and it is NOT "the compiler would reject it" — it would not. A source for
+ * this type would type-check and compile: `kind: "action_claim"` is a member of the
+ * published `ClaimKind`, its single `action_outcome` evidence row is structurally ordinary,
+ * and with no `render` block the F7 guard never fires. The exclusion is about what such a
+ * source would ASSERT, not about what the compiler can chew.
+ *
+ * This is the registry's ONLY `action_claim`, and an action claim does not render through
+ * the read-template grammar at all: it renders through the responder's
+ * `SUCCESS_CLAIM_CLASSES` path (`../ibatexas-responder.ts`), where `PURCHASE_COMPLETED`
+ * maps to TWO lowercase guard classes (`order-placed` + `purchase-completed`) in a
+ * different namespace from the registry's. The compiler's `render` block models exactly one
+ * posture — the `validated` READ template — and has no shape for that. So a compiled source
+ * would be SILENT about the one mechanism that actually determines how this type reaches a
+ * customer, and its generated doc card would print `**render (validated)**: _(no render
+ * template)_` — which for a read type truthfully means "abstains to SAFE_UNKNOWN", and for
+ * this one would be actively FALSE, since it does render. Publishing that card is the
+ * dead-and-misleading-artifact failure inv.18 v2 exists to prevent, which is why the
+ * ruling is an exclusion rather than a low-value adoption (contrast MENU_ITEM_ALLERGENS
+ * directly above, where `_(no render template)_` is TRUE and the adoption is therefore
+ * honest, if small).
+ *
+ * WHAT WOULD CHANGE THE RULING: an `action_claim` render posture in the published
+ * compiler's `RenderSource` — a block that names the guard classes an action claim earns —
+ * at which point this type becomes an ordinary adoption. Nothing in this repo can supply
+ * that; `@adjudicate/core` is a separately published package and the dependency arrow never
+ * points backward (SDD §M/§Q).
+ *
+ * NOT a deferral, NOT pending BKL-121/-123, and NOT to be "fixed" by adding a GenUnit that
+ * compiles: doing so would move the census to 23/23 while publishing the false card above.
+ */
+const EXCLUDED_BY_DESIGN = ["PURCHASE_COMPLETED"] as const;
 
 /** sha256 of a generated file's source-of-record (the `.claim.ts`). */
 function sourceChecksum(sourceFile: string): string {
@@ -236,11 +369,23 @@ export function emitGeneratedModule(unit: GenUnit): string {
 
   // (3) render template — wrap the compiled slots in the ibatexas Template shape
   // (claimType keyed + the `validated` posture).
-  const template = tsLiteral({
-    claimType: a.type,
-    posture: "validated",
-    slots: a.renderTemplate?.slots ?? [],
-  });
+  // OPTIONAL, on exactly the closure block's footing (R2-S9): a source with NO `render`
+  // block compiles to `renderTemplate: undefined`, and such a type emits NO template
+  // export at all. The alternative — an empty-`slots` stub — would publish a template that
+  // renders the empty string and that a consumer could splice into VALIDATED_TEMPLATES,
+  // for a type whose UN-RENDERABILITY is the ratified decision (MENU_ITEM_ALLERGENS,
+  // BKL-123: a validated allergen template is soundness-sensitive and owner-gated). The
+  // block and its `Template` import are therefore both conditional, exactly as the closure
+  // block and its `RegistryClaimType` import already are.
+  const renderTemplate = a.renderTemplate;
+  const template =
+    renderTemplate === undefined
+      ? undefined
+      : tsLiteral({
+          claimType: a.type,
+          posture: "validated",
+          slots: renderTemplate.slots,
+        });
 
   // (7) decomposition closure — spanClass literal + requires + the regex markers.
   // OPTIONAL: a type with no §O#15 span (no closure row, no markers — e.g. STORE_HOURS,
@@ -261,14 +406,18 @@ export function emitGeneratedModule(unit: GenUnit): string {
     closure === undefined
       ? `import type { GeneratedReadClaimSpec } from "../claim-registry.js";`
       : `import type { GeneratedReadClaimSpec, RegistryClaimType } from "../claim-registry.js";`,
-    `import type { Template } from "../slot-grammar.js";`,
+    ...(template === undefined ? [] : [`import type { Template } from "../slot-grammar.js";`]),
     `import type { ClaimDefinition } from "@adjudicate/core";`,
     "",
     `/** (1) GENERATED registry spec row (evidence / falsifiers / value-binding). */`,
     `export const ${P}_REGISTRY_SPEC = ${registrySpec} satisfies GeneratedReadClaimSpec;`,
-    "",
-    `/** (3) GENERATED render template (proposition slots bound 1:1 to self + field). */`,
-    `export const ${P}_TEMPLATE = ${template} satisfies Template;`,
+    ...(template === undefined
+      ? []
+      : [
+          "",
+          `/** (3) GENERATED render template (proposition slots bound 1:1 to self + field). */`,
+          `export const ${P}_TEMPLATE = ${template} satisfies Template;`,
+        ]),
     ...(closure === undefined
       ? []
       : [
@@ -303,7 +452,7 @@ export function generateAll(): void {
   }
 }
 
-export { UNITS };
+export { EXCLUDED_BY_DESIGN, UNITS };
 
 // Direct-run entrypoint (ESM): regenerate when invoked as a script.
 if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`) {

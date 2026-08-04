@@ -18,17 +18,27 @@ import type { ClaimDefinition } from "@adjudicate/core";
 import { CLAIM_REGISTRY } from "../claim-registry.js";
 import { CART_CONTENTS_DEFINITION } from "../claimdefs/cart-contents.generated.js";
 import { CART_EMPTY_DEFINITION } from "../claimdefs/cart-empty.generated.js";
+import { COUPON_INVALID_DEFINITION } from "../claimdefs/coupon-invalid.generated.js";
+import { COUPON_VALID_DEFINITION } from "../claimdefs/coupon-valid.generated.js";
+import { DELIVERY_COVERAGE_DEFINITION } from "../claimdefs/delivery-coverage.generated.js";
+import { DELIVERY_NO_COVERAGE_DEFINITION } from "../claimdefs/delivery-no-coverage.generated.js";
 import { MENU_DIETARY_DEFINITION } from "../claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_ALLERGENS_DEFINITION } from "../claimdefs/menu-item-allergens.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "../claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "../claimdefs/menu-item-price.generated.js";
+import { MENU_OVERVIEW_DEFINITION } from "../claimdefs/menu-overview.generated.js";
+import { MENU_PAIRINGS_DEFINITION } from "../claimdefs/menu-pairings.generated.js";
+import { MENU_SUBSTITUTIONS_DEFINITION } from "../claimdefs/menu-substitutions.generated.js";
 import { ORDER_FULFILLMENT_STAGE_DEFINITION } from "../claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_DEFINITION } from "../claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_DEFINITION } from "../claimdefs/payment-history.generated.js";
 import { PAYMENT_STATUS_DEFINITION } from "../claimdefs/payment-status.generated.js";
 import { RESERVATION_STATUS_DEFINITION } from "../claimdefs/reservation-status.generated.js";
+import { STORE_HOURS_FOR_DATE_DEFINITION } from "../claimdefs/store-hours-for-date.generated.js";
 import { STORE_HOURS_DEFINITION } from "../claimdefs/store-hours.generated.js";
 import { STORE_INFO_DEFINITION } from "../claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_DEFINITION } from "../claimdefs/store-open-now.generated.js";
+import { VALIDATED_TEMPLATES } from "../slot-grammar.js";
 import {
   assertClaimDefinitionRegistryValid,
   CLAIM_DEFINITIONS,
@@ -234,6 +244,29 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
     // that happens to agree today.
     ["ORDER_FULFILLMENT_STAGE", ORDER_FULFILLMENT_STAGE_DEFINITION, true],
     ["PAYMENT_STATUS", PAYMENT_STATUS_DEFINITION, true],
+    // R2-S8 — the LAST parameterized type. It had no row here when it was adopted, which is
+    // a pre-existing gap R2-S9 closes rather than inherits: with the table complete over all
+    // 22 generated types, the "a type whose definition is still hand-reassembled passes
+    // every value assertion" loophole is closed for EVERY type instead of for the twelve
+    // someone remembered to list.
+    ["STORE_HOURS_FOR_DATE", STORE_HOURS_FOR_DATE_DEFINITION, false],
+    // R2-S9 — the FIXED-SUBJECT BATCH. All eight are PUBLIC (`triadScoped: false` declared
+    // in each source), so unlike the owner-scoped rows above a silent fallback to
+    // `buildClaimDefinition` would ALSO produce `false` — from `TRIAD_SCOPED_TYPES` not
+    // listing them, which is the WRONG REASON for the RIGHT value, and exactly the state
+    // reference identity exists to see. The three pairs are listed positive-then-twin, the
+    // order their shared closure row names them in.
+    ["DELIVERY_COVERAGE", DELIVERY_COVERAGE_DEFINITION, false],
+    ["DELIVERY_NO_COVERAGE", DELIVERY_NO_COVERAGE_DEFINITION, false],
+    ["COUPON_VALID", COUPON_VALID_DEFINITION, false],
+    ["COUPON_INVALID", COUPON_INVALID_DEFINITION, false],
+    ["MENU_PAIRINGS", MENU_PAIRINGS_DEFINITION, false],
+    ["MENU_SUBSTITUTIONS", MENU_SUBSTITUTIONS_DEFINITION, false],
+    ["MENU_OVERVIEW", MENU_OVERVIEW_DEFINITION, false],
+    // The DEGENERATE unit: no falsifiers, no valueBinding, no render, no closure. Its
+    // `triadScoped: false` is what makes the absent closure row sound rather than an
+    // unreachable-type defect, so the column is doing real work on this row too.
+    ["MENU_ITEM_ALLERGENS", MENU_ITEM_ALLERGENS_DEFINITION, false],
   ] as const)(
     "CLAIM_DEFINITIONS.%s IS the generated definition (reference identity)",
     (type, generated, triadScoped) => {
@@ -376,6 +409,72 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
     expect(rowsNamingEmpty).toEqual([["CART_CONTENTS_Q", ["CART_CONTENTS", "CART_EMPTY"]]]);
     // So the real registry validates — and this is the assertion that goes RED the moment
     // the pair de-syncs, at the same seam production boots through.
+    expect(validateClaimDefinitionRegistry()).toEqual({ ok: true });
+  });
+
+  // ── R2-S9 — THE THREE PUBLIC PAIRS at the BOOT seam, and the sentence above that does
+  //    NOT carry over to them ──────────────────────────────────────────────────────────
+  //
+  // The CART assertion above ends "this is the assertion that goes RED the moment the pair
+  // de-syncs". For the three pairs R2-S9 adopted that is FALSE, and the reason is
+  // structural rather than incidental: INV-4's forward direction obliges TRIAD-SCOPED types
+  // only, and all six members are PUBLIC. The measurement itself lives in
+  // `claimdefs/__tests__/generated-drift.test.ts` (where the replacement pin is too); what
+  // belongs HERE is the boot-seam SHAPE — each twin reachable through exactly one row, its
+  // owner's — asserted for the same reason the CART case is, minus the claim it cannot
+  // support.
+  it.each([
+    ["DELIVERY_COVERAGE_Q", "DELIVERY_COVERAGE", "DELIVERY_NO_COVERAGE"],
+    ["COUPON_VALIDITY_Q", "COUPON_VALID", "COUPON_INVALID"],
+    ["PAIRING_Q", "MENU_PAIRINGS", "MENU_SUBSTITUTIONS"],
+  ] as const)(
+    "%s names both members, and the twin %s / %s is reachable ONLY through it",
+    (span, positive, negative) => {
+      const rowsNaming = (type: string) =>
+        Object.entries(CLAIM_DEFINITION_CONTEXT.closures ?? {})
+          .filter(([, types]) => types.includes(type))
+          .map(([s]) => s)
+          .sort();
+      expect(rowsNaming(positive)).toEqual([span]);
+      expect(rowsNaming(negative)).toEqual([span]);
+      expect(CLAIM_DEFINITION_CONTEXT.closures?.[span]).toEqual([positive, negative]);
+      // BOTH are PUBLIC — which is what makes the row's agreement invisible to INV-4, and
+      // is therefore the fact to assert rather than assume. If either flips to
+      // Triad-scoped, INV-4 becomes a live detector for this pair and three source headers
+      // plus the drift-suite measurement must be corrected.
+      expect(CLAIM_DEFINITIONS[positive].triadScoped).toBe(false);
+      expect(CLAIM_DEFINITIONS[negative].triadScoped).toBe(false);
+      expect(validateClaimDefinitionRegistry()).toEqual({ ok: true });
+    },
+  );
+
+  // R2-S9 — the DEGENERATE unit at the boot seam. MENU_ITEM_ALLERGENS is the only registry
+  // type whose definition carries NO optional block at all, and each absence is a ratified
+  // decision rather than an omission — so each is pinned, and pinned HERE because this is
+  // the object the fail-closed boot validator runs over.
+  it("MENU_ITEM_ALLERGENS boots with no falsifiers, no binding, no template and no closure", () => {
+    const def = CLAIM_DEFINITIONS.MENU_ITEM_ALLERGENS;
+    // No falsifier stance ⟹ the kernel's W6 eligibility cap keeps this type UNKNOWN-only.
+    // For the registry's one safety-critical read that is the correct fail-safe posture.
+    expect(def.falsifierComplete).toBeUndefined();
+    expect(def.falsifiers).toBeUndefined();
+    // No C6 binding ⟹ §5 stays value-agnostic; there is no sentence to bind a value into.
+    expect(def.valueBinding).toBeUndefined();
+    expect(def.valueProjections).toBeUndefined();
+    // No render template ⟹ the BKL-123 gate, now STRUCTURAL: the source declares no
+    // `render` block, so the generator omits the `_TEMPLATE` export entirely and there is
+    // nothing for a future author to splice into VALIDATED_TEMPLATES by accident.
+    expect(def.renderTemplate).toBeUndefined();
+    expect(VALIDATED_TEMPLATES.MENU_ITEM_ALLERGENS).toBeUndefined();
+    // No closure row, and `triadScoped: false` is what makes that sound rather than an
+    // unreachable-type defect — the two must be asserted TOGETHER or the first is vacuous.
+    expect(def.triadScoped).toBe(false);
+    expect(
+      Object.entries(CLAIM_DEFINITION_CONTEXT.closures ?? {}).filter(([, types]) =>
+        types.includes("MENU_ITEM_ALLERGENS"),
+      ),
+    ).toEqual([]);
+    // …and the registry still boots.
     expect(validateClaimDefinitionRegistry()).toEqual({ ok: true });
   });
 });

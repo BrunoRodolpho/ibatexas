@@ -63,16 +63,30 @@ import type {
 // STORE_HOURS_FOR_DATE, the one whose span class is a COMPOSED predicate rather than a flat
 // marker alternation: the `scheduleContext` conjunct became the generated marker net and
 // the `dateAnchor` conjunct stayed a hand-written GUARD, so no span-net restructure was
-// needed after all. EVERY `perResourceKey` type in this object now compiles from a source;
-// what remains hand-written here is the NINE non-parameterized types (MENU_ITEM_ALLERGENS,
-// MENU_OVERVIEW, DELIVERY_COVERAGE, DELIVERY_NO_COVERAGE, COUPON_VALID, COUPON_INVALID,
-// MENU_PAIRINGS, MENU_SUBSTITUTIONS, PURCHASE_COMPLETED — the last being the only
-// action_claim, a posture the compiler has no `render.validated` shape for).
+// needed after all. EVERY `perResourceKey` type in this object compiles from a source.
+//
+// R2-S9 then closed the FIXED-SUBJECT remainder — the three presence-complement pairs
+// (DELIVERY_COVERAGE/NO_COVERAGE, COUPON_VALID/INVALID, MENU_PAIRINGS/SUBSTITUTIONS),
+// MENU_OVERVIEW and MENU_ITEM_ALLERGENS — through the PUBLISHED `compileClaimDefinition`
+// (the R2-S1 path; none of them is parameterized, so R2-S2's wrapper is not involved).
+// EXACTLY ONE row in this object is still hand-written, and it is a RULING rather than a
+// remainder — see the PURCHASE_COMPLETED note at the end of REGISTRY_SPECS. The census is
+// pinned as 22 GENERATED + 1 DOCUMENTED EXCLUSION = 23 in
+// `./claimdefs/__tests__/generated-drift.test.ts`, so a future type addition must declare
+// itself as one or the other instead of quietly becoming a second hand-written row.
 import { CART_CONTENTS_REGISTRY_SPEC } from "./claimdefs/cart-contents.generated.js";
 import { CART_EMPTY_REGISTRY_SPEC } from "./claimdefs/cart-empty.generated.js";
+import { COUPON_INVALID_REGISTRY_SPEC } from "./claimdefs/coupon-invalid.generated.js";
+import { COUPON_VALID_REGISTRY_SPEC } from "./claimdefs/coupon-valid.generated.js";
+import { DELIVERY_COVERAGE_REGISTRY_SPEC } from "./claimdefs/delivery-coverage.generated.js";
+import { DELIVERY_NO_COVERAGE_REGISTRY_SPEC } from "./claimdefs/delivery-no-coverage.generated.js";
 import { MENU_DIETARY_REGISTRY_SPEC } from "./claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_ALLERGENS_REGISTRY_SPEC } from "./claimdefs/menu-item-allergens.generated.js";
 import { MENU_ITEM_CONTENTS_REGISTRY_SPEC } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_REGISTRY_SPEC } from "./claimdefs/menu-item-price.generated.js";
+import { MENU_OVERVIEW_REGISTRY_SPEC } from "./claimdefs/menu-overview.generated.js";
+import { MENU_PAIRINGS_REGISTRY_SPEC } from "./claimdefs/menu-pairings.generated.js";
+import { MENU_SUBSTITUTIONS_REGISTRY_SPEC } from "./claimdefs/menu-substitutions.generated.js";
 import { ORDER_FULFILLMENT_STAGE_REGISTRY_SPEC } from "./claimdefs/order-fulfillment-stage.generated.js";
 import { ORDER_HISTORY_REGISTRY_SPEC } from "./claimdefs/order-history.generated.js";
 import { PAYMENT_HISTORY_REGISTRY_SPEC } from "./claimdefs/payment-history.generated.js";
@@ -554,27 +568,25 @@ export type GeneratedReadClaimSpec = Omit<ReadClaimSpec, "dietaryPosture">;
  * its evidence schema can never silently diverge.
  */
 export const REGISTRY_SPECS = {
+  // inv.18 v2 / R2-S9 — MENU_ITEM_ALLERGENS is now GENERATED from its ClaimDefinition
+  // source (`./claimdefs/menu-item-allergens.generated.ts`, compiled from
+  // `menu-item-allergens.claim.ts`). The registry's SMALLEST adoption and the one R2-S1
+  // rejected as proving nothing: no falsifiers, no valueBinding, no render, no closure —
+  // so what its compile exercises is that the folds are TOTAL over the degenerate case.
+  // It is here because the census demands it (a type left hand-written because its
+  // adoption is unexciting is exactly the residue `22 + 1 = 23` cannot tolerate). The SDD
+  // §E floor rationale — free-text "sem alérgenos" must FAIL the C2 conjunct — moved
+  // verbatim into that source, along with the reason each absent facet is absent.
+  // BKL-270 — the posture is SPLICED here for the same reason as on its siblings:
+  // `compileClaimDefinition` has no concept of `dietaryPosture`. `abstain` is
+  // DOCUMENTATION with zero behaviour change: this type has NO VALIDATED_TEMPLATES entry
+  // (slot-grammar.ts), so a validated claim already falls to the template-undefined branch
+  // and abstains unconditionally. The declaration makes BKL-123's ratification LEGIBLE
+  // here, so a future author who adds a template trips a contradiction instead of silently
+  // un-ratifying a closed owner decision.
   MENU_ITEM_ALLERGENS: {
-    kind: "read_claim",
-    // BKL-270 — DOCUMENTATION, zero behaviour change: this type has NO
-    // VALIDATED_TEMPLATES entry (slot-grammar.ts), so a validated claim already
-    // falls to the template-undefined branch and abstains unconditionally. The
-    // declaration makes BKL-123's ratification LEGIBLE here, so a future author
-    // who adds a template trips a contradiction instead of silently un-ratifying
-    // a closed owner decision.
+    ...MENU_ITEM_ALLERGENS_REGISTRY_SPEC,
     dietaryPosture: "abstain",
-    // SDD §E: free-text "sem alérgenos" must fail → the floor is `structured`.
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "allergens",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "static",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
   },
   // BKL-121 — the full STORE_HOURS validated render chain, now GENERATED from its
   // ClaimDefinition source (inv.18 v2 / R2-S1). The evidence key + W6 falsifier pair +
@@ -887,53 +899,26 @@ export const REGISTRY_SPECS = {
     ...MENU_DIETARY_REGISTRY_SPEC,
     dietaryPosture: "abstain",
   },
-  // BKL-142 — MENU_OVERVIEW: the menu-WIDE overview ("o que tem no cardápio?"). PUBLIC
-  // and FIXED-SUBJECT like STORE_HOURS (single key, NOT perResourceKey) — the evidence
-  // is a deterministic listing of the whole catalog, not a per-item read. C6-bound to a
-  // pre-composed scalar (`overviewText` — first-party titles + centavos prices, composed
-  // in menu-item-resolver.ts; NO allergen/dietary — those stay carved out). Same
-  // deliberately-unread `menu:item_unpublished` falsifier disposition as the per-item
-  // menu claims.
+  // inv.18 v2 / R2-S9 — MENU_OVERVIEW is now GENERATED from its ClaimDefinition source
+  // (`./claimdefs/menu-overview.generated.ts`, compiled from `menu-overview.claim.ts`).
+  // PUBLIC and FIXED-SUBJECT like STORE_HOURS (single key, NOT perResourceKey) — the
+  // evidence is a deterministic listing of the whole catalog, not a per-item read — so it
+  // reaches the compiler through the PUBLISHED `compileClaimDefinition`, and
+  // `publicPerItemBaseKey` must keep resolving `undefined` for it while resolving a base
+  // key for its three per-ITEM siblings (asserted in
+  // `./claimdefs/__tests__/per-resource-claim.test.ts`'s base-key axis). This one line
+  // REPLACES the ~40-line handwritten stanza; the ttl UNITS pin and the
+  // same-row-tautology rationale for the deliberately-unread `menu:item_unpublished`
+  // falsifier moved verbatim into that source, as did the BKL-205 marker/ordering
+  // decomposition.
+  // BKL-270 — the posture is SPLICED here (the compiler cannot emit it; see
+  // STORE_OPEN_NOW). `abstain`: renders titles and prices with no descriptions, so no
+  // INDIVIDUAL item is described; the implication lives in the LIST'S RESPONSIVENESS.
+  // Under "o que tem no cardapio sem lactose?" the returned list IS the claimed
+  // sem-lactose menu. Gate shipped by BKL-273/#441.
   MENU_OVERVIEW: {
-    kind: "read_claim",
-    // BKL-270 — renders titles and prices with no descriptions, so no INDIVIDUAL
-    // item is described; the implication lives in the LIST'S RESPONSIVENESS. Under
-    // "o que tem no cardapio sem lactose?" the returned list IS the claimed
-    // sem-lactose menu. Gate shipped by BKL-273/#441.
+    ...MENU_OVERVIEW_REGISTRY_SPEC,
     dietaryPosture: "abstain",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "menu:overview",
-        ownershipPolicy: "not_applicable",
-        // ttl in epoch-MILLISECONDS (BKL-121/BKL-125 pin) — 300_000 ms = the ratified
-        // 5-minute catalog-freshness bound (vacuous within a per-turn ledger).
-        freshnessPolicy: { kind: "cacheable", ttl: 300_000 },
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    // W6 — `menu:item_unpublished` is DECLARED (so MENU_OVERVIEW escapes the W6
-    // UNKNOWN-only cap and can VALIDATE) but DELIBERATELY UNREAD — the SAME disposition
-    // the per-item menu claims + CART_CONTENTS's `cart_cleared` took after the #290/#291
-    // review: an "unpublished item" signal derived from the SAME catalog rows the
-    // overview came from is a same-row TAUTOLOGY (an unpublished item already reads
-    // ABSENT from the published listing ⇒ no present base to demote) that would
-    // re-introduce the exact class those PRs removed. Declaring-without-reading is sound:
-    // the runtime arm resolves an always-absent key ⇒ never fires ⇒ demote-only safety
-    // preserved. A future INDEPENDENT catalog `product.unpublished` event could wire it.
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "menu:item_unpublished",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "menu:overview", path: ["overviewText"] },
   },
   // BKL-136 — STORE_INFO: the store address/parking read ("onde fica?"), now GENERATED
   // from its ClaimDefinition source (inv.18 v2 / R2-S1). The evidence + the
@@ -953,256 +938,144 @@ export const REGISTRY_SPECS = {
     ...STORE_INFO_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
   },
-  // LE2-002 / NEW-007 — DELIVERY_COVERAGE: the PUBLIC "we deliver there" read.
-  // FIXED-SUBJECT single-key (the STORE_INFO / MENU_OVERVIEW shape — no
-  // perResourceKey, keys are never `:{subject}`-parameterized): a coverage answer
-  // is about the STORE's delivery policy, so there is one key and no owner.
-  // `must_read_this_turn` (NOT cacheable): the fee/ETA are ADMIN-EDITABLE at any
-  // moment (routes/admin/delivery-zones.ts) and the ticket requires an admin zone
-  // edit to show up in the very next chat answer — a cacheable TTL would license
-  // the kernel to accept a stale entry, which is exactly the staleness this claim
-  // must not have. The `delivery:zones_changed` W6 falsifier is DECLARED (escaping
-  // the W6 UNKNOWN-only cap so the type can VALIDATE) but DELIBERATELY UNREAD —
-  // the same disposition STORE_INFO's `store:info_changed` and CART_CONTENTS's
-  // `cart_cleared` carry, and for the same reason: the only available "changed"
-  // signal derives from the SAME zone row the base read already returned this turn,
-  // so firing it would be a tautology that demotes every truthful answer while
-  // catching zero staleness the base misses. The declaration stays for a future
-  // INDEPENDENT signal (a zone-events stream / the Redis invalidation pub-sub).
+  // inv.18 v2 / R2-S9 — the DELIVERY PRESENCE-COMPLEMENT PAIR is now GENERATED from their
+  // ClaimDefinition sources (`./claimdefs/delivery-coverage.generated.ts` /
+  // `./claimdefs/delivery-no-coverage.generated.ts`). The SECOND pair to SHARE one §O#15
+  // closure row after R2-S6's cart pair, and the FIRST whose members are PUBLIC — which is
+  // the whole difference, and it is a MEASURED one rather than a stylistic note: INV-4's
+  // forward direction obliges Triad-scoped types only, so for this pair (and the coupon and
+  // pairing pairs below) it CANNOT detect a `requires` that stopped naming the twin.
+  // Dropping CART_EMPTY from the cart row is DECOMPOSITION_UNREACHABLE; dropping
+  // DELIVERY_NO_COVERAGE from this one is `{ ok: true }`. An explicit structural pin in
+  // `./claimdefs/__tests__/generated-drift.test.ts` stands in for the boot-time refusal;
+  // the full derivation, and why the fallback matters (a de-synced row silently removes
+  // the twin from `classifyOnlyRequiredTypes`, so the honest-NO branch stops being
+  // produced on the deterministic path), is in delivery-coverage.claim.ts's header.
+  //
+  // These two lines REPLACE ~90 lines of handwritten stanza (evidence + the
+  // deliberately-unread W6 falsifiers + the C6 bindings + the ten-arm coverage-ask net,
+  // whose rationales moved verbatim into the sources). Both are FIXED-SUBJECT single-key
+  // (the STORE_INFO / MENU_OVERVIEW shape — no perResourceKey), so they compile through the
+  // PUBLISHED `compileClaimDefinition` and nothing here is ever `:{subject}`-parameterized.
+  //
+  // BKL-270 — the postures are SPLICED here for the same reason as on their siblings.
+  // `answer-anyway` for DELIVERY_COVERAGE: renders a zone name, integer centavos and
+  // integer minutes. A delivery zone is store policy about GEOGRAPHY, not food. Borderline
+  // B3 ("voces entregam comida sem gluten no CEP X?" is a product-existence question in
+  // delivery clothing) resolved by the containment ring: the follow-up necessarily hits an
+  // abstaining MENU_* family.
   DELIVERY_COVERAGE: {
-    kind: "read_claim",
-    // BKL-270 — renders a zone name, integer centavos and integer minutes. A
-    // delivery zone is store policy about GEOGRAPHY, not food. Borderline B3 ("voces
-    // entregam comida sem gluten no CEP X?" is a product-existence question in
-    // delivery clothing) resolved by the containment ring: the follow-up necessarily
-    // hits an abstaining MENU_* family.
+    ...DELIVERY_COVERAGE_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "delivery:coverage",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "delivery:zones_changed",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered sentence to the read's ACTUAL `coverageText`, the
-    // scalar delivery-coverage-resolver.ts composes IN CODE from the zone row's
-    // INTEGER centavos + minutes (Hard Rule 2). Ledger-sourced, never model-authored.
-    valueBinding: { key: "delivery:coverage", path: ["coverageText"] },
   },
-  // LE2-002 / NEW-007 — DELIVERY_NO_COVERAGE: the presence-COMPLEMENT of
-  // DELIVERY_COVERAGE (the CART_CONTENTS/CART_EMPTY pairing, BKL-163). The
-  // investigator records `delivery:no_coverage` PRESENT *only* when the estimation
-  // tool positively proved the supplied CEP falls outside every active zone, so
-  // exactly ONE of the pair can ever be present in a turn. A read that ERRORED or
-  // could not resolve records NEITHER key → honest UNKNOWN (Inv 7: "could not
-  // check" is never "we don't deliver").
+  // `answer-anyway` for DELIVERY_NO_COVERAGE — a NEGATIVE about geography. Carries the
+  // least dietary implication of any row: it declines to serve, which cannot endorse
+  // anything.
   DELIVERY_NO_COVERAGE: {
-    kind: "read_claim",
-    // BKL-270 — a NEGATIVE about geography. Carries the least dietary implication of
-    // any row: it declines to serve, which cannot endorse anything.
+    ...DELIVERY_NO_COVERAGE_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "delivery:no_coverage",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "delivery:zones_changed",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "delivery:no_coverage", path: ["noCoverageText"] },
   },
-  // LE2-019 — COUPON_VALID: the PUBLIC "this code is good" read. FIXED-SUBJECT
-  // single-key (the STORE_INFO / DELIVERY_COVERAGE shape — no perResourceKey,
-  // keys are never `:{subject}`-parameterized): the answer is about the STORE's
-  // promotion, so there is one key and no owner. `must_read_this_turn` (NOT
-  // cacheable): a promotion's status, campaign window and budget move on their own
-  // (a budget exhausts on someone ELSE's checkout), so a cacheable TTL would
-  // license the kernel to accept a stale entry — exactly the staleness a "vale?"
-  // answer must not have. The `coupon:promotions_changed` W6 falsifier is DECLARED
-  // (escaping the W6 UNKNOWN-only cap so the type can VALIDATE) but DELIBERATELY
-  // UNREAD — the same disposition STORE_INFO's `store:info_changed` and
-  // DELIVERY_COVERAGE's `delivery:zones_changed` carry, and for the same reason:
-  // the only available "changed" signal derives from the SAME promotion row the
-  // base read already returned this turn, so firing it would be a tautology that
-  // demotes every truthful answer while catching zero staleness. The declaration
-  // stays for a future INDEPENDENT signal (a promotion-events stream).
+  // inv.18 v2 / R2-S9 — the COUPON PRESENCE-COMPLEMENT PAIR is now GENERATED from their
+  // ClaimDefinition sources (`./claimdefs/coupon-valid.generated.ts` /
+  // `./claimdefs/coupon-invalid.generated.ts`). The THIRD shared-row pair, and the FIRST
+  // whose span is named after NEITHER member (`COUPON_VALIDITY_Q`), so R2-S6's rule needed
+  // a stated TIE-BREAK instead of the naming settlement the cart and delivery pairs had:
+  // the POSITIVE member declares the row, on three grounds recorded in
+  // coupon-valid.claim.ts's header. The choice moves no byte — the row is identical
+  // whichever file declares it — so it is a REVIEW property, recorded so the next pair
+  // inherits a rule.
+  //
+  // Its MARKER/GUARD split is also the first where NO conjunct of the span predicate
+  // decomposes: all four coupon regexes are single lookbehind-anchored literals whose `|`s
+  // sit inside one group (the R2-S8 `dateAnchor` shape), so the question was which conjunct
+  // IS the marker net rather than which one splits. The coupon NOUN — the topic gate — is
+  // the answer the compiler's own semantics give; the read-vs-mutation discrimination
+  // (apply-imperative, modal frame, validity phrasing, the code-extraction FUNCTION) stays
+  // hand-written and carries BEHAVIOURAL pins, a byte pin being guard-blind by
+  // construction.
+  //
+  // These two lines REPLACE ~86 lines of handwritten stanza. Both are FIXED-SUBJECT
+  // single-key (no perResourceKey), so they compile through the PUBLISHED
+  // `compileClaimDefinition`. The same INV-4 vacuity noted on the delivery pair applies
+  // here (MEASURED: `COUPON_VALIDITY_Q loses COUPON_INVALID -> { ok: true }`).
+  //
+  // BKL-270 — the postures are SPLICED here. `answer-anyway` for COUPON_VALID: a promotion
+  // record's own code and discount terms. Money/policy, no food.
   COUPON_VALID: {
-    kind: "read_claim",
-    // BKL-270 — a promotion record's own code and discount terms. Money/policy, no
-    // food.
+    ...COUPON_VALID_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "coupon:valid",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "coupon:promotions_changed",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered sentence to the read's ACTUAL `validityText`, the
-    // scalar coupon-validity-resolver.ts composes IN CODE from the promotion
-    // record's own code + `application_method` (Hard Rule 2 for a fixed amount).
-    // Ledger-sourced, never model-authored — the model cannot invent a discount.
-    valueBinding: { key: "coupon:valid", path: ["validityText"] },
   },
-  // LE2-019 — COUPON_INVALID: the presence-COMPLEMENT of COUPON_VALID (the
-  // DELIVERY_COVERAGE / CART_CONTENTS pairing). The investigator records
-  // `coupon:invalid` PRESENT *only* when a SUCCESSFUL promotion lookup positively
-  // determined the code is not usable (absent / draft / inactive / outside its
-  // campaign window / budget-exhausted), so exactly ONE of the pair can ever be
-  // present in a turn. A lookup that ERRORED records NEITHER key → honest UNKNOWN
-  // (Inv 7: "could not check" is never "your coupon is invalid").
+  // `answer-anyway` for COUPON_INVALID — a negative about a code, and it states NO reason
+  // by design. Nothing to endorse.
   COUPON_INVALID: {
-    kind: "read_claim",
-    // BKL-270 — a negative about a code, and it states NO reason by design. Nothing
-    // to endorse.
+    ...COUPON_INVALID_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "coupon:invalid",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "coupon:promotions_changed",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "coupon:invalid", path: ["invalidityText"] },
   },
-  // LE2-029 — MENU_PAIRINGS: the PUBLIC "what goes with this" read. FIXED-SUBJECT
-  // single-key (the STORE_INFO / COUPON_VALID shape — no perResourceKey): the
-  // answer is about the STORE's own authored advice, so there is one key and no
-  // owner. `must_read_this_turn` (NOT cacheable): the SENTENCE names live product
-  // titles resolved from the catalog this turn, and an object that stopped being
-  // sold must stop being suggested — a cacheable TTL would license the kernel to
-  // accept a suggestion for something off the menu. The
-  // `menu:pairings_changed` W6 falsifier is DECLARED (escaping the W6 UNKNOWN-only
-  // cap so the type can VALIDATE) but DELIBERATELY UNREAD — the same disposition
-  // STORE_INFO's `store:info_changed` and COUPON_VALID's `coupon:promotions_changed`
-  // carry, and for the same reason: the only available "changed" signal derives
-  // from the SAME catalog read the base read already performed this turn, so
-  // firing it would be a tautology that demotes every truthful answer while
-  // catching zero staleness.
+  // inv.18 v2 / R2-S9 — the PAIRING PRESENCE-COMPLEMENT PAIR is now GENERATED from their
+  // ClaimDefinition sources (`./claimdefs/menu-pairings.generated.ts` /
+  // `./claimdefs/menu-substitutions.generated.ts`). The FOURTH and last shared-row pair,
+  // and the family the compiler was built for: LE2-029 registered it across SIX files and
+  // +430 lines pre-compiler, three of which are now projections of one source each. It is
+  // ALSO the only unit in the corpus whose generated `markers` ORDER a RUNTIME branch reads
+  // — the two arms are the relation discriminator `classifyPairingAsk` tests in sequence —
+  // so the decomposer reads them through NAMED index constants and each arm is pinned
+  // byte-for-byte and INDIVIDUALLY; see menu-pairings.claim.ts's header.
+  //
+  // These two lines REPLACE ~84 lines of handwritten stanza. Both are FIXED-SUBJECT
+  // single-key (no perResourceKey). The same INV-4 vacuity noted on the delivery pair
+  // applies (MEASURED: `PAIRING_Q loses MENU_SUBSTITUTIONS -> { ok: true }`).
+  //
+  // The "THERE IS NO MENU_NO_PAIRINGS" argument in the enum comment above is unaffected and
+  // is summarized in menu-pairings.claim.ts's header, since that is now the file an author
+  // adding a claim type would open.
+  //
+  // BKL-270 — the postures are SPLICED here. `abstain` for MENU_PAIRINGS: THE RATIFIED
+  // ANCHOR. Renders the hand-authored 10-edge TASTE graph; under a dietary qualifier the
+  // house's suggestion reads as a house recommendation FOR THAT DIET, with no staff in the
+  // loop. LE2-029 measured the full list rendering for "sem gluten" and closed it; this
+  // declaration makes the existing read-guard registry-driven instead of hand-applied.
   MENU_PAIRINGS: {
-    kind: "read_claim",
-    // BKL-270 — THE RATIFIED ANCHOR. Renders the hand-authored 10-edge TASTE graph;
-    // under a dietary qualifier the house's suggestion reads as a house
-    // recommendation FOR THAT DIET, with no staff in the loop. LE2-029 measured the
-    // full list rendering for "sem gluten" and closed it; this declaration makes the
-    // existing read-guard registry-driven instead of hand-applied.
+    ...MENU_PAIRINGS_REGISTRY_SPEC,
     dietaryPosture: "abstain",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "menu:pairings",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "menu:pairings_changed",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered sentence to the read's ACTUAL `suggestionsText`, the
-    // scalar pairing-resolver.ts composes IN CODE from the authored graph's edges
-    // and the LIVE product titles those edges resolve to. Ledger-sourced, never
-    // model-authored: the model cannot invent a suggestion, and cannot invent the
-    // pt-BR name of one either.
-    valueBinding: { key: "menu:pairings", path: ["suggestionsText"] },
   },
-  // LE2-029 — MENU_SUBSTITUTIONS: the presence-COMPLEMENT of MENU_PAIRINGS. The
-  // investigator records `menu:substitutions` PRESENT *only* when the utterance
-  // asked what to have INSTEAD, so exactly one of the pair can ever be present in
-  // a turn. A read that found no subject, no edges, or no live product records
-  // NEITHER key → honest UNKNOWN.
+  // `abstain` for MENU_SUBSTITUTIONS — same authored graph as MENU_PAIRINGS, and the frame
+  // is if anything stronger: "a casa indica" is explicitly an endorsement verb.
   MENU_SUBSTITUTIONS: {
-    kind: "read_claim",
-    // BKL-270 — same authored graph as MENU_PAIRINGS, and the frame is if anything
-    // stronger: "a casa indica" is explicitly an endorsement verb.
+    ...MENU_SUBSTITUTIONS_REGISTRY_SPEC,
     dietaryPosture: "abstain",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "menu:substitutions",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: false,
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "menu:pairings_changed",
-        ownershipPolicy: "not_applicable",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    valueBinding: { key: "menu:substitutions", path: ["substitutionsText"] },
   },
+  // ── R2-S9 — THE ONE HAND-WRITTEN ROW LEFT, AND IT IS A RULING ─────────────────────
+  //
+  // PURCHASE_COMPLETED is EXCLUDED BY DESIGN from the claimdef compiler. It is the only
+  // stanza in this object that is not a spread of a generated spec, and it must stay that
+  // way; the census pin (`22 generated + 1 documented exclusion = 23`, in
+  // `./claimdefs/__tests__/generated-drift.test.ts`) is what makes a future type addition
+  // declare itself as one or the other rather than quietly becoming a second hand-written
+  // row. The companion note lives at the end of `./claimdefs/generate.ts`'s UNITS.
+  //
+  // NOT "the compiler would reject it" — it would not. `kind: "action_claim"` is a member
+  // of the published `ClaimKind`, the single `action_outcome` evidence row is structurally
+  // ordinary, and with no `render` block the compiler's F7 guard never fires. The exclusion
+  // is about what a compiled source would ASSERT.
+  //
+  // This is the registry's ONLY `action_claim`, and an action claim does not render through
+  // the read-template grammar at all: it renders through the responder's
+  // `SUCCESS_CLAIM_CLASSES` path (`./ibatexas-responder.ts`), where this ONE registry type
+  // maps to TWO lowercase guard classes (`order-placed` + `purchase-completed`) in a
+  // different namespace (SDD §K "map, do not equate"). The compiler's `render` block models
+  // exactly one posture — the `validated` READ template — and has no shape for that. So a
+  // compiled source would be SILENT about the one mechanism that determines how this type
+  // reaches a customer, and its generated doc card would print `**render (validated)**:
+  // _(no render template)_` — which for a read type truthfully means "abstains to
+  // SAFE_UNKNOWN" (MENU_ITEM_ALLERGENS above, where the same card line is TRUE and the
+  // adoption is therefore honest) and for this one would be actively FALSE, since it does
+  // render. Publishing that card is the dead-and-misleading-artifact failure inv.18 v2
+  // exists to prevent.
+  //
+  // WHAT WOULD CHANGE THE RULING: an `action_claim` render posture in the published
+  // compiler's `RenderSource`. Nothing in this repo can supply it — `@adjudicate/core` is a
+  // separately published package and the dependency arrow never points backward (SDD
+  // §M/§Q). This is NOT a deferral and NOT pending BKL-121/-123.
   PURCHASE_COMPLETED: {
     kind: "action_claim",
     minSourceIntegrity: "structured",
