@@ -281,7 +281,7 @@ catalog depend on its own dependent and produce a circular turbo build graph.)
 
 ## Version-bump discipline
 
-`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `15`.
+`CATALOG_VERSION` is a **hand-authored monotonic integer**, currently `16`.
 
 It is deliberately *not* derived (no content hash, no git sha, no build
 timestamp): a derived version changes on every unrelated edit and cannot be

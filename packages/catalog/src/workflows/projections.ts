@@ -68,6 +68,57 @@ export function workflowSelectionKinds(
   return new Set(workflows.map((workflow) => workflow.selection.capability))
 }
 
+/**
+ * ONE WORKFLOW'S ANCHOR, as the host's tool factory needs to see it.
+ *
+ * The same anchors {@link workflowSelectionKinds} projects, carrying the two
+ * things a bare kind cannot: the AUTHORED description the minted handler wears
+ * (`selection.anchorDescription`), and the WORKFLOW ID that declared it — which
+ * exists so a workflow that forgot the description can be NAMED in the failure
+ * rather than described as "some anchor".
+ */
+export interface WorkflowSelectionAnchor {
+  /** The workflow whose `selection` declared this anchor. */
+  readonly workflowId: string
+  /** The capability the SELECTION envelope carries. */
+  readonly capability: string
+  /** The authored pt-BR handler description, when the workflow declares one. */
+  readonly description?: string
+}
+
+/**
+ * Every workflow's ANCHOR, in corpus declaration order, DEDUPED BY CAPABILITY.
+ *
+ * The richer sibling of {@link workflowSelectionKinds}, and deduped for the same
+ * reason that one returns a Set: these records drive REGISTRATION, and two
+ * workflows anchored on one kind need that kind's handler registered ONCE. A list
+ * with both would register twice and, under the registry's last-write-wins, make
+ * the second registration silently authoritative over the first.
+ *
+ * FIRST DECLARATION WINS, matching the iteration order of the Set the kinds
+ * projection returns. A second workflow on the same anchor contributes nothing —
+ * including nothing to the description — because the handler it would describe
+ * has already been described by the workflow that got there first.
+ */
+export function workflowSelectionAnchors(
+  workflows: readonly WorkflowDefinition[],
+): readonly WorkflowSelectionAnchor[] {
+  const anchors: WorkflowSelectionAnchor[] = []
+  const seen = new Set<string>()
+  for (const workflow of workflows) {
+    const capability = workflow.selection.capability
+    if (seen.has(capability)) continue
+    seen.add(capability)
+    const description = workflow.selection.anchorDescription
+    anchors.push({
+      workflowId: workflow.id,
+      capability,
+      ...(description === undefined ? {} : { description }),
+    })
+  }
+  return anchors
+}
+
 /** Look a workflow up by id. `undefined` for an id the corpus does not declare. */
 export function findWorkflow(
   workflows: readonly WorkflowDefinition[],

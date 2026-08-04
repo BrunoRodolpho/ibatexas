@@ -3491,7 +3491,7 @@ export async function bootstrapClaustrum(
     toolsRef: workflowToolsRef,
   });
   registerWorkflowScopedTools(toolRegistry, workflowRuntime.activityCapabilities());
-  registerWorkflowAnchorTools(toolRegistry, workflowRuntime.selectionCapabilities());
+  registerWorkflowAnchorTools(toolRegistry, workflowRuntime.selectionAnchors());
   installWorkflowRuntime(toolRegistry, workflowRuntime);
   workflowToolsRef.current = toolRegistry;
 

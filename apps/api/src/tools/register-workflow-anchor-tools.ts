@@ -33,131 +33,144 @@
 // is untouched — which keeps "registered" and "chat-drivable" two different
 // facts instead of one conflated one.
 
+import type { WorkflowSelectionAnchor } from "@ibatexas/catalog";
 import type { ToolDefinition, ToolRegistry } from "@claustrum/core";
 import type { CapabilityId, IntentKind } from "@claustrum/core";
 
 /**
- * The reorder-last anchor.
+ * THE ONE EXECUTOR EVERY MINTED ANCHOR GETS — and the must-THROW invariant, held
+ * once instead of restated per anchor.
  *
  * ── WHY IT DOES NOTHING ──────────────────────────────────────────────────────
  *
- * Reaching this executor MEANS the customer approved the reorder: the kernel
- * parked the envelope on `confirmReorderLast`'s REQUEST_CONFIRMATION and only
- * a resumed, receipt-bearing adjudication returns EXECUTE. The approval is the
- * whole content of the act. The rebuilding happens in the workflow's activity
- * sequence, which `installWorkflowRuntime`'s wrapper runs immediately after this
- * returns — each step adjudicated individually, writing its own audit row.
+ * Reaching this executor MEANS the customer approved the workflow: the kernel
+ * parked the anchor envelope on the guard's REQUEST_CONFIRMATION and only a
+ * resumed, receipt-bearing adjudication returns EXECUTE. (Or — the paid-cancel
+ * case — the guard deliberately said nothing and `executeW5Kinds` let the anchor
+ * through on the selecting turn, which is a considered absence of a question, not
+ * an absence of consideration.) Either way the approval is the WHOLE content of
+ * the act. Everything that MOVES happens in the workflow's activity sequence,
+ * which `installWorkflowRuntime`'s wrapper runs immediately after this returns —
+ * each step adjudicated individually, writing its own audit row.
  *
- * Giving it work to do would be actively wrong, not merely redundant:
- * `order.reorder`'s handler POSTs a brand-new `/store/carts`, so any cart this
- * executor created would be abandoned one step later.
+ * Giving an anchor work to do would be actively wrong, not merely redundant, and
+ * the three shipped anchors each show a sharper version of why:
+ *
+ *   - REORDER — `order.reorder`'s handler POSTs a brand-new `/store/carts`, so
+ *     any cart minted here would be abandoned one step later.
+ *   - COUPON SWAP — the route's first activity CANCELS THE ORDER, through the
+ *     kernel, with its own audit row and its own declared compensator. A cancel
+ *     riding the anchor's EXECUTE would be an ungoverned money act, invisible to
+ *     the per-activity trace and unreachable by the compensation machinery that
+ *     exists to undo exactly it.
+ *   - PAID CANCEL — worse still: the anchor runs BEFORE the activity, so the
+ *     activity's `gatePaidCancel` would adjudicate an order that was already
+ *     cancelled and the escalate band would evaluate against a fait accompli.
  *
  * ── AND WHY IT CANNOT FAIL SOFTLY ────────────────────────────────────────────
  *
- * The wrapper spreads this result and then overwrites `message` with the
- * outcome template, so a soft `{success: false, message}` returned here would be
- * SILENTLY DISCARDED and the customer would read "Pronto!" over a failed anchor.
- * A trivial executor has no failure mode to express, which is the safest way to
- * hold that property — but it is a property to hold deliberately, so any future
- * anchor work here must THROW rather than return a failure shape.
+ * The wrapper spreads this result and then OVERWRITES `message` with the outcome
+ * template, so a soft `{success: false, message}` returned here would be SILENTLY
+ * DISCARDED and the customer would read "Pronto, cancelei seu pedido" over a
+ * failed anchor. A trivial executor has no failure mode to express, which is the
+ * safest way to hold that property — but it is a property held DELIBERATELY, so
+ * any future anchor work must THROW rather than return a failure shape.
+ *
+ * Since R6-S3 that is one property of one function rather than three parallel
+ * comments over three byte-identical constants: every minted anchor carries THIS
+ * reference, and a test asserts so for every anchor in the loaded corpus. Making
+ * this executor do work — or return a failure shape — breaks every anchor at
+ * once, loudly, which is the correct blast radius for a decision this load-bearing.
  */
-const REORDER_REQUEST_ANCHOR: ToolDefinition<unknown, unknown> = {
-  id: "ibatexas.order.reorderRequest.v1",
-  capability: "order.reorder.request" as CapabilityId,
-  intentKind: "order.reorder.request" as IntentKind,
-  description: "Confirmar a repetição do último pedido do cliente.",
-  inputSchema: {},
-  outputSchema: {},
-  // The anchor itself moves nothing. The risk of the ROUTE lives on
-  // `order.reorder` (medium — it replaces the customer's cart), where the
-  // kernel actually adjudicates it.
-  riskLevel: "low",
+export const WORKFLOW_ANCHOR_NO_OP = (): Promise<{ readonly approved: true }> =>
   // The port is async and the anchor has nothing to await, so the promise is
-  // constructed rather than awaited — `async () => …` would trip
-  // `require-await` for describing a real property of this executor.
-  execute: () => Promise.resolve({ approved: true }),
-};
+  // constructed rather than awaited — `async () => …` would trip `require-await`
+  // for describing a real property of this executor.
+  Promise.resolve({ approved: true } as const);
 
 /**
- * The swap-for-coupon anchor — LE2-023.
+ * The RISK of an anchor, which is `"low"` for every anchor and always will be.
  *
- * Does nothing, for the same reason `REORDER_REQUEST_ANCHOR` does nothing and
- * with more at stake. Reaching this executor MEANS the customer approved the
- * swap: `confirmSwapForCoupon` parked the envelope and only a resumed,
- * receipt-bearing adjudication returns EXECUTE. The approval IS the act.
- *
- * Here the "giving it work would be actively wrong" argument is not a nicety.
- * The route's first activity CANCELS THE ORDER, and it does so through the
- * kernel, individually adjudicated, with its own audit row and its own declared
- * compensator. Any cancelling this executor did would be an ungoverned mutation
- * riding the anchor's EXECUTE — a real money act with no adjudication of its
- * own, invisible to the per-activity trace, and unreachable by the compensation
- * machinery that exists to undo exactly it.
- *
- * The same no-soft-failure rule applies: the wrapper overwrites `message` with
- * the outcome template, so a `{success: false}` returned here would be silently
- * discarded. Future work in this executor must THROW.
+ * Not a judgement about the route — reorder replaces a cart, coupon-swap and
+ * paid-cancel cancel real orders — but about THIS TOOL, which moves nothing. The
+ * route's risk lives on the activity capabilities (`order.reorder`,
+ * `order.cancel`), where the kernel actually adjudicates it against the full
+ * money ladder. Declaring an anchor `"high"` would double-count a risk already
+ * priced one step later, on the step that bears it.
  */
-const COUPON_SWAP_REQUEST_ANCHOR: ToolDefinition<unknown, unknown> = {
-  id: "ibatexas.order.couponSwapRequest.v1",
-  capability: "order.coupon.swap.request" as CapabilityId,
-  intentKind: "order.coupon.swap.request" as IntentKind,
-  description: "Confirmar a troca de um pedido por um novo com cupom aplicado.",
-  inputSchema: {},
-  outputSchema: {},
-  // The anchor itself moves nothing. The risk of the ROUTE lives on
-  // `order.cancel` (irreversible) and is adjudicated there, by the kernel,
-  // against the full money ladder.
-  riskLevel: "low",
-  execute: () => Promise.resolve({ approved: true }),
-};
+const ANCHOR_RISK_LEVEL = "low" as const;
 
 /**
- * The paid-cancel anchor — LE2-024.
+ * The tool id for an anchor kind — MECHANICAL, and the only field of a minted
+ * anchor that is derived rather than authored or fixed.
  *
- * Does nothing, for the third time and with the sharpest version of the reason.
- * Reaching this executor means one of exactly two things: the customer approved a
- * PAID cancel (`confirmPaidCancel` parked the envelope and only a resumed,
- * receipt-bearing adjudication returns EXECUTE), or the order was UNPAID and that
- * guard deliberately said nothing, so `executeW5Kinds` let the anchor through on
- * the selecting turn. In both cases the approval — or the considered absence of a
- * question — IS the whole content of the act.
+ * `order.coupon.swap.request` -> `ibatexas.order.couponSwapRequest.v1`: the head
+ * segment stays, the tail becomes one camelCase word. It reproduces all three
+ * hand-written ids byte-for-byte (the R6-S3 registration diff is the proof), and
+ * it is derivation rather than declaration because an id is an identifier the
+ * kind already determines — authoring it would be offering a reviewer a choice
+ * whose only wrong answers are typos.
  *
- * Cancelling here would be the worst instance of the mistake the other two
- * anchors avoid. The route's one activity IS the cancel, and it reaches
- * `executeOrderCancel` through the workflow runtime's refund-first dispatch, with
- * its own adjudication, its own money ladder and its own audit row. A cancel
- * riding THIS executor would be an ungoverned real-money mutation on the anchor's
- * EXECUTE — and worse, it would run BEFORE the activity, so the activity's
- * `gatePaidCancel` would then adjudicate an order that was already cancelled. The
- * escalate band would evaluate against a fait accompli.
- *
- * The same no-soft-failure rule applies: the wrapper overwrites `message` with
- * the outcome template, so a `{success: false}` returned here would be silently
- * discarded and the customer would read "Pronto, cancelei seu pedido" over a
- * failed anchor. Future work in this executor must THROW.
+ * Note this is NOT the main roster's convention, which is genuinely irregular
+ * (`order.cart.add` -> `ibatexas.cart.addItem.v1`). It does not need to be: an
+ * anchor is never advertised to the model and never named in a parse, so its id
+ * is an internal registry key, and regularity buys more here than familiarity.
  */
-const PAID_CANCEL_REQUEST_ANCHOR: ToolDefinition<unknown, unknown> = {
-  id: "ibatexas.order.cancelRequest.v1",
-  capability: "order.cancel.request" as CapabilityId,
-  intentKind: "order.cancel.request" as IntentKind,
-  description: "Confirmar o cancelamento de um pedido já pago do cliente.",
-  inputSchema: {},
-  outputSchema: {},
-  // The anchor itself moves nothing. The risk of the ROUTE lives on
-  // `order.cancel` (irreversible) and is adjudicated there, by the kernel,
-  // against the full money ladder.
-  riskLevel: "low",
-  execute: () => Promise.resolve({ approved: true }),
-};
+export function workflowAnchorToolId(capability: string): string {
+  const [head, ...tail] = capability.split(".");
+  const camel = tail
+    .map((part, index) =>
+      index === 0 ? part : part.charAt(0).toUpperCase() + part.slice(1),
+    )
+    .join("");
+  return `ibatexas.${head}${camel === "" ? "" : `.${camel}`}.v1`;
+}
 
-/** The anchor handlers this composition can supply, by capability kind. */
-const WORKFLOW_ANCHOR_TOOLS: ReadonlyMap<string, ToolDefinition<unknown, unknown>> =
-  new Map([
-    ["order.reorder.request", REORDER_REQUEST_ANCHOR],
-    ["order.coupon.swap.request", COUPON_SWAP_REQUEST_ANCHOR],
-    ["order.cancel.request", PAID_CANCEL_REQUEST_ANCHOR],
-  ]);
+/**
+ * MINT the standard no-op handler for one corpus anchor.
+ *
+ * Every field is mechanical except `description`, which is AUTHORED pt-BR read
+ * off the workflow's own selection declaration (`selection.anchorDescription` in
+ * `@ibatexas/catalog`). That asymmetry is the point of the factory: the shape of
+ * an anchor is a fact about the ASK/ACT split and belongs in code, while the
+ * sentence describing a business act is catalog data (Hard Rule #4) and belongs
+ * next to the workflow that means it.
+ *
+ * A MISSING OR BLANK DESCRIPTION THROWS, naming the workflow and the field. It
+ * is not defaulted to a template, and that refusal is the whole conscious-
+ * authoring act: minting is cheap enough that an author who never thinks about
+ * this anchor would otherwise get a working one for free, described by a sentence
+ * nobody chose, for a capability whose approval IS the customer-facing act.
+ */
+export function mintWorkflowAnchorTool(
+  anchor: WorkflowSelectionAnchor,
+): ToolDefinition<unknown, unknown> {
+  const description = anchor.description;
+  if (description === undefined || description.trim() === "") {
+    throw new Error(
+      `[workflow] the workflow "${anchor.workflowId}" is anchored on ` +
+        `"${anchor.capability}", which the main tool roster does not carry, so its ` +
+        "handler must be minted here — but the workflow declares no " +
+        "`selection.anchorDescription`. The anchor's description is the one " +
+        "AUTHORED field of a minted handler and is never defaulted: a template " +
+        "would describe a customer-facing approval in a sentence nobody chose. " +
+        "Add `selection.anchorDescription` (pt-BR) to the workflow in " +
+        "@ibatexas/catalog, or anchor it on a capability the roster already owns.",
+    );
+  }
+  return {
+    id: workflowAnchorToolId(anchor.capability),
+    capability: anchor.capability as CapabilityId,
+    // `capability === intentKind` — the roster-wide invariant, held here too even
+    // though an anchor is deliberately off the LLM-callable roster.
+    intentKind: anchor.capability as IntentKind,
+    description,
+    inputSchema: {},
+    outputSchema: {},
+    riskLevel: ANCHOR_RISK_LEVEL,
+    execute: WORKFLOW_ANCHOR_NO_OP,
+  };
+}
 
 /**
  * Register anchor handlers for the selection capabilities a loaded corpus uses
@@ -169,26 +182,52 @@ const WORKFLOW_ANCHOR_TOOLS: ReadonlyMap<string, ToolDefinition<unknown, unknown
  * last-write-wins, so shadowing a real capability's real handler with a stub
  * would silently replace the anchor ACT with a no-op.
  *
- * Throws for an anchor with no handler on either side, for the same reason
- * `registerWorkflowScopedTools` does: composition time is the only cheap place
- * to catch a route that would confirm with a customer and then fail at dispatch.
+ * ── WHAT R6-S3 CHANGED, AND WHAT IT DELIBERATELY DID NOT ────────────────────
+ *
+ * Before: three hand-written constants and a hand-written map from kind to
+ * constant. An author who added a fourth workflow and forgot the map entry got
+ * the boot throw below — discovery by wall.
+ *
+ * Now: any corpus anchor the roster does not cover is MINTED. That does not make
+ * anchors free, because minting requires the workflow to have AUTHORED
+ * `selection.anchorDescription`, and `mintWorkflowAnchorTool` throws when it has
+ * not. So the forgettable step moved from "add a map entry in apps/api" to
+ * "declare the sentence next to the workflow you are already writing" — the same
+ * fail-closed guarantee, on the field that actually needed a human.
  */
 export function registerWorkflowAnchorTools(
   tools: ToolRegistry,
-  capabilities: Iterable<string>,
+  anchors: Iterable<WorkflowSelectionAnchor>,
 ): void {
-  for (const capability of capabilities) {
-    if (tools.hasCapability(capability)) continue;
-    const tool = WORKFLOW_ANCHOR_TOOLS.get(capability);
-    if (tool === undefined) {
+  for (const anchor of anchors) {
+    if (tools.hasCapability(anchor.capability)) continue;
+    tools.register(mintWorkflowAnchorTool(anchor));
+
+    // ── THE WALL, NOW UNREACHABLE — AND KEPT ANYWAY ─────────────────────────
+    //
+    // This is LE2-021's boot throw, narrowed to what it always MEANT: no anchor
+    // leaves this function undispatchable. Its old cause (a corpus anchor with
+    // no hand-map entry) cannot occur now — the line above either minted a
+    // handler or threw naming the workflow — so nothing in the test suite drives
+    // this branch, and `factory-coverage.test.ts` asserts the absence of that
+    // cause directly, over the real corpus, which is what replaced its discovery
+    // role.
+    //
+    // Deleting it would still be wrong. The property it states is about the
+    // REGISTRY, not about this module's bookkeeping: `installWorkflowRuntime`
+    // runs next and will wrap whatever `list()` returns for this capability, and
+    // a customer who confirms a workflow whose anchor cannot dispatch is exactly
+    // the failure both throws exist to keep out of production. A wall that costs
+    // two lines and stands where a confirmed multi-step run would otherwise fail
+    // is worth keeping unreachable.
+    if (!tools.hasCapability(anchor.capability)) {
       throw new Error(
-        `[workflow] a loaded workflow is anchored on "${capability}", which has ` +
-          "neither a registered tool nor a workflow-anchor handler. The anchor is " +
-          "dispatched like any other capability, so an unregistered one would " +
-          "confirm with the customer and then fail at dispatch. Register the tool, " +
-          "add its anchor handler here, or anchor the workflow on a kind that has one.",
+        `[workflow] a loaded workflow is anchored on "${anchor.capability}", which ` +
+          "has no registered tool even after its anchor handler was minted. The " +
+          "anchor is dispatched like any other capability, so an unregistered one " +
+          "would confirm with the customer and then fail at dispatch. Register the " +
+          "tool, or anchor the workflow on a kind that has one.",
       );
     }
-    tools.register(tool);
   }
 }
