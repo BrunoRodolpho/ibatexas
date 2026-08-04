@@ -617,12 +617,14 @@ describe("claims-renderer-adapter — BKL-111 claims.terminal signal", () => {
     expect(payloads[0]).not.toHaveProperty("turnId");
   });
 
-  // ── BKL-152-edge (Rider C) — the construction-time `renderCarriersActive` flag +
-  // the 0.8.0 `resolvedQueryDate` carrier both reach the required-claim decomposer,
-  // making the STORE_OPEN_NOW date-anchor suppression EXACT on weekday==today. Proved
-  // via the completeness DEGRADE: STORE_HOURS_FOR_DATE VALIDATED + STORE_OPEN_NOW
-  // UNKNOWN on a date-anchored hours question — suppressed ⇒ complete (no degrade);
-  // kept ⇒ incomplete (degrade). The two directions differ ONLY by the carrier. ──
+  // ── F-12 — the §O#15 gate's date-anchor decomposition, WITHOUT a clock. This block
+  // used to pin the BKL-152-edge wiring (a `renderCarriersActive` construction flag +
+  // the 0.8.0 `resolvedQueryDate` carrier steering the decomposer's weekday==today
+  // arm); both are deleted, so the gate's answer now depends on the REQUEST TEXT
+  // alone and matches what the planner and the classify-only gate build. Still proved
+  // the same way — via the completeness DEGRADE on STORE_HOURS_FOR_DATE VALIDATED +
+  // STORE_OPEN_NOW UNKNOWN: suppressed ⇒ complete (no degrade); required ⇒
+  // incomplete (degrade). The cases below differ ONLY by the utterance. ──
   const STORE_HOURS_FOR_DATE = "STORE_HOURS_FOR_DATE";
   const dateHoursResult = () =>
     resultOf({
@@ -646,24 +648,60 @@ describe("claims-renderer-adapter — BKL-111 claims.terminal signal", () => {
     }
   };
 
-  it("BKL-152-edge WIRING: seam active + resolvedQueryDate PRESENT (non-today) → suppressed → NO degrade", () => {
-    const active = createIbatexasClaimsRenderer({ renderCarriersActive: true });
+  it("a date-anchored hours ask does NOT degrade — the open-now companion is suppressed", () => {
     expect(
-      degradeFor(active, {
+      degradeFor(createIbatexasClaimsRenderer(), {
         requestText: "que horas vocês abrem amanhã?",
-        resolvedQueryDate: "2026-07-24",
       }),
     ).toBe(false);
   });
 
-  it("BKL-152-edge WIRING: seam active + resolvedQueryDate ABSENT (today) → kept → DEGRADE", () => {
-    const active = createIbatexasClaimsRenderer({ renderCarriersActive: true });
-    expect(degradeFor(active, { requestText: "que horas vocês abrem amanhã?" })).toBe(true);
+  // pt-BR weekday names indexed by `getDay()`, so the case below can name TODAY.
+  // A HARDCODED weekday would be the defect's branch only ONE DAY IN SEVEN — the
+  // whole point of F-12 is that the old arm fired exactly when the named day was
+  // today, so a fixed "segunda" would make this case vacuous on the other six days
+  // (measured: it stayed GREEN under a revert-to-red until it was clock-derived).
+  const weekdayPtToday = (): string => {
+    const tz = "America/Sao_Paulo";
+    const short = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" })
+      .format(new Date());
+    const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(short);
+    expect(dow, "the timezone weekday must resolve").toBeGreaterThanOrEqual(0);
+    return ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"][dow]!;
+  };
+
+  it("F-12 (was: → kept → DEGRADE): a weekday that IS TODAY does NOT degrade either", () => {
+    // THIS CASE PREVIOUSLY PINNED THE DEFECT at the gate layer. It used to build a
+    // renderer with `renderCarriersActive: true`, pass NO `resolvedQueryDate` (the
+    // carrier's encoding of "the named weekday resolved to TODAY"), and assert
+    // `true` — the gate KEEPING STORE_OPEN_NOW, finding it UNKNOWN, and degrading
+    // the whole turn. F-12 deleted the clock-aware arm and the construction flag
+    // that reached it, so the gate now suppresses on every day and the same
+    // VALIDATED STORE_HOURS_FOR_DATE renders. `dateHoursResult()` is unchanged: the
+    // date claim is VALIDATED and the open-now companion is UNKNOWN, which is
+    // exactly the disposition that used to be fatal here.
+    expect(
+      degradeFor(createIbatexasClaimsRenderer(), {
+        requestText: `que horas vocês abrem ${weekdayPtToday()}?`,
+      }),
+    ).toBe(false);
   });
 
-  it("BKL-152-edge BYTE-IDENTICAL-ABSENT: default renderer (seam inactive) → pure #301 suppress → NO degrade", () => {
-    const inactive = createIbatexasClaimsRenderer();
-    expect(degradeFor(inactive, { requestText: "que horas vocês abrem amanhã?" })).toBe(false);
+  it("CONTROL: an UNKNOWN STORE_OPEN_NOW IS still fatal where it is genuinely required", () => {
+    // Without this the two cases above would pass on a gate that had simply stopped
+    // degrading anything — the direction that makes a "does NOT degrade" assertion
+    // non-vacuous. IDENTICAL claim dispositions (`dateHoursResult()`: the date claim
+    // VALIDATED, STORE_OPEN_NOW UNKNOWN); the ONLY thing that changes is the
+    // utterance. A BARE open-now ask fires no date-for span, so nothing suppresses
+    // the companion, it stays required, and its UNKNOWN degrades the turn. That
+    // isolates the suppression as the single cause of the two greens above — a
+    // PICKUP ask would also degrade here, but for a SECOND reason (its ABSENT
+    // ORDER_FULFILLMENT_STAGE companion), which would blunt the attribution.
+    expect(
+      degradeFor(createIbatexasClaimsRenderer(), {
+        requestText: "vocês estão abertos agora?",
+      }),
+    ).toBe(true);
   });
 });
 

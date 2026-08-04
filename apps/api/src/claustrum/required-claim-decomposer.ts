@@ -1930,26 +1930,43 @@ const OWNERSHIP_GATED_TYPES = {
  * that cannot soundly be required — neither adds a claim or prose authority.
  */
 /**
- * BKL-152-edge — the DATE-ANCHOR exactness signal (@claustrum/core 0.8.0). The
- * clock lives in the ADOPTER (the RenderCarriersForTurn seam, wired at
- * claustrum-bootstrap): it resolves the queried date and threads
- * `ClaimsRenderContext.resolvedQueryDate` PRESENT iff the queried date is a
- * CONFIRMED NON-TODAY day (absent ⟺ the date resolved to TODAY, or was
- * unresolvable). This decomposer stays CLOCK-PURE — it only reads that pre-resolved
- * signal. `seamActive` says the adopter wired the seam this turn (so absent means
- * "today", not "unwired"); when `false`/omitted the pure rule below runs
- * byte-identically (the seam-unwired / test path).
+ * F-12 — THE SCHEDULE CLUSTER'S DECOMPOSITION IS CLOCK-FREE, BY CONTRACT.
+ *
+ * This function is the SINGLE declared source for "what does a schedule ask
+ * REQUIRE", consumed by every side of the turn: the claim planner's BKL-110
+ * relevance filter + BKL-289 union (`ibatexas-claim-planner.ts`), the
+ * deterministic classify-only eligibility gate (`classify-only-reads.ts`), and
+ * the renderer's §O#15 completeness gate (`claims-renderer-adapter.ts`).
+ *
+ * It TAKES NO CLOCK, and that is the load-bearing property rather than an
+ * implementation detail. Between BKL-152-edge (@claustrum/core 0.8.0) and F-12
+ * it took an OPTIONAL `DateAnchorSignal`, and the three callers passed three
+ * DIFFERENT things — the planner nothing (⇒ the pure #301 "always suppress"
+ * arm), the renderer's gate the adopter's clock-resolved date (⇒ the
+ * clock-aware arm), classify-only a seam-active signal with no date. One shared
+ * function is NOT one shared answer when an optional input selects the arm: on
+ * the day a named weekday resolved to TODAY the gate KEPT the STORE_OPEN_NOW
+ * companion that the planner had already been told to SUPPRESS, so completeness
+ * found it ABSENT and degraded an answerable turn to a proposition-free UNKNOWN
+ * — a once-a-week loss of a question the reads had already answered (measured
+ * on all three paths; pinned in `__tests__/r2s8-hours-for-date-claims.e2e.test.ts`).
+ *
+ * Removing the parameter is what makes that disagreement STRUCTURALLY
+ * IMPOSSIBLE: with no clock input there is nothing for two callers to disagree
+ * about. The surviving rule is the original #301 one, applied uniformly — a
+ * date-SPECIFIC hours question does not semantically require "is it open right
+ * now", and that judgement never depended on which day is being named.
+ *
+ * SOUNDNESS is unchanged and demote-only: this REMOVES a required companion, it
+ * never adds a claim, sets a verdict, or grants prose authority. Every rendered
+ * proposition still maps 1:1 to an independently-VALIDATED claim (Inv 6).
+ * STORE_OPEN_NOW stays required wherever it is genuinely a half of the question:
+ * PICKUP_Q (you can only collect from an OPEN store) and every bare/"hoje"
+ * open-now ask, neither of which fires STORE_HOURS_FOR_DATE_Q.
  */
-export interface DateAnchorSignal {
-  readonly seamActive: boolean;
-  /** The resolved queried ISO date, PRESENT ⟺ a confirmed NON-TODAY day. */
-  readonly resolvedQueryDate?: string;
-}
-
 export function decomposeRequiredClaims(
   spanClasses: readonly string[],
   ownership?: ActiveResourceOwnership,
-  dateAnchor?: DateAnchorSignal,
 ): ReadonlySet<RegistryClaimType> {
   const required = new Set<RegistryClaimType>();
   for (const cls of spanClasses) {
@@ -1989,29 +2006,23 @@ export function decomposeRequiredClaims(
   //     stays for "que horas abrem hoje?" and bare "vocês estão abertos?" — no clock
   //     is needed here to keep the today/undated open-now companion.
   //
-  // BKL-152-edge (@claustrum/core 0.8.0) — the weekday==today edge, now EXACT where
-  // the RenderCarriersForTurn seam is wired. The `dateAnchor` signal carries the
-  // adopter's clock-resolved date (this decomposer stays clock-pure):
-  //   - seam ACTIVE + resolvedQueryDate PRESENT (confirmed NON-TODAY) → SUPPRESS (the
-  //     precise SCN-002 case; a genuine future/other-day hours question).
-  //   - seam ACTIVE + resolvedQueryDate ABSENT → the queried date resolved to TODAY
-  //     (a named weekday that IS today) → KEEP STORE_OPEN_NOW: the open-now fact is
-  //     relevant when the named day is today. (An unresolvable "feriado" also lands
-  //     here and keeps it — harmless: its STORE_HOURS_FOR_DATE claim can't validate
-  //     without a resolvable date, so the turn degrades regardless of this companion.)
-  //   - seam INACTIVE (unwired / tests) → the pure #301 rule: SUPPRESS whenever a
-  //     date-for span is present. Byte-identical to the pre-0.8.0 behavior.
-  // Guards unchanged: PICKUP_Q present keeps STORE_OPEN_NOW (pickup needs open-now);
-  // "hoje"/undated never fire STORE_HOURS_FOR_DATE_Q, so they keep it with no seam.
+  // F-12 — UNCONDITIONAL, and the unconditionality is the fix. This used to branch
+  // on a clock-resolved `DateAnchorSignal`, KEEPING the companion when the named
+  // weekday resolved to TODAY. That arm is gone: it was the only place where two
+  // callers of this one function could compute two different required sets for the
+  // same utterance, and it bought a "relevant" companion at the price of the whole
+  // answer (see this function's header for the measured degrade). "Relevant" is not
+  // "required" — §O#15 exists to stop HALF a question being answered, and a named
+  // day's opening hours are the WHOLE of "que horas vocês abrem segunda?".
+  //
+  // Suppression is DEMOTE-ONLY on the REQUIREMENT, never on the claim: nothing here
+  // forbids STORE_OPEN_NOW from being proposed, validated or rendered — it only stops
+  // completeness from DEMANDING a companion this turn shape does not deliver.
   if (
     spanClasses.includes("STORE_HOURS_FOR_DATE_Q") &&
     !spanClasses.includes("PICKUP_Q")
   ) {
-    const suppress =
-      dateAnchor?.seamActive === true
-        ? dateAnchor.resolvedQueryDate !== undefined // exact: only a confirmed non-today date
-        : true; // pure #301 fallback (seam unwired)
-    if (suppress) required.delete("STORE_OPEN_NOW");
+    required.delete("STORE_OPEN_NOW");
   }
 
   return required;

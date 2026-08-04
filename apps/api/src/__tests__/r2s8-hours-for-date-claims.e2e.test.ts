@@ -511,55 +511,39 @@ describe("R2-S8 — the STORE_OPEN_NOW suppression seam at the turn seam", () =>
     expect(reply).toContain(OPEN_NOW_FRAME);
   });
 
-  it("FINDING (pre-existing): a weekday that IS TODAY degrades the whole turn", async () => {
+  it("F-12 FIXED (was: 'a weekday that IS TODAY degrades the whole turn') — classify-only renders the day's hours", async () => {
     // ════════════════════════════════════════════════════════════════════════════
-    //  F-12 — MEASURED, PRE-EXISTING, AND PINNED HERE SO A CHANGE MUST ANNOUNCE ITSELF (ledger: F-12; F-11 is the typed-backend-builder finding)
+    //  F-12 — THIS CASE PREVIOUSLY PINNED THE DEFECT. It now pins the FIX.
     // ════════════════════════════════════════════════════════════════════════════
     //
-    // The BKL-152-edge branch KEEPS the STORE_OPEN_NOW companion when the named weekday
-    // resolves to TODAY (`decomposeRequiredClaims`'s `resolvedQueryDate === undefined`
-    // arm). On that turn the customer gets the proposition-free generic UNKNOWN instead
-    // of the day's real hours — the answerable question is thrown away.
+    // WHAT IT USED TO ASSERT, verbatim in spirit: that this exact turn came back as
+    //     "Não localizei essa informação confirmada agora. Quer que eu verifique?"
+    // with `hoursFor(today)` ABSENT — the customer losing an answerable question on
+    // one day of the week, on all three paths (classify-only, the model path with
+    // both claims proposed, and the model path with only the date claim). The read
+    // had already run; only the required-claim closure threw the answer away.
     //
-    // MEASURED, not inferred, and on THREE independent paths: the deterministic
-    // classify-only path (which DOES build both candidates — verified at the unit level
-    // against `buildClassifyOnlyCandidates`, with the correct `schedule:store_open_now`
-    // and `schedule:store_hours:{today}` evidence keys), the model path with BOTH claims
-    // proposed, and the model path with only the date claim. All three land on the same
-    // string. The neighbouring measurement that localises it: on ANY date-anchored turn
-    // the open-now companion never reaches the reply — demote the date claim with a
-    // holiday and the turn degrades rather than rendering the surviving open-now half —
-    // so the "keep it when the day is today" branch requires a companion that this turn
-    // shape cannot satisfy, and §O#15 completeness degrades everything.
+    // THE MECHANISM THAT WAS FIXED. Two decompositions of the same utterance
+    // disagreed. The claim planner decomposed CLOCK-FREE (always suppress the
+    // STORE_OPEN_NOW companion on a date-anchored ask, so it was neither proposed
+    // nor unioned, and a model that proposed it had it relevance-DEMOTED), while
+    // the renderer's §O#15 completeness gate decomposed CLOCK-AWARE and KEPT that
+    // companion when the named day resolved to TODAY. The gate then required a
+    // claim the planner had been told to drop, found it ABSENT, and degraded the
+    // whole turn. Every other day the two agreed on "suppress", which is why the
+    // defect stayed invisible until this suite drove a weekday==today hours turn.
     //
-    // NOT CAUSED BY THIS SLICE, and that is measured rather than argued: the whole probe
-    // set above was re-run against a tree checked out at 94b75ce4 (this branch's parent,
-    // before any adoption edit) and every reply was BYTE-IDENTICAL. The migration moved
-    // no behaviour here; it only made the existing behaviour visible, because this is the
-    // first suite to drive a weekday==today hours turn at any depth.
+    // THE FIX (direction (c) — single declared source, no divergent input): the
+    // required-claim decomposition no longer takes a clock at all. It was already
+    // ONE shared function, `decomposeRequiredClaims`; what diverged was its
+    // OPTIONAL `DateAnchorSignal` argument, which different callers passed
+    // differently. Removing the parameter makes disagreement structurally
+    // impossible rather than merely fixed. The surviving rule is the original #301
+    // one applied uniformly: a date-SPECIFIC hours question does not require "is it
+    // open right now" — a judgement that never depended on which day was named.
     //
-    // MECHANISM, confirmed by a controlled experiment rather than inferred. Delete the
-    // BKL-152 suppression outright (`required.delete("STORE_OPEN_NOW")`) and this exact
-    // turn renders BOTH sentences correctly:
-    //
-    //     "No momento, o período de funcionamento é: jantar.
-    //      Nesse dia, nosso horário de funcionamento é: 03h–23h."
-    //
-    // So the answer was available the whole time, and neither claim was unvalidatable.
-    // What loses it is a DISAGREEMENT between two decompositions of the same utterance:
-    // the claim planner decomposes CLOCK-FREE (the pure #301 arm — always suppress, so
-    // STORE_OPEN_NOW is neither proposed nor unioned, and a model that proposes it has it
-    // relevance-DEMOTED), while the renderer's §O#15 completeness gate decomposes
-    // CLOCK-AWARE (seam active — KEEP, because the named day is today). The gate then
-    // requires a companion the planner was told to drop, finds it ABSENT, and degrades.
-    // On every other date-anchored turn the two agree on "suppress" and nothing is lost,
-    // which is why this has stayed invisible.
-    //
-    // Backlog-shaped, not fixable inside an adoption slice: the fix is to give the planner
-    // the same clock-aware `DateAnchorSignal` the renderer's gate already receives (or to
-    // stop the seam keeping a companion the planner cannot deliver). Either change alters
-    // live routing for every hours turn and belongs to its own ticket with its own
-    // measurement.
+    // The assertions below are the SAME PROBE with the polarity flipped, so the
+    // before/after comparison is exact.
     const text = `que horas vocês abrem ${todayWeekdayPt()}?`;
     const today = dateOf(text);
     const reply = await drive({
@@ -567,17 +551,60 @@ describe("R2-S8 — the STORE_OPEN_NOW suppression seam at the turn seam", () =>
       model: claimProposalForbiddenModel("weekday==today"),
       classifyOnly: true,
     });
-    // The pin is DIRECTIONAL in both senses: the day's hours are absent (the loss), and
-    // the reply is the honest self-report rather than prose or a wrong day (the floor
-    // that makes this a degrade and not a soundness failure).
-    expect(reply).not.toContain(hoursFor(today));
-    expect(reply).toBe(
+    // THE FIX, directionally: the day's real hours render…
+    expect(reply).toContain(FOR_DATE_FRAME);
+    expect(reply).toContain(hoursFor(today));
+    // …and the degrade string this case used to assert is GONE.
+    expect(reply).not.toBe(
       "Não localizei essa informação confirmada agora. Quer que eu verifique?",
     );
     expect(reply).not.toBe(MODEL_PROSE);
-    // …and the read genuinely ran, so the loss is a routing/completeness one rather than
-    // a missing read. That is what makes this worth a ticket instead of a mock fix.
     expect(st.dateReads).toContain(today);
+    // THE SAME REPLY THE NON-TODAY WEEKDAY GETS — the fence the fix had to satisfy.
+    // The open-now companion is suppressed here exactly as the "amanhã" case above
+    // asserts it is suppressed there, so today's weekday is no longer a special day.
+    expect(reply).not.toContain(OPEN_NOW_FRAME);
+  });
+
+  it("F-12 FIXED on the MODEL path too — the union restores the date claim, today's weekday included", async () => {
+    // The mechanism DIFFERED PER PATH, so the fix needs both. On classify-only the
+    // candidates are built deterministically; here a real 4B proposes, and the
+    // planner's BKL-110 relevance filter + BKL-289 union both read the SAME
+    // decomposition the §O#15 gate later checks. Before F-12 that shared reading
+    // split on the weekday==today branch and this turn degraded like the other two.
+    //
+    // COMPOUND, for the reason the union cases below document: the union is gated on
+    // `candidates.length > 0`, and a schedule-only turn whose sole proposal is
+    // relevance-demoted has an empty candidate set. The price span supplies a
+    // surviving candidate, so the union is genuinely in play — and the model here
+    // proposes ONLY the price, which makes the hours sentence the union's work.
+    const text = `quanto custa a costela bovina? e que horas vocês abrem ${todayWeekdayPt()}?`;
+    const today = dateOf(text);
+    const reply = await drive({
+      text,
+      model: scriptedModel([{ type: "MENU_ITEM_PRICE", subject: "prod_costela" }]),
+      classifyOnly: false,
+    });
+    expect(reply).toContain("R$ 89,00");
+    expect(reply).toContain(FOR_DATE_FRAME);
+    expect(reply).toContain(hoursFor(today));
+    expect(reply).not.toBe(MODEL_PROSE);
+  });
+
+  it("F-12 FIXED on the model path with the date claim PROPOSED — the third path that used to degrade", async () => {
+    // The third of the three paths the original finding measured: the model proposes
+    // the date claim itself. Its subject is DISCARDED and re-derived by the planner
+    // (see the "model's WRONG date is discarded" case), so this drives the same
+    // resolver date by a different route into the same gate.
+    const text = `que horas vocês abrem ${todayWeekdayPt()}?`;
+    const today = dateOf(text);
+    const reply = await drive({
+      text,
+      model: scriptedModel([{ type: "STORE_HOURS_FOR_DATE", subject: today }]),
+      classifyOnly: false,
+    });
+    expect(reply).toContain(hoursFor(today));
+    expect(reply).not.toBe(MODEL_PROSE);
   });
 });
 

@@ -229,24 +229,24 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     "STORE_HOURS_FOR_DATE",
     // STORE_OPEN_NOW joins ONLY as that family's COMPANION, never as its own
     // entry point — `classifyOnlyRequiredTypes` declines any turn that requires it
-    // WITHOUT the date type (see the guard there). Two facts force this pairing:
+    // WITHOUT the date type (see the guard there).
     //
-    //   1. A date-anchored ask usually fires BOTH spans ("qual o horário de
-    //      domingo?" trips `hor[áa]rio` in the generated STORE_OPEN_NOW markers),
-    //      and the BKL-152 suppression only deletes the open-now companion when
-    //      the queried date is a CONFIRMED non-today. On the day the named weekday
-    //      IS today — and on an unresolvable bare "feriado" — the companion STAYS.
-    //   2. This module's gate is text-pure while the renderer's §O#15 completeness
-    //      gate (claims-renderer-adapter.ts) runs the SEAM-AWARE 3-arg decomposition
-    //      with a live clock. Admitting the date type alone would let the two
-    //      DISAGREE exactly on those days: the gate would build only the date claim,
-    //      completeness would require the open-now companion, find it ABSENT, and
-    //      degrade the turn to a proposition-free UNKNOWN — an intermittent,
-    //      day-of-week-dependent regression, the worst shape to debug.
+    // F-12 CHANGED WHY THIS ENTRY EXISTS, and shrank what it does. It used to be
+    // load-bearing: the BKL-152 suppression deleted the open-now companion only for
+    // a CONFIRMED non-today date, so on the day the named weekday IS today the
+    // companion STAYED, and this text-pure gate had to build it or DISAGREE with the
+    // renderer's §O#15 gate — which re-decomposed with a live clock and would have
+    // found it ABSENT and degraded the turn, an intermittent day-of-week-dependent
+    // regression. F-12 removed the clock from the decomposition entirely, so both
+    // gates now compute the same required set from the span classes alone and a
+    // date-anchored ask never requires the companion on ANY day.
     //
-    // The gate therefore decomposes with `seamActive: true` and NO resolved date
-    // (the conservative "the date might be today" branch), so the candidate set is
-    // a SUPERSET of whatever completeness later asks for under any clock.
+    // The entry is therefore now UNREACHABLE-BY-CONSTRUCTION rather than
+    // load-bearing: a date-anchored ask suppresses it, a PICKUP_Q ask declines
+    // wholesale by name above, and a BARE open-now ask is declined by the
+    // date-type-less guard. It is KEPT as defense-in-depth — the eligibility loop
+    // below is a fail-closed roster, and removing a name from it can only ever turn
+    // a future required set into a silent wholesale decline.
     //
     // FE-D12 residual grows as it does for every addition (a pure hours-read turn
     // skips the model's §O#9 self-report); an hours ask carries no safety marker,
@@ -299,13 +299,14 @@ export function classifyOnlyRequiredTypes(
   // subject for the order companion, and lose its answerable open-now/hours half
   // to a proposition-free UNKNOWN — reintroducing #8a on the classify-only path.
   if (spans.includes("PICKUP_Q")) return undefined;
-  // BKL-222 — decompose with the seam ACTIVE and NO resolved date: the
-  // CONSERVATIVE "the queried date might be today" branch, which KEEPS the
-  // STORE_OPEN_NOW companion the BKL-152 suppression would otherwise delete. The
-  // renderer's §O#15 completeness gate re-decomposes with a live clock, so this
-  // gate must never build a SUBSET of what that one will require — see the
-  // STORE_OPEN_NOW entry in the eligible set for the full argument.
-  const required = decomposeRequiredClaims(spans, undefined, { seamActive: true });
+  // F-12 — the SAME 2-arg decomposition the renderer's §O#15 completeness gate
+  // calls. This used to pass a seam-active signal with no resolved date (the
+  // conservative "the queried date might be today" branch) precisely because that
+  // gate re-decomposed with a LIVE CLOCK and the two could otherwise disagree. The
+  // decomposition no longer takes a clock, so "must not build a subset of what the
+  // gate will require" is now an IDENTITY rather than an invariant somebody has to
+  // maintain — see `decomposeRequiredClaims`'s header.
+  const required = decomposeRequiredClaims(spans);
   if (required.size === 0) return undefined;
   // BKL-222 — STORE_OPEN_NOW is eligible ONLY as the date family's companion. A
   // BARE schedule question ("vocês estão abertos agora?", "que horas fecham?")
