@@ -652,7 +652,13 @@ describe("R2-S8 — the §O#15 union still parameterizes this type off the LEDGE
     // (the documented BKL-078 gap; measured on this exact utterance, and byte-identical
     // at 94b75ce4). Adding the price span gives the turn a candidate that SURVIVES
     // relevance, which is what puts the union in play at all.
-    const text = "quanto custa a costela? e qual o horário de domingo?";
+    // "costela bovina", not bare "costela": the bare surface is DECLARED-AMBIGUOUS in
+    // the alias gazetteer (bovina vs congelada), and since R1-S2 wired the harness's
+    // funnel by default (production parity), a bare-"costela" turn short-circuits to
+    // alias-CLARIFY before the planner runs — the union would never be reached. Same
+    // rewrite class as dietary-posture.e2e (the F-1 family); "bovina" is the gazetteer's
+    // own disambiguatedBy surface.
+    const text = "quanto custa a costela bovina? e qual o horário de domingo?";
     const sunday = dateOf(text);
     const reply = await drive({
       text,
@@ -671,7 +677,9 @@ describe("R2-S8 — the §O#15 union still parameterizes this type off the LEDGE
     // reason other than the union. Same utterance, same expected string, model proposes
     // BOTH — so the union case is proven to have reconstructed exactly what the model
     // would have supplied, subject included.
-    const text = "quanto custa a costela? e qual o horário de domingo?";
+    // Same disambiguated surface as the union case above — the control must drive the
+    // IDENTICAL utterance or it stops being a control.
+    const text = "quanto custa a costela bovina? e qual o horário de domingo?";
     const sunday = dateOf(text);
     const reply = await drive({
       text,
