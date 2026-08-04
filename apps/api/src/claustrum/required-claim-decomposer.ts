@@ -42,6 +42,7 @@ import {
 // MENU_ITEM_CONTENTS_Q's THREE-conjunct guard (`notOrderScoped && !mutationImperative &&
 // !isMenuOverview`), whose third term is what keeps a whole-menu ask disjoint from the
 // per-item contents span.
+import { CART_CONTENTS_CLOSURE } from "./claimdefs/cart-contents.generated.js";
 import { MENU_DIETARY_CLOSURE } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_CLOSURE } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_CLOSURE } from "./claimdefs/menu-item-price.generated.js";
@@ -145,21 +146,22 @@ export const REQUIRED_CLAIM_CLOSURE = {
   // OWNER-SCOPED type; the row shape is identical either way (a span class mapped to a
   // non-empty required set), since ownership lives on the SPEC's evidence rows, not here.
   [RESERVATION_STATUS_CLOSURE.spanClass]: RESERVATION_STATUS_CLOSURE.requires,
-  // BKL-139 — a cart-contents question requires the cart claim. Like
-  // RESERVATION_STATUS_Q, CART_CONTENTS is required ONLY by its own span (no unrelated
-  // span force-requires it), so it also auto-enrols CART_CONTENTS into the claim-planner's
-  // RELEVANCE_GOVERNED_TYPES via the closure-value union (an over-proposed cart claim is
-  // DEMOTED on a turn whose cart span did not fire, KEPT when it did).
-  // BKL-163 — the row ALSO requires CART_EMPTY, the provable-empty complement:
-  // the two claims read COMPLEMENTARY keys (`cart_contents:` vs `cart_empty:` —
-  // exactly one is PRESENT after a successful owner-scoped cart read), so exactly
-  // one validates and the other resolves honest UNKNOWN and is dropped by the
-  // kernel's §D filter — never a rendered contradiction. Requiring both here is
-  // what auto-enrols CART_EMPTY into the classify-only candidate set (an
-  // empty-cart question deterministically frames the claim that CAN validate) and
-  // into RELEVANCE_GOVERNED_TYPES (an over-proposed CART_EMPTY demotes on a
-  // non-cart turn).
-  CART_CONTENTS_Q: ["CART_CONTENTS", "CART_EMPTY"],
+  // inv.18 v2 / R2-S6 — CART_CONTENTS_Q's row is GENERATED (span class + required set), and
+  // it is the FIRST generated row SHARED BY TWO SOURCES: the BKL-139 rationale (the cart
+  // claim, and why this row is what auto-enrols CART_CONTENTS into the claim-planner's
+  // RELEVANCE_GOVERNED_TYPES) and the BKL-163 rationale (why the row ALSO requires the
+  // provable-empty complement CART_EMPTY, which reads the complementary key off the same
+  // owner-scoped read) both moved verbatim into `./claimdefs/cart-contents.claim.ts` — the
+  // SPAN-OWNING source, which declares the whole row including its twin. `cart-empty.claim.ts`
+  // declares NO closure; its `triadScoped: true` is what makes a `requires` that stopped
+  // naming it a fail-closed INV-4 boot REFUSAL rather than a silent un-enrolment. The row
+  // shape is identical either way (a span class mapped to a non-empty required set).
+  //
+  // WHAT STAYS HERE: this row is satisfiable ONLY because the pair is registered in
+  // PRESENCE_COMPLEMENT_PAIRS below — a SET-level relation between two types, not a per-type
+  // facet a source can project (BKL-163 reopened; LE2-002 shipped the same shape for
+  // DELIVERY without the registration and degraded every coverage turn RENDER→UNKNOWN).
+  [CART_CONTENTS_CLOSURE.spanClass]: CART_CONTENTS_CLOSURE.requires,
   // inv.18 v2 / R2-S5 — both history rows are GENERATED (span class + required set); the
   // FE-D03 rationale for each requiring ONLY its own list-shaped claim, and for the row
   // being what auto-enrols the type into the claim-planner's RELEVANCE_GOVERNED_TYPES,
@@ -1068,6 +1070,24 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
    * carries the shared backstop.
    */
   paymentHistory: PAYMENT_HISTORY_CLOSURE.markers.map((m) => m.source).join("|"),
+  /**
+   * inv.18 v2 / R2-S6 — the CART_CONTENTS_Q marker, now GENERATED as ONE arm from
+   * `cart-contents.claim.ts`. This is the DEGENERATE case of the reassembly statement its
+   * six predecessors make: with a single arm the `join("|")` is the arm's own source, and
+   * `markers.some((m) => m.test(t))` is literally the `.test(t)` the pre-migration `cartRef`
+   * const ran — no alternation was split and no `||` was folded, so the migration is a
+   * relocation and byte-identity says so.
+   *
+   * Byte-identity here holds ONE property a rewrite would lose and ONE it merely preserves,
+   * and the difference is measured rather than assumed. (1) LOAD-BEARING: the LEFT anchor
+   * `(?<![a-z])`, without which a cart word matches mid-word — dropping it turns both this
+   * pin and a must-not-fire case red. (2) BYTE-PIN-ONLY: the PLURALS spelled out as their own
+   * alternatives. The net has no RIGHT anchor, so `carrinho` already matches inside
+   * "carrinhos"; deleting the three plural alternatives changes NO row of the corpus below,
+   * and an `s?` suffix is equivalent. The R2-S5 byte-pin-only-arm shape, recorded because a
+   * comment claiming otherwise would be a safety property the measurement denies.
+   */
+  cartContents: CART_CONTENTS_CLOSURE.markers.map((m) => m.source).join("|"),
 } as const;
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -1475,8 +1495,16 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // read-vs-mutation split is the BKL-153 must-not-fire discipline (verified against
   // must-fire + must-not-fire word lists in required-claim-decomposer.test.ts). A
   // gratitude / order-status turn contains no cart word, so it is untouched.
-  const cartRef = /(?<![a-z])(carrinho|carrinhos|cesta|cestas|sacola|sacolas)/.test(t);
-  if (cartRef && !mutationImperative) classes.push("CART_CONTENTS_Q");
+  //
+  // inv.18 v2 / R2-S6 — the MARKER is now GENERATED from `./claimdefs/cart-contents.claim.ts`.
+  // ONE arm: the pre-migration `cartRef` const was a SINGLE regex literal, so
+  // `markers.some((m) => m.test(t))` is that same `.test(t)` — the relocation-with-no-split
+  // case (the R2-S4 disposition, at arm count one), pinned byte-for-byte by
+  // `__SPAN_NET_SOURCES_FOR_TEST.cartContents`. The `!mutationImperative` GUARD is NOT part
+  // of the generated contribution and stays here: the compiler models which markers classify
+  // INTO a span, never which contexts must suppress it.
+  const cartRef = CART_CONTENTS_CLOSURE.markers.some((m) => m.test(t));
+  if (cartRef && !mutationImperative) classes.push(CART_CONTENTS_CLOSURE.spanClass);
 
   // Bare "status" with NO payment/order discriminator → over-include BOTH (never
   // silently drop either companion). If a discriminator is present, the precise

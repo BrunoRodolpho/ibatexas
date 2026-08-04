@@ -61,6 +61,8 @@ import type {
 // ones, whose `ownershipPolicy: "required"` rows add a C1 axis this batch does not touch,
 // plus STORE_HOURS_FOR_DATE, whose span class is a COMPOSED predicate rather than a flat
 // marker alternation) stay hand-written here until each is adopted in turn.
+import { CART_CONTENTS_REGISTRY_SPEC } from "./claimdefs/cart-contents.generated.js";
+import { CART_EMPTY_REGISTRY_SPEC } from "./claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_REGISTRY_SPEC } from "./claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_REGISTRY_SPEC } from "./claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_REGISTRY_SPEC } from "./claimdefs/menu-item-price.generated.js";
@@ -800,107 +802,58 @@ export const REGISTRY_SPECS = {
   // honest UNKNOWN (the fail-closed ownership ruling). The money in `itemsSummaryText`
   // is composed in code from integer centavos (Hard Rule 2), NEVER model-authored
   // (FE-D04 / BKL-149).
+  // inv.18 v2 / R2-S6 — the CART PRESENCE-COMPLEMENT PAIR is now GENERATED from their
+  // ClaimDefinition sources (`./claimdefs/cart-contents.generated.ts` /
+  // `./claimdefs/cart-empty.generated.ts`, compiled from the matching `.claim.ts`). The
+  // FOURTH and FIFTH owner-scoped types to compile from source, on exactly the
+  // RESERVATION_STATUS / histories footing: each required-evidence row carries
+  // `ownershipPolicy: "required"` and is projected VERBATIM (by reference) by the published
+  // `toRegistrySpec`, so `ownerScopedBaseKey` below still resolves `cart_contents` /
+  // `cart_empty` off the GENERATED specs exactly as it did off these stanzas — no second
+  // schema widening was needed (only R2-S2's `perResourceKey`, via
+  // `./claimdefs/per-resource-claim.ts`). The generated rows carry the UNSUFFIXED base keys
+  // plus `perResourceKey: true`, and `selectCandidateClaim` suffixes them by `:{subject}` at
+  // select time as before — here the subject is the AUTHENTICATED customerId (one cart per
+  // customer), matching the investigator's `cart_contents:{customerId}` /
+  // `cart_empty:{customerId}`. These two lines REPLACE ~92 lines of handwritten stanza
+  // (evidence + the deliberately-unread W6 falsifiers + the C6 bindings, whose rationales
+  // moved verbatim into the sources) and can never drift from the templates or the SHARED
+  // closure row, which are generated too.
+  //
+  // THE PAIR IS THE FIRST SLICE WHERE ONE CLOSURE ROW SERVES TWO SOURCES: `CART_CONTENTS_Q`
+  // requires BOTH types, and it is declared by the span-owning source
+  // (`cart-contents.claim.ts`) while `cart-empty.claim.ts` declares no `decomposition` at
+  // all. Read cart-contents.claim.ts's header for the decision and its evidence.
+  //
+  // BKL-270 — the postures are SPLICED here for the same reason as on their seven siblings:
+  // `compileClaimDefinition` has no concept of `dietaryPosture`, so it cannot emit the
+  // field, and splicing keeps the generated files byte-pure under their source-checksum
+  // drift guard. THE PAIR TAKES TWO DIFFERENT VALUES, which is the sharpest available
+  // demonstration that the posture is an OWNER RULING and not a projection of the source:
+  // the two rows are otherwise structurally identical, and no mechanical rule over the
+  // sources could produce `answer-with-abstention` for one and `answer-anyway` for the
+  // other.
+  //
+  // `answer-with-abstention` for CART_CONTENTS — THE REGISTRY'S ONLY row with this posture
+  // (owner ruling 2026-07-27). itemsSummaryText NAMES PRODUCTS, so under "o que tem no meu
+  // carrinho QUE SEJA SEM GLUTEN?" returning the summary would assert those specific items
+  // are safe — food the customer is about to eat, the highest-stakes assertion in the
+  // registry. But the cart is the customer's OWN prior act, and refusing to show it is a
+  // severe degradation for the very customer who needs to check. So: render the cart (the
+  // fact is theirs to have) AND append the ratified BKL-184 abstain + handoff (the dietary
+  // FILTER is not ours to answer).
   CART_CONTENTS: {
-    kind: "read_claim",
-    // BKL-270 — THE ONLY answer-with-abstention row (owner ruling 2026-07-27).
-    // itemsSummaryText NAMES PRODUCTS, so under "o que tem no meu carrinho QUE
-    // SEJA SEM GLUTEN?" returning the summary would assert those specific items
-    // are safe — food the customer is about to eat, the highest-stakes assertion
-    // in the registry. But the cart is the customer's OWN prior act, and refusing
-    // to show it is a severe degradation for the very customer who needs to check.
-    // So: render the cart (the fact is theirs to have) AND append the ratified
-    // BKL-184 abstain + handoff (the dietary FILTER is not ours to answer).
+    ...CART_CONTENTS_REGISTRY_SPEC,
     dietaryPosture: "answer-with-abstention",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "cart_contents",
-        // Ownership required — the cart is the authenticated customer's own
-        // (session-resolved, never a model id); the owner-scope wiring gates it.
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: true,
-    // Parameterize by subject — matches the investigator's `cart_contents:{customerId}`.
-    perResourceKey: true,
-    // W6 — the `cart_cleared` falsifier is DECLARED (so CART_CONTENTS escapes the W6
-    // UNKNOWN-only cap and can VALIDATE), but DELIBERATELY UNREAD by the investigator —
-    // the SAME disposition as ORDER_FULFILLMENT_STAGE's `order_cancelled` /
-    // RESERVATION_STATUS's `reservation_cancelled` after their review-fix: a
-    // same-cart-row "cleared" signal is tautological AND inert (a cleared/checked-out
-    // cart already reads `hasItems: false` ⇒ `cart_contents` ABSENT ⇒ no present base to
-    // demote). Declaring-without-reading is sound: the runtime arm resolves an
-    // always-absent key ⇒ never fires ⇒ demote-only safety is preserved.
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "cart_cleared",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered summary to the read's PRE-COMPOSED `itemsSummaryText`
-    // field (ledger-sourced, deterministic; never model-authored).
-    valueBinding: { key: "cart_contents", path: ["itemsSummaryText"] },
   },
-  // BKL-163 — CART_EMPTY: the provably-empty cart twin of CART_CONTENTS. The SAME
-  // owner-scoped, must_read_this_turn, perResourceKey shape (subject = the
-  // authenticated customerId), but its evidence key `cart_empty:{customerId}` is
-  // recorded PRESENT by the investigator ONLY when the cart read resolved
-  // `hasItems: false` — presence IS the provable-empty proposition, so the pair is
-  // complementary by construction (a cart with items leaves `cart_empty` ABSENT ⇒
-  // this claim resolves UNKNOWN ⇒ dropped when CART_CONTENTS validates; an empty
-  // cart leaves `cart_contents` ABSENT ⇒ CART_CONTENTS drops and THIS renders).
-  // The C6 proposition is a DETERMINISTIC code-composed scalar (`emptinessText`,
-  // the literal "vazio") — never model-authored.
+  // `answer-anyway` for CART_EMPTY — the bound scalar is the hardcoded literal "vazio". The
+  // safest render in the registry: true under every reading of every qualifier, and it names
+  // no food. NOTE its complement CART_CONTENTS takes a DIFFERENT posture — the pair is
+  // splittable only because the two use DISTINCT evidence keys (cart_empty vs
+  // cart_contents), which the boot gate's shared-key check pins.
   CART_EMPTY: {
-    kind: "read_claim",
-    // BKL-270 — the bound scalar is the hardcoded literal "vazio". The safest
-    // render in the registry: true under every reading of every qualifier, and it
-    // names no food. NOTE its complement CART_CONTENTS takes a DIFFERENT posture —
-    // the pair is splittable only because the two use DISTINCT evidence keys
-    // (cart_empty vs cart_contents), which the boot gate's shared-key check pins.
+    ...CART_EMPTY_REGISTRY_SPEC,
     dietaryPosture: "answer-anyway",
-    minSourceIntegrity: "structured",
-    requiredEvidence: [
-      {
-        key: "cart_empty",
-        // Ownership required — the (empty) cart is the authenticated customer's own
-        // (session-resolved, never a model id); the owner-scope wiring gates it.
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    customerScoped: true,
-    // Parameterize by subject — matches the investigator's `cart_empty:{customerId}`.
-    perResourceKey: true,
-    // W6 — `cart_item_added` is DECLARED (so CART_EMPTY escapes the W6 UNKNOWN-only
-    // cap and can VALIDATE) but DELIBERATELY UNREAD — the exact CART_CONTENTS
-    // `cart_cleared` disposition: a same-cart-row "item added" signal is tautological
-    // AND inert (a cart that gained an item already reads `hasItems: true` ⇒
-    // `cart_empty` ABSENT ⇒ no present base to demote). Declaring-without-reading is
-    // sound: the runtime arm resolves an always-absent key ⇒ never fires ⇒
-    // demote-only safety preserved.
-    falsifierComplete: true,
-    falsifiers: [
-      {
-        key: "cart_item_added",
-        ownershipPolicy: "required",
-        freshnessPolicy: "must_read_this_turn",
-        sourceIntegrity: "structured",
-        provenancePolicy: "preserve",
-      },
-    ],
-    // C6 — bind the rendered scalar to the read's code-composed `emptinessText`
-    // field (ledger-sourced, deterministic; never model-authored).
-    valueBinding: { key: "cart_empty", path: ["emptinessText"] },
   },
   // inv.18 v2 / R2-S5 — the HISTORIES PAIR is now GENERATED from their ClaimDefinition
   // sources (`./claimdefs/order-history.generated.ts` /

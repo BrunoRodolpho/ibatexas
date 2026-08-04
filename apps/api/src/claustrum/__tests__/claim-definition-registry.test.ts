@@ -16,6 +16,8 @@
 import { describe, expect, it } from "vitest";
 import type { ClaimDefinition } from "@adjudicate/core";
 import { CLAIM_REGISTRY } from "../claim-registry.js";
+import { CART_CONTENTS_DEFINITION } from "../claimdefs/cart-contents.generated.js";
+import { CART_EMPTY_DEFINITION } from "../claimdefs/cart-empty.generated.js";
 import { MENU_DIETARY_DEFINITION } from "../claimdefs/menu-dietary.generated.js";
 import { MENU_ITEM_CONTENTS_DEFINITION } from "../claimdefs/menu-item-contents.generated.js";
 import { MENU_ITEM_PRICE_DEFINITION } from "../claimdefs/menu-item-price.generated.js";
@@ -212,6 +214,14 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
     // that sees it.
     ["ORDER_HISTORY", ORDER_HISTORY_DEFINITION, true],
     ["PAYMENT_HISTORY", PAYMENT_HISTORY_DEFINITION, true],
+    // R2-S6 — the CART presence-complement pair. Same loophole, and for CART_EMPTY the
+    // `triadScoped: true` column is doing extra duty: that flag is the half of the
+    // SHARED-CLOSURE-ROW agreement that lives on the non-span-owning twin, so a silent
+    // fallback to `buildClaimDefinition` would source it from TRIAD_SCOPED_TYPES (which
+    // still lists it) and the INV-4 agreement would keep passing for the wrong reason —
+    // it would no longer be pinned to what `cart-empty.claim.ts` declares.
+    ["CART_CONTENTS", CART_CONTENTS_DEFINITION, true],
+    ["CART_EMPTY", CART_EMPTY_DEFINITION, true],
   ] as const)(
     "CLAIM_DEFINITIONS.%s IS the generated definition (reference identity)",
     (type, generated, triadScoped) => {
@@ -253,6 +263,9 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
   it.each([
     ["ORDER_HISTORY", ORDER_HISTORY_DEFINITION],
     ["PAYMENT_HISTORY", PAYMENT_HISTORY_DEFINITION],
+    // R2-S6 — the cart pair joins the same table (fourth and fifth owner-scoped rows).
+    ["CART_CONTENTS", CART_CONTENTS_DEFINITION],
+    ["CART_EMPTY", CART_EMPTY_DEFINITION],
   ] as const)(
     "the generated %s definition carries ownershipPolicy: required on its evidence",
     (type, generated) => {
@@ -263,4 +276,28 @@ describe("claim-definition-registry — boot CONSUMES the generated definition",
       expect(CLAIM_DEFINITIONS[type].requiredEvidence).toBe(generated.requiredEvidence);
     },
   );
+
+  // R2-S6 — THE SHARED CLOSURE ROW at the BOOT seam. The compiler-level proof that INV-4
+  // rejects a de-synced pair lives in `claimdefs/__tests__/per-resource-claim.test.ts` over
+  // synthetic worlds; what belongs HERE is that the REAL boot fold discharges CART_EMPTY's
+  // INV-4 obligation through its TWIN's row, since that is the property with no precedent in
+  // the nine definitions adopted before it.
+  it("CART_EMPTY is Triad-scoped and reachable ONLY through its twin's shared closure row", () => {
+    // The obligation is real…
+    expect(CART_EMPTY_DEFINITION.triadScoped).toBe(true);
+    // …this type declares NO row of its own…
+    expect(
+      Object.entries(CLAIM_DEFINITION_CONTEXT.closures ?? {}).filter(([span]) =>
+        span.startsWith("CART_EMPTY"),
+      ),
+    ).toEqual([]);
+    // …and it is discharged by exactly ONE row, the twin's, which names both members.
+    const rowsNamingEmpty = Object.entries(CLAIM_DEFINITION_CONTEXT.closures ?? {}).filter(
+      ([, types]) => types.includes("CART_EMPTY"),
+    );
+    expect(rowsNamingEmpty).toEqual([["CART_CONTENTS_Q", ["CART_CONTENTS", "CART_EMPTY"]]]);
+    // So the real registry validates — and this is the assertion that goes RED the moment
+    // the pair de-syncs, at the same seam production boots through.
+    expect(validateClaimDefinitionRegistry()).toEqual({ ok: true });
+  });
 });
