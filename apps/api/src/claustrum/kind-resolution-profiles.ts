@@ -1,6 +1,6 @@
 /**
  * kind-resolution-profiles — THE DECLARED TABLE of what RESOLVE does per intent
- * kind (R3-S3).
+ * kind (R3-S3, extended with the id-threading axis by R3-S4).
  *
  * ── WHAT THIS REPLACES ───────────────────────────────────────────────────────
  *
@@ -10,8 +10,11 @@
  * ORDER_NAMED_REFERENCE / RESERVATION_AUTORESOLVE / RESERVATION_SLOT_RESOLVE /
  * REFUND_OWNERSHIP), a ninth hand-mirrored set in `compose-policy-packs.ts`
  * (AUTORESOLVE_CONFIRM_KINDS), and a scatter of `kind === "…"` gates inside the
- * per-kind normalizers. Answering the question meant grepping a 2.8k-line file
- * for the kind string and hoping you found every site.
+ * per-kind normalizers and the id-threading stage. Answering the question meant
+ * grepping a 2.8k-line file for the kind string and hoping you found every site.
+ *
+ * As of R3-S4 there is no such gate left: `resolve-and-assemble.ts` contains ZERO
+ * intent-kind comparisons outside the accessors below.
  *
  * The cost was not readability, it was DRIFT. Membership in one set implies
  * membership in another — auto-resolving a target you must then confirm; loading
@@ -64,19 +67,31 @@
  *
  * A kind with no row gets {@link UNPROFILED_KIND}: no target resolution, no
  * confirm, no slot grounding, no ownership binding, no normalizers, no
- * projections, and NO SIGNAL IT MAY STAMP. That is the safe direction on every
- * axis — an unknown kind cannot silently acquire an auto-resolve, and it cannot
- * stamp an honesty-floor signal it was never declared to carry.
+ * projections, no kind-specific threading, and NO SIGNAL IT MAY STAMP. That is
+ * the safe direction on every axis — an unknown kind cannot silently acquire an
+ * auto-resolve, and it cannot stamp an honesty-floor signal it was never declared
+ * to carry.
  *
- * `ctxLoader` is the ONE axis where "absent" cannot mean "nothing", because every
- * kind gets some loader — the question is only which. Its default is therefore
- * `"domain-default"`: consult {@link DOMAIN_DEFAULT_CTX_LOADERS}, the prefix
- * ladder `loadCtxForKind` always used. A row's explicit `ctxLoader` is an
- * OVERRIDE of its domain's default, which is exactly what ORDER_BY_ID_KINDS
- * encoded (order kinds that load by id instead of as cart ops). This asymmetry
- * is deliberate and is the honest scope line: the kind space is open (ops kinds,
- * whatsapp kinds and unknown kinds all reach this resolver), so a table that
- * claimed to be TOTAL over kinds would either be a lie or a regression.
+ * TWO axes cannot mean "nothing" when absent, because both were PREFIX facts
+ * about a whole domain rather than per-kind facts, over a kind space that is
+ * genuinely open (ops kinds, whatsapp kinds and unknown kinds all reach this
+ * resolver):
+ *
+ *   `ctxLoader` — every kind gets some loader; the question is only which. Its
+ *     default is `"domain-default"`: consult {@link DOMAIN_DEFAULT_CTX_LOADERS},
+ *     the prefix ladder `loadCtxForKind` always used. A row's explicit value is an
+ *     OVERRIDE of its domain's default, which is exactly what ORDER_BY_ID_KINDS
+ *     encoded (order kinds that load by id instead of as cart ops).
+ *   `threadingSteps` (R3-S4) — every `order.` kind threads its resolved cartId
+ *     and every `reservation.` kind its customerId, whether or not it has a row.
+ *     Its default is the {@link DOMAIN_DEFAULT_THREADING_STEPS} baseline, and a
+ *     row's steps are ADDITIVE to it rather than an override, because threading is
+ *     a set and a loader is not.
+ *
+ * The asymmetry is deliberate and is the honest scope line: a table that claimed
+ * to be TOTAL over kinds would either be a lie or a regression. Read both axes
+ * through their accessors ({@link ctxLoaderFor}, {@link threadingStepsFor}) — the
+ * raw row field is only half the answer.
  *
  * ── WHY THIS MODULE HAS NO RUNTIME DEPENDENCIES ──────────────────────────────
  *
@@ -195,6 +210,77 @@ export type CtxProjection =
   /** LE2-023 — the coupon fields `confirmSwapForCoupon` reads. */
   | "coupon-swap";
 
+/**
+ * R3-S4 — the ID-THREADING steps `threadResolvedIdsIntoPayload` may apply to the
+ * OUTGOING payload, after the ctx is built.
+ *
+ * This is the last stage that was still a wall of `kind === "…"` gates. The names
+ * below are taken from what each gate's body DOES, which is worth stating because
+ * two of them are not what the stage's name suggests: the `order.` prefix gate
+ * threads a **cartId** (never an orderId — that was already resolved upstream by
+ * `applyAutoResolve`), and the `reservation.` prefix gate threads a **customerId**.
+ *
+ * SELECTION only, exactly as `payloadNormalizers` established in R3-S3: each body
+ * stays the function it was in `resolve-and-assemble.ts`, and what moved here is
+ * the kind gate it wore. Sequence — and the two places one step NESTS inside
+ * another's runtime guard — stay in the interpreter.
+ */
+export type ThreadingStep =
+  /**
+   * F3/L1 (D-014) — copy the session-resolved `ctx.cartId` onto the payload so a
+   * cart mutation does not EXECUTE and then ZodError on the missing id. Never
+   * overrides an explicit value, and self-scoping: `ctx.cartId` is a string only
+   * for kinds that routed through `loadCartCtx`.
+   */
+  | "thread-cart-id"
+  /**
+   * F3/L1 (D-014) — reservation executors require `customerId` (identity, never
+   * LLM-supplied). Never overrides an explicit value.
+   */
+  | "thread-reservation-customer-id"
+  /**
+   * BKL-103 — stamp the authenticated `actorId` PROPOSER field `gatePaidCancel`'s
+   * overlay compares against `approval.approverId`. UNCONDITIONAL overwrite: a
+   * fill-only-if-absent would be defeated by a smuggled value.
+   */
+  | "stamp-cancel-actor"
+  /**
+   * BKL-061/067/199 + FE-T09 — resolve a loose NL product name to `variantId`,
+   * refill `allergens` from the RESOLVED PRODUCT (Hard Rule #1: always an
+   * explicit array, never model-supplied — the field is stripped unconditionally
+   * first), and recover the customer's stated `quantity`.
+   *
+   * The three travel as ONE step because no kind takes them apart: both selecting
+   * kinds want all three, and splitting would create a co-selection invariant this
+   * table has no way to enforce (a row could declare the hydration without the
+   * allergen refill — precisely the Hard-Rule-#1 hole the step exists to close).
+   */
+  | "hydrate-product-with-allergens"
+  /** FE-T09 (D-a) — resolve the NL `item` reference against a PLACED order's own
+   *  line items (`resolveOrderLineItem`); never a catalog-wide guess. */
+  | "resolve-order-line-item"
+  /** FE-T14 — the same NL→`itemId` shape resolved against the ACTIVE CART
+   *  (`resolveCartLineItem`), whose wire schema needs a real Medusa line id. */
+  | "resolve-cart-line-item"
+  /**
+   * Review B3 — positive-integer coercion of the quantity a `*.update_qty` /
+   * `*.item.update` carries. NESTED inside whichever line-item resolution the kind
+   * also declares (see the interpreter): it has never run on a turn that arrived
+   * with an explicit `itemId`, and hoisting it would change that.
+   */
+  | "coerce-line-item-quantity"
+  /** FE-D28 — resolve the reviewed `productId` from the reviewed order's OWN line
+   *  items (a review is purchase-bound). Never guesses; the interpreter stamps the
+   *  `reviewProductUnresolved` honesty floor when it does not resolve. */
+  | "resolve-review-product"
+  /**
+   * FE-T14 — `allergenExclusions` is REQUIRED on the wire but is never on the
+   * extraction schema (Hard Rule #1). Stripped unconditionally and refilled from
+   * the customer's CURRENT saved preferences, so an ordinary "sou vegetariano"
+   * cannot silently wipe a declared allergy.
+   */
+  | "refill-allergen-exclusions";
+
 // ── The row ──────────────────────────────────────────────────────────────────
 
 /**
@@ -227,6 +313,14 @@ export interface KindResolutionProfile {
   /** Which additive ctx projections are stamped after the loader. */
   readonly ctxProjections: readonly CtxProjection[];
   /**
+   * R3-S4 — which id-threading steps run against the OUTGOING payload, ON TOP OF
+   * the kind's domain baseline ({@link DOMAIN_DEFAULT_THREADING_STEPS}). Read
+   * through {@link threadingStepsFor}, never directly: a row declares only what is
+   * SPECIFIC to the kind, so reading this field alone would miss the prefix
+   * threads every `order.` / `reservation.` kind gets.
+   */
+  readonly threadingSteps: readonly ThreadingStep[];
+  /**
    * The R3-S2 resolution signals this kind MAY stamp — the honesty-floor channel
    * the kernel guards read. ENFORCED, not documentation: `stampProfiledSignal`
    * refuses an undeclared (kind, signal) pair, so the kind gate on a stamp site
@@ -254,18 +348,27 @@ export const UNPROFILED_KIND: KindResolutionProfile = {
   payloadNormalizers: [],
   ctxProjections: [],
   signals: [],
+  // NOT the whole answer for an unprofiled kind, and deliberately so: the domain
+  // baseline still applies on top (an unlisted `order.` kind still gets its cartId
+  // threaded, which is what kept every un-rowed cart op working before this
+  // slice). `threadingStepsFor` is where the two combine.
+  threadingSteps: [],
 };
 
 // ── The table ────────────────────────────────────────────────────────────────
 
 /**
  * A row exists for a kind IFF the resolve stage does something kind-specific in
- * one of the declared axes. Kinds whose only special handling is an id-threading
- * block (`order.item.add`'s product hydration, `order.item.update`'s cart-line
- * resolution) have no row: that machinery is not yet profiled, and inventing
- * all-default rows for it would make the table claim a completeness it does not
- * have. `kind-resolution-profiles.test.ts` pins this rule — every row must be
- * non-default somewhere.
+ * one of the declared axes. `kind-resolution-profiles.test.ts` pins this rule —
+ * every row must be non-default somewhere.
+ *
+ * R3-S4 applied that rule to a new axis rather than bending it. The previous
+ * revision of this docblock named `order.item.add` and `order.item.update` as
+ * kinds deliberately left un-rowed, "because that machinery is not yet profiled"
+ * — id-threading was the one stage still gated by `kind === "…"`. It is profiled
+ * now, so those three kinds are non-default in `threadingSteps` and have earned
+ * rows on exactly the stated rule. Nothing about the rule changed; the set of
+ * axes did.
  *
  * Grouped by what the kinds have in common, and every group's membership is
  * pinned against a hand-written control list in the test's census.
@@ -284,6 +387,10 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    // BKL-103 — the conversational plane's PROPOSER stamp. The only kind that
+    // needs it: it is the only RESUMABLE escalation kind whose overlay compares
+    // an approver against a proposer.
+    threadingSteps: ["stamp-cancel-actor"],
   },
   // BKL-216 — the amend kinds honour a NAMED order before the blind fallback.
   "order.amend.request": {
@@ -295,6 +402,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    threadingSteps: [],
   },
   "order.amend.add_item": {
     targetResolution: "order-named-reference",
@@ -307,6 +415,10 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     // FE-D18 — the honesty floor that REFUSEs an unresolvable item BEFORE the
     // confirm guard can park a doomed envelope behind a found-implying prompt.
     signals: [AUTO_RESOLVED_MONEY_REF, AMEND_ITEM_UNRESOLVED],
+    // Shares the hydration step with its cart sibling `order.item.add`; what
+    // separates them is the signal above, which is why the stamp is gated by the
+    // DECLARATION rather than by a second kind test inside the step.
+    threadingSteps: ["hydrate-product-with-allergens"],
   },
   "order.amend.update_qty": {
     targetResolution: "order-named-reference",
@@ -317,6 +429,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    threadingSteps: ["resolve-order-line-item", "coerce-line-item-quantity"],
   },
   "order.amend.remove_item": {
     targetResolution: "order-named-reference",
@@ -327,6 +440,9 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    // A removal carries no quantity — the one field that separates it from its
+    // update_qty sibling, which is why the coercion is its own step.
+    threadingSteps: ["resolve-order-line-item"],
   },
   "order.note.add": {
     targetResolution: "order-most-recent",
@@ -337,6 +453,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    threadingSteps: [],
   },
   "order.address.change": {
     targetResolution: "order-most-recent",
@@ -347,6 +464,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    threadingSteps: [],
   },
   "order.type.switch": {
     targetResolution: "order-most-recent",
@@ -357,6 +475,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    threadingSteps: [],
   },
   // FE-D28 — the one kind reaching its order by DISPLAY number.
   "order.review.submit": {
@@ -369,6 +488,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     ctxProjections: [],
     // The review-product honesty floor, same posture as the amend flag above.
     signals: [AUTO_RESOLVED_MONEY_REF, REVIEW_PRODUCT_UNRESOLVED],
+    threadingSteps: ["resolve-review-product"],
   },
 
   // ── Payment kinds ─────────────────────────────────────────────────────────
@@ -384,6 +504,9 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    // No `payment.` domain baseline: the two prefix threads serve order and
+    // reservation executors only.
+    threadingSteps: [],
   },
   // 034-F1 — ownership BINDING only. No target resolution, so NO forced confirm:
   // the refund target stays the caller's explicit paymentId.
@@ -396,6 +519,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [],
+    threadingSteps: [],
   },
   "payment.refund.confirm": {
     targetResolution: "none",
@@ -406,9 +530,12 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [],
+    threadingSteps: [],
   },
 
   // ── Reservation kinds ─────────────────────────────────────────────────────
+  // Every reservation kind threads its customerId, but NOT from a row: that is
+  // the `reservation.` domain baseline, so the open kind space keeps it.
   "reservation.cancel": {
     targetResolution: "reservation-active",
     confirmOnAutoResolve: true,
@@ -418,6 +545,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    threadingSteps: [],
   },
   // The kind that proves the axes are independent: it auto-resolves its
   // reservation AND grounds a slot AND recovers a party size from the utterance.
@@ -430,6 +558,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: ["modify-party-size"],
     ctxProjections: [],
     signals: [AUTO_RESOLVED_MONEY_REF],
+    threadingSteps: [],
   },
   // FE-D27 — create/waitlist ground a slot but auto-resolve NO target (there is
   // no existing booking to guess at), so they never confirm.
@@ -442,6 +571,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [],
+    threadingSteps: [],
   },
   "reservation.waitlist.join": {
     targetResolution: "none",
@@ -452,6 +582,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: [],
     signals: [],
+    threadingSteps: [],
   },
 
   // ── Cart-plane order kinds with a declared projection or normalizer ────────
@@ -467,6 +598,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: ["previous-order"],
     signals: [],
+    threadingSteps: [],
   },
   "order.coupon.swap.request": {
     targetResolution: "none",
@@ -479,6 +611,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     // the previous-order projection resolves.
     ctxProjections: ["previous-order", "coupon-swap"],
     signals: [],
+    threadingSteps: [],
   },
   "order.cancel.request": {
     targetResolution: "none",
@@ -489,6 +622,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     payloadNormalizers: [],
     ctxProjections: ["previous-order"],
     signals: [],
+    threadingSteps: [],
   },
   // Deliberately NOT auto-resolved: a checkout's cartId comes from the session's
   // active-cart key — THE customer's one cart, not a guess among several.
@@ -502,6 +636,52 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     ctxProjections: [],
     // BKL-280 — the one signal read in a PUBLISHED PACK.
     signals: [STAY_HOME_DELIVERY_MARKER],
+    // The cartId it checks out arrives via the `order.` domain baseline, not a
+    // row — same thread every cart op gets.
+    threadingSteps: [],
+  },
+
+  // ── Cart line-item kinds (R3-S4: rows for the FIRST time) ─────────────────
+  // Before this slice these three had no row, because the table did not yet have
+  // an axis for the only thing that is special about them: their id-threading.
+  // Everything else about them IS the default — no auto-resolve, no confirm, the
+  // domain cart loader, no normalizer, no projection, no signal.
+  "order.item.add": {
+    targetResolution: "none",
+    confirmOnAutoResolve: false,
+    ctxLoader: "cart",
+    slotResolution: "none",
+    ownershipBinding: "none",
+    payloadNormalizers: [],
+    ctxProjections: [],
+    // NOT `amendItemUnresolved`: an unresolvable item on the CART path already
+    // REFUSEs honestly (no confirm parks it first), so the flag would be an
+    // honesty floor with nothing to protect. The asymmetry with
+    // `order.amend.add_item` is the whole reason that stamp reads the table.
+    signals: [],
+    threadingSteps: ["hydrate-product-with-allergens"],
+  },
+  "order.item.update": {
+    targetResolution: "none",
+    confirmOnAutoResolve: false,
+    ctxLoader: "cart",
+    slotResolution: "none",
+    ownershipBinding: "none",
+    payloadNormalizers: [],
+    ctxProjections: [],
+    signals: [],
+    threadingSteps: ["resolve-cart-line-item", "coerce-line-item-quantity"],
+  },
+  "order.item.remove": {
+    targetResolution: "none",
+    confirmOnAutoResolve: false,
+    ctxLoader: "cart",
+    slotResolution: "none",
+    ownershipBinding: "none",
+    payloadNormalizers: [],
+    ctxProjections: [],
+    signals: [],
+    threadingSteps: ["resolve-cart-line-item"],
   },
 
   // ── Customer kinds ────────────────────────────────────────────────────────
@@ -515,6 +695,7 @@ export const KIND_RESOLUTION_PROFILES: Readonly<Record<string, KindResolutionPro
     ctxProjections: [],
     // FE-T14 — the allergen honesty floor.
     signals: [ALLERGEN_MENTION_DETECTED],
+    threadingSteps: ["refill-allergen-exclusions"],
   },
 };
 
@@ -553,6 +734,40 @@ export const DOMAIN_DEFAULT_CTX_LOADERS: ReadonlyArray<
   ["order.", "cart"],
 ];
 
+/**
+ * R3-S4 — the id-threading steps a kind gets from its DOMAIN, before any row.
+ *
+ * The second total axis, and for the same reason as {@link
+ * DOMAIN_DEFAULT_CTX_LOADERS}: these two steps were `kind.startsWith("order.")`
+ * and `kind.startsWith("reservation.")` tests, i.e. facts about a whole domain
+ * over an OPEN kind space. Rewriting them as per-kind rows would have required
+ * enumerating every `order.` kind that can reach this resolver and would have
+ * silently dropped the thread for the next one added — a regression, not a
+ * refactor. So the prefix stays a prefix, and it stays declared HERE rather than
+ * inline in the interpreter.
+ *
+ * ADDITIVE, unlike the loader ladder (which is an OVERRIDE, because a kind gets
+ * exactly one loader). Threading is a SET axis: a row's steps COMPOSE with its
+ * domain baseline instead of replacing it, so `order.cancel` declaring
+ * `stamp-cancel-actor` does not have to re-declare the cartId thread that every
+ * other order kind gets. The cost of that choice is stated plainly: a row CANNOT
+ * opt out of its domain baseline. Nothing needs to today — both threads are
+ * no-ops when their input is absent (`ctx.cartId` is a string only for kinds that
+ * routed through `loadCartCtx`), so they are already self-scoping at runtime. A
+ * kind that genuinely had to suppress one would need a declared suppression, not
+ * a silent omission, and this comment is the marker for that day.
+ *
+ * Every matching prefix contributes (a union, not first-match-wins). The two
+ * prefixes are disjoint, so the distinction is not observable today; union is
+ * declared because it is the composition-safe reading of a set.
+ */
+export const DOMAIN_DEFAULT_THREADING_STEPS: ReadonlyArray<
+  readonly [prefix: string, steps: readonly ThreadingStep[]]
+> = [
+  ["order.", ["thread-cart-id"]],
+  ["reservation.", ["thread-reservation-customer-id"]],
+];
+
 // ── Reading the table ────────────────────────────────────────────────────────
 
 /**
@@ -580,6 +795,25 @@ export function ctxLoaderFor(kind: string): Exclude<CtxLoaderSelection, "domain-
     }
   }
   return "base";
+}
+
+/**
+ * R3-S4 — every id-threading step this kind runs: its domain baseline
+ * ({@link DOMAIN_DEFAULT_THREADING_STEPS}) UNION its row's own steps.
+ *
+ * Returns a SET, deliberately. The interpreter asks `has(step)` at fixed points in
+ * a fixed sequence, so the order a row happens to list its steps in cannot change
+ * what runs when — the same "the table declares WHAT, the interpreter decides
+ * WHEN" split R3-S3's `payloadNormalizers` had to spell out in prose. A set makes
+ * it structural.
+ */
+export function threadingStepsFor(kind: string): ReadonlySet<ThreadingStep> {
+  const steps = new Set<ThreadingStep>();
+  for (const [prefix, domainSteps] of DOMAIN_DEFAULT_THREADING_STEPS) {
+    if (kind.startsWith(prefix)) for (const step of domainSteps) steps.add(step);
+  }
+  for (const step of resolutionProfileFor(kind).threadingSteps) steps.add(step);
+  return steps;
 }
 
 /**
