@@ -327,9 +327,21 @@ export function classifyOnlyRequiredTypes(
  * Build the deterministic candidate claims for a classify-only-eligible
  * required set — the classify-only REPLACEMENT for the model's
  * `propose_claim` tool call. Mirrors `ibatexas-planner.ts`'s FIX 1 (actor) +
- * FIX 2 (subject) resolution EXACTLY, minus the "honor the model's subject if
- * it happens to name an owned resource" branch — there is no model subject
- * here, so that branch is vacuous by construction, not omitted behavior:
+ * FIX 2 (subject) resolution, minus the "honor the model's subject if it
+ * happens to name an owned resource" branch — there is no model subject here,
+ * so that branch is vacuous by construction, not omitted behavior:
+ *
+ * PARITY IS NOT EXACT, and is no longer asserted only here. This comment used
+ * to claim the mirror was EXACT; measured, it is not, in two places — this path
+ * resolves an explicitly-NAMED owned order at ≥2-owned (BKL-203) where the model
+ * path dead-ends in its ambiguity CLARIFY, and it derives MENU_DIETARY's subject
+ * from the ledger where the model path has no branch and passes the model's
+ * string through. Both are fail-safe and both are now PINNED (parity where it
+ * holds, characterized where it does not) by
+ * `__tests__/r7-cross-path-subject-parity.test.ts`; the measurements and the
+ * reason the two homes were NOT merged are recorded in
+ * `docs/architecture/design/r7-candidate-assembly.md`. Change either path's
+ * disposition and that test tells you what the other one does.
  *
  *   - actor: the AUTHENTICATED principal (never model/session output — FIX 1).
  *   - subject: resolved ONLY from `auth.ownedByBaseKey` (FIX 2) — exactly ONE
