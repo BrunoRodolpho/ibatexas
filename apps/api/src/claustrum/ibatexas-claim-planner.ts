@@ -79,6 +79,11 @@ import {
   // paths parameterize a public per-resource type from the SAME ledger-named id.
   presentPublicItemIds,
   publicPerItemBaseKey,
+  // F-19 — BKL-203's OWN named-owned-order resolution, reused verbatim so the model
+  // route reaches the same subject the classify-only route does (see
+  // `namedOwnedSubjectsByBaseKey` below). This module is where BOTH routes get their
+  // owner-scoped projection built, so it is where the one resolver is called once.
+  resolveNamedOwnedOrderSubject,
   type DisambiguationCandidate,
 } from "./classify-only-reads.js";
 import {
@@ -87,7 +92,10 @@ import {
   type RegistryClaimType,
 } from "./claim-registry.js";
 import type { ClaimAuthContext, ClaimAwarePlannerPort } from "./ibatexas-planner.js";
-import { ownedResourceIdsByBaseKey } from "./ibatexas-claims-kernel-deps.js";
+import {
+  ownedResourceIdsByBaseKey,
+  type EvidenceLedgerLike,
+} from "./ibatexas-claims-kernel-deps.js";
 import { completeWithResilience } from "./complete-with-retry.js";
 import {
   classifyRequestSpans,
@@ -395,6 +403,44 @@ function unionRequiredCandidates(
 }
 
 /**
+ * F-19 — the owner-scoped "which of MY resources does THIS message name?"
+ * projection the MODEL route consumes, built here (where both routes get their
+ * owner-scoped projection) with the read plane's OWN resolver.
+ *
+ * The model route cannot call {@link resolveNamedOwnedOrderSubject} itself: that
+ * resolver reads each owned entry's `displayId` off the turn ledger, and
+ * `ClaimAwarePlannerPort.proposeClaims(state, auth)` receives no `EvidenceLedger`
+ * (the structural fact recorded in `docs/architecture/design/r7-candidate-assembly.md`).
+ * So the ADAPTER — which holds the ledger, and already projects it into
+ * `auth.ownedByBaseKey` via `ownedResourceIdsByBaseKey` — runs the resolver and
+ * passes the RESULT. That keeps the display-number heuristic in exactly one place
+ * (BKL-216's shared `matchNamedOwnedOrders`, which the resolver delegates to) and
+ * gives the model route the SAME answer the classify-only route computes from the
+ * SAME two inputs, rather than a second implementation that could drift.
+ *
+ * Only base keys with ≥2 owned ids can produce an entry — the 1-owned case is
+ * already bound by FIX 2 on both routes and the 0-owned case has nothing to name,
+ * so an entry exists ONLY where it decides something. The resolver itself is
+ * owner-scoped (values are drawn from `ownedIds`), applies only to the
+ * order-keyed base keys, and returns nothing on 0 or ≥2 matches — so an ambiguous
+ * reference produces NO entry and the caller's CLARIFY stands. Pure over
+ * (data, ledger).
+ */
+export function namedOwnedSubjectsByBaseKey(
+  ownedByBaseKey: ReadonlyMap<string, readonly string[]>,
+  ledger: EvidenceLedgerLike,
+  messageText: string,
+): Map<string, string> {
+  const named = new Map<string, string>();
+  for (const [baseKey, ownedIds] of ownedByBaseKey) {
+    if (ownedIds.length < 2) continue;
+    const subject = resolveNamedOwnedOrderSubject(baseKey, ownedIds, ledger, messageText);
+    if (subject !== undefined) named.set(baseKey, subject);
+  }
+  return named;
+}
+
+/**
  * Adapt the EXISTING Q6b claim-aware planner into the published
  * `ClaimPlannerPort`. The SAME planner instance is wired as the Conductor's
  * `planner` (its `PlannerPort.propose` is the intent path, unchanged); this
@@ -432,11 +478,28 @@ export function createIbatexasClaimPlanner(
       // absent → excluded), so the set of admissible subjects is owner-scoped by
       // construction. Both inputs are optional on `ClaimPlannerInput` (a host that
       // never wired them yields no auth context → the planner fails closed).
+      //
+      // F-19 — the SAME projection additionally carries the ≥2-owned
+      // "which one did they NAME?" resolution (`namedOwnedSubjectsByBaseKey`, above),
+      // so the MODEL route reaches the subject BKL-203 already reached on the
+      // classify-only route below. Both are computed from the SAME ledger + request
+      // text, by the SAME resolver, at this one seam.
+      const ownedByBaseKey =
+        input.ledger === undefined ? undefined : ownedResourceIdsByBaseKey(input.ledger);
+      const namedOwnedSubjectByBaseKey =
+        input.ledger === undefined || ownedByBaseKey === undefined
+          ? undefined
+          : namedOwnedSubjectsByBaseKey(
+              ownedByBaseKey,
+              input.ledger,
+              input.cognition.perception.text,
+            );
       const auth: ClaimAuthContext = {
         ...(input.customerId === undefined ? {} : { customerId: input.customerId }),
-        ...(input.ledger === undefined
+        ...(ownedByBaseKey === undefined ? {} : { ownedByBaseKey }),
+        ...(namedOwnedSubjectByBaseKey === undefined || namedOwnedSubjectByBaseKey.size === 0
           ? {}
-          : { ownedByBaseKey: ownedResourceIdsByBaseKey(input.ledger) }),
+          : { namedOwnedSubjectByBaseKey }),
       };
 
       // FE-T18 (FE-3.0 / D1) — the classify-only read bypass. Gated OFF by

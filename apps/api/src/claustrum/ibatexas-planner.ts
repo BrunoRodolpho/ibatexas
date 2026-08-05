@@ -1101,15 +1101,29 @@ function translateToolCalls(args: {
  *  - `ownedByBaseKey`   — the owner-scoped resource ids that resolved PRESENT this
  *    turn, grouped by base key (`ownedResourceIdsByBaseKey`). The ONLY admissible
  *    subjects for an owner-scoped candidate (FIX 2): exactly one → bind it; many →
- *    CLARIFY; none → no resolution (degrade SAFE to UNKNOWN — never the model's id).
+ *    the NAMED resolution below, else CLARIFY; none → no resolution (degrade SAFE to
+ *    UNKNOWN — never the model's id).
+ *  - `namedOwnedSubjectByBaseKey` — F-19 / BKL-203: for a base key whose ≥2-owned set
+ *    is ambiguous, the ONE owned id THIS message explicitly NAMES by display number,
+ *    already resolved by the read plane's own `resolveNamedOwnedOrderSubject`
+ *    (classify-only-reads.ts) against the SAME turn's ledger. It is a RESULT, not an
+ *    input to a second resolver: this planner never parses a display number itself,
+ *    so there is exactly one such heuristic in the codebase (BKL-216's
+ *    `matchNamedOwnedOrders`, which that function delegates to). Owner-scoped /
+ *    IDOR-safe by construction — the resolver can only ever return an id drawn from
+ *    the authenticated owned set, and 0-or-≥2 matches yield NO entry (the ambiguity
+ *    CLARIFY stands — never a guess).
  *
- * Both OPTIONAL: absent (unit tests / a non-owner-scoped turn) ⟹ the planner keeps
+ * All OPTIONAL: absent (unit tests / a non-owner-scoped turn) ⟹ the planner keeps
  * the model's subject and stamps an `"unauthenticated"` actor that owns nothing
  * (fail-closed), so a missing auth context can never validate an owner-scoped claim.
+ * An absent `namedOwnedSubjectByBaseKey` is byte-identical to the pre-F-19 planner
+ * (the ≥2-owned branch falls straight through to CLARIFY).
  */
 export interface ClaimAuthContext {
   readonly customerId?: string;
   readonly ownedByBaseKey?: ReadonlyMap<string, readonly string[]>;
+  readonly namedOwnedSubjectByBaseKey?: ReadonlyMap<string, string>;
 }
 
 export interface ClaimAwarePlannerPort extends PlannerPort {
@@ -2377,10 +2391,37 @@ export function createIbatexasPlanner(
             // customer owns exactly ONE relevant resource → bind it (FIX 2).
             subject = owned[0] as string;
           } else if (owned.length > 1) {
-            // ≥2 owned relevant resources and no unambiguous model match → CLARIFY,
-            // never guess. Drop this owner-scoped proposal (no candidate emitted).
-            ownerScopedAmbiguous = true;
-            continue;
+            // F-19 (BKL-203 on the model route) — before dropping to the ≥2-owned
+            // CLARIFY, honor an EXPLICITLY-NAMED owned order, exactly as the
+            // classify-only route does. The model can only ever emit the DISPLAY
+            // number it read in the text ("933869"), which is never an internal
+            // resource id, so `owned.includes(modelSubject)` above is always false
+            // for a named order and a multi-order customer dead-ended here — the
+            // very dead-end BKL-203 exists to remove, but only ever removed on the
+            // deterministic route (recorded as R7 residual 1).
+            //
+            // The resolution is NOT re-spelled here: `auth.namedOwnedSubjectByBaseKey`
+            // carries the RESULT of the read plane's own `resolveNamedOwnedOrderSubject`
+            // (classify-only-reads.ts), computed by the claim-planner adapter off the
+            // SAME turn ledger + text it hands the classify-only route. So both routes
+            // run ONE matcher (BKL-216's `matchNamedOwnedOrders`) over one input, and
+            // the ambiguity contract is inherited rather than re-implemented: 0 or ≥2
+            // matched owned orders → no entry → the CLARIFY below stands, never a guess.
+            //
+            // IDOR-safe by construction: the map's values are drawn from the
+            // authenticated owner-scoped PRESENT set, so a message naming SOMEONE
+            // ELSE's display number is unrepresentable here. The re-check against
+            // `owned` is defense-in-depth for a future caller that builds the map
+            // from a wider set than this base key's owned ids.
+            const named = auth?.namedOwnedSubjectByBaseKey?.get(baseKey);
+            if (named !== undefined && owned.includes(named)) {
+              subject = named;
+            } else {
+              // ≥2 owned relevant resources and no unambiguous model or NAMED match →
+              // CLARIFY, never guess. Drop this owner-scoped proposal (no candidate).
+              ownerScopedAmbiguous = true;
+              continue;
+            }
           } else {
             // 0 owned → no admissible subject. Keep the model's id; the kernel's
             // owner-scoped `owns` refuses it → honest UNKNOWN/REFUSED, never a leak.

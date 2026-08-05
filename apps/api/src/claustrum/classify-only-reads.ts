@@ -333,16 +333,24 @@ export function classifyOnlyRequiredTypes(
  * so that branch is vacuous by construction, not omitted behavior:
  *
  * PARITY IS NOT EXACT, and is no longer asserted only here. This comment used
- * to claim the mirror was EXACT; measured, it is not, in two places — this path
- * resolves an explicitly-NAMED owned order at ≥2-owned (BKL-203) where the model
- * path dead-ends in its ambiguity CLARIFY, and it derives MENU_DIETARY's subject
- * from the ledger where the model path has no branch and passes the model's
- * string through. Both are fail-safe and both are now PINNED (parity where it
- * holds, characterized where it does not) by
+ * to claim the mirror was EXACT; measured under R7, it was not, in two places —
+ * this path resolved an explicitly-NAMED owned order at ≥2-owned (BKL-203) where
+ * the model path dead-ended in its ambiguity CLARIFY, and it derives
+ * MENU_DIETARY's subject from the ledger where the model path has no branch and
+ * passes the model's string through. Both were fail-safe; both are PINNED
+ * (parity where it holds, characterized where it does not) by
  * `__tests__/r7-cross-path-subject-parity.test.ts`; the measurements and the
  * reason the two homes were NOT merged are recorded in
  * `docs/architecture/design/r7-candidate-assembly.md`. Change either path's
  * disposition and that test tells you what the other one does.
+ *
+ * F-19 CLOSED THE FIRST GAP — in the direction of THIS path, which is unchanged.
+ * The model route now reaches the same named-owned-order subject by consuming the
+ * RESULT of {@link resolveNamedOwnedOrderSubject} (this module's own resolver,
+ * called once per turn by the claim-planner adapter and handed over as
+ * `auth.namedOwnedSubjectByBaseKey`). There is still exactly ONE display-number
+ * heuristic in the codebase; the model route did not grow a second one, and the
+ * 0-or-≥2-match ambiguity contract is shared rather than duplicated.
  *
  *   - actor: the AUTHENTICATED principal (never model/session output — FIX 1).
  *   - subject: resolved ONLY from `auth.ownedByBaseKey` (FIX 2) — exactly ONE
