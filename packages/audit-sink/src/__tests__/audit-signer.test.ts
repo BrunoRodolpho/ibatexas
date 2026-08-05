@@ -2,7 +2,7 @@
 // verifier, key parsing, and the fail-closed boot resolver.
 
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { generateKeyPairSync, createPublicKey, type KeyObject } from "node:crypto"
+import { generateKeyPairSync, type KeyObject } from "node:crypto"
 import {
   auditSignaturePreimage,
   buildAuditRecord,
