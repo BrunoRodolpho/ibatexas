@@ -50,10 +50,11 @@
 import { describe, expect, it } from "vitest";
 import * as personas from "../prompts/personas.js";
 import { PROMPT_CATALOG } from "../prompts/prompt-catalog.js";
-import { IBATEXAS_CAPABILITY_DESCRIPTIONS } from "../../tools/register-ibatexas-tool-packs.js";
-import { toPayloadJsonSchema } from "../language-engine/extraction-schema.js";
-import { AUTHORED_SCHEMAS } from "../language-engine/wire-schemas.js";
-import { READ_TOOL_AUTHORED_SCHEMAS } from "../language-engine/read-tool-schemas.js";
+// The walkers live in a helper module, not here, so F-67's catalog-completeness
+// axis can consume the SAME enumeration instead of growing a second one that
+// drifts. See helpers/prompt-surfaces.ts for the two-shapes hazard and for the
+// precise scope this covers (static surface only — no runtime-composed text).
+import { asText, collectSurfaces } from "./helpers/prompt-surfaces.js";
 
 /** `YYYY-MM-DD` anywhere in the text. */
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
@@ -89,39 +90,6 @@ const ALLOWED_SITE_LITERALS: readonly string[] = [
  * collector has started reading source text instead of what the model gets.
  */
 const INERT_LITERALS: readonly string[] = ["2026-03-20", "2026-07-18"];
-
-/**
- * Personas are authored in BOTH shapes — some end `].join("\n")` and are
- * strings, some stay `string[]`. Normalizing here (rather than assuming one)
- * is what lets the namespace walk cover every export whichever way it is
- * written, including ones added later in the other shape.
- */
-function asText(value: unknown): string | null {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
-    return value.join("\n");
-  }
-  return null;
-}
-
-/** Every (siteId, text) pair the model can actually see. */
-function collectSurfaces(): ReadonlyArray<readonly [string, string]> {
-  const out: Array<readonly [string, string]> = [];
-
-  // Module-namespace walk — catches personas the catalog omits, now and later.
-  for (const [name, value] of Object.entries(personas)) {
-    const text = asText(value);
-    if (text !== null) out.push([`persona:${name}`, text]);
-  }
-  for (const entry of PROMPT_CATALOG) out.push([`catalog:${entry.id}`, entry.source]);
-  for (const [kind, text] of Object.entries(IBATEXAS_CAPABILITY_DESCRIPTIONS)) {
-    out.push([`capability:${kind}`, text]);
-  }
-  for (const schema of [...AUTHORED_SCHEMAS, ...READ_TOOL_AUTHORED_SCHEMAS]) {
-    out.push([`wire:${schema.capability}`, JSON.stringify(toPayloadJsonSchema(schema))]);
-  }
-  return out;
-}
 
 /**
  * `"<site>|<literal>"` for every date found. Deduped by TEXT first, so a
