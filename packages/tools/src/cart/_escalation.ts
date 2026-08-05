@@ -55,15 +55,45 @@
 // (the escalation row references the order, never the person).
 
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import type { OrderFulfillmentStatus } from "@ibatexas/types";
 
 /**
  * The escalation situations these tools can raise. One entry per site that
  * tells the customer an attendant was notified AND can actually reach staff.
+ *
+ * `amend_denied_needs_staff` covers BOTH escalating arms of the shared
+ * `checkRemoveOrUpdateQty` validator (order-action-validator.ts): the
+ * 'preparing'-state denial (:77) and the PONR-expired denial (:79). It is keyed
+ * on the validator's own `escalate` flag rather than on a per-arm situation,
+ * which is what makes it cover both: whichever arm produced the denial, the
+ * publish fires. A per-arm split was considered and rejected — :79 cannot be
+ * reached by any current caller (all three pass only `fulfillmentStatus`, and
+ * `withinPonr` returns true without PONR context), so a dedicated :79 branch
+ * would be unreachable code guarded by an untestable claim. Keying on
+ * `escalate` also means a future caller that DOES supply PONR context is wired
+ * the day it starts denying, with no further change here.
  */
 export type OrderEscalationSituation =
   | "amend_remove_past_ponr"
   | "amend_qty_past_ponr"
+  | "amend_denied_needs_staff"
   | "cancel_past_ponr";
+
+/**
+ * pt-BR labels for the fulfillment states a denied amend can be in. Closed
+ * table over the seven-status universe — the value is a system enum read from
+ * the order projection, never customer text, so it is safe on a staff-bound
+ * string.
+ */
+const FULFILLMENT_LABEL_PT_BR: Record<OrderFulfillmentStatus, string> = {
+  pending: "aguardando confirmação",
+  confirmed: "confirmado",
+  preparing: "em preparo",
+  ready: "pronto",
+  in_delivery: "em entrega",
+  delivered: "entregue",
+  canceled: "cancelado",
+};
 
 /**
  * System-authored pt-BR reason per situation. NEVER interpolate customer- or
@@ -72,6 +102,7 @@ export type OrderEscalationSituation =
 const SITUATION_REASON_PT_BR: Record<OrderEscalationSituation, string> = {
   amend_remove_past_ponr: "Remoção de item solicitada após o prazo de alteração",
   amend_qty_past_ponr: "Alteração de quantidade solicitada após o prazo de alteração",
+  amend_denied_needs_staff: "Alteração de pedido recusada — cliente precisa de atendimento",
   cancel_past_ponr: "Cancelamento solicitado após o prazo de cancelamento",
 };
 
@@ -84,6 +115,11 @@ const SITUATION_REASON_PT_BR: Record<OrderEscalationSituation, string> = {
 const SITUATION_SESSION_PREFIX: Record<OrderEscalationSituation, string> = {
   amend_remove_past_ponr: "order-amend",
   amend_qty_past_ponr: "order-amend",
+  // Deliberately the SAME family as the two PONR sites. This is the volume
+  // control the governor's ruling turns on: an order amended three times while
+  // preparing claims one dedup key and therefore pages staff ONCE, and an order
+  // that hits a state denial AND later a PONR denial still pages once.
+  amend_denied_needs_staff: "order-amend",
   cancel_past_ponr: "order-cancel-ponr",
 };
 
@@ -108,12 +144,21 @@ export function orderEscalationReason(
   situation: OrderEscalationSituation,
   orderId: string,
   displayId?: number,
+  fulfillmentStatus?: OrderFulfillmentStatus,
 ): string {
   const ref =
     typeof displayId === "number" && Number.isFinite(displayId) && displayId > 0
       ? `#${displayId}`
       : orderId;
-  return `${SITUATION_REASON_PT_BR[situation]} — pedido ${ref}`;
+  // The state is what tells staff WHY the change was refused, and it is the
+  // only thing distinguishing the two validator arms on the wire. Looked up
+  // through the closed table so an unknown string can never reach the message.
+  const label =
+    fulfillmentStatus === undefined
+      ? undefined
+      : FULFILLMENT_LABEL_PT_BR[fulfillmentStatus];
+  const suffix = label === undefined ? "" : ` (${label})`;
+  return `${SITUATION_REASON_PT_BR[situation]} — pedido ${ref}${suffix}`;
 }
 
 /**
@@ -128,13 +173,14 @@ export function publishOrderEscalation(args: {
   readonly situation: OrderEscalationSituation;
   readonly orderId: string;
   readonly displayId?: number;
+  readonly fulfillmentStatus?: OrderFulfillmentStatus;
 }): void {
-  const { situation, orderId, displayId } = args;
+  const { situation, orderId, displayId, fulfillmentStatus } = args;
   void (async () => {
     try {
       await publishNatsEvent("support.handoff_requested", {
         sessionId: orderEscalationSessionId(situation, orderId),
-        reason: orderEscalationReason(situation, orderId, displayId),
+        reason: orderEscalationReason(situation, orderId, displayId, fulfillmentStatus),
       });
     } catch (err) {
       console.error(

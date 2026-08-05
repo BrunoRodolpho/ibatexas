@@ -24,6 +24,7 @@ import {
   switchOrderType,
   medusaAdmin,
   medusaAdjudicated,
+  publishOrderEscalation,
 } from "@ibatexas/tools";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import {
@@ -755,7 +756,9 @@ function validateAmendChanges(
   fulfillmentStatus: OrderFulfillmentStatus,
   isPreparing: boolean,
   itemProductTypeMap: Map<string, string | undefined>,
-): { ok: false; reason: string | undefined } | { ok: true; lockedItems: string[] } {
+):
+  | { ok: false; reason: string | undefined; escalate: boolean }
+  | { ok: true; lockedItems: string[] } {
   const lockedItems: string[] = [];
   for (const change of changes) {
     // Check if action is allowed for current fulfillment status
@@ -764,7 +767,12 @@ function validateAmendChanges(
       fulfillmentStatus,
     });
     if (!check.allowed) {
-      return { ok: false, reason: check.reason };
+      // F-48 — `escalate` used to be DROPPED here, which is why the 422 body's
+      // "Um atendente foi notificado." was false on this plane specifically:
+      // the batch route denies before it ever reaches `amendOrder`, so it could
+      // not inherit the tool path's escalation. Carried out to the caller,
+      // which owns the orderId the escalation is keyed by.
+      return { ok: false, reason: check.reason, escalate: check.escalate === true };
     }
 
     // During preparing: food items are locked
@@ -1562,6 +1570,18 @@ export async function orderActionRoutes(
         itemProductTypeMap,
       );
       if (!validation.ok) {
+        // F-48 — the 422 body below is customer-facing pt-BR that (on the two
+        // escalating arms) claims an attendant was notified. Make that true on
+        // this plane too. Same helper / dedup family as the tool path, so a
+        // customer who retries here, or who hits the tool path for the same
+        // order, still produces exactly ONE staff record + ping.
+        if (validation.escalate) {
+          publishOrderEscalation({
+            situation: "amend_denied_needs_staff",
+            orderId: id,
+            fulfillmentStatus,
+          });
+        }
         return reply.code(422).send({
           error: validation.reason,
           code: "ACTION_NOT_ALLOWED",

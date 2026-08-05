@@ -283,6 +283,47 @@ describe("F-48 — a past-PONR amend escalation reaches staff end to end", () =>
     ]);
   });
 
+  // ── The governor's volume control, proven at the SUBSCRIBER ──────────────
+  //
+  // The ruling wires the routine 'preparing'-state denial, whose precondition
+  // is reachable on any order the kitchen has started. The control that keeps
+  // that from paging staff repeatedly is the subscriber's own dedup, not
+  // anything on the producer side — so it is proven here, against the real
+  // subscriber, rather than by counting publishes.
+  it("one order amended THREE times while preparing pages staff exactly ONCE", async () => {
+    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "preparing" });
+
+    for (let i = 0; i < 3; i++) {
+      const r = await amendOrder(
+        { orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE },
+        CTX,
+      );
+      await flushEscalation();
+      // Each attempt really did make the claim to the customer.
+      expect(r.message).toContain("Um atendente foi notificado");
+    }
+
+    // Three publishes rode NATS…
+    expect(published.filter((p) => p.subject === "support.handoff_requested")).toHaveLength(3);
+    // …and the subscriber collapsed them to ONE staff ping + ONE record.
+    expect(staffMessages()).toHaveLength(1);
+    expect(recordedHandoffs).toHaveLength(1);
+    expect(staffMessages()[0]).toContain("em preparo");
+  });
+
+  it("a state denial and a later past-PONR denial on the same order still page ONCE", async () => {
+    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "preparing" });
+    await amendOrder({ orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE }, CTX);
+    await flushEscalation();
+
+    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "pending" });
+    await amendOrder({ orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE }, CTX);
+    await flushEscalation();
+
+    expect(published.filter((p) => p.subject === "support.handoff_requested")).toHaveLength(2);
+    expect(staffMessages()).toHaveLength(1);
+  });
+
   // F-43 lesson: `reason` is interpolated VERBATIM into the staff message and
   // nothing sanitizes it on this non-kernel path. Prove the delivered staff
   // message carries no customer-controlled text and no customer identifier.

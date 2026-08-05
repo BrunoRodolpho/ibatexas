@@ -12,16 +12,19 @@
 //     (+ order.service.ts:233 cancel past PONR → cancel-order.ts, pinned in
 //      cancel-order.test.ts)
 //
-//   STILL-FALSE (residual, OWNER decision pending) — the copy claims a
-//   notification and NOTHING is published:
 //     • order-action-validator.ts:77  the routine 'preparing'-state denial
-//     • order-action-validator.ts:79  PONR-expired — additionally UNREACHABLE
-//       from every amend caller (measured below)
+//     • order-action-validator.ts:79  PONR-expired
 //
-// Changing customer-facing pt-BR copy is OWNER territory, so this slice pins
-// the residual rather than editing the strings. If a later change wires :77,
-// the residual test below goes RED and must be deleted deliberately — that is
-// the point of naming a test after a FALSE claim.
+// The last two are the GOVERNOR-RULED additions. They are pre-kernel early
+// returns inside `amendOrder`'s gate — no envelope is built past them — so the
+// publish lives in the tools layer alongside the past-PONR sites, and is keyed
+// on the validator's own `escalate` flag so that BOTH arms are covered by one
+// wire. Because every arm is now wired, no pt-BR copy changes were needed and
+// OWNER territory stays untouched.
+//
+// :79 remains UNREACHABLE from every current caller (measured below); that is
+// exactly why the wiring keys on `escalate` rather than branching per arm — a
+// dedicated :79 branch would be unreachable code behind an untestable claim.
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { canPerformAction, type ActionContext, type OrderFulfillmentStatus } from "@ibatexas/types"
@@ -113,47 +116,31 @@ beforeEach(() => {
 
 // ── RESIDUAL: the 'preparing' denial (validator :77) ─────────────────────────
 
-describe("F-48 residual — the 'preparing'-state denial claims a notification that never happens", () => {
-  // The during-arm and the absence-arm live in the SAME test on purpose: an
-  // "X is not published" assertion is vacuous unless the same driver is shown
-  // to publish X under the treatment it is being contrasted with.
-  it("remove during 'preparing': the customer is told an attendant was notified, and NOTHING is published (while the past-PONR arm DOES publish)", async () => {
-    // ── during-arm: the wired path publishes, so the spy can observe one ────
-    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "pending" })
-    mockCancelItem.mockResolvedValue({
-      success: false,
-      needsEscalation: true,
-      message: `Prazo para remover "${ITEM_TITLE}" já passou. ${CLAIM}.`,
-    })
-    const wired = await amendOrder(
-      { orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE },
-      CTX,
-    )
-    expect(wired.message).toContain(CLAIM)
-    expect(handoffSubjects()).toHaveLength(1) // ← the observable IS reachable here
-
-    // ── absence-arm: same driver, 'preparing' state, no publish ────────────
-    mockPublishNatsEvent.mockClear()
-    mockCancelItem.mockClear()
+describe("F-48 — the escalating validator denials reach staff (both arms)", () => {
+  it("remove during 'preparing': the claim is made AND an escalation is published", async () => {
     mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "preparing" })
 
-    const residual = await amendOrder(
+    const result = await amendOrder(
       { orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE },
       CTX,
     )
 
-    expect(residual.success).toBe(false)
-    expect(residual.needsEscalation).toBe(true)
-    // The claim IS made to the customer…
-    expect(residual.message).toBe(VALIDATOR_PREPARING_COPY)
-    expect(residual.message).toContain(CLAIM)
-    // …and no attendant is reached. STILL FALSE — see the file header.
-    expect(handoffSubjects()).toHaveLength(0)
-    // The denial short-circuits before the handler, so cancelItem never runs.
+    expect(result.success).toBe(false)
+    expect(result.needsEscalation).toBe(true)
+    expect(result.message).toBe(VALIDATOR_PREPARING_COPY)
+    expect(result.message).toContain(CLAIM)
+    // …and the claim is now TRUE.
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith("support.handoff_requested", {
+      sessionId: "order-amend:order_01",
+      reason:
+        "Alteração de pedido recusada — cliente precisa de atendimento — pedido order_01 (em preparo)",
+    })
+    // The denial short-circuits before the handler, so cancelItem never runs —
+    // which is exactly why this publish has to live at the gate, not in it.
     expect(mockCancelItem).not.toHaveBeenCalled()
   })
 
-  it("update_qty during 'preparing': same false claim, same silence", async () => {
+  it("update_qty during 'preparing': same denial, same escalation", async () => {
     mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "preparing" })
 
     const result = await amendOrder(
@@ -163,8 +150,83 @@ describe("F-48 residual — the 'preparing'-state denial claims a notification t
 
     expect(result.message).toBe(VALIDATOR_PREPARING_COPY)
     expect(result.needsEscalation).toBe(true)
-    expect(handoffSubjects()).toHaveLength(0)
+    expect(handoffSubjects()).toHaveLength(1)
     expect(mockMedusaAdjudicated).not.toHaveBeenCalled()
+  })
+
+  // The wiring keys on `escalate`, NOT on a per-arm situation — that is what
+  // makes it cover :79 as well as :77. This pins the discrimination: a denial
+  // WITHOUT escalate must stay silent, or "wired" would just mean "publishes on
+  // every refusal", which would page staff for ordinary cancelled orders.
+  it("a NON-escalating denial publishes nothing (the escalate flag is the gate)", async () => {
+    // 'canceled' → checkRemoveOrUpdateQty's first arm: deny(…) with NO escalate.
+    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "canceled" })
+
+    const denied = await amendOrder(
+      { orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE },
+      CTX,
+    )
+
+    expect(denied.success).toBe(false)
+    expect(denied.message).toBe("Pedido cancelado.")
+    expect(denied.needsEscalation).toBeUndefined()
+    expect(handoffSubjects()).toHaveLength(0)
+
+    // Control in the SAME test: the identical driver DOES publish on an
+    // escalating denial, so the absence above is a real discrimination and not
+    // an unreachable observable.
+    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "preparing" })
+    await amendOrder({ orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE }, CTX)
+    expect(handoffSubjects()).toHaveLength(1)
+  })
+
+  // The volume control the ruling turns on. `handoff:{sessionId}` is claimed
+  // for 7 days and the sessionId is order-keyed, so repeat denials on ONE order
+  // collapse. Pinned here at the producer (one key), and end-to-end at the
+  // subscriber in apps/api's f48-amend-escalation-reaches-staff test.
+  it("three denials on the SAME order publish ONE dedup key; a different order gets its own", async () => {
+    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "preparing" })
+
+    for (let i = 0; i < 3; i++) {
+      await amendOrder({ orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE }, CTX)
+    }
+    await amendOrder({ orderId: "order_02", action: "remove", itemTitle: ITEM_TITLE }, CTX)
+
+    const sessionIds = mockPublishNatsEvent.mock.calls
+      .filter((c: unknown[]) => c[0] === "support.handoff_requested")
+      .map((c: unknown[]) => (c[1] as { sessionId: string }).sessionId)
+
+    expect(sessionIds).toEqual([
+      "order-amend:order_01",
+      "order-amend:order_01",
+      "order-amend:order_01",
+      "order-amend:order_02",
+    ])
+    // Three publishes ride NATS, but they carry ONE key — so the subscriber
+    // records one escalation and pages staff once for order_01.
+    expect(new Set(sessionIds.slice(0, 3)).size).toBe(1)
+  })
+
+  // The escalating denial shares its dedup key with the past-PONR sites, so an
+  // order that hits a state denial and later a PONR denial pages staff once.
+  it("shares the dedup family with the past-PONR sites (one key per order, whatever denied)", async () => {
+    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "preparing" })
+    await amendOrder({ orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE }, CTX)
+
+    mockOrderQueryGetById.mockResolvedValue({ fulfillmentStatus: "pending" })
+    mockCancelItem.mockResolvedValue({
+      success: false,
+      needsEscalation: true,
+      message: `Prazo para remover "${ITEM_TITLE}" já passou. ${CLAIM}.`,
+    })
+    await amendOrder({ orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE }, CTX)
+
+    const sessionIds = mockPublishNatsEvent.mock.calls
+      .filter((c: unknown[]) => c[0] === "support.handoff_requested")
+      .map((c: unknown[]) => (c[1] as { sessionId: string }).sessionId)
+
+    expect(sessionIds).toHaveLength(2)
+    expect(new Set(sessionIds).size).toBe(1)
   })
 })
 
@@ -208,14 +270,14 @@ describe("F-48 measurement — the validator's PONR-expired arm is UNREACHABLE f
     expect(reasons).toContain(VALIDATOR_PREPARING_COPY)
   })
 
-  // The recommendation, pinned. For the SAME `preparing` state and the SAME
-  // PONR-expiry condition, this validator's sibling arms tell the customer the
-  // truth — "Entre em contato com o restaurante." — and only the
-  // remove/update_qty arms claim a notification. That makes :77/:79 look like a
-  // copy defect rather than a policy decision, and it means the honest wording
-  // an OWNER would need already exists in the same file. If a sibling's copy
-  // ever changes, this reds and the recommendation must be re-derived.
-  it("sibling arms for the SAME states already use honest copy (the precedent for fixing :77/:79)", () => {
+  // Scope boundary, pinned. For the SAME `preparing` state and the SAME
+  // PONR-expiry condition, this validator's sibling arms make a DIFFERENT
+  // promise — "Entre em contato com o restaurante." — so they need no staff
+  // wiring: they never claim anyone was notified. Only the remove/update_qty
+  // arms claim a notification, and those are the two this slice wires. If a
+  // sibling's copy ever drifts toward claiming a notification, this reds and
+  // that arm has to be wired too.
+  it("sibling arms for the SAME states promise contact-us, not notification (so they need no wiring)", () => {
     const cancelPreparing = canPerformAction("cancel_order", { fulfillmentStatus: "preparing" })
     const addressPreparing = canPerformAction("change_delivery_address", {
       fulfillmentStatus: "preparing",

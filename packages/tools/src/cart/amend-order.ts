@@ -717,6 +717,22 @@ export async function amendOrder(
       fulfillmentStatus: fulfillmentStatus as OrderFulfillmentStatus,
     });
     if (!check.allowed) {
+      // F-48 (governor ruling) — BOTH escalating arms of the shared
+      // remove/update_qty validator tell the customer "Um atendente foi
+      // notificado": the routine 'preparing' denial (:77) and the PONR-expired
+      // denial (:79). This is a PRE-KERNEL early return — no envelope is built
+      // past this point — so the publish belongs here in the tools layer,
+      // exactly like the two past-PONR sites, and carries the same
+      // system-authored-reason posture. Keyed on the validator's own `escalate`
+      // flag, so whichever arm denied is the one that reaches staff.
+      if (check.escalate) {
+        publishOrderEscalation({
+          situation: "amend_denied_needs_staff",
+          orderId: parsed.orderId,
+          displayId: order.display_id,
+          fulfillmentStatus: fulfillmentStatus as OrderFulfillmentStatus,
+        });
+      }
       return {
         success: false,
         message: check.reason,
