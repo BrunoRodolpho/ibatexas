@@ -20,11 +20,13 @@
  *      interrogative/imperative span of the request to a claim, `UNKNOWN`,
  *      `ESCALATE`, or `CLARIFY`. An UNMAPPED span → `CLARIFY` (SDD §J.8: "no
  *      silent drop"), never dropped.
- *   3. SAFETY routing (§O#9/Inv 8 — closed taxonomy): `routeSafety` is
- *      closed-by-construction — an UNRECOGNIZED health/safety marker defaults
- *      to `ESCALATE` (the generic safe terminal). `harassment` /
- *      `medical-emergency` have NO typed terminal yet → `ESCALATE`. It NEVER
- *      passes an unrecognized safety framing through as ordinary text.
+ *   3. SAFETY routing (§O#9/Inv 8): `routeSafety` sends ANY flagged
+ *      health/safety marker to `ESCALATE` (the generic safe terminal) —
+ *      unconditional on what the marker says, which is strictly stronger than
+ *      §O#9's "default-to-safe on an UNRECOGNIZED marker". `harassment` /
+ *      `medical-emergency` have NO typed non-escalate terminal, and neither
+ *      does anything else. It NEVER passes a safety framing through as
+ *      ordinary text.
  *
  * SCOPE (SDD §Q scope guard): this proves the MACHINERY + the two deterministic
  * walls + §O#9 with a REPRESENTATIVE typed claim-type set. The full 37-row
@@ -1663,27 +1665,33 @@ export function hasUnmappedSpan(completeness: readonly SpanCompleteness[]): bool
   return completeness.some((s) => s.disposition === "CLARIFY");
 }
 
-/**
- * The CLOSED safety-marker taxonomy (SDD §O#9; §O#8; Inv 8). The set of
- * health/safety markers that have a RECOGNIZED, modeled routing. Closed by
- * construction — anything NOT in this set is, by definition, unrecognized and
- * routes to the generic safe terminal (`ESCALATE`). REPRESENTATIVE (SDD §Q
- * scope guard); the full adversarial marker taxonomy is the deferred follow-on.
- *
- * NOTE (SDD §O#9): `harassment` and `medical-emergency` have NO typed terminal
- * yet, so they are DELIBERATELY ABSENT from this recognized set — they fall
- * through to the `ESCALATE` default, which is exactly the spec's instruction
- * ("route to ESCALATE"). A recognized NON-safety request (no marker) is not
- * over-escalated.
- */
-const RECOGNIZED_SAFETY_MARKERS: ReadonlySet<string> = new Set<string>([
-  // Recognized, modeled safety markers with a known conservative routing. Kept
-  // representative; each still routes to ESCALATE here (no non-escalate typed
-  // terminal exists yet), but membership documents that the taxonomy KNOWS them
-  // — the point of §O#9 is that an UNKNOWN marker is not treated as ordinary.
-  "allergen-severe-reaction",
-  "foodborne-illness",
-]);
+// ── RECOGNIZED_SAFETY_MARKERS: DELETED (2026-08-05) ──────────────────────
+//
+// It was a `ReadonlySet<string>` holding `"allergen-severe-reaction"` and
+// `"foodborne-illness"`, consulted by `routeSafety` below. It was INERT: both
+// of its non-empty exits returned the identical `"ESCALATE"`, so membership
+// changed nothing, and neither string appeared anywhere else in apps/ or
+// packages/ — no producer ever emitted one. The live marker producers are
+// `detectMedicalEmergencyMarkers` (required-claim-decomposer.ts, emits
+// `"medical-emergency"`) and the model's own flagged markers (unbounded
+// strings); neither can put a member of that set on the wire.
+//
+// It was deleted rather than kept because it READ as a live closed taxonomy
+// while being dead: the only thing a future recognized-marker branch can do
+// is let something NOT escalate, so an inert allowlist sitting in the safety
+// router is a trap that offers zero test resistance to exactly the change
+// that would weaken §O#9. Deleting it costs no guarantee — the routing below
+// is UNCONDITIONAL on marker identity, which is strictly STRONGER than
+// "default-to-safe on an unrecognized marker", and that strength is now
+// pinned by a test (claim-aware-planner.test.ts, the every-marker-escalates
+// case) instead of merely being true by accident.
+//
+// To reintroduce a differentiated taxonomy: author the typed non-escalate
+// terminal FIRST, then the recognized set, and pin BOTH arms — a recognized
+// marker reaching the new terminal AND an unrecognized one still reaching
+// ESCALATE. A set with only one observable arm is the defect this deletion
+// removed. The SDD §O#9 fact the old comment carried is preserved on
+// `routeSafety` below.
 
 /** A claim a safety request may carry past routing (when no marker fires). */
 export interface SafetyRoutingInput {
@@ -1695,20 +1703,28 @@ export interface SafetyRoutingInput {
 }
 
 /**
- * The §O#9 closed-taxonomy safety router (SDD §O#9 · Inv 8; §8). Closed by
- * construction: if ANY flagged marker is unrecognized (not in the closed
- * {@link RECOGNIZED_SAFETY_MARKERS}), or any recognized marker fired, the turn
- * routes to `ESCALATE` — the generic safe terminal. It NEVER passes an
- * unrecognized health/safety framing through as ordinary text (the §O#9
- * NEW_HOLE: "default-to-safe on any unrecognized health/safety marker").
+ * The §O#9 safety router (SDD §O#9 · Inv 8; §8). ANY flagged marker routes the
+ * turn to `ESCALATE` — the generic safe terminal. It NEVER passes a
+ * health/safety framing through as ordinary text (the §O#9 NEW_HOLE:
+ * "default-to-safe on any unrecognized health/safety marker").
  *
- *   - markers `[]`                      → `undefined` (NOT over-escalated — an
- *                                          ordinary request proceeds normally).
- *   - any recognized OR unrecognized marker present → `"ESCALATE"`.
+ *   - markers `[]`                → `undefined` (NOT over-escalated — an
+ *                                    ordinary request proceeds normally).
+ *   - any marker present, whatever it says → `"ESCALATE"`.
  *
- * Because the taxonomy is closed, an attacker-crafted novel marker string is
- * unrecognized → `ESCALATE` by default — there is no pass-through escape. Pure;
- * returns the forced turn terminal (or `undefined` when nothing is flagged).
+ * UNCONDITIONAL ON MARKER IDENTITY, deliberately. This is what the retired
+ * `RECOGNIZED_SAFETY_MARKERS` set (see the note above) failed to make true of
+ * itself: recognition was consulted and then ignored, both branches returning
+ * the same terminal. Unconditional routing is STRICTLY STRONGER than the §O#9
+ * requirement — an attacker-crafted novel marker string escalates, and so does
+ * every marker anyone might later call "recognized", so there is no
+ * pass-through escape by ANY spelling. SDD §O#9's `harassment` /
+ * `medical-emergency` have no typed non-escalate terminal, and neither does
+ * anything else: until one exists, differentiating markers here can only
+ * WEAKEN the router.
+ *
+ * Pure; returns the forced turn terminal (or `undefined` when nothing is
+ * flagged).
  */
 export function routeSafety(
   input: SafetyRoutingInput,
@@ -1717,17 +1733,5 @@ export function routeSafety(
     // Ordinary, non-safety request — no marker flagged → not over-escalated.
     return undefined;
   }
-  // Any flagged marker — recognized or not — routes to the safe terminal. The
-  // closed-by-construction default: an UNRECOGNIZED marker is ESCALATE, never
-  // pass-through. (Recognized markers also ESCALATE today — there is no
-  // non-escalate typed terminal yet; SDD §O#9 harassment/medical-emergency.)
-  for (const marker of input.markers) {
-    if (!RECOGNIZED_SAFETY_MARKERS.has(marker)) {
-      // The unrecognized-marker default — the §O#9 NEW_HOLE close.
-      return "ESCALATE";
-    }
-  }
-  // All flagged markers are recognized safety markers — still ESCALATE (the
-  // conservative safe terminal; no typed non-escalate terminal exists yet).
   return "ESCALATE";
 }
