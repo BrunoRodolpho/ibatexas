@@ -106,7 +106,7 @@ measured cost of that blind spot. Rejected.
 | M0 | Q1: CI Redis service + loud-skip gate — **DONE** | 1 |
 | M1 | The 8 script-shape contract suites — **DONE (8/8)** | 2–3 |
 | M2 | Class (i): the 7 eval-emulating doubles retired onto shape suites + unit observation — **DONE (7/7)** | 2 |
-| M3 | Class (i-b) bound cases + the two F-22-deferred migrations (after the F-22 ruling lands) | 1–2 |
+| M3 | Class (i-b) bound cases + the two F-22-deferred migrations — **DONE** | 1 |
 | M4 | The 12 `multi()` redisFake files, per-file disposition | 2–3 |
 
 ### M1 status — all 8 shapes covered
@@ -254,6 +254,85 @@ real-Redis suite in `packages/journeys`, and a suite that can skip in a
 directory the gate never scans is the M0 hole reopened one package over. The
 gate is 21 suites / ≥156 executing cases (146 container-backed) across two
 packages.
+
+### M3 status — the class (i-b) rows, and the container that proved nothing
+
+**The enumerated class was already empty; the open row was the one the census
+had filed somewhere else.** Items 8–13 were verified individually rather than
+read off the table. Items 11 and 13 are genuinely discharged (Phase 5), and the
+two F-22-deferred migrations they correspond to needed nothing. Items 8, 9, 10
+and 12 still reach the release site and still have that release refused — the
+mechanism is intact — but that is now the DESIGNED state, not a hole: the
+adapter refuses `eval` by W4 RULE 3, and the invariant lives in M1's CAD shape
+suite plus M2's `expectResumingLockReleased()` observation. Migrating them would
+add three containers for zero new signal (Q2). Measured, not assumed: a
+temporary probe in `releaseDeferResumingLock`'s catch counted 1 / 1 / 2 refused
+releases across those three files.
+
+| Row | Verified state | Disposition | Where the invariant lives |
+|---|---|---|---|
+| 8 `defer-roundtrip` | reaches Lua, refused | keep — already DECLARES the bound | CAD suite + M2 observation; the bound is its own case |
+| 9 `defer-roundtrip-extensions` | reaches Lua ×1, refused | keep as-is | CAD suite + M2 observation |
+| 10 `defer-resolver-resumedkey-redis-error` | reaches Lua ×1, refused | keep as-is | CAD suite + M2 observation |
+| 12 `boot-window-race` | reaches Lua ×2, refused | keep as-is | CAD suite + M2 observation |
+| 11 `defer-resume-integrity` | on the container, enrolled at 3 | already done (Phase 5) | its own cases |
+| 13 `park-nx-hoist` | SUT never reaches Redis | already done (Phase 5) | `park-nx-hash` + `park-nx-release-failure-mode` |
+| **F-37** `sweeper-resolver-race` | **enrolled, container real, Lua DEAD** | **fixed** | its own cases, now 6 |
+
+**F-37, and what it was actually hiding.** The suite's `@ibatexas/tools` shim
+forwarded eight commands to the container and omitted `eval`, so every
+`defer:resuming:*` compare-and-delete threw and `releaseDeferResumingLock`
+swallowed it. Proved before fixing: after a sweeper-won sweep the mutex was
+still present, `ttl=60`. Fixed by forwarding `eval` verbatim to the container
+the file already had — never an emulation, and the in-memory adapter still
+refuses `eval`.
+
+That fix then surfaced two defects the dead release had been masking, both of
+which are worse than F-37 itself:
+
+- **F-39 — a dead spy.** `mockAuditSinkEmit` was declared, cleared and asserted
+  on three times, but no `vi.mock` ever connected it, so `auditEmits` was
+  structurally always 0. Every `toBe(0)` was vacuous and the
+  `park_missing_after_lock` arm's `toBe(1)` was unsatisfiable — green only
+  because that arm was unreachable while the release was dead. Now wired to
+  `getAuditSink().emit`.
+- **F-40 — a live double-mutation window, ~0.8%.** With the release working, the
+  100-iteration case immediately caught BOTH surfaces firing. The resolver has
+  re-checked parkKey after its own SETNX since E2 Fix-b; **the sweeper never
+  did**. In the gap between the sweeper's E3 blob GET and its SETNX, the
+  resolver can complete a whole resume and release the shared mutex, after
+  which the sweeper acquires it and publishes `intent.defer.timeout` for an
+  envelope already resumed. The file's headline "hard zero" was an ARTIFACT of
+  the broken release: while the mutex only ever ended by TTL, the window could
+  not open. Measured 4 violations / 500 iterations before, 0 / 500 after the
+  sweeper-side re-check landed in `jobs/defer-timeout-sweeper.ts`, and pinned
+  deterministically by that file's F-40 case rather than left to a 1% rate.
+
+**Gate strengthening — enrolment proves a file ran, not that its Lua ran.**
+Two small changes, both general, neither a per-file mechanism:
+
+1. `scripts/check-real-redis-suites.mjs` now fails on a **non-zero vitest exit**.
+   It previously read only `assertionResults`, so a suite-level failure — a
+   throwing `beforeAll`/`afterAll`, an unhandled rejection — left every case
+   reading "passed" and the gate certified the run. `run.status` was already
+   captured and used only inside an error string.
+2. `setupRedisTestContainer({ expectLuaCalls: true })` counts EVAL/EVALSHA
+   through the harness client and **fails teardown when zero scripts reached the
+   container**. Deliberately a ZERO alarm, not a per-suite count: 21
+   hand-maintained expected-call figures would each be a new way to red
+   spuriously, to catch a failure mode that is always "the Lua stopped entirely".
+   Like the completeness alarm, it can only ADD a failure, never satisfy a
+   requirement. The six M1 shape suites do not need it — they assert their Lua's
+   effects directly and red on their own; it is for suites where the Lua is a
+   side effect of the path under test, which is exactly where it dies unnoticed.
+
+Measured together, not assumed: with `eval` removed from the shim AND the two
+F-37 cases neutered to trivial passes, vitest reports **6 passed / 0 failed**
+and still exits 1 on the alarm. That state — every case green, Lua dead — is
+what the pre-M3 gate certified, and it is what the two changes now catch.
+
+The roll call is **21 suites / ≥159 executing cases (149 container-backed)**;
+`sweeper-resolver-race` goes 3 → 6.
 
 Estimated total: **8–11 slices** at the program's measured per-slice pace.
 F-21's competing-clients regression tests do not wait on any of this — they

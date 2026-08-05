@@ -342,6 +342,51 @@ async function processParkedCandidate(
     return false;
   }
 
+  // audit-2026-05-24 E2 (Fix-b), SWEEPER SIDE — added 2026-08-05 as F-40.
+  //
+  // The resolver has re-checked parkKey after ITS SETNX since Fix-b; the
+  // sweeper never did, and the asymmetry is exploitable in exactly one
+  // window. The E3 guard above (`raw === null`) closes the gap between our
+  // SCAN/TTL pass and our blob GET. It does NOT close the gap between that
+  // GET and the SETNX just above: in that interval the resolver can run its
+  // whole resume — dispatch, DEL parkKey, and release the shared
+  // `defer:resuming:*` mutex — after which our SETNX succeeds against a
+  // just-freed mutex and we publish `intent.defer.timeout` for an envelope
+  // that has already been resumed. Two destructive mutations for one parked
+  // envelope, which is the P0-2 class the mutex was introduced to close.
+  //
+  // Measured at ~0.8% per iteration (4 violations / 500) by
+  // `__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts`, and pinned
+  // deterministically by that file's F-40 case. The window was invisible
+  // until F-37 was fixed: while the test's Redis shim omitted `eval`, every
+  // `releaseDeferResumingLock` threw and was swallowed, the mutex only ever
+  // ended by TTL, and our SETNX could never succeed inside an iteration.
+  //
+  // parkKey is the ground-truth ownership token, exactly as on the resolver
+  // side: if it is gone once we hold the mutex, the resolver won — stand
+  // down and let it own the outcome. A Redis error here is treated as
+  // "still parked", which is today's behaviour, so this only ever fires on
+  // a definite absence.
+  //
+  // Deliberately GET and not EXISTS, even though EXISTS is the cheaper and
+  // more obvious call. This function already GETs the same key at the E3
+  // guard above, so GET adds no new command to the client surface a caller
+  // has to satisfy — whereas EXISTS would, and a test double that omitted it
+  // would take the synchronous `redis.exists is not a function` straight
+  // past this `.catch()` (a promise catch does not see a synchronous
+  // throw). That is F-37's own mechanism, and the first draft of this fix
+  // reproduced it: the sweeper silently stopped publishing at all.
+  const stillParked = await redis.get(key).catch(() => "");
+  if (stillParked === null) {
+    effectiveLogger?.debug(
+      { sessionId, intentHash, signal, ttl },
+      "sweeper: parkKey vanished between the blob GET and the resuming SETNX — resolver won the race; suppressing publish (E2 Fix-b, sweeper side)",
+    );
+    await redis.del(recoveryKey).catch(() => {});
+    await releaseDeferResumingLock(resumingMutexKey, mutex.lockValue);
+    return false;
+  }
+
   // Publish the timeout. Subscribers (e.g. notification fan-out)
   // consume `intent.defer.timeout` to drive user-facing follow-ups.
   const payload: DeferTimeoutEventPayload = {

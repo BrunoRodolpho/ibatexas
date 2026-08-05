@@ -73,6 +73,10 @@ const mockAdjudicate = vi.hoisted(() =>
 // the getRedisClient mock below.
 let runtimeHarness: RedisTestHarness | null = null
 
+// F-40 seam — see the `get` shim below. Installed by exactly one case and
+// cleared in `beforeEach`, so every other case runs an unhooked shim.
+let afterParkGetHook: ((key: string) => Promise<void>) | null = null
+
 function requireRuntimeRedis(): RedisTestHarness["client"] {
   if (!runtimeHarness) {
     throw new Error(
@@ -108,7 +112,14 @@ vi.mock("@ibatexas/tools", () => ({
           : ((await redis.set(key, value)) as string | null)
       },
       async get(key: string): Promise<string | null> {
-        return (await redis.get(key)) as string | null
+        const value = (await redis.get(key)) as string | null
+        // F-40 seam. Lets ONE deterministic case interleave a resolver win
+        // into the exact window between the sweeper's E3 blob GET and its
+        // `defer:resuming:*` SETNX. Null for every other case, so nothing
+        // else in this file changes behaviour. See the F-40 test below for
+        // why a hook beats leaning on the 100-iteration case's ~1% rate.
+        if (afterParkGetHook) await afterParkGetHook(key)
+        return value
       },
       async del(key: string): Promise<number> {
         return (await redis.del(key)) as number
@@ -125,6 +136,29 @@ vi.mock("@ibatexas/tools", () => ({
       async ttl(key: string): Promise<number> {
         return (await redis.ttl(key)) as number
       },
+      // F-37 (M3). This shim used to omit `eval`, and that single omission
+      // made the file a class-(i-b) hole WEARING A CONTAINER: both surfaces
+      // release their `defer:resuming:*` mutex through
+      // `releaseDeferResumingLock`, whose Lua compare-and-delete died on
+      // `redis.eval is not a function` and was swallowed by that helper's
+      // documented best-effort catch (`lib/defer-resuming-lock.ts:128`). The
+      // races below still raced — SETNX went to the real server — but the
+      // RELEASE half never executed, so the mutex only ever ended by TTL and
+      // this suite's roll-call enrolment certified a file that ran, not a Lua
+      // path that did. Measured before the fix: after a sweeper-won sweep the
+      // mutex was still present with ttl=60.
+      //
+      // The fix is a verbatim FORWARD, never an emulation — the script text,
+      // keys and arguments go to the same container every other command here
+      // goes to, and Redis executes it. Nothing about W4 RULE 3 is bent: the
+      // in-memory adapter still refuses `eval`, and this is not the in-memory
+      // adapter.
+      async eval(
+        script: string,
+        options?: { keys?: string[]; arguments?: string[] },
+      ): Promise<unknown> {
+        return await redis.eval(script, options)
+      },
       scanIterator(opts: { MATCH?: string; COUNT?: number }) {
         return redis.scanIterator(opts) as AsyncIterable<string | string[]>
       },
@@ -132,6 +166,32 @@ vi.mock("@ibatexas/tools", () => ({
   }),
   rk: (k: string) => `t6-race:${k}`,
 }))
+
+// F-39 (M3). `mockAuditSinkEmit` above was a DEAD SPY: it was declared,
+// cleared in `beforeEach`, and asserted on in three places — but no
+// `vi.mock` ever connected it to anything, so `auditEmits` was structurally
+// always 0. That made `expect(auditEmits).toBe(0)` vacuous everywhere it
+// appeared, and made the `park_missing_after_lock` arm's
+// `expect(auditEmits).toBe(1)` unsatisfiable. It stayed green only because
+// that arm was UNREACHABLE while the release EVAL was dead (F-37): the
+// sweeper never freed the mutex inside an iteration, so the resolver could
+// only ever come back `duplicate_suppressed`. Fixing F-37 made the branch
+// reachable and the dead spy fell out immediately.
+//
+// Wired here to the real seam the resolver uses (`getAuditSink().emit`),
+// with the rest of the module passed through — `src/__tests__/setup.ts`
+// imports `__setAuditSinkDependencies` from it to bootstrap the no-op sink
+// every apps/api test file relies on.
+vi.mock("@ibatexas/audit-sink", async () => {
+  const real =
+    await vi.importActual<typeof import("@ibatexas/audit-sink")>(
+      "@ibatexas/audit-sink",
+    )
+  return {
+    ...real,
+    getAuditSink: () => ({ emit: mockAuditSinkEmit }),
+  }
+})
 
 vi.mock("@adjudicate/core/kernel", async () => {
   const real = await vi.importActual<typeof import("@adjudicate/core/kernel")>(
@@ -231,7 +291,13 @@ async function flushRedis(): Promise<void> {
 // ── Real-Redis harness lifecycle ──────────────────────────────────────────
 
 beforeAll(async () => {
-  runtimeHarness = await setupRedisTestContainer()
+  // `expectLuaCalls` — F-37 (M3). This file's release path is Lua, but the Lua
+  // is a SIDE EFFECT of the race under test rather than the thing the
+  // assertions read, which is exactly how it managed to be dead for as long as
+  // it was. The declaration makes teardown fail if zero scripts reach the
+  // container, so the file cannot go back to being enrolled-but-Lua-less
+  // without saying so.
+  runtimeHarness = await setupRedisTestContainer({ expectLuaCalls: true })
 }, 120_000)
 
 afterAll(async () => {
@@ -245,6 +311,7 @@ beforeEach(async () => {
   mockAuditSinkEmit.mockClear()
   mockAdjudicate.mockClear()
   mockAdjudicate.mockReturnValue({ kind: "EXECUTE" as const })
+  afterParkGetHook = null
   await flushRedis()
 })
 
@@ -574,6 +641,165 @@ describe.skipIf(!RUN_REAL_REDIS)(
       void sweeperWon
       void resolverWon
     }, 240_000)
+
+    // ── F-37 (M3) — the two cases that make this file's Lua path load-bearing ──
+    //
+    // Everything else in this file races SETNX. These two are the only cases
+    // that require the RELEASE half — the `defer:resuming:*` Lua compare-and-
+    // delete — to actually execute. Before M3 the shim above omitted `eval`,
+    // so the release threw, `releaseDeferResumingLock` swallowed it, and the
+    // mutex ended only by TTL while all three enrolled cases stayed green.
+    // Delete the `eval` forward from the shim and BOTH of these red.
+    //
+    // Division of labour with M1's shape suite (ruling Q2): the CAD's SHAPE
+    // invariant — that the script never releases a foreign owner, over all 11
+    // production sites — lives in `lua-shape-cad-contract.test.ts`. What lives
+    // HERE is the site half: that the sweeper's own release path really issues
+    // it against a real server inside this race harness.
+
+    it("F-37 — a sweeper-won sweep RELEASES its defer:resuming mutex (not left to TTL)", async () => {
+      const sessionId = "sess_f37_release"
+      const signal = "payment.confirmed"
+      const { resumingKey } = await seedParkedEnvelope({
+        sessionId,
+        signal,
+        nonce: "f37-release",
+      })
+      const { sweepDeferTimeouts } = await import(
+        "../../jobs/defer-timeout-sweeper.js"
+      )
+      mockPublishNatsEvent.mockClear()
+
+      const published = await sweepDeferTimeouts(makeLogger())
+      // Control: the sweeper really did win and run its release path. Without
+      // this the assertion below could be satisfied by a sweep that did
+      // nothing at all (the mutex would be absent because it was never taken).
+      expect(
+        published,
+        "sweeper did not publish — it never acquired the mutex, so the release assertion below would be vacuous",
+      ).toBe(1)
+
+      const exists = await requireRuntimeRedis().exists(resumingKey)
+      const ttl = await requireRuntimeRedis().ttl(resumingKey)
+      expect(
+        exists,
+        `defer:resuming mutex survived a sweeper-won release (ttl=${ttl}). ` +
+          `The Lua compare-and-delete did not execute — check that the ` +
+          `@ibatexas/tools shim in this file still forwards \`eval\` to the ` +
+          `container (F-37).`,
+      ).toBe(0)
+    })
+
+    it("F-37 — that release is OWNERSHIP-CHECKED: a foreign holder's mutex survives, its own does not", async () => {
+      // BOTH ARMS ARE REQUIRED, and the order matters. "A foreign mutex
+      // survives" is trivially true when the release never runs at all —
+      // which is exactly the pre-M3 state of this file. The matching arm is
+      // what makes the foreign arm mean something: it proves the release DID
+      // execute against this container, so the foreign key's survival is a
+      // decision the script made and not an absence of any script.
+      const { releaseDeferResumingLock } = await import(
+        "../../lib/defer-resuming-lock.js"
+      )
+      const { getRedisClient } = await import("@ibatexas/tools")
+      const client = (await getRedisClient()) as unknown as Parameters<
+        typeof releaseDeferResumingLock
+      >[2]
+
+      const key = "t6-race:defer:resuming:f37-ownership"
+
+      // Arm 1 — FOREIGN owner. The stored value belongs to someone else; our
+      // release must leave it alone.
+      await requireRuntimeRedis().set(key, "resolver:not-our-token", { EX: 60 })
+      await releaseDeferResumingLock(key, "sweeper:our-token", client)
+      expect(
+        await requireRuntimeRedis().get(key),
+        "the release deleted (or overwrote) a mutex held by another owner — CAD ownership regression",
+      ).toBe("resolver:not-our-token")
+
+      // Arm 2 — OWN token. Same key, same helper, same client: this one must
+      // really go, or arm 1 proved nothing.
+      await requireRuntimeRedis().set(key, "sweeper:our-token", { EX: 60 })
+      await releaseDeferResumingLock(key, "sweeper:our-token", client)
+      expect(
+        await requireRuntimeRedis().exists(key),
+        "the release left its OWN mutex in place — the Lua compare-and-delete " +
+          "never executed, so arm 1 above is vacuous (F-37)",
+      ).toBe(0)
+    })
+
+    // ── F-40 (M3) — the window F-37 was hiding ────────────────────────────
+    //
+    // The 100-iteration case above catches this at ~1% per iteration, which
+    // is a signal but a poor regression net. This case reproduces the SAME
+    // interleaving deterministically.
+    //
+    // The window: the sweeper's E3 guard GETs the park blob and returns
+    // early if the key is already gone. It then SETNX-acquires
+    // `defer:resuming:*` and publishes. Between those two steps the resolver
+    // can complete its whole resume — dispatch, DEL parkKey, RELEASE the
+    // mutex — at which point the sweeper's SETNX succeeds against a
+    // just-freed mutex and it publishes `intent.defer.timeout` for an
+    // envelope that has already been resumed. Two destructive mutations for
+    // one parked envelope: precisely the P0-2 class this file exists to
+    // police.
+    //
+    // The resolver got a post-SETNX parkKey re-check for this (E2 Fix-b).
+    // The sweeper never did. That asymmetry was invisible because the
+    // sweeper's release was DEAD (F-37): with the mutex only ever ending by
+    // TTL, the sweeper's SETNX could not succeed inside an iteration, so the
+    // window could not open and "hard zero" was an artifact of the broken
+    // release rather than a property of the code.
+    //
+    // The hook below deletes the parkKey the instant the sweeper's blob GET
+    // returns — standing in for a resolver that won that window — and leaves
+    // the mutex free, exactly as a completed resolver would.
+    it("F-40 — the sweeper re-checks parkKey AFTER its SETNX: no publish for an envelope the resolver already resumed", async () => {
+      const sessionId = "sess_f40_window"
+      const signal = "payment.confirmed"
+      const { parkKey } = await seedParkedEnvelope({
+        sessionId,
+        signal,
+        nonce: "f40-window",
+      })
+
+      let fired = 0
+      afterParkGetHook = async (key) => {
+        if (key !== parkKey || fired > 0) return
+        fired += 1
+        // The resolver wins the window: it dispatched, DEL'd the parkKey and
+        // released the resuming mutex. The mutex is free, so the sweeper's
+        // SETNX below WILL succeed.
+        await requireRuntimeRedis().del(parkKey)
+      }
+
+      const { sweepDeferTimeouts } = await import(
+        "../../jobs/defer-timeout-sweeper.js"
+      )
+      mockPublishNatsEvent.mockClear()
+      const published = await sweepDeferTimeouts(makeLogger())
+
+      // Control: the hook really did fire, so the assertion below is about
+      // the sweeper's behaviour in the window and not about a sweep that
+      // never reached it.
+      expect(
+        fired,
+        "the parkKey-GET hook never fired — the sweeper did not reach its E3 blob read, so this case proves nothing",
+      ).toBe(1)
+      expect(
+        await requireRuntimeRedis().exists(parkKey),
+        "parkKey should be gone — the hook deletes it to simulate the resolver winning",
+      ).toBe(0)
+
+      const timeoutPublishes = mockPublishNatsEvent.mock.calls.filter(
+        ([s]) => s === "intent.defer.timeout",
+      )
+      expect(
+        timeoutPublishes.length,
+        "sweeper published intent.defer.timeout for an envelope the resolver had already resumed and unparked — " +
+          "the post-SETNX parkKey re-check (the sweeper-side mirror of the resolver's E2 Fix-b) is missing or weakened.",
+      ).toBe(0)
+      expect(published, "sweeper reported a published timeout in the same window").toBe(0)
+    })
 
     it("deterministic case — when resolver SETNX wins first, sweeper short-circuits with no publish", async () => {
       const sessionId = "sess_t6_resolver_wins"

@@ -481,6 +481,38 @@ two shapes, so it is where a script-blind swap would do the most damage.
   only positive-arm coverage is `defer-resume-integrity.test.ts:327`; its
   ownership arm now lives in the CAD shape suite. This is class (i-b) wearing a
   container — worth a row in M3's disposition.
+
+  > **RESOLVED in M3, and it was hiding two worse things.** Proved before
+  > fixing: after a sweeper-won sweep the `defer:resuming:*` mutex was still
+  > present with `ttl=60` — the release had run and done nothing. Fixed by
+  > forwarding `eval` VERBATIM to the container the file already had (not an
+  > emulation; the in-memory adapter still refuses `eval`). The file is 3 → 6
+  > cases and declares `expectLuaCalls: true` to the harness.
+  >
+  > **F-39 — a dead spy.** `mockAuditSinkEmit` was declared, cleared in
+  > `beforeEach` and asserted on three times, but NO `vi.mock` ever connected
+  > it to anything, so `auditEmits` was structurally always 0: every
+  > `expect(auditEmits).toBe(0)` was vacuous, and the `park_missing_after_lock`
+  > arm's `toBe(1)` was unsatisfiable. It stayed green only because that arm
+  > was unreachable while the release was dead. Now wired to
+  > `getAuditSink().emit`, the seam the resolver actually uses.
+  >
+  > **F-40 — a live ~0.8% double-mutation window in production code.** With the
+  > release working, the 100-iteration case caught BOTH surfaces firing. The
+  > resolver has re-checked parkKey after its own SETNX since E2 Fix-b; the
+  > SWEEPER never did. Between the sweeper's E3 blob GET and its SETNX, the
+  > resolver can complete a resume and release the shared mutex — the sweeper
+  > then acquires it and publishes `intent.defer.timeout` for an
+  > already-resumed envelope. **The file's "hard zero" was an artifact of the
+  > broken release**: with the mutex only ever ending by TTL, the window could
+  > not open, so the regression this file exists to catch was unreproducible in
+  > it. 4 violations / 500 iterations before the sweeper-side re-check, 0 / 500
+  > after, plus a deterministic case so the net is not a 1% rate.
+  >
+  > The general lesson, which is the one worth keeping: **roll-call enrolment
+  > proves a FILE ran, not that its Lua ran** — and a suite whose Lua is a side
+  > effect of the path under test, rather than the thing its assertions read, is
+  > where that gap hides. See the gate strengthening in the ruling doc.
 - **A stale comment in `force-routes-governance.test.ts`** (:1643-1650) still
   claims "the mocked redis.eval … emulates the Lua script". It does not — that
   suite forwards `eval` verbatim to a real container, and it is the only
@@ -597,6 +629,65 @@ completeness alarm and the drive-and-count step run per package.
 `packages/journeys` gained `redis` as a devDependency (it already had
 `testcontainers`); the suite drives the same three-method wrapper
 `journey-lock.ts`'s own `defaultRedis()` builds.
+
+---
+
+## M3 — the class (i-b) rows, and the container that proved nothing
+
+**Verified-open population: ONE — and it was not in the class (i-b) table.**
+Every row was checked against the tree rather than read off the enumeration.
+
+| Row | Hole proof | Disposition | Where the invariant lives now |
+|---|---|---|---|
+| 8 `defer-roundtrip` | reaches Lua ×1, refused (its own declared-bound case asserts it) | **keep** | CAD shape suite + M2 observation; the bound is a tested statement here |
+| 9 `defer-roundtrip-extensions` | probe in the release catch: **1** refusal | **keep** | CAD shape suite + M2's `expectResumingLockReleased()` |
+| 10 `defer-resolver-resumedkey-redis-error` | probe: **1** refusal | **keep** | as above |
+| 12 `boot-window-race` | probe: **2** refusals | **keep** | as above |
+| 11 `defer-resume-integrity` | n/a — on the container since Phase 5, enrolled at 3 | **already done** | its own cases |
+| 13 `park-nx-hoist` | n/a — SUT never reaches Redis (Phase 5) | **already done** | `park-nx-hash`, `park-nx-release-failure-mode` |
+| **F-37** `sweeper-resolver-race` | mutex present with **ttl=60** after a sweeper-won release | **FIXED** | its own cases, 3 → 6 |
+
+Rows 8–12 are **not** holes to close. The adapter refuses `eval` on purpose
+(W4 RULE 3) and the ownership invariant is held by the CAD shape suite plus the
+unit observation; three more containers would buy no new signal, which is
+ruling Q2 applied rather than quoted. Nothing was deleted, so no row needs a
+"nothing covers this now" statement.
+
+**The two F-22-deferred migrations needed nothing** — verified before touching
+anything, per the brief. `defer-resume-integrity` is on the shared harness and
+enrolled; `park-nx-hoist` is a unit file whose SUT provably never reaches
+`parkDeferredIntent`.
+
+### What F-37 cost, beyond the one file
+
+Fixing it exposed **F-39** (a dead `mockAuditSinkEmit` spy — three vacuous
+assertions and one unsatisfiable one) and **F-40** (a live ~0.8%
+double-mutation window: the sweeper had no post-SETNX parkKey re-check, the
+mirror of the resolver's E2 Fix-b). Both are written up at the F-37 entry in
+"Two findings M2/M3 should not rediscover" above. F-40 is the load-bearing one:
+**the file's headline "hard zero" invariant was an artifact of the broken
+release**, because a mutex that only ever ends by TTL cannot produce the
+interleaving the test was written to catch.
+
+### The classification lesson
+
+The census classifies by *what kind of double is it*. F-37 shows the property
+that actually matters is *does the SUT's Lua execute* — and those come apart
+exactly once here: a file can wear a real container and still be class (i-b).
+The sweep that bounds it is one line: of 22 container-backed `apps/api` suites,
+exactly one wraps its container in a `@ibatexas/tools` mock that mentions
+`eval` nowhere.
+
+Two gate changes follow from it, both general and both measured (see the ruling
+doc): the roll-call gate now fails on a **non-zero vitest exit** — previously a
+throwing `afterAll` left every case reading "passed" and the gate certified the
+run — and `setupRedisTestContainer({ expectLuaCalls: true })` fails teardown
+when **zero** scripts reach the container. Proof they were both needed: with
+`eval` removed and the two new F-37 cases neutered to trivial passes, vitest
+reports **6 passed / 0 failed** and exits 1 on the alarm. The old gate read only
+the case counts, and would have called that green.
+
+Roll call after M3: **21 suites / ≥159 cases (149 container-backed)**.
 
 ---
 
@@ -993,6 +1084,33 @@ Class (i-b) is now **empty**: items 8–10 and 12 were migrated by R5-S12, and
 items 11 and 13 by Phase 5. The whole owner-gated remainder of the enumerated
 population is class (i) — the 7 eval-EMULATING doubles, which M2 retires onto
 the shape suites.
+
+> **M3 CORRECTION — "empty" is true of the DOUBLES, not of the MECHANISM, and
+> the enumeration was the wrong place to look.** Two things this paragraph
+> gets wrong if read quickly:
+>
+> 1. **Items 8, 9, 10 and 12 still reach a Lua site and still have that release
+>    refused.** R5-S12 retired their hand-rolled doubles for the canonical
+>    adapter, whose `eval` throws `LuaAtomicityNotEmulated` — so the SUT still
+>    reaches the site, the release still fails, and `releaseDeferResumingLock`
+>    still swallows it. M3 measured this rather than reasoning about it: a
+>    temporary `console.error` in that helper's catch counted **1 / 1 / 2**
+>    refused releases in items 9 / 10 / 12 respectively. What changed in R5-S12
+>    is that the refusal is now BY DESIGN (W4 RULE 3) instead of accidental,
+>    and item 8 turns it into a declared, tested bound. The invariant lives in
+>    M1's CAD shape suite plus M2's `expectResumingLockReleased()`; three more
+>    containers would buy no new signal (Q2), so M3 left all four alone.
+> 2. **The one genuinely open row was never in this table.** It was filed under
+>    class (iii) as "Already real Redis" — `sweeper-resolver-race.test.ts`,
+>    F-37. Classifying by "what kind of double is it?" put a container-backed
+>    file out of scope, when the property that matters is "does the SUT's Lua
+>    actually execute?". A file can wear a container and still be class (i-b);
+>    see the F-37 entry below.
+>
+> The M3 sweep that established this looked at the right axis: of the 22
+> container-backed suites in `apps/api`, exactly ONE wrapped its container in a
+> `@ibatexas/tools` mock that mentions `eval` nowhere. The class-(i-b)
+> population wearing a container was, and is, bounded at one.
 
 The `redisFake` cluster (12) is untouched and still owner-gated on `multi()`.
 

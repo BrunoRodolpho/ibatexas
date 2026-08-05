@@ -133,7 +133,15 @@ const ROLL_CALL = [
   },
   // 3 cases, of which 1 is inside the RUN_REAL_REDIS describe.
   { file: "src/__tests__/ledger-replay-suppression.test.ts", minExecuted: 3, realRedis: 1 },
-  { file: "src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts", minExecuted: 3, realRedis: 3 },
+  // M3 / F-37. Was enrolled at 3 and passing while the Lua path it is cited
+  // for never ran: the suite's own `@ibatexas/tools` shim omitted `eval`, so
+  // every `defer:resuming:*` compare-and-delete release threw and was
+  // swallowed. The container was real; the Lua was dead. 3 → 6 with the two
+  // F-37 cases (the release fires; it is ownership-checked) and the F-40 case
+  // (the sweeper-side post-SETNX parkKey re-check that the dead release was
+  // hiding). The file also declares `expectLuaCalls: true` to the harness, so
+  // a future regression to zero scripts fails teardown rather than passing.
+  { file: "src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts", minExecuted: 6, realRedis: 6 },
   // ── M1 — THE SCRIPT-SHAPE CONTRACT SUITES (Q2) ─────────────────────────────
   //
   // Everything above this line is a SITE suite: it drives one call site's
@@ -363,6 +371,26 @@ for (const pkg of PACKAGES) {
         `did not run at all — treat this as the zero-count failure this gate exists to raise.`,
     )
     continue
+  }
+
+  // ── 3b. Honour vitest's EXIT CODE, not just the report (M3) ───────────────
+  // The per-case loop below reads assertionResults, which only describe cases.
+  // A suite-level failure — a throwing `afterAll`/`beforeAll`, an unhandled
+  // rejection, a module that blows up after some cases already passed — makes
+  // vitest exit non-zero while every listed case still reads "passed", so the
+  // loop's `failed === 0` check certifies a run that failed. `run.status` was
+  // already captured here and used only inside an error string.
+  //
+  // This is what makes the harness's `expectLuaCalls` alarm enforceable: it
+  // fires from `teardown()` in `afterAll`, which is precisely a suite-level
+  // failure with no case to attach to.
+  if (run.status !== 0) {
+    fail(
+      `${pkg.name}: vitest exited ${run.status} even though a JSON report was produced.\n` +
+        `      A suite-level failure (throwing beforeAll/afterAll, unhandled rejection) does\n` +
+        `      not appear as a failed CASE, so the per-file counts below can all look fine.\n` +
+        `      Read the vitest output above for the actual error.`,
+    )
   }
 
   const report = JSON.parse(readFileSync(outFile, "utf8"))
