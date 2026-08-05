@@ -9,7 +9,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { createDeliveryZoneService } from "@ibatexas/domain";
-import { getRedisClient, invalidateDeliveryCache, rk } from "@ibatexas/tools";
+import {
+  getRedisClient,
+  invalidateDeliveryCache,
+  rk,
+  type DeliveryCacheInvalidationClient,
+} from "@ibatexas/tools";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
 
 const DeliveryZoneIdParams = z.object({ id: z.string().min(1) });
@@ -36,41 +41,51 @@ type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 // ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule) ─────────────
 //
 // The honest Pick is {issued} ∪ {optionally consumed downstream}. MEASURED for
-// this module: the downstream half is EMPTY. Every `redis` occurrence in the
-// file was read (not just the one call site): the client is bound to a
-// function-local `const` and its single command is issued on it directly. No
-// site passes `redis` to anything.
+// this module by reading every `redis` occurrence in the file, not just the
+// command sites:
+//   • ISSUED here: `set`, once, in the dedup gate — bound to a function-local
+//     `const` and issued on it directly.
+//   • HANDED TO downstream: `invalidateDeliveryCache`, at the three mutating
+//     sites. This half used to be EMPTY and is no longer; see below.
 //
-// ── The HAND-IT-TO read, and the one callee that ACCEPTS a client ──────────
+// ── The HAND-IT-TO read: the callee that ACCEPTS a client, now THREADED ────
 //
-// `invalidateDeliveryCache()` is called at all three mutating sites with ZERO
-// arguments, so it resolves its OWN singleton and is not downstream of this
-// Pick. It is worth naming because — unlike `withLock`, which takes no client
-// at all (#548's negative measurement) — this one CAN take one:
-// `invalidateDeliveryCache(options?: DeliveryCacheOptions)` accepts
-// `options.client`, a `Pick<RedisClientType, "get"|"set"|"scan"|"del">`
-// (`packages/tools/src/catalog/estimate-delivery.ts`).
+// `invalidateDeliveryCache()` used to be called at all three mutating sites
+// with ZERO arguments, so it resolved its OWN singleton — a LATENT hand-off,
+// neither a hand-off nor a non-hand-off. F-42 closed it: all three sites now
+// pass this route's threaded client, so the callee IS downstream of this Pick
+// and the Pick below absorbs its commands.
 //
-// It is deliberately NOT collapsed into this seam, for two reasons that point
-// the same way:
+// The hazard that made closing it worth a slice is the #539 swallowing shape.
+// `invalidateDeliveryCache`'s body is a bare try/catch with an empty handler,
+// so a Pick derived from what this route ISSUES (`{set}` alone) would leave
+// `scan` absent, the TypeError would be absorbed by that catch, and the cache
+// would silently never be invalidated — every suite green while a zone edit
+// stops showing up in chat. The Pick is therefore widened by UNION with the
+// callee's own honest Pick, not derived from this file's command usage:
 //
-//   1. It already HAS its own client seam, with its own suite
-//      (`packages/tools/src/catalog/__tests__/delivery-cache-seam.test.ts`).
-//      Threading it from here would give one path two composition roots.
-//   2. Its body is a bare `try { … } catch { /* Best-effort */ }`. That is
-//      exactly the #539 swallowing shape: whoever DOES thread it must widen
-//      this Pick to {set, scan, del}, because a Pick derived from what this
-//      route issues would leave `scan` absent, the TypeError absorbed by that
-//      catch, and the cache silently never invalidated — green.
+//     {set}  ∪  DeliveryCacheInvalidationClient ({scan, del})  =  {set, scan, del}
 //
-// Threading it stays SAFE whenever someone wants it (its commands are
-// `scan`/`del`, no Lua), so unlike `order-actions.ts`'s CONSUME store the
-// boundary here is a scope call, not a classification one.
+// `DeliveryCacheInvalidationClient` (`@ibatexas/tools`) is the invalidation
+// path's re-derived Pick — `scan` + `del` and nothing else. It is NOT the
+// wider `DeliveryCacheClient` (`{get, set, scan, del}`), which is the union
+// across BOTH of that module's entry points; `get`/`set` belong to
+// `estimateDelivery`'s read-through cache, which this route never enters, so
+// naming them here would falsify the EXHAUSTIVE claim below to buy nothing.
 //
-// ── Lua: NONE, in the module's text OR through a hand-off ──────────────────
+// Its own suite (`packages/tools/src/catalog/__tests__/delivery-cache-seam.test.ts`)
+// still drives the seam directly; that is a second DRIVER of one seam, not a
+// second composition root — the production client is resolved here and only
+// here, and the tools-side default stays the singleton for un-threaded callers.
 //
-// No `eval`/`multi`/`evalSha` in this file, and no callee is handed this
-// client. `atomicIncr` — the `eval` that gated `auth.ts` / `analytics.ts` /
+// ── Lua: NONE, in the module's text OR through the ONE hand-off ────────────
+//
+// No `eval`/`multi`/`evalSha` in this file. The one callee now handed this
+// client — `invalidateDeliveryCache` — was read line by line and issues only
+// `scan` (the manual cursor loop, not `scanIterator`) and `del`, hands the
+// client to nothing further, and runs no feature detection, so no Lua reaches
+// the client through it and the in-memory adapter can serve the whole path.
+// `atomicIncr` — the `eval` that gated `auth.ts` / `analytics.ts` /
 // `whatsapp-webhook.ts` in #548 — is not imported here.
 //
 // ── Feature detection: MEASURED, none ─────────────────────────────────────
@@ -87,14 +102,30 @@ type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 type ZoneDedupRedis = Pick<RedisClient, "set">;
 
 /**
- * The EXHAUSTIVE union of Redis commands this route issues — the type
- * `DeliveryZoneRouteDeps.redis` resolves to.
+ * The EXHAUSTIVE union of Redis commands this route issues DIRECTLY or through
+ * a callee it hands the client to — the type `DeliveryZoneRouteDeps.redis`
+ * resolves to.
  *
- * Hand-written on purpose rather than derived from the per-consumer type
- * above: a derived union can never disagree with its consumer, so it could
- * not catch a consumer that grew a command nobody declared (F-14).
+ * Hand-written on purpose rather than derived from the per-consumer types
+ * above: a derived union can never disagree with its consumers, so it could
+ * not catch a consumer that grew a command nobody declared (F-14). Concretely
+ * that means this literal is NOT written as
+ * `ZoneDedupRedis & DeliveryCacheInvalidationClient` — spelling out
+ * `"set" | "scan" | "del"` is what keeps the F-42 assertion below a real claim
+ * rather than a restatement of the callee's own type.
  */
-export type DeliveryZoneRouteRedisClient = Pick<RedisClient, "set">;
+export type DeliveryZoneRouteRedisClient = Pick<RedisClient, "set" | "scan" | "del">;
+
+/**
+ * The invalidation consumer's slice — what `invalidateDeliveryCache` receives.
+ *
+ * Declared as the callee's own exported Pick rather than re-spelled here, so
+ * that if the callee ever grows a command this alias widens with it and
+ * `invalidateZoneCache` below stops accepting `deps.redis` — a `tsc` failure,
+ * which is the ONLY signal available given the callee's empty catch turns a
+ * missing command into silence at runtime.
+ */
+type ZoneCacheInvalidationRedis = DeliveryCacheInvalidationClient;
 
 /** The collaborators `admin/delivery-zones.ts` resolves through the seam. */
 export interface DeliveryZoneRouteDeps {
@@ -129,6 +160,35 @@ function resolveDeliveryZoneRouteDeps(
   options?: DeliveryZoneRoutesOptions,
 ): DeliveryZoneRouteDeps {
   return { ...defaultDeliveryZoneRouteDeps(), ...(options?.deps ?? {}) };
+}
+
+/**
+ * Fire-and-forget the delivery cache invalidation on THIS route's client.
+ *
+ * Shaped to preserve, exactly, what `void invalidateDeliveryCache()` did:
+ *
+ *   • Nothing is awaited on the response path. `deps.redis` is a factory, and
+ *     awaiting it here would put a Redis round trip in front of the reply on
+ *     mutations that today never resolve a client at all (the dedup guard only
+ *     resolves one when an `x-request-id` header is present).
+ *   • A Redis outage still degrades silently rather than throwing later.
+ *     `getRedisClient()` used to reject INSIDE the callee's own catch; the
+ *     rejection handler below is that catch, moved to where the resolution now
+ *     happens. Without it a rejected factory would surface as an unhandled
+ *     rejection — a NEW failure mode this slice must not introduce.
+ *
+ * The cache stays warm until its 1h TTL in that case, which is the behaviour
+ * the singleton path already had.
+ */
+function invalidateZoneCache(
+  resolveRedis: () => Promise<ZoneCacheInvalidationRedis>,
+): void {
+  void resolveRedis().then(
+    (client) => invalidateDeliveryCache({ client }),
+    () => {
+      // Redis unreachable — best-effort invalidation, same as before.
+    },
+  );
 }
 
 // Idempotency guard shared by the mutating zone routes (create/update/delete).
@@ -214,7 +274,7 @@ export async function deliveryZoneRoutes(
       // Check for duplicate CEPs across existing zones
       if (await rejectOnCepConflict(deliveryZoneSvc, reply, request.body.cepPrefixes)) return reply;
       const zone = await deliveryZoneSvc.create(request.body);
-      void invalidateDeliveryCache();
+      invalidateZoneCache(deps.redis);
       return reply.code(201).send({ zone });
     },
   );
@@ -238,7 +298,7 @@ export async function deliveryZoneRoutes(
       if (await rejectOnCepConflict(deliveryZoneSvc, reply, request.body.cepPrefixes, request.params.id))
         return reply;
       const zone = await deliveryZoneSvc.update(request.params.id, request.body);
-      void invalidateDeliveryCache();
+      invalidateZoneCache(deps.redis);
       return reply.send({ zone });
     },
   );
@@ -258,7 +318,7 @@ export async function deliveryZoneRoutes(
       if (await rejectIfDuplicateRequest(deps.redis, request, reply, "delete")) return reply;
       const deliveryZoneSvc = createDeliveryZoneService();
       await deliveryZoneSvc.remove(request.params.id);
-      void invalidateDeliveryCache();
+      invalidateZoneCache(deps.redis);
       return reply.send({ ok: true });
     },
   );
