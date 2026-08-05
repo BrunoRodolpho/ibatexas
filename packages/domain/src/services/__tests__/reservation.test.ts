@@ -16,6 +16,14 @@ const mockTimeSlotFindUnique = vi.hoisted(() => vi.fn());
 // simulation without touching the create/modify tests above.
 const mockReservationFindMany = vi.hoisted(() => vi.fn());
 const mockReservationCount = vi.hoisted(() => vi.fn());
+// `checkAvailability` is the only caller of the PRISMA-level (non-tx) timeSlot /
+// reservationTable / table `findMany`s — create/modify reach those through the
+// `tx` object their `$transaction` mock hands out, never through `prisma`. So
+// delegating these three to hoisted spies is inert for every test above and
+// gives the checkAvailability block below a controllable seam on the SAME double.
+const mockTimeSlotFindMany = vi.hoisted(() => vi.fn());
+const mockReservationTableFindMany = vi.hoisted(() => vi.fn());
+const mockTableFindMany = vi.hoisted(() => vi.fn());
 
 vi.mock("../../client.js", () => ({
   prisma: {
@@ -27,9 +35,16 @@ vi.mock("../../client.js", () => ({
       findMany: (...args: unknown[]) => mockReservationFindMany(...args),
       count: (...args: unknown[]) => mockReservationCount(...args),
     },
-    timeSlot: { update: vi.fn(), findUnique: (...args: unknown[]) => mockTimeSlotFindUnique(...args) },
-    reservationTable: { findMany: vi.fn(), deleteMany: vi.fn() },
-    table: { findMany: vi.fn() },
+    timeSlot: {
+      update: vi.fn(),
+      findUnique: (...args: unknown[]) => mockTimeSlotFindUnique(...args),
+      findMany: (...args: unknown[]) => mockTimeSlotFindMany(...args),
+    },
+    reservationTable: {
+      findMany: (...args: unknown[]) => mockReservationTableFindMany(...args),
+      deleteMany: vi.fn(),
+    },
+    table: { findMany: (...args: unknown[]) => mockTableFindMany(...args) },
   },
 }));
 
@@ -517,6 +532,278 @@ describe("ReservationService.listByCustomer — status filter + pagination-buryi
       expect.objectContaining({
         where: expect.objectContaining({ status: "confirmed" }),
       }),
+    );
+  });
+});
+
+// ── checkAvailability — the live chat-plane availability algorithm ─────────────
+//
+// WHY THIS BLOCK EXISTS. Before it, `checkAvailability` had ZERO exercise
+// anywhere in the repo: replacing its whole body with `throw new Error("dead")`
+// left packages/domain (574), packages/tools (1077) and apps/api (7629 + 3
+// skipped) entirely GREEN. The suite that LOOKED like coverage —
+// `packages/tools/src/reservation/__tests__/check-availability.test.ts` — mocked
+// `@ibatexas/domain` wholesale with no `importOriginal`, so the domain package
+// never loaded, and RE-IMPLEMENTED this algorithm inside its own mock factory.
+// Every assertion there read back the test's own construction. It had already
+// drifted unnoticed: it pinned a PER-SLOT `table.findMany({ where: { id: { notIn:
+// [...] } } })`, a query production stopped issuing when it moved to a single
+// bulk `{ active: true }` fetch plus a JS filter. The test stayed green because
+// the test itself issued the call it asserted on.
+//
+// HOW THIS BLOCK AVOIDS THE SAME TRAP. It drives the REAL method through the
+// file's existing `vi.mock("../../client.js")` prisma double (no new double),
+// backed by a FAITHFUL in-memory store: each simulator reads the where-clause
+// the SUT actually built and applies real Prisma semantics — in particular an
+// ABSENT clause filters NOTHING. That is what makes a dropped `active: true`,
+// `status: { notIn: [...] }` or `timeSlotId: { in: [...] }` leak extra rows and
+// turn an assertion RED, instead of silently narrowing to an empty result that
+// a weaker double would let pass.
+describe("ReservationService.checkAvailability", () => {
+  const DATE = "2026-03-15";
+  const OTHER_DATE = "2026-03-16";
+  const utcMidnight = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
+
+  type SlotRow = {
+    id: string; date: Date; startTime: string;
+    durationMinutes: number; maxCovers: number; reservedCovers: number;
+  };
+  type TableRow = { id: string; location: string; active: boolean };
+  type ResTableRow = { tableId: string; timeSlotId: string; status: string };
+
+  let store: { slots: SlotRow[]; tables: TableRow[]; reservationTables: ResTableRow[] };
+
+  function makeSlot(
+    id: string,
+    startTime: string,
+    over: Partial<Pick<SlotRow, "date" | "durationMinutes" | "maxCovers" | "reservedCovers">> = {},
+  ): SlotRow {
+    return {
+      id,
+      date: over.date ?? utcMidnight(DATE),
+      startTime,
+      durationMinutes: over.durationMinutes ?? 90,
+      maxCovers: over.maxCovers ?? 40,
+      reservedCovers: over.reservedCovers ?? 0,
+    };
+  }
+
+  // ── Faithful simulators (absent clause ⇒ NO filtering, exactly like Prisma) ──
+
+  function simulateTimeSlotFindMany(args: {
+    where?: { date?: Date };
+    orderBy?: { startTime?: "asc" | "desc" };
+  }): SlotRow[] {
+    let rows = [...store.slots];
+    if (args.where?.date !== undefined) {
+      const want = args.where.date.getTime();
+      rows = rows.filter((s) => s.date.getTime() === want);
+    }
+    if (args.orderBy?.startTime !== undefined) {
+      const dir = args.orderBy.startTime === "desc" ? -1 : 1;
+      rows = [...rows].sort((a, b) => dir * a.startTime.localeCompare(b.startTime));
+    }
+    return rows;
+  }
+
+  function simulateReservationTableFindMany(args: {
+    where?: {
+      reservation?: {
+        timeSlotId?: { in?: string[] };
+        status?: { notIn?: string[] };
+      };
+    };
+  }): Array<{ tableId: string; reservation: { timeSlotId: string } }> {
+    let rows = [...store.reservationTables];
+    const inList = args.where?.reservation?.timeSlotId?.in;
+    if (inList !== undefined) rows = rows.filter((r) => inList.includes(r.timeSlotId));
+    const notIn = args.where?.reservation?.status?.notIn;
+    if (notIn !== undefined) rows = rows.filter((r) => !notIn.includes(r.status));
+    return rows.map((r) => ({ tableId: r.tableId, reservation: { timeSlotId: r.timeSlotId } }));
+  }
+
+  function simulateTableFindMany(args: {
+    where?: { active?: boolean };
+  }): Array<{ id: string; location: string }> {
+    let rows = [...store.tables];
+    const active = args.where?.active;
+    if (active !== undefined) rows = rows.filter((t) => t.active === active);
+    return rows.map((t) => ({ id: t.id, location: t.location }));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    store = {
+      slots: [
+        makeSlot("ts_lunch", "12:00", { maxCovers: 40, reservedCovers: 0 }),
+        makeSlot("ts_dinner", "19:30", { maxCovers: 40, reservedCovers: 10 }),
+        // 20 − 18 = 2 remaining: the capacity-boundary slot.
+        makeSlot("ts_late", "21:00", { maxCovers: 20, reservedCovers: 18 }),
+        // A slot on the NEXT day — must never surface for DATE.
+        makeSlot("ts_tomorrow", "19:30", { date: utcMidnight(OTHER_DATE) }),
+      ],
+      tables: [
+        { id: "tbl_in_1", location: "indoor", active: true },
+        { id: "tbl_in_2", location: "indoor", active: true },
+        { id: "tbl_out", location: "outdoor", active: true },
+        // Retired table — its location must never reach a customer.
+        { id: "tbl_retired", location: "terrace", active: false },
+      ],
+      reservationTables: [],
+    };
+    mockTimeSlotFindMany.mockImplementation(async (args: Parameters<typeof simulateTimeSlotFindMany>[0]) =>
+      simulateTimeSlotFindMany(args),
+    );
+    mockReservationTableFindMany.mockImplementation(
+      async (args: Parameters<typeof simulateReservationTableFindMany>[0]) =>
+        simulateReservationTableFindMany(args),
+    );
+    mockTableFindMany.mockImplementation(async (args: Parameters<typeof simulateTableFindMany>[0]) =>
+      simulateTableFindMany(args),
+    );
+  });
+
+  it("returns one row per slot with room, in startTime order, echoing the requested date and the REMAINING covers", async () => {
+    const svc = createReservationService();
+
+    // No preferredTime — this is also the CONTROL for the preferredTime test
+    // below: the `preferredTime && ...` short-circuit must filter nothing here.
+    const result = await svc.checkAvailability(DATE, 4);
+
+    expect(result).toEqual([
+      {
+        timeSlotId: "ts_lunch",
+        date: DATE,
+        startTime: "12:00",
+        durationMinutes: 90,
+        availableCovers: 40,
+        tableLocations: ["indoor", "outdoor"],
+      },
+      {
+        timeSlotId: "ts_dinner",
+        date: DATE,
+        startTime: "19:30",
+        durationMinutes: 90,
+        // 40 max − 10 already reserved: the REMAINING covers, not maxCovers.
+        availableCovers: 30,
+        tableLocations: ["indoor", "outdoor"],
+      },
+    ]);
+  });
+
+  it("only surfaces slots on the REQUESTED date (the UTC-midnight day anchor)", async () => {
+    const svc = createReservationService();
+
+    const result = await svc.checkAvailability(DATE, 2);
+    expect(result.map((s) => s.timeSlotId)).not.toContain("ts_tomorrow");
+
+    // Control: the same slot IS reachable on its own date, so the exclusion
+    // above is the date anchor doing work, not the fixture being unreachable.
+    const tomorrow = await svc.checkAvailability(OTHER_DATE, 2);
+    expect(tomorrow.map((s) => s.timeSlotId)).toEqual(["ts_tomorrow"]);
+  });
+
+  it("drops a slot with fewer remaining covers than the party, but KEEPS the exact fit (`<`, not `<=`)", async () => {
+    const svc = createReservationService();
+
+    // ts_late has exactly 2 remaining.
+    const tooBig = await svc.checkAvailability(DATE, 3);
+    expect(tooBig.map((s) => s.timeSlotId)).toEqual(["ts_lunch", "ts_dinner"]);
+
+    const exactFit = await svc.checkAvailability(DATE, 2);
+    expect(exactFit.map((s) => s.timeSlotId)).toEqual(["ts_lunch", "ts_dinner", "ts_late"]);
+    expect(exactFit.find((s) => s.timeSlotId === "ts_late")?.availableCovers).toBe(2);
+  });
+
+  it("preferredTime keeps only the slot whose startTime matches EXACTLY", async () => {
+    const svc = createReservationService();
+
+    const result = await svc.checkAvailability(DATE, 2, "19:30");
+
+    expect(result.map((s) => s.timeSlotId)).toEqual(["ts_dinner"]);
+  });
+
+  it("a table reserved for one slot is withheld from THAT slot only — reserved-table attribution is per-slot", async () => {
+    // The single outdoor table is taken at dinner. Lunch and the late slot are
+    // untouched — and lunch additionally exercises the `?? new Set()` default
+    // for a slot with no entry in the reserved-by-slot map at all.
+    store.reservationTables = [
+      { tableId: "tbl_out", timeSlotId: "ts_dinner", status: "confirmed" },
+    ];
+    const svc = createReservationService();
+
+    const result = await svc.checkAvailability(DATE, 2);
+    const byId = Object.fromEntries(result.map((s) => [s.timeSlotId, s.tableLocations]));
+
+    expect(byId.ts_dinner).toEqual(["indoor"]);
+    expect(byId.ts_lunch).toEqual(["indoor", "outdoor"]);
+    expect(byId.ts_late).toEqual(["indoor", "outdoor"]);
+  });
+
+  it("collapses duplicate locations — two free indoor tables report `indoor` once", async () => {
+    const svc = createReservationService();
+
+    const [lunch] = await svc.checkAvailability(DATE, 2);
+
+    // tbl_in_1 + tbl_in_2 are both free and both indoor.
+    expect(lunch?.tableLocations).toEqual(["indoor", "outdoor"]);
+    expect(lunch?.tableLocations.filter((l) => l === "indoor")).toHaveLength(1);
+  });
+
+  it("a cancelled or no-show reservation does not hold its table", async () => {
+    store.reservationTables = [
+      { tableId: "tbl_out", timeSlotId: "ts_lunch", status: "cancelled" },
+      { tableId: "tbl_in_1", timeSlotId: "ts_dinner", status: "no_show" },
+    ];
+    const svc = createReservationService();
+
+    const result = await svc.checkAvailability(DATE, 2);
+    const byId = Object.fromEntries(result.map((s) => [s.timeSlotId, s.tableLocations]));
+
+    // Neither dead reservation removes anything: both locations still offered.
+    expect(byId.ts_lunch).toEqual(["indoor", "outdoor"]);
+    expect(byId.ts_dinner).toEqual(["indoor", "outdoor"]);
+  });
+
+  it("never offers a retired (inactive) table's location", async () => {
+    const svc = createReservationService();
+
+    const result = await svc.checkAvailability(DATE, 2);
+
+    expect(result).not.toHaveLength(0);
+    for (const s of result) expect(s.tableLocations).not.toContain("terrace");
+  });
+
+  it("returns [] and skips BOTH follow-up queries when the date has no slots", async () => {
+    store.slots = [];
+    const svc = createReservationService();
+
+    const result = await svc.checkAvailability(DATE, 2);
+
+    expect(result).toEqual([]);
+    // The early return is a real short-circuit, not just an empty loop.
+    expect(mockReservationTableFindMany).not.toHaveBeenCalled();
+    expect(mockTableFindMany).not.toHaveBeenCalled();
+  });
+
+  it("BULK, not N+1 — three slots cost exactly one reservationTable query and one table query", async () => {
+    // This is the property the drifted tools-layer test destroyed: it pinned a
+    // PER-SLOT `table.findMany({ id: { notIn } })`, i.e. the N+1 shape the
+    // service deliberately does NOT use.
+    store.reservationTables = [
+      { tableId: "tbl_out", timeSlotId: "ts_dinner", status: "confirmed" },
+    ];
+    const svc = createReservationService();
+
+    const result = await svc.checkAvailability(DATE, 2);
+
+    expect(result).toHaveLength(3);
+    expect(mockTimeSlotFindMany).toHaveBeenCalledTimes(1);
+    expect(mockReservationTableFindMany).toHaveBeenCalledTimes(1);
+    expect(mockTableFindMany).toHaveBeenCalledTimes(1);
+    // The one table query is unfiltered by id — exclusion happens in JS.
+    expect(mockTableFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { active: true } }),
     );
   });
 });
