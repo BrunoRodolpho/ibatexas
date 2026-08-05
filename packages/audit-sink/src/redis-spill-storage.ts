@@ -39,9 +39,55 @@
 // adapter moved here from `@ibatexas/llm-provider`, importing `rk` from
 // `@ibatexas/tools` would have re-introduced that exact runtime dep. The
 // `rk()` helper is a one-liner (`${APP_ENV}:${key}`), so it is inlined
-// below to preserve the leaf invariant. It MUST stay byte-identical to
-// `packages/tools/src/redis/key.ts` so spill keys land in the same Redis
-// namespace the rest of the codebase uses.
+// below to preserve the leaf invariant.
+//
+// The invariant is one-directional and cannot be relaxed even for tests:
+// `@ibatexas/tools` DEPENDS on `@ibatexas/audit-sink` (`packages/tools/
+// package.json`), so declaring `@ibatexas/tools` here — as a devDependency
+// too — is a hard cycle. Measured (F-23): `turbo build` refuses with
+// "Cyclic dependency detected: @ibatexas/tools#build,
+// @ibatexas/audit-sink#build". The copy below therefore cannot be
+// cross-checked against the canonical `rk` by import from anywhere in this
+// package; its agreement is pinned as a PROPERTY instead — see
+// `__tests__/redis-spill-storage.test.ts` ("reads APP_ENV at CALL time").
+//
+// ── What "the same as canonical" means here (F-23) ─────────────────────────
+//
+// This copy is a semantic mirror of the FUNCTION in
+// `packages/tools/src/redis/key.ts`, NOT a byte copy of that FILE. The
+// header used to claim byte-identity; it was false in two ways, and one of
+// them was a live defect. Stated precisely, so the claim is checkable:
+//
+//   MIRRORED (must not drift) — the function body: the `APP_ENV` read
+//   happens at CALL time, and the fallback is `"development"`. Reading at
+//   call time is not a stylistic choice: a module-level capture is the
+//   exact pattern FE-D26 abolished, because out-of-process tooling (the
+//   ibx CLI's dotenv preload / the journeys harness's `loadTestEnv()`) sets
+//   APP_ENV AFTER the module graph is evaluated, so a frozen prefix made
+//   the CLI write `development:`-keys while the api read `test:`-keys
+//   (invisible seeded carts, phantom counter reset). This file DID capture
+//   at module load until F-23; it does not any more.
+//
+//   DELIBERATELY NOT MIRRORED — the canonical module's import-time
+//   fail-fast (`NODE_ENV === "production" && !APP_ENV` ⇒ throw). Rationale,
+//   measured rather than assumed: that guard is process-wide, and no
+//   process can load this leaf without also arming it. `@ibatexas/audit-
+//   sink` has exactly two DIRECT dependents in the workspace —
+//   `@ibatexas/tools` and `apps/api` — so every transitive consumer reaches
+//   this leaf through one of them, and both put the `@ibatexas/tools`
+//   barrel in the same process. That barrel re-exports `./redis/key.js`, so
+//   the guard is evaluated during module-graph evaluation, before any spill
+//   key can be built. Verified on the built graph: from
+//   `apps/api/dist/index.js` the guard is a depth-1 static import; from
+//   `packages/cli/dist/index.js` (a transitive consumer, and the one
+//   process with the FE-D26 late-APP_ENV shape) it is reached via the same
+//   barrel. Duplicating the throw here would add no
+//   coverage and would give a leaf whose whole value is being inert at
+//   import the power to abort a process. That premise is not left to this
+//   comment: `__tests__/leaf-purity-guard-reachability.test.ts` fails the
+//   day a package depends on `@ibatexas/audit-sink` without `@ibatexas/
+//   tools` in its dependency closure — i.e. the day this paragraph stops
+//   being true and the guard must be reconsidered.
 
 import type { AuditRecord } from "@adjudicate/core"
 import type { PersistentSpillStorage } from "@adjudicate/audit"
@@ -51,9 +97,14 @@ import type { PersistentSpillStorage } from "@adjudicate/audit"
 // cross-environment key bleed when staging/production share a Redis
 // instance. APP_ENV falls back to "development" so local runs work
 // without extra config.
-const RK_ENV_PREFIX: string = process.env.APP_ENV ?? "development"
+//
+// APP_ENV is read at CALL time, never captured at module import (FE-D26) —
+// mirroring `packages/tools/src/redis/key.ts` exactly. Whenever APP_ENV is
+// stable (set before the first call, which is every real deployment), this
+// returns the identical string a module-load capture would have.
 function rk(key: string): string {
-  return `${RK_ENV_PREFIX}:${key}`
+  const envPrefix = process.env.APP_ENV ?? "development"
+  return `${envPrefix}:${key}`
 }
 
 /**
