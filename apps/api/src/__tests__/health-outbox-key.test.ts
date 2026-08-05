@@ -13,12 +13,18 @@
 // an empty APP_ENV it read a namespace nothing writes and reported a clean
 // outbox over a real backlog.
 //
-// WHY A SEPARATE FILE from `health.test.ts`: that file mocks `@ibatexas/tools`
-// with `getRedisClient` ONLY, so `rk` is `undefined` inside the SUT and the
-// first `rk(...)` call in `checkQueues` throws straight into that function's
-// swallowing `catch`. Its 9 tests never reach a queue key at all. Wiring a real
-// `rk` and an `lLen` into that mock would change what those 9 tests exercise;
-// a sibling file with its own mock leaves them untouched.
+// WHY A SEPARATE FILE from `health.test.ts`: when this file was written that
+// one mocked `@ibatexas/tools` with `getRedisClient` ONLY, so `rk` was
+// `undefined` inside the SUT and the first `rk(...)` call in `checkQueues`
+// threw straight into that function's swallowing `catch` — its 9 tests never
+// reached a queue key at all. F-30 has since completed that mock (real `rk` +
+// a table-driven `lLen`) and pinned the handler's queue BEHAVIOUR there:
+// dlq/outbox body fields, the hasDlqEntries / hasOutboxBacklog flags, the
+// `len > 100` backlog threshold, and the non-fatal catch. The split still
+// stands, and the two files are complementary, not redundant: this file is
+// about WHICH KEYS the route asks Redis for (it delegates to the real `rk` and
+// records every suffix), `health.test.ts` is about what the handler DOES with
+// the lengths that come back (it holds the key bytes fixed).
 
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import Fastify from "fastify";
