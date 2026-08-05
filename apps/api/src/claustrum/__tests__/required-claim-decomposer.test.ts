@@ -717,27 +717,116 @@ describe("classifyRequestSpans — F-27 the `mud` past-tense lookahead", () => {
     }
   });
 
-  // Every OTHER root in both literals is untouched by this change. If a future edit
-  // widens the lookahead to a shared position, these red.
-  it("the SIBLING roots are unmoved — no other root's behaviour changed", () => {
-    for (const text of [
-      "adiciona uma coca no carrinho",
-      "acrescenta batata frita",
-      "remove a costela do pedido",
-      "tira o refrigerante",
-      "coloca 2 cocas no carrinho",
-      "põe mais uma porção",
-      "ponha o brisket no lugar",
-      "troca a costela por brisket",
-      "limpa o carrinho",
-      "esvazia o carrinho",
-      "aumenta pra 3 unidades",
-      "diminui pra 1 unidade",
-      "cancela meu pedido",
-      "fecha o pedido",
-      "finaliza a compra",
-    ]) {
+  // THE 16-ROOT ROLL CALL — one probe per root across all THREE literals, by NAME
+  // and hand-written. It carries two jobs at once:
+  //
+  //   1. F-27's blast radius: every OTHER root is unmoved by the lookahead.
+  //   2. THE SPLIT GUARD. `hasMutationImperative` is spelled as three literals for
+  //      Sonar S5843 (see its docblock). A re-split, a "tidy" back into one, or a
+  //      root dropped in the shuffle reds HERE, by the name of the root that went
+  //      missing — which no corpus-level identity check can do, because a corpus can
+  //      only witness the roots it happens to contain.
+  //
+  // The roll call is hand-written on purpose: deriving it from the regex source would
+  // mean a deleted root deletes its own coverage.
+  it("the 16-root ROLL CALL — every root in all three literals still fires", () => {
+    const ROOTS: Readonly<Record<string, string>> = {
+      // MEMBERSHIP — which items are in the order
+      adicion: "adiciona uma coca no carrinho",
+      acrescent: "acrescenta batata frita",
+      remov: "remove a costela do pedido",
+      tir: "tira o refrigerante",
+      "colo[cq]": "coloca 2 cocas no carrinho",
+      "p[õo]e": "põe mais uma porção",
+      ponh: "ponha o brisket no lugar",
+      // AMEND — change what is already there
+      mud: "muda a costela para 3 unidades",
+      "tro[cq]": "troca a costela por brisket",
+      limp: "limpa o carrinho",
+      esvazi: "esvazia o carrinho",
+      aument: "aumenta pra 3 unidades",
+      diminu: "diminui pra 1 unidade",
+      // LIFECYCLE
+      cancel: "cancela meu pedido",
+      fech: "fecha o pedido",
+      finaliz: "finaliza a compra",
+    };
+    expect(Object.keys(ROOTS)).toHaveLength(16);
+    for (const [root, probe] of Object.entries(ROOTS)) {
+      expect(hasMutationImperative(probe), `${root}: ${probe}`).toBe(true);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-31 — the ADDRESS-CHANGE family rides a STORE_INFO read. A CHANGE DETECTOR,
+// recording a DEFECT. Everything asserted below is WRONG behaviour, pinned at its
+// measured value so that FIXING it is loud instead of silent.
+//
+// WHAT IS WRONG. A customer asking to change THEIR delivery address is answered
+// with the RESTAURANT's address. `STORE_INFO_Q` fires on the possessed "meu
+// endereço" and STORE_INFO is classify-only-eligible, so the whole turn is answered
+// deterministically and the address change is dropped — a wrong-FAMILY render, not a
+// mild over-inclusion.
+//
+// WHY IT IS NOT F-27's DEFECT, and why F-27 still records it. The mutation verbs in
+// this family — `atualiz` / `corrig` / `cadastr` / `alter` — are in NEITHER literal
+// of `hasMutationImperative`, so seven of the eight phrasings below already routed to
+// STORE_INFO at c9e871c4, before F-27 existed. F-27 moves exactly ONE of them,
+// "meu endereço mudou[, atualiza por favor]", by no longer treating the preterite
+// REPORT as a command. That is the file's stated fail-safe boundary (a preterite is
+// not an imperative — see `hasMutationImperative`) applied consistently, and it does
+// not open the family: it joins a hole that is already seven phrasings wide.
+//
+// WHAT CLOSING F-31 LOOKS LIKE, so this pin names its own exit: give the address
+// family its own read/mutation discriminator — most likely an ADDRESS-SCOPED span
+// that a possessive ("meu/minha") routes AWAY from STORE_INFO, plus the missing
+// `atualiz|corrig|cadastr|alter` roots — and then DELETE this describe block, do not
+// update its expectations. A row here flipping to `undefined`/a different span is
+// F-31 being fixed; it must be reviewed as such, never re-baselined.
+//
+// SCOPE NOTE: the ATTESTED corpus mutations in this family ("muda o endereço de
+// entrega", "muda o endereço do restaurante") carry a real root and are NOT affected
+// — the last case pins that, so this block cannot be read as "addresses are broken".
+// ─────────────────────────────────────────────────────────────────────────────
+describe("F-31 (CHANGE DETECTOR, records a DEFECT) — address changes ride STORE_INFO", () => {
+  /** PRE-EXISTING at c9e871c4 — identical before and after F-27. */
+  const PRE_EXISTING = [
+    "atualiza meu endereço por favor",
+    "atualiza meu endereço",
+    "corrige meu endereço",
+    "cadastra meu endereço novo",
+    "quero atualizar meu endereço",
+    "meu endereço agora é rua das flores 123",
+    "meu novo endereço é rua das flores 123",
+  ];
+
+  /** The ONE phrasing F-27 moved into the family. Separated so the ledger is honest. */
+  const MOVED_BY_F27 = ["meu endereço mudou", "meu endereço mudou, atualiza por favor"];
+
+  it("PRE-EXISTING — seven phrasings already answered with the STORE's address", () => {
+    for (const text of PRE_EXISTING) {
+      // The verbs are in NEITHER literal — that is the actual mechanism, pinned
+      // directly so this block cannot be misread as a lookahead problem.
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).toContain("STORE_INFO_Q");
+      expect([...(classifyOnlyRequiredTypes(text) ?? [])], text).toContain("STORE_INFO");
+    }
+  });
+
+  it("MOVED BY F-27 — the preterite report joins the same pre-existing hole", () => {
+    for (const text of MOVED_BY_F27) {
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).toContain("STORE_INFO_Q");
+      expect([...(classifyOnlyRequiredTypes(text) ?? [])], text).toContain("STORE_INFO");
+    }
+  });
+
+  it("NOT AFFECTED — the attested address mutations carry a root and stay mutations", () => {
+    // Both are real corpus utterances, not authored probes.
+    for (const text of ["muda o endereço de entrega", "muda o endereço do restaurante"]) {
       expect(hasMutationImperative(text), text).toBe(true);
+      expect(classifyOnlyRequiredTypes(text), text).toBeUndefined();
     }
   });
 });
