@@ -73,14 +73,11 @@ vi.mock("redis", () => {
     },
     hDel: async () => 1,
     expire: async () => 1,
-    multi: () => {
-      const chain: Record<string, unknown> = {
-        hSet: () => chain,
-        expire: () => chain,
-        exec: async () => [],
-      };
-      return chain;
-    },
+    // No `multi()`: M4 measured this file's whole run and it never reaches a
+    // production multi() site, so a stub here covers nothing while silently
+    // DROPPING any queued write a future path adds (census, M4). Left absent so
+    // that path fails loudly instead; real Redis is the home if one needs a
+    // transaction's effect (W4 RULE 3 — the adapter does not emulate multi).
     duplicate: () => client,
   };
   return { createClient: () => client };

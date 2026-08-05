@@ -212,6 +212,15 @@ correction immediately below before treating 14 as the whole surface.
 
 ## Population correction (R5-S9) — the enumeration above is INCOMPLETE
 
+> **RESOLVED by M4 — and the count in it was wrong in the direction it warned
+> about.** The sweep was rebuilt as this section demands; the population is
+> **13**, not 12 (`r4s3-harness-turn-contexts.e2e.test.ts` arrived after this
+> tip). More importantly the *classification* below is wrong: the twelve are
+> NOT "class (i) atomicity theater" and were never migratable-or-not, because
+> **twelve of the thirteen never invoke `multi()` at all** — measured. See
+> "M4 — the `multi()` redisFake files" for the probe, the per-file
+> dispositions and the correction to the paragraph on `multi()` chains.
+
 **Status: NEEDS-VERIFICATION. Do not quote "the map is complete" without reading
 this.**
 
@@ -253,6 +262,16 @@ What this does and does not change:
   (`LuaAtomicityNotEmulated`, W4 RULE 3), so **none of the twelve is
   migratable** — they are class (i) atomicity theater, owner-gated for the
   same reason items 1-7 are. R5-S9 really was the last actionable item.
+
+  > **CORRECTED by M4.** "Class (i) atomicity theater, owner-gated" is the
+  > wrong classification, and it is wrong in the way M3 warned about — by the
+  > ARTEFACT (a `multi()` stub is present) rather than by the PROPERTY (does a
+  > transaction's effect actually happen). Measured: `multi()` is invoked **3
+  > times in the whole cluster**, all in `tool-dispatch-self-readjudication`.
+  > For the other twelve the stub is unreachable, so there is nothing to
+  > emulate, nothing owner-gated, and no container that would buy anything.
+  > Note the reversal this implies for the bullet below: "at least 25
+  > owner-gated / at least 19 in class (i)" over-counts by twelve.
 - It **does** change the owner-gated total. "13 owner-gated" counts the
   enumeration only; the true figure is at least 25, and the class-(i)
   atomicity-theater group is at least 19 rather than 7. Any decision priced
@@ -276,6 +295,14 @@ Not fixed here: classifying twelve files, re-pricing the owner's decision, and
 deciding whether the copy-pasted `redisFake` should become one shared harness
 are all outside a spill-migration slice. Filed so the next census slice starts
 from the real number.
+
+> **M4 did the classification.** The `multi()` paragraph above is right about
+> what the chain DOES and wrong about who it happens to: only
+> `tool-dispatch-self-readjudication` ever writes through it, and it is the
+> "writes transactionally, never reads back" case rather than the
+> "sees its own write vanish" one — a latent fiction, not a live defect. The
+> shared-harness question answered itself: with twelve stubs deleted and one
+> file reaching a `multi()`, there is no duplication left to factor out.
 
 ---
 
@@ -708,6 +735,164 @@ failure mode that is always "the Lua stopped entirely". Disproportionate gate
 mechanisms are how a gate becomes noise and then gets ignored.
 
 Roll call after M3: **21 suites / ≥159 cases (149 container-backed)**.
+
+---
+
+## M4 — the `multi()` redisFake files, per-file disposition
+
+**The population is THIRTEEN, not twelve, and twelve of the thirteen were never
+holed — their `multi()` stub is dead code that no SUT reaches.** The single
+genuinely-reaching file was holed exactly as the R5-S9 correction describes.
+
+### The sweep, rebuilt
+
+The R5-S9 correction is explicit that its sweep was an unfaithful
+re-implementation (raw 28, over-matching on `Set`/`type`/`publish`/`subscribe`)
+and that anyone re-opening the census must rebuild it before trusting a total.
+Rebuilt from the method stated at the top of this file — a file is a
+behavioural double when **two or more** methods named for a Redis command read
+or write a **test-local backing store**:
+
+- `Set` (capital) is excluded, which is what produced most of R5-S9's
+  over-match; `type`/`publish`/`subscribe` count only when the body touches a
+  store.
+- **The store-declaration form is where both prior sweeps failed.** The first
+  rebuild recognised `new Map()`, object/array literals and the DESTRUCTURED
+  `const { redisFake } = vi.hoisted(...)`, and still returned a wrong 12 — it
+  dropped `tool-dispatch-self-readjudication.test.ts`, one of the census's own
+  twelve, because that file uses the PLAIN form `const redisFake =
+  vi.hoisted(() => ({ … }))`. Adding that form is what makes the sweep
+  reproduce the M-phase enumerations.
+
+Corrected sweep: **866 test `.ts` files scanned, 31 behavioural doubles, 13
+bearing a `multi()`.**
+
+| | Files |
+|---|---|
+| The census's list | 12 |
+| Rebuilt sweep | **13** |
+| Difference | `__tests__/r4s3-harness-turn-contexts.e2e.test.ts` |
+
+`r4s3-harness-turn-contexts.e2e.test.ts` was added by `3c61572d` (R4-S3) after
+the census's tip `1ce0df35` and carries a byte-identical copy of the double. It
+is the copy-paste the correction predicted, arriving after the count was taken —
+which is the argument for the sweep being rebuildable rather than for the list
+being maintained by hand.
+
+All 13 chains are the same stub in 3 trivially-different spellings (trailing
+comma; one adds `touch("multi")`): **every one stubs only `hSet`, `expire` and
+`exec: async () => []`.**
+
+### The hole proof — measured per file, not assumed
+
+Each file's chain was temporarily replaced with a **Proxy** that records every
+command the SUT queues (including commands the real stub does not define, which
+today throw) plus the production call site, and logs at `exec()` and at
+`multi()` entry. Whole cluster driven: 13 files / 165 tests.
+
+**`multi()` is invoked exactly 3 times in the entire cluster.** All three are
+the same production site and the same test file:
+
+| Production site | Queued | Times | From |
+|---|---|---|---|
+| `packages/tools/src/intelligence/update-preferences.ts:92` | `["hSet","expire"]` | 3 | `tool-dispatch-self-readjudication.test.ts`, its three `probeAll()` runs |
+
+So **twelve of the thirteen never reach a production `multi()` at all** — the
+stub is unreachable code, and there is no dropped write in them because there is
+no write. The thirteenth reaches it and drops it exactly as described.
+
+**The instrument's ability to produce a non-zero is not assumed (M3's lesson).**
+The twelve zeros and the three hits come from the SAME probe, in the SAME run,
+against the SAME build — the thirteenth file is the positive control for the
+instrument that reports zero for the other twelve. A zero from an instrument
+that never fires anywhere would have been worth nothing.
+
+### Two facts that decide the dispositions
+
+1. **Every production `multi()` in this repo is a batching PIPELINE, not a
+   transaction.** Grepped repo-wide: there is **no `WATCH` anywhere** (the only
+   occurrence of the word is a comment in `claustrum-bootstrap.ts:2538` saying
+   none is needed), and **nothing feature-detects `multi`**. All 18 production
+   `multi()` sites queue commands and ignore or discard the replies. No
+   all-or-nothing property is claimed by any of them.
+2. **The one live site's contract already has a home.**
+   `packages/tools/src/intelligence/__tests__/update-preferences.test.ts` is its
+   site suite and pins, with spies, that the site calls `multi()` once, `hSet`s
+   the `rk()`-composed profile key with the `preferences` field, and `expire`s
+   it with `PROFILE_TTL_SECONDS` — plus two negative cases where `multi` must
+   NOT be called. That is Q2's unit-level site observation, already in place.
+
+### Dispositions
+
+| # | File | Hole proof | Disposition | Where the invariant lives |
+|---|---|---|---|---|
+| 1 | `alias-canonicalization.e2e.test.ts` | `multi()` invoked **0×** | **delete** the dead stub | nothing was covered; nothing to rehome |
+| 2 | `chat-l1-parse-memo.e2e.test.ts` | 0× | **delete** | as above |
+| 3 | `chat-pix-checkout.e2e.test.ts` | 0× | **delete** | as above |
+| 4 | `chat-stayhome-pickup-contradiction.e2e.test.ts` | 0× | **delete** | as above |
+| 5 | `l0-social-short-circuit.e2e.test.ts` | 0× | **delete** | as above |
+| 6 | `l2-scoped-parse.e2e.test.ts` | 0× | **delete** | as above |
+| 7 | `paid-cancel-parity.e2e.test.ts` | 0× | **delete** | as above |
+| 8 | `r4s3-harness-turn-contexts.e2e.test.ts` *(not in the census's 12)* | 0× | **delete** | as above |
+| 9 | `reorder-last-workflow.e2e.test.ts` | 0× | **delete** | as above |
+| 10 | `swap-for-coupon-workflow.e2e.test.ts` | 0× | **delete** | as above |
+| 11 | `workflow-runtime-v1.e2e.test.ts` | 0× | **delete** | as above |
+| 12 | `workflow-runtime.e2e.test.ts` | 0× | **delete** | as above |
+| 13 | `tool-dispatch-self-readjudication.test.ts` | **3× — write DROPPED** | **retire onto real (non-transactional) observation** | the site's command/key/TTL contract → `update-preferences.test.ts`; that the write LANDS → this file's new case |
+
+**Nothing is left without a home.** For rows 1–12 the deleted stub held no
+invariant — it was never executed, so no assertion in any of those files ever
+depended on it (proved twice: by the probe, and by the suite staying at
+165/165). Row 13's two properties are named above and both are now pinned.
+
+**Why delete rather than repair, for the twelve.** A stub that is never invoked
+cannot fail, so it can only mislead: it is the shape the census flagged as
+copy-pasted per file, and the R4-S3 arrival is that copy-paste happening again.
+Removing it means the next path that DOES reach a `multi()` site fails loudly
+(`redis.multi is not a function`) instead of silently dropping the write and
+reporting green — which is the direction the ruling takes everywhere else. Each
+deletion leaves a note saying so, so the stub is not pasted back.
+
+**Why the thirteenth is not a container.** Its `multi()` carries no atomicity
+requirement (fact 1 above), nothing in the file reads the profile hash back, and
+its site's contract is already pinned by spies (fact 2). What was wrong was
+narrower than "no real Redis": the queued write vanished while the identical
+direct `hSet` landed. The chain now APPLIES its queued commands in order through
+the client's own methods, and `exec` returns one reply per queued command
+instead of `[]` — both fictions the correction named, gone. It makes no
+atomicity claim, and the file's header says so; the canonical in-memory adapter
+still refuses `multi` (W4 RULE 3) and **was not extended**.
+
+`multi` is also load-bearing in that file for a reason worth recording, since it
+rules out "delete" there: `reachedDepth()` requires the probe not to throw, so
+removing `multi` would have made `customer.preferences.update` read as a SHALLOW
+probe and broken the file's own anti-vacuity gate.
+
+### Revert-to-red
+
+| # | Injected | Result |
+|---|---|---|
+| 1 | `tool-dispatch`'s chain restored to the dropping shape (`hSet: () => chain`, `exec: async () => []`) | **1 RED** — the new case, `toHaveLength(1)` received 0; file exits 1 |
+| 2 | same, observed against the file's PRE-M4 cases | **10/10 GREEN** — every pre-existing assertion is blind to the drop |
+
+Row 2 is the load-bearing one: it measures the census's "silently DROPPED …
+asserted green" claim directly. The drop was invisible to all ten existing cases
+because `touch("multi")` fires whether or not the write lands, so the depth gate
+was satisfied by a store that never changed.
+
+For rows 1–12 there is no revert-to-red to run, and that is the finding rather
+than a gap: deleting code that is never executed cannot change any outcome. The
+claim under test there is *unreachability*, and the probe is what tests it.
+
+### Roll call — no enrolments, deliberately
+
+**M4 adds no real-Redis suite, so `scripts/check-real-redis-suites.mjs` is
+unchanged: 21 suites / ≥159 cases (149 container-backed).** An enrolment here
+would be decorative in F-37's exact sense — the gate proves a FILE ran, and none
+of these 13 files runs any Lua or any transaction against a container. Enrolling
+a file whose container does nothing is how `sweeper-resolver-race` came to be
+certified while its Lua was dead. The arithmetic that matters for this phase is
+the cluster's own: **165 → 166 cases** (13 files; `tool-dispatch` 10 → 11).
 
 ---
 
