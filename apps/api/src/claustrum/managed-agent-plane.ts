@@ -52,6 +52,7 @@ import {
   createAgentKillSwitchManager,
   type AgentKillSwitchManager,
 } from "./agent-kill-switch.js";
+import { setAgentKillStateReader } from "./compose-policy-packs.js";
 import type { AgentApprovalEngine } from "./agent-approvals.js";
 
 /** Env flag that opts a boot into running the managed-agent plane (default off). */
@@ -195,6 +196,24 @@ export async function startManagedAgentPlane(
 
   // T3-5 host-side pre-openCapsule kill check wrapping the live runner.
   const runner = killGuardedRunner(liveRunner, (ns) => killSwitch.isKilled(ns));
+
+  // T3-5 KERNEL-side leg (F-51). Point the AUTH-phase kill guard's late-bound
+  // holder at THIS manager — the same instance the host-side leg above reads, so
+  // both legs answer from one store rather than two that can disagree. Until
+  // this call landed the holder kept its never-killed default in every process:
+  // `agentKillSwitchGuard` is authGuards[0] of every composed pack and it read
+  // constant-false, so the in-pipeline backstop the host-side leg is documented
+  // to complement did not exist. What that leaves uncovered without this line is
+  // exactly what the host-side check cannot reach: a turn already past
+  // openCapsule when the switch flips, and the agent-approvals RESUME
+  // re-adjudication (a killed agent's parked envelope, re-adjudicated on a
+  // manager's accept, never passes through the runner at all).
+  //
+  // Late binding is what makes the placement safe: `agentKillSwitchGuard` is a
+  // module-level const built at import — before any manager exists — over a
+  // closure that reads the holder at DECISION time, so packs composed before
+  // this call still see the live state. Composition order is not load-bearing.
+  setAgentKillStateReader((ns) => killSwitch.isKilled(ns));
 
   const plane = composeAgentPlane({
     registry: deps.registry,
