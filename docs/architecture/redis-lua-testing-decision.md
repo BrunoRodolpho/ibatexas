@@ -14,7 +14,12 @@ The canonical in-memory Redis adapter refuses `eval` and `multi` by design
 asserts atomicity the double cannot provide). That refusal leaves ≥25 test
 files owner-gated: 7 doubles that emulate Lua, 6 that omit it over Lua-reaching
 paths, 12 whose `multi()` chains silently drop every queued write, plus the two
-migrations deferred on the F-22 class. Production runs 20 Lua call sites across
+migrations deferred on the F-22 class.
+<!-- M4 correction: that third figure was wrong in both directions. The
+     population is 13, and only ONE of them ever invokes multi() — the other
+     twelve were never owner-gated on anything, because their stub is
+     unreachable. See the M4 status section. -->
+ Production runs 20 Lua call sites across
 8 script shapes — every distributed lock release, every confirmation-store
 consume, both rate limiters.
 
@@ -75,6 +80,14 @@ consume, both rate limiters.
   `multi` is refactored to non-transactional observation over the canonical
   adapter. The adapter itself never grows a non-atomic `multi` (W4 RULE 3
   stands, verbatim).
+
+  > **SATISFIED by M4, and the population was 13.** The per-file rule was the
+  > right call for a reason nobody had measured: **twelve of the thirteen never
+  > invoke `multi()` at all**, so the blanket "migrate them" would have bought
+  > twelve containers for zero signal and the blanket "refactor them" would
+  > have refactored dead code. Exactly one file reaches a production `multi()`,
+  > and it took the second branch — non-transactional observation. The adapter
+  > was not extended.
 - **Q5 — sequencing with F-22.** The F-22 ruling (capabilities validated at the
   composition root; no runtime `typeof` feature-detection) defines the
   client-capability contract the migrated tests code against. Class-(i-b)
@@ -107,7 +120,7 @@ measured cost of that blind spot. Rejected.
 | M1 | The 8 script-shape contract suites — **DONE (8/8)** | 2–3 |
 | M2 | Class (i): the 7 eval-emulating doubles retired onto shape suites + unit observation — **DONE (7/7)** | 2 |
 | M3 | Class (i-b) bound cases + the two F-22-deferred migrations — **DONE** | 1 |
-| M4 | The 12 `multi()` redisFake files, per-file disposition | 2–3 |
+| M4 | The `multi()` redisFake files, per-file disposition — **DONE (13/13)** | 1 |
 
 ### M1 status — all 8 shapes covered
 
@@ -334,6 +347,65 @@ what the pre-M3 gate certified, and it is what the two changes now catch.
 The roll call is **21 suites / ≥159 executing cases (149 container-backed)**;
 `sweeper-resolver-race` goes 3 → 6.
 
-Estimated total: **8–11 slices** at the program's measured per-slice pace.
-F-21's competing-clients regression tests do not wait on any of this — they
-extend the existing harness today.
+### M4 status — the `multi()` cluster, and the twelve stubs nobody was calling
+
+**The migration plan is COMPLETE.** M4 is the last phase, and it closes by
+removing coverage rather than adding it — the honest outcome once the population
+was measured instead of read off a table.
+
+**The sweep was rebuilt first, as the census's own calibration rule requires.**
+R5-S9's sweep was unfaithful (raw 28, over-matching on `Set`/`type`/`publish`/
+`subscribe`) and its twelve were never individually classified. Rebuilt, the
+population is **13**: `r4s3-harness-turn-contexts.e2e.test.ts` carries a
+byte-identical copy of the double and arrived after the census's tip. The
+rebuild's own first attempt returned a *wrong* 13-minus-one, because it missed
+the plain `const redisFake = vi.hoisted(...)` store form — recorded in the
+census, since that is the third sweep in a row to be defeated by how a store
+happens to be declared.
+
+**The hole proof is per file, and it inverted the expected answer.** Each
+chain was replaced with a recording Proxy and the whole cluster driven (13 files
+/ 165 cases). `multi()` is invoked **exactly 3 times**, all from
+`packages/tools/src/intelligence/update-preferences.ts:92`, all inside
+`tool-dispatch-self-readjudication.test.ts`. **Twelve files never reach a
+production `multi()` at all** — their stub is unreachable code, so there was no
+dropped write to fix, and the "class (i) atomicity theater, at least 19 files"
+figure the census carried over-counts by twelve. Per M3's instrument rule the
+zeros are not taken on faith: the thirteenth file is the positive control for
+the same probe, in the same run.
+
+| Disposition | Files | Justification |
+|---|---|---|
+| **delete** the dead stub | 12 | never invoked; holds no invariant; its presence would silently drop the first queued write a future path adds |
+| **retire onto real, non-transactional observation** | 1 | `tool-dispatch-self-readjudication` — the queued write now lands and `exec` returns one reply per command |
+
+**No container, and the adapter did not grow `multi`.** Two measured facts
+carried that decision. First, **there is no `WATCH` anywhere in production** and
+nothing feature-detects `multi`: all 18 production `multi()` sites are batching
+pipelines, so no site claims an all-or-nothing property for a container to
+prove. Second, the one live site's contract — `multi()` once, the `rk()`-composed
+profile key, the `preferences` field, `PROFILE_TTL_SECONDS` — is already pinned
+by spies in `packages/tools/src/intelligence/__tests__/update-preferences.test.ts`,
+which is Q2's unit-level site observation already in place. What was actually
+wrong was narrower: the queued write vanished while the identical direct `hSet`
+landed, and `exec` answered `[]` for a non-empty transaction.
+
+**Revert-to-red, and the half that matters.** Restoring the dropping chain reds
+the new case (1 failed, exit 1) — and leaves the file's other **ten cases
+green**. That measures the census's "silently DROPPED … asserted green" claim
+directly: `touch("multi")` fires whether or not the write lands, so the file's
+own depth gate was satisfied by a store that never changed. For the twelve there
+is no revert-to-red and that is the finding, not a gap — deleting never-executed
+code cannot change an outcome; the claim under test is *unreachability*, and the
+probe is what tests it.
+
+**No roll-call enrolment, deliberately.** M4 adds no real-Redis suite, so the
+gate stays at **21 suites / ≥159 cases (149 container-backed)**. Enrolling any of
+these files would be decorative in F-37's exact sense — the gate proves a FILE
+ran, and none of them runs Lua or a transaction against a container. A container
+that does nothing, certified by a gate, is the state F-37 was.
+
+Estimated total was **8–11 slices**; the program ran **M0–M4 in 5**, with M4 at
+1 rather than its estimated 2–3 because eleven twelfths of its population turned
+out to be dead code. F-21's competing-clients regression tests do not wait on any
+of this — they extend the existing harness today.

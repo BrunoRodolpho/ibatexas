@@ -272,12 +272,58 @@ vi.mock("redis", () => {
     evalSha: async () => (touch("evalSha"), 1),
     scriptLoad: async () => (touch("scriptLoad"), "sha_1"),
     expire: async () => (touch("expire"), 1),
+    // M4 — the ONE file in the redisFake cluster that actually reaches a
+    // production `multi()`. Measured, not assumed: across all 13 copies of this
+    // double, `multi()` is invoked exactly 3 times and every one is
+    // `updatePreferences` (packages/tools/src/intelligence/update-preferences.ts)
+    // queuing hSet+expire on the customer profile hash — from this file's three
+    // `probeAll()` runs.
+    //
+    // The queued commands APPLY here rather than being dropped. The old chain
+    // returned itself for hSet/expire and `[]` from exec, so the profile write
+    // vanished while the identical direct `hSet` landed — the census's
+    // silent-drop shape. Nothing read it back, so it was a latent fiction
+    // rather than a live defect, but it is a fiction this file no longer tells.
+    //
+    // This makes NO atomicity claim, and does not need to: every production
+    // `multi()` in this repo is a batching PIPELINE — there is no `WATCH`
+    // anywhere in the tree — and nothing in this file asserts a transaction's
+    // all-or-nothing property. What the site must issue (this key, this field,
+    // this TTL) is pinned by its own suite,
+    // `packages/tools/src/intelligence/__tests__/update-preferences.test.ts`.
+    // A case that genuinely needs atomicity belongs on the real-Redis harness;
+    // the canonical in-memory adapter still refuses `multi` (W4 RULE 3).
+    //
+    // `multi` is load-bearing in this file for a second reason: `reachedDepth()`
+    // requires the probe not to throw, so removing it would make
+    // `customer.preferences.update` read as a shallow probe.
     multi: () => {
       touch("multi");
+      const queued: Array<() => Promise<unknown>> = [];
       const chain: Record<string, unknown> = {
-        hSet: () => chain,
-        expire: () => chain,
-        exec: async () => [],
+        hSet: (key: string, field: string, value: string) => {
+          queued.push(() =>
+            (client.hSet as (k: string, f: string, v: string) => Promise<number>)(
+              key,
+              field,
+              value,
+            ),
+          );
+          return chain;
+        },
+        expire: (key: string, seconds: number) => {
+          queued.push(() =>
+            (client.expire as (k: string, s: number) => Promise<number>)(key, seconds),
+          );
+          return chain;
+        },
+        // Real EXEC returns one reply per queued command; the old `[]` gave zero
+        // replies for N commands, so any positional read got `undefined`.
+        exec: async () => {
+          const replies: unknown[] = [];
+          for (const run of queued) replies.push(await run());
+          return replies;
+        },
       };
       return chain;
     },
@@ -540,6 +586,41 @@ describe("BKL-242/243 — no dispatched tool re-adjudicates its own intent kind"
         "deepen their PROBE_INPUTS fixture or record them in SHALLOW_PROBE with " +
         "a reason.",
     ).toEqual(Object.keys(SHALLOW_PROBE).sort());
+  });
+
+  // Anti-vacuity #1b — the double does not silently swallow a TRANSACTIONAL
+  // write (M4).
+  //
+  // `updatePreferences` is the only production path any of these probes takes
+  // through `redis.multi()`, and it writes the customer profile hash through
+  // the pipeline rather than directly. While the chain returned itself and
+  // `exec` answered `[]`, that write went nowhere: the probe still "reached a
+  // leaf effect" (the `touch("multi")` above fires either way), so the gate
+  // above stayed green over a store that never changed. This pins the write
+  // landing, which is what makes the queued commands worth queuing.
+  //
+  // The KEY's exact composition is deliberately not asserted here — that is
+  // `packages/tools/src/intelligence/__tests__/update-preferences.test.ts`'s
+  // job, which pins `rk()`, the field and PROFILE_TTL_SECONDS at the site.
+  it("a pipelined profile write LANDS in the same keyspace as a direct write", async () => {
+    seedEnv();
+    installMedusaFake();
+
+    await probeAll();
+
+    const profileHashes = [...redisFake.hashes.entries()].filter(([k]) =>
+      k.endsWith("customer:profile:cus_1"),
+    );
+
+    expect(
+      profileHashes.map(([k]) => k),
+      "`customer.preferences.update` ran, so its multi()-queued hSet on the " +
+        "profile hash must be observable in the SAME backing store a direct " +
+        "hSet writes to. An empty list means the transaction path dropped the " +
+        "write — the census's silent-drop shape, asserted green.",
+    ).toHaveLength(1);
+
+    expect(profileHashes[0]?.[1]).toHaveProperty("preferences");
   });
 
   // Anti-vacuity #2 — the detector itself works, independently of any real tool.
