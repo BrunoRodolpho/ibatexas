@@ -125,6 +125,14 @@ const requirePaymentExists: PaymentGuard = (envelope, state) => {
 // resource is the orderId (payment ownership flows through the order), bound in the
 // per-customer authority graph of OWNED resources. A non-owned order is unbound ⇒
 // REFUSE (de-vacuumed — see the pack-payments ownership canary).
+//
+// F-24 — this set MUST agree with the adopter's `OWNERSHIP_GATED_KINDS`
+// (ibatexas apps/api claustrum/authority-wiring.ts), which decides what gets a
+// `resourceRefs` stamp and an injected `state.authority`. Dropping a kind here
+// leaves the adopter stamping an envelope this guard never reads — measured:
+// removing `payment.refund.issue` turns a CROSS-CUSTOMER refund from REFUSE into
+// REQUEST_CONFIRMATION. The agreement is pinned per kind by that adopter's
+// claustrum/__tests__/ownership-set-agreement.test.ts.
 const OWNERSHIP_GATED_PAYMENT_KINDS: ReadonlySet<string> = new Set([
   "payment.refund.issue",
   "payment.refund.confirm",

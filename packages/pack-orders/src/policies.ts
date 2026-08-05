@@ -761,6 +761,13 @@ const requireCancellable: OrderGuard = (envelope, state) => {
 // resources + a session→principal map). The order money kinds bind to the order
 // resource via `resourceRefs`; a resource the customer does not own is unbound in
 // the graph ⇒ REFUSE (de-vacuumed — see the pack-orders ownership canary test).
+//
+// F-24 — this set MUST agree with the adopter's `OWNERSHIP_GATED_KINDS`
+// (ibatexas apps/api claustrum/authority-wiring.ts), which decides what gets a
+// `resourceRefs` stamp and an injected `state.authority`. Dropping a kind here
+// leaves the adopter stamping an envelope this guard never reads — enforcement
+// silently gone. The agreement is measured, per kind, by that adopter's
+// claustrum/__tests__/ownership-set-agreement.test.ts.
 const OWNERSHIP_GATED_ORDER_KINDS: ReadonlySet<string> = new Set([
   "order.cancel",
   "order.amend.request",
