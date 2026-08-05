@@ -121,7 +121,7 @@ Net-new infra #2: **Deferred-work scheduler** — generalize the existing `defer
 
 **Agent #1: PIX payment-failure remediation.** Trigger: `payment.status_changed → failed/expired`. Goal: recover the checkout — draft a WhatsApp outreach, propose `payment.pix.regenerate` or method switch, escalate when ambiguous. Why first: triggers, tools, policies, jobs (pix-expiry-monitor) and escalation paths all exist; outcome is measurable (recovered orders); failure mode is bounded (worst case = no outreach, which is today's behavior).
 
-**Agent #2 (later): escalation triage.** Trigger: `order.escalation_needed` / `support.handoff_requested`. Draft-only forever-ish: gathers context (order projection, audit trail, conversation archive), drafts a staff action into the admin console.
+**Agent #2 (later): escalation triage.** Trigger: `support.handoff_requested` (the single staff spine — `order.escalation_needed` was retired by F-48 as a subscriber-less subject; its former cart-tool producers now publish on the handoff spine too). Draft-only forever-ish: gathers context (order projection, audit trail, conversation archive), drafts a staff action into the admin console.
 
 **Stays deterministic (explicit):** PIX expiry transitions, reminder messages, order status transitions, reservation confirmations, webhook processing, anonymize grace flows. These are working BullMQ/NATS handlers. Converting them to agents is the documented 8x-cost anti-pattern. Honest critique: "expert agents triggered in complex situations" over-scopes — in this stack, almost every complex situation is a deterministic workflow with one ambiguous step. The agent owns only the ambiguous step (what to say, which remedy to propose); the workflow stays code.
 

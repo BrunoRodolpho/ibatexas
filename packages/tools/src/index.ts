@@ -50,6 +50,16 @@ export { checkOrderStatus, CheckOrderStatusTool } from "./cart/check-order-statu
 export { checkPaymentStatus, CheckPaymentStatusTool } from "./cart/check-payment-status.js"
 export { cancelOrder, CancelOrderTool } from "./cart/cancel-order.js"
 export { amendOrder, AmendOrderTool } from "./cart/amend-order.js"
+// F-48 — the HTTP batch-amend route denies BEFORE it ever calls amendOrder
+// (validateAmendChanges → 422), so it cannot inherit the tool path's wiring and
+// needs the publisher itself. Same helper, same dedup family, same
+// system-authored reason text.
+export {
+  publishOrderEscalation,
+  orderEscalationSessionId,
+  orderEscalationReason,
+  type OrderEscalationSituation,
+} from "./cart/_escalation.js"
 export { changeDeliveryAddress } from "./cart/change-delivery-address.js"
 export { switchOrderType } from "./cart/switch-order-type.js"
 export { reorder, ReorderTool } from "./cart/reorder.js"
