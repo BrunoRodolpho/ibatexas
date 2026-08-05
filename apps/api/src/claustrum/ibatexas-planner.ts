@@ -2346,6 +2346,12 @@ export function createIbatexasPlanner(
       // to a SINGLE owned resource because the authenticated customer owns ≥2
       // relevant ones → CLARIFY (ask which), never a guess.
       let ownerScopedAmbiguous = false;
+      // F-20 — the PUBLIC per-item twin of the flag above: a public per-item claim
+      // whose deterministic derivation found ≥2 admissible subjects (today reachable
+      // only for MENU_DIETARY, whose text can name two diets) is DROPPED and the turn
+      // CLARIFYs. The same disposition `buildClassifyOnlyCandidates`'s `publicAmbiguity`
+      // has always had for the ≥2-present case — never a guess between two items.
+      let publicPerItemAmbiguous = false;
       // BKL-209 — the safety markers are the UNION of (a) what the 4B flagged via
       // `propose_claim.safetyMarkers` (a bounded probabilistic §O#8 input) and (b) a
       // DETERMINISTIC medical-emergency net over the request text. Relying on (a)
@@ -2460,6 +2466,33 @@ export function createIbatexasPlanner(
           );
           if (resolvedItem === undefined) continue;
           subject = resolvedItem.id;
+        } else if (canonicalType === "MENU_DIETARY") {
+          // F-20 (subject) — the dietary claim's SUBJECT is the requested dietary TAG,
+          // detected DETERMINISTICALLY from the request text via the SHARED
+          // `detectDietaryPreferenceTags` — the SAME pure function the investigator
+          // keys its `menu:dietary:{tag}` read by, so the candidate subject == the
+          // ledger key suffix by construction (exactly the BKL-142 menu-item and
+          // BKL-138 date shapes above).
+          //
+          // MENU_DIETARY joined the public per-item class in BKL-214 with a
+          // classify-only subject derivation and an in-planner VALUE deriver, but
+          // WITHOUT this branch — so it was the ONE public per-item type whose
+          // model-route subject was model-AUTHORED (`menu:dietary:{whatever the 4B
+          // said}`). Fail-safe (an unrecognised tag keys nothing recorded → ABSENT →
+          // honest UNKNOWN) but not sound-by-construction, and recorded as R7
+          // residual 2. The model now only CLASSIFIES; the detector disposes.
+          //
+          // NO recognised tag → DROP the proposal (no candidate), the same honest
+          // degrade the two branches above take when their resolver finds nothing —
+          // never the model's string. ≥2 recognised tags ("vegetariano ou vegano?")
+          // → DROP + CLARIFY, mirroring the classify-only route's ≥2-present public
+          // ambiguity: ask which diet, never silently answer about one of the two.
+          const tags = detectDietaryPreferenceTags(state.perception.text);
+          if (tags.length !== 1) {
+            if (tags.length > 1) publicPerItemAmbiguous = true;
+            continue;
+          }
+          subject = tags[0] as string;
         }
 
         proposals.push({
@@ -2691,9 +2724,13 @@ export function createIbatexasPlanner(
       // FIX 2 — an owner-scoped claim the authenticated customer owns ≥2 relevant
       // resources for forces CLARIFY (ask which order), exactly like an unmapped P4
       // span: never a guess. §O#9 ESCALATE still outranks it (safety > clarify).
+      // F-20 — a ≥2-subject PUBLIC per-item ambiguity joins it on the same footing
+      // (ask which diet), the classify-only route's `publicAmbiguity` disposition.
       const forcedTerminal: Extract<TurnTerminal, "ESCALATE" | "CLARIFY"> | undefined =
         safetyTerminal ??
-        (hasUnmappedSpan(completeness) || ownerScopedAmbiguous ? "CLARIFY" : undefined);
+        (hasUnmappedSpan(completeness) || ownerScopedAmbiguous || publicPerItemAmbiguous
+          ? "CLARIFY"
+          : undefined);
 
       // F2 observability (claim-planner visibility): the Q6b `proposeClaims`
       // model call was previously INVISIBLE in `turn_trace` (only the intent

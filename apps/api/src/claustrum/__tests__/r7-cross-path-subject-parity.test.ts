@@ -452,13 +452,15 @@ describe("R7 / F-19 — the claim-planner ADAPTER carries the resolution to the 
   });
 });
 
-describe("R7 — DIVERGENCE 2: public per-item subject derivation on the model route", () => {
+describe("R7 / F-20 — public per-item subject derivation on the model route", () => {
   // The classify-only + union routes derive a public per-item subject from the LEDGER
   // (`presentPublicItemIds` — the investigator names the admissible item, never the
   // model). The model route cannot: `proposeClaims(state, auth)` receives NO
   // EvidenceLedger. It instead re-derives the subject per TYPE from the request text
-  // with the SAME shared resolvers the investigator used. That is sound where a branch
-  // exists — and absent where one does not.
+  // with the SAME shared resolvers the investigator used. F-20 added the fourth and
+  // last branch (MENU_DIETARY), so the class is now covered per TYPE with no member
+  // left model-authored — which is why the membership pin at the top of this file is
+  // load-bearing: a NEW member arrives here with no branch.
   const MODEL_ROUTE_TEXT: Record<string, string> = {
     MENU_ITEM_PRICE: "quanto custa a costela?",
     MENU_ITEM_CONTENTS: "o que vem na costela?",
@@ -467,7 +469,17 @@ describe("R7 — DIVERGENCE 2: public per-item subject derivation on the model r
   };
   const JUNK = "subject-the-4b-made-up";
 
-  it.each(["MENU_ITEM_PRICE", "MENU_ITEM_CONTENTS", "STORE_HOURS_FOR_DATE"])(
+  // WAS the it.each over THREE types with MENU_DIETARY characterized separately as a
+  // documented gap. F-20 added the fourth branch, so the roll call is now the WHOLE
+  // class — every public per-item type, one name at a time (a hand-written roll call,
+  // never derived from the class itself: deleting a branch must delete a passing test,
+  // not its own coverage).
+  it.each([
+    "MENU_ITEM_PRICE",
+    "MENU_ITEM_CONTENTS",
+    "STORE_HOURS_FOR_DATE",
+    "MENU_DIETARY",
+  ])(
     "%s — the model's subject is OVERRIDDEN by the deterministic in-planner derivation",
     async (type) => {
       const auth: ClaimAuthContext = { customerId: "cust-A", ownedByBaseKey: new Map() };
@@ -479,27 +491,18 @@ describe("R7 — DIVERGENCE 2: public per-item subject derivation on the model r
     },
   );
 
-  it("MENU_DIETARY — DOCUMENTED GAP: the model's subject passes through VERBATIM", async () => {
-    // MENU_DIETARY joined the public per-item class (BKL-214) with a classify-only
-    // subject derivation and an in-planner VALUE deriver, but WITHOUT an in-planner
-    // SUBJECT branch. So on the model route the candidate is keyed by whatever the 4B
-    // emitted. Fail-SAFE (an unrecognised tag parameterizes a key nothing recorded →
-    // ABSENT → honest UNKNOWN; the ledger still gates every validation), but it is the
-    // one public per-item type whose model-route subject is model-authored.
+  it("MENU_DIETARY — BOTH routes key the candidate by the SAME dietary tag", async () => {
+    // WAS `DIVERGENCE 2`, a characterization: MENU_DIETARY joined the public per-item
+    // class (BKL-214) with a classify-only subject derivation and an in-planner VALUE
+    // deriver but NO in-planner SUBJECT branch, so on the model route the candidate was
+    // keyed by whatever the 4B emitted (`menu:dietary:{junk}`). Fail-safe, but the one
+    // member of this class whose model-route subject was model-authored.
     //
-    // This test is a CHARACTERIZATION, not an endorsement: closing the gap turns it
-    // RED, which is the intended signal to update
-    // `docs/architecture/design/r7-candidate-assembly.md` and move MENU_DIETARY into
-    // the overridden set above.
-    const auth: ClaimAuthContext = { customerId: "cust-A", ownedByBaseKey: new Map() };
-    const plan = await modelRoute("MENU_DIETARY", JUNK, MODEL_ROUTE_TEXT.MENU_DIETARY as string, auth);
-    const candidate = plan.candidates.find((c) => c.type === "MENU_DIETARY");
-
-    expect(candidate?.subject).toBe(JUNK);
-    expect(candidate?.soundness.valueBinding?.key).toBe(`menu:dietary:${JUNK}`);
-  });
-
-  it("the classify-only route derives MENU_DIETARY's subject from the LEDGER instead", () => {
+    // F-20 closed it with the branch the R7 record named: the model route derives the
+    // subject from `detectDietaryPreferenceTags` — the SAME pure function the
+    // investigator keys its `menu:dietary:{tag}` read by — so the two routes reach the
+    // identical subject from different inputs (text vs ledger) by construction.
+    const text = MODEL_ROUTE_TEXT.MENU_DIETARY as string;
     const ledger = new EvidenceLedger("turn-5");
     ledger.record({
       key: "menu:dietary:vegetariano",
@@ -512,9 +515,79 @@ describe("R7 — DIVERGENCE 2: public per-item subject derivation on the model r
     });
     const auth: ClaimAuthContext = { customerId: "cust-A", ownedByBaseKey: new Map() };
 
-    const built = classifyOnlyRoute(["MENU_DIETARY"], auth, ledger, "tem opção vegetariana?");
+    const viaClassifyOnly = classifyOnlyRoute(["MENU_DIETARY"], auth, ledger, text);
+    // The model emits pure junk for the subject — the strongest available treatment.
+    const viaModel = await modelRoute("MENU_DIETARY", JUNK, text, auth);
+    const modelDietary = viaModel.candidates.filter((c) => c.type === "MENU_DIETARY");
 
-    expect(subjectsOf(built.candidates)).toEqual(["vegetariano"]);
-    expect(built.candidates[0]?.soundness.valueBinding?.key).toBe("menu:dietary:vegetariano");
+    expect(subjectsOf(viaClassifyOnly.candidates)).toEqual(["vegetariano"]);
+    expect(subjectsOf(modelDietary)).toEqual(subjectsOf(viaClassifyOnly.candidates));
+    expect(modelDietary[0]?.soundness.valueBinding?.key).toBe(
+      viaClassifyOnly.candidates[0]?.soundness.valueBinding?.key,
+    );
+    expect(modelDietary[0]?.soundness.valueBinding?.key).toBe("menu:dietary:vegetariano");
+    expect(viaModel.forcedTerminal).toBe(viaClassifyOnly.forcedTerminal);
+  });
+
+  it("MENU_DIETARY — an UNRECOGNISED diet drops the proposal (honest UNKNOWN), never the model's string", async () => {
+    // THE UNRECOGNISED BOUNDARY. `detectDietaryPreferenceTags` is a closed set
+    // {vegetariano, vegano} (the allergen-adjacent diets are deliberately excluded), so
+    // a diet outside it resolves to nothing. The branch then does what the other three
+    // do when their resolver finds nothing: DROP the proposal. Fail-safe — the turn
+    // degrades to an honest UNKNOWN and no `menu:dietary:` key is ever parameterized by
+    // a model-authored string. NOT an error, and NOT a fabricated tag.
+    const auth: ClaimAuthContext = { customerId: "cust-A", ownedByBaseKey: new Map() };
+    const plan = await modelRoute("MENU_DIETARY", "low carb", "tem opção low carb?", auth);
+
+    expect(plan.candidates.filter((c) => c.type === "MENU_DIETARY")).toEqual([]);
+    expect(plan.candidates.map((c) => c.soundness.valueBinding?.key)).not.toContain(
+      "menu:dietary:low carb",
+    );
+    // CONTROL, same test: the SAME model subject with a RECOGNISED diet in the text
+    // does produce a candidate — so the drop above is the closed-set boundary, not a
+    // branch that never emits.
+    const control = await modelRoute("MENU_DIETARY", "low carb", "tem opção vegana?", auth);
+    expect(subjectsOf(control.candidates.filter((c) => c.type === "MENU_DIETARY"))).toEqual([
+      "vegano",
+    ]);
+  });
+
+  it("MENU_DIETARY — TWO diets named: BOTH routes drop the candidate and force CLARIFY", async () => {
+    // THE AMBIGUITY BOUNDARY, and the reason F-20's branch is not just "bind tags[0]":
+    // the classify-only route has always CLARIFYd on ≥2 present public per-item reads
+    // (`publicAmbiguity`) rather than answer about one of the two. The model route now
+    // takes the same disposition from the same shape of input, so a two-diet ask is
+    // asked back on either route instead of silently half-answered.
+    const text = "tem opção vegetariana ou vegana?";
+    const ledger = new EvidenceLedger("turn-5b");
+    for (const tag of ["vegetariano", "vegano"]) {
+      ledger.record({
+        key: `menu:dietary:${tag}`,
+        value: { dietaryText: `Pratos ${tag}s` },
+        source: "catalog.searchProducts",
+        fetchedAt: NOW,
+        sourceMode: "live",
+        taint: "TRUSTED",
+        originProvenance: "FIRST_PARTY",
+      });
+    }
+    const auth: ClaimAuthContext = { customerId: "cust-A", ownedByBaseKey: new Map() };
+
+    const viaClassifyOnly = classifyOnlyRoute(["MENU_DIETARY"], auth, ledger, text);
+    const viaModel = await modelRoute("MENU_DIETARY", "vegetariano", text, auth);
+
+    expect(viaClassifyOnly.forcedTerminal).toBe("CLARIFY");
+    expect(viaModel.forcedTerminal).toBe(viaClassifyOnly.forcedTerminal);
+    expect(subjectsOf(viaModel.candidates.filter((c) => c.type === "MENU_DIETARY"))).toEqual(
+      subjectsOf(viaClassifyOnly.candidates),
+    );
+    expect(subjectsOf(viaClassifyOnly.candidates)).toEqual([]);
+    // CONTROL, same test: naming ONE diet binds and does NOT force a terminal — so the
+    // CLARIFY above is the ≥2 boundary, not a branch that always drops.
+    const control = await modelRoute("MENU_DIETARY", "vegetariano", "tem opção vegana?", auth);
+    expect(subjectsOf(control.candidates.filter((c) => c.type === "MENU_DIETARY"))).toEqual([
+      "vegano",
+    ]);
+    expect(control.forcedTerminal).toBeUndefined();
   });
 });
