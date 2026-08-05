@@ -687,6 +687,122 @@ describe("ordersPolicyBundle — REWRITE-clamp on stock-capped item.update", () 
   })
 })
 
+// ── Business: guard ORDER is protective (F-57) ──────────────────────────
+
+/**
+ * `validateQuantity` sits ABOVE `clampUpdateToStockCap` in the business
+ * phase, and these tests exist so that fact cannot be edited away silently.
+ * Before this block the whole suite was 223/223 GREEN with the two guards in
+ * EITHER order, while swapping them turns a REFUSE of a malformed proposal
+ * into a clamp-then-EXECUTE of a laundered one.
+ *
+ * The two cases are a CONTROL/TREATMENT pair on ONE variable — integrality —
+ * and the control is what stops the treatment from being vacuous. Identical
+ * kind, itemId, state and stockCap; identical over-cap relation (both request
+ * more than the cap of 3). The control REWRITEs, which PROVES the clamp
+ * engages on exactly this envelope+state shape; so when the treatment REFUSEs
+ * instead, the only thing that can explain it is which guard ran first. Drop
+ * the control and the treatment would still pass with the clamp deleted
+ * entirely, and would be pinning nothing.
+ *
+ * Revert-to-red: swap the two entries in `ordersPolicyBundle.business` and
+ * the treatment must RED (it becomes REWRITE). Measured — see F-57.
+ */
+describe("ordersPolicyBundle — guard ORDER is protective (F-57)", () => {
+  const cappedAtThree = {
+    items: [
+      {
+        variantId: "v-1",
+        quantity: 1,
+        priceInCentavos: 5_000,
+        stockCap: 3,
+      },
+    ],
+  }
+
+  it("CONTROL: an INTEGER over-cap quantity REWRITEs — the clamp does engage here", () => {
+    const decision = adjudicate(
+      env("order.item.update", {
+        cartId: "cart-1",
+        itemId: "v-1",
+        quantity: 7,
+      }),
+      state(cappedAtThree),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REWRITE")
+    if (decision.kind !== "REWRITE") return
+    expect(
+      (decision.rewritten.payload as { quantity: number }).quantity,
+    ).toBe(3)
+  })
+
+  it("TREATMENT: a NON-INTEGER over-cap quantity REFUSEs, and is never clamped into an EXECUTE", () => {
+    const decision = adjudicate(
+      env("order.item.update", {
+        cartId: "cart-1",
+        itemId: "v-1",
+        quantity: 7.5,
+      }),
+      state(cappedAtThree),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.item.quantity_invalid")
+    // The failure this pins is not "some refusal happened" but "the malformed
+    // 7.5 never became a well-formed 3". Name the value so a future clamp-first
+    // ordering cannot satisfy this test by refusing for some later reason.
+    expect(decision.refusal.detail).toBe("quantity=7.5")
+  })
+})
+
+// ── Business: KNOWN HOLE — zero stockCap clamps to an invalid quantity ──
+
+/**
+ * CHARACTERIZATION, not an endorsement (F-57). `stockCap: 0` is a DEFINED
+ * cap, so `clampUpdateToStockCap` engages and rewrites any positive request
+ * to `quantity: 0` — a value `validateQuantity` itself rejects (`q <= 0`),
+ * reached because the clamp runs after validation and the kernel does not
+ * re-validate a rewritten envelope.
+ *
+ * This test asserts what the Pack DOES today so the hole stays visible; it is
+ * not a claim that this is correct. Closing it is a behaviour change (REFUSE
+ * where an EXECUTE happens now, via `refuseQuantityOverLimit`) and is open
+ * with the governor. When that ruling lands, this test SHOULD be replaced —
+ * deleting it is the intended outcome of the fix, not a regression.
+ *
+ * Inert in the ibatexas host: nothing populates `stockCap` and the live
+ * `ctx.items` is `undefined`, so this is an adopter-facing contract defect.
+ */
+describe("ordersPolicyBundle — stockCap: 0 (known hole, F-57)", () => {
+  it("clamps a positive request to quantity 0 and does NOT refuse", () => {
+    const decision = adjudicate(
+      env("order.item.update", {
+        cartId: "cart-1",
+        itemId: "v-1",
+        quantity: 5,
+      }),
+      state({
+        items: [
+          {
+            variantId: "v-1",
+            quantity: 1,
+            priceInCentavos: 5_000,
+            stockCap: 0,
+          },
+        ],
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REWRITE")
+    if (decision.kind !== "REWRITE") return
+    expect(
+      (decision.rewritten.payload as { quantity: number }).quantity,
+    ).toBe(0)
+  })
+})
+
 // ── Business: REQUEST_CONFIRMATION for large-ticket checkout ────────────
 
 describe("ordersPolicyBundle — REQUEST_CONFIRMATION for large checkout", () => {

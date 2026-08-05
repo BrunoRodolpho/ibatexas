@@ -10,10 +10,9 @@
  *
  * Guard ordering inside each phase matters. The PIX-DEFER guard fires
  * BEFORE the auth guards (kernel evaluation order: state → taint → auth
- * → business per ADR-104 / `@adjudicate/core/kernel/adjudicate.ts`); the
- * REWRITE clamp on `order.item.update` runs BEFORE the
- * quantity-cap REFUSE so adopters see a clamped envelope rather than a
- * blanket refusal when stock is depleted.
+ * → business per ADR-104 / `@adjudicate/core/kernel/adjudicate.ts`);
+ * `validateQuantity` runs BEFORE the `clampUpdateToStockCap` REWRITE,
+ * and that order is PROTECTIVE — see the note on the business phase.
  *
  * # Migrated behaviour
  *
@@ -1024,6 +1023,24 @@ const validateQuantity: OrderGuard = (envelope) => {
  * not carry stock caps see this guard skip (extractor returns
  * undefined). The metadata declares `mutatesPayloadFields: ["quantity"]`
  * for the M3 REWRITE-scope analyzer (ADR-104).
+ *
+ * Runs AFTER `validateQuantity` — see the ordering note in the business
+ * phase; the pair is not interchangeable.
+ *
+ * KNOWN HOLE (F-57), open with the governor — do not "fix" it silently.
+ * `stockCap: 0` is a DEFINED cap, so the extractor engages and any
+ * positive request clamps to `quantity: 0` and EXECUTEs, even though
+ * `validateQuantity` classifies `0` as invalid (`q <= 0`). The clamp
+ * therefore mints a payload this Pack's own validity rule rejects, and
+ * it does so precisely in the depleted-stock case a stock clamp exists
+ * to serve. Inert in the ibatexas host today: nothing populates
+ * `stockCap`, and the live `ctx.items` is `undefined`, so the extractor
+ * returns undefined and the guard never fires — this is an adopter-facing
+ * Pack-contract defect, not a live one. Closing it is a behaviour change
+ * (a REFUSE where an EXECUTE happens now) and needs a ruling, not a
+ * drive-by; `refuseQuantityOverLimit` in `./refusals.ts` is the refusal
+ * it would use. Characterized by the `stockCap: 0` test in
+ * `__tests__/orders-pack.test.ts` so the hole cannot go quiet again.
  */
 const clampUpdateToStockCap = nameGuard(
   "clampUpdateToStockCap",
@@ -2092,6 +2109,25 @@ export const ordersPolicyBundle: PolicyBundle<
   taint: orderTaintPolicy,
   business: [
     requireExplicitAllergens,
+    // F-57 — `validateQuantity` MUST stay ABOVE `clampUpdateToStockCap`. This
+    // pair is NOT interchangeable and the order is protective; an earlier
+    // version of this file's header asserted the opposite order, so if you came
+    // here to make the code match a comment, the comment was the bug.
+    //
+    // The two match domains OVERLAP on an `order.item.update` whose quantity is
+    // BOTH non-integer AND above the line's `stockCap` (e.g. `7.5` against a cap
+    // of `3`). Business guards are first-non-null-wins, so on that overlap the
+    // ORDER alone picks the decision:
+    //   shipped (validate first) → REFUSE `order.item.quantity_invalid`
+    //   swapped  (clamp first)   → REWRITE to `quantity: 3`, then EXECUTE
+    // Swapping converts a REFUSE of a malformed LLM proposal into an EXECUTE of
+    // a laundered one — permissive, and silent: the swap is 223/223 GREEN in
+    // both directions. The ERDS-056 config-seal DOES red on it (guard order is
+    // part of the sealed `policyStructure`), but its remedy line reads
+    // "re-gere com 'export --out'" — so the seal alone invites a re-baseline
+    // that would bless the change. The behavioural pin is what makes the swap
+    // legible as a REGRESSION rather than as config drift:
+    // `__tests__/orders-pack.test.ts` §"guard ORDER is protective".
     validateQuantity,
     clampUpdateToStockCap,
     validatePaymentMethod,

@@ -355,6 +355,37 @@ export function refuseInvalidQuantity(quantity: unknown): Refusal {
   )
 }
 
+/**
+ * UNCONSUMED BY DESIGN-GAP, RETAINED DELIBERATELY (F-57). No guard calls
+ * this, and none ever has: a per-revision invocation census over every
+ * commit that touches the token (`git log -G`, not `-S`, which misses two)
+ * counts ZERO call sites in ALL of them — including inside the legacy
+ * `@ibatexas/llm-provider` brain, where the same builder lived in
+ * `refusal-taxonomy.ts` and was likewise only ever defined + barrel-exported
+ * until the package was deleted wholesale (`d945a0c7`). The token count went
+ * 4 → 2 there because a duplicate PAIR vanished with the package, never
+ * because a call site was lost. So this is BORN UNUSED, not the fossil of a
+ * dropped guard — the two verdicts are different and only the census tells
+ * them apart.
+ *
+ * It is kept because it is not decoration either: it NAMES a decision the
+ * Pack is missing. `clampUpdateToStockCap` clamps rather than refuses, and
+ * at `stockCap: 0` that clamp produces `quantity: 0` — a payload
+ * `validateQuantity` itself calls invalid (see that guard's KNOWN HOLE
+ * note). A REFUSE is the right decision at a zero cap, and this is the
+ * refusal it takes. Deleting the builder would erase the last
+ * machine-checkable trace of that gap at the same moment F-57 rewrote away
+ * the prose trace — the F-43 mistake exactly.
+ *
+ * Its code is declared in the Pack's `basisCodes` vocabulary, which is a
+ * SEALED surface (ERDS-056): removing it moves the config-seal digest and
+ * reopens the `packVersion` question tracked as F-44. Wire it only as part
+ * of the ruling that closes the zero-cap hole, never to tidy the vocabulary.
+ *
+ * Why nothing caught this: AC-004 checks basis-vocabulary PURITY in one
+ * direction only (every code EMITTED is declared). A code declared and
+ * never emitted is invisible to it.
+ */
 export function refuseQuantityOverLimit(
   requested: number,
   max: number,

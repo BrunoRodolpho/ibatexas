@@ -259,6 +259,14 @@ export const ordersPack = {
     "order.checkout.amount_exceeds_limit",
     "order.item.allergens_not_explicit",
     "order.item.quantity_invalid",
+    // F-57 — DECLARED BUT NEVER EMITTED, and retained on purpose. No guard
+    // builds this refusal (`refuseQuantityOverLimit` has had zero call sites
+    // since the Pack's creation commit); it is held as the named refusal for
+    // the zero-`stockCap` hole recorded on `clampUpdateToStockCap`. Note the
+    // asymmetry that let it sit here unnoticed: AC-004 verifies every EMITTED
+    // code is declared, never that every DECLARED code is reachable. Do not
+    // drop it to tidy the list — this array is a sealed surface (ERDS-056) and
+    // removing an entry moves the digest and reopens F-44 (packVersion).
     "order.item.quantity_over_limit",
     "order.review.rating_invalid",
     // BKL-090 — kernel transition-legality guard refusal codes.
