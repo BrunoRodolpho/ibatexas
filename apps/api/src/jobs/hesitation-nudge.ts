@@ -14,7 +14,7 @@ import { mintBroadcastReply } from "@adjudicate/core";
 import { sendText } from "../whatsapp/client.js";
 import logger from "../lib/logger.js";
 import { shouldSuppressPromotionalSend } from "../broadcast/broadcast-optout.js";
-import { createQueue, createWorker, type Job } from "./queue.js";
+import { assertDepsBag, createQueue, createWorker, type Job } from "./queue.js";
 
 const NUDGE_DELAY_MS = Number.parseInt(
   process.env.HESITATION_NUDGE_DELAY_MS || "45000",
@@ -39,10 +39,63 @@ function getQueue(): Queue {
   return queue;
 }
 
-/** BullMQ processor — checks if customer replied, sends nudge if not. */
-async function processNudge(job: Job<NudgeJobData>): Promise<void> {
+// ── The Redis client seam (R5 rollout, jobs/subscribers family) ──────────────
+//
+// PER-CONSUMER NARROWING (the R5-S1 rule, as `session/store.ts` applies it): the
+// two entry points reach DISJOINT commands, so they take disjoint client types.
+// A client that can serve `markCustomerReplied` is not, by that fact, one that
+// can serve the processor.
+//
+// FAIL-CLOSED PICK ANALYSIS (R5-S12's rule), per entry point:
+//   • `processNudge` ISSUES `get` and `del`.
+//   • `processNudge` hands the client to NOTHING. Its one downstream call that
+//     could have taken it — `shouldSuppressPromotionalSend` — reaches Postgres
+//     through `getBroadcastOptOutStore()` (a `BroadcastOptOutStore` over
+//     Prisma), not Redis, so no command joins the Pick from that edge.
+//   • `markCustomerReplied` ISSUES `set`, and hands the client to nothing.
+//   • feature detection: none in either graph (measured).
+//
+// SWALLOWING: neither command is inside a catch here. `processNudge`'s failure
+// surfaces to the BullMQ `failed` listener below (which logs + Sentry-reports),
+// so a client missing a command is loud, not a silently-skipped nudge.
+
+/** `processNudge` — the replied-marker read and its consuming delete. */
+export type NudgeProcessorRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "get" | "del"
+>;
+
+/** `markCustomerReplied` — the marker write only. */
+export type MarkRepliedRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "set"
+>;
+
+export interface ProcessNudgeDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: NudgeProcessorRedis;
+}
+
+export interface MarkCustomerRepliedDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: MarkRepliedRedis;
+}
+
+/**
+ * BullMQ processor — checks if customer replied, sends nudge if not.
+ *
+ * Exported for the seam test. It is registered behind a ONE-ARGUMENT wrapper
+ * (see `startHesitationNudgeWorker`) so BullMQ's lock token can never reach the
+ * `deps` slot; `assertDepsBag` makes that requirement fail loudly instead of
+ * silently.
+ */
+export async function processNudge(
+  job: Job<NudgeJobData>,
+  deps: ProcessNudgeDeps = {},
+): Promise<void> {
+  assertDepsBag("hesitation-nudge", deps);
   const { phone, phoneHash } = job.data;
-  const redis = await getRedisClient();
+  const redis: NudgeProcessorRedis = deps.redis ?? (await getRedisClient());
 
   // Check if customer replied (webhook handler sets this key on any reply)
   const repliedKey = rk(`wa:nudge:replied:${phoneHash}`);
@@ -78,14 +131,21 @@ export async function scheduleHesitationNudge(
 }
 
 /** Mark that customer replied (cancels pending nudge). */
-export async function markCustomerReplied(phoneHash: string): Promise<void> {
-  const redis = await getRedisClient();
+export async function markCustomerReplied(
+  phoneHash: string,
+  deps: MarkCustomerRepliedDeps = {},
+): Promise<void> {
+  const redis: MarkRepliedRedis = deps.redis ?? (await getRedisClient());
   await redis.set(rk(`wa:nudge:replied:${phoneHash}`), "1", { EX: 120 });
 }
 
 export function startHesitationNudgeWorker(): void {
   if (worker) return;
-  worker = createWorker("hesitation-nudge", processNudge);
+  // A one-argument WRAPPER, not `processNudge` itself — BullMQ calls its
+  // processor as `(job, token)` and the token would land in the `deps` slot.
+  // See `assertDepsBag` in ./queue.ts for the full note; the guard makes a bare
+  // registration throw rather than degrade silently.
+  worker = createWorker("hesitation-nudge", (job) => processNudge(job as Job<NudgeJobData>));
 
   // The createWorker factory attaches a default "error" handler (connection-level
   // failures). Add a "failed" listener for PROCESSOR failures: jobs run with

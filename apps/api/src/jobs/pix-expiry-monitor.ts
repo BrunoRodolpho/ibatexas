@@ -38,7 +38,7 @@ import type { Queue, Worker } from "bullmq";
 import { mintCronReply } from "@adjudicate/core";
 import { sendText } from "../whatsapp/client.js";
 import logger from "../lib/logger.js";
-import { createQueue, createWorker, type Job } from "./queue.js";
+import { assertDepsBag, createQueue, createWorker, type Job } from "./queue.js";
 
 const PIX_REMINDER_DELAY_MS = Number.parseInt(
   process.env.PIX_REMINDER_DELAY_MS || "1500000", // 25 minutes
@@ -92,9 +92,72 @@ function getQueue(): Queue {
   return queue;
 }
 
+// ── The Redis client seam (R5 rollout, jobs/subscribers family) ──────────────
+//
+// PER-CONSUMER NARROWING (the R5-S1 rule): the three entry points reach
+// different commands and are called from three different composition roots
+// (`routes/stripe-webhook.ts` for `markPixPaid`, the BullMQ worker for
+// `processPixExpiry`, and both for `isPixPaid`), so each takes its own type.
+//
+// FAIL-CLOSED PICK ANALYSIS (R5-S12's rule):
+//   • `isPixPaid` ISSUES `get`. Its DB fallback goes through
+//     `createPaymentQueryService()` (Prisma), which never sees this client.
+//   • `markPixPaid` ISSUES `set`.
+//   • `processPixExpiry` ISSUES `set` (the NX send claim) AND hands its client
+//     DOWNSTREAM to `isPixPaid`, which issues `get`. Declaring only `set` here —
+//     the "declare what the module issues" reading — compiles and typechecks and
+//     is WRONG: the paid-check would throw and the customer who already paid
+//     gets "O PIX expirou". So `PixExpiryProcessorRedis` is `get | set`, the
+//     UNION, and its `get` is load-bearing for a command this function never
+//     names.
+//   • feature detection: none in this module's graph (measured).
+//
+// SWALLOWING: `isPixPaid`'s Redis `get` is OUTSIDE its try/catch (only the DB
+// read is wrapped), so a client that cannot serve `get` throws rather than
+// defaulting to unpaid. The NX claim in `processPixExpiry` is unwrapped too.
+
+/** `isPixPaid` — the best-effort paid-flag read. */
+export type PixPaidReadRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "get"
+>;
+
+/** `markPixPaid` — the paid-flag write. */
+export type PixPaidWriteRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "set"
+>;
+
+/**
+ * `processPixExpiry` — its own NX send claim (`set`) UNION the `get` its
+ * `isPixPaid` call issues on the same client. See the fail-closed note above.
+ */
+export type PixExpiryProcessorRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "get" | "set"
+>;
+
+export interface IsPixPaidDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: PixPaidReadRedis;
+}
+
+export interface MarkPixPaidDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: PixPaidWriteRedis;
+}
+
+export interface ProcessPixExpiryDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: PixExpiryProcessorRedis;
+}
+
 /** Check if PIX payment was already confirmed (stripe webhook sets this key). */
-export async function isPixPaid(paymentIntentId: string): Promise<boolean> {
-  const redis = await getRedisClient();
+export async function isPixPaid(
+  paymentIntentId: string,
+  deps: IsPixPaidDeps = {},
+): Promise<boolean> {
+  const redis: PixPaidReadRedis = deps.redis ?? (await getRedisClient());
   const paid = await redis.get(rk(`pix:paid:${paymentIntentId}`));
   if (paid) return true;
 
@@ -120,7 +183,14 @@ export async function isPixPaid(paymentIntentId: string): Promise<boolean> {
 }
 
 /** BullMQ processor — sends reminder or expiry message if PIX is unpaid. */
-export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void> {
+export async function processPixExpiry(
+  job: Job<PixExpiryJobData>,
+  deps: ProcessPixExpiryDeps = {},
+): Promise<void> {
+  // Same fail-closed guard as `hesitation-nudge.ts` — see the note on
+  // `assertDepsBag`: BullMQ calls a processor as `(job, token)`, and a lock-token
+  // string in the deps slot degrades SILENTLY to the singleton default.
+  assertDepsBag("pix-expiry-monitor", deps);
   const { phone, stage } = job.data;
   const paymentIntentId = readPaymentIntentId(job.data);
 
@@ -131,8 +201,12 @@ export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void
     return;
   }
 
-  // Skip if already paid
-  if (await isPixPaid(paymentIntentId)) return;
+  // Skip if already paid.
+  //
+  // The client threads THROUGH — `isPixPaid` runs on the same client this
+  // processor was handed, which is why `PixExpiryProcessorRedis` carries a `get`
+  // this function never issues itself.
+  if (await isPixPaid(paymentIntentId, { redis: deps.redis })) return;
 
   // P3-NET-PIXREMINDER: per-stage idempotency around the message send. Jobs are
   // scheduled with removeOnComplete, so a retry re-runs this processor; without
@@ -140,7 +214,7 @@ export async function processPixExpiry(job: Job<PixExpiryJobData>): Promise<void
   // send with SET NX (first runner wins); a null reply means another run already
   // sent this {paymentIntentId,stage}, so skip. This wraps ONLY the message send —
   // the isPixPaid() paid-check and all payment logic above are untouched.
-  const redis = await getRedisClient();
+  const redis: PixExpiryProcessorRedis = deps.redis ?? (await getRedisClient());
   const claimed = await redis.set(
     rk(`pix:reminder-sent:${paymentIntentId}:${stage}`),
     "1",
@@ -217,15 +291,23 @@ export async function schedulePixExpiryMonitor(
  * {@link schedulePixExpiryMonitor} was given for this attempt. Passing the
  * Medusa order id here writes a key `isPixPaid` never reads.
  */
-export async function markPixPaid(paymentIntentId: string): Promise<void> {
-  const redis = await getRedisClient();
+export async function markPixPaid(
+  paymentIntentId: string,
+  deps: MarkPixPaidDeps = {},
+): Promise<void> {
+  const redis: PixPaidWriteRedis = deps.redis ?? (await getRedisClient());
   // TTL 2h — plenty of time for any pending jobs to check
   await redis.set(rk(`pix:paid:${paymentIntentId}`), "1", { EX: 7200 });
 }
 
 export function startPixExpiryMonitor(): void {
   if (worker) return;
-  worker = createWorker("pix-expiry-monitor", processPixExpiry);
+  // A one-argument WRAPPER, not `processPixExpiry` itself — BullMQ calls its
+  // processor as `(job, token)` with a lock-token STRING, which would otherwise
+  // land in the `deps` slot. See the identical note in `hesitation-nudge.ts`.
+  worker = createWorker("pix-expiry-monitor", (job) =>
+    processPixExpiry(job as Job<PixExpiryJobData>),
+  );
 
   // The createWorker factory attaches a default "error" handler (connection-level
   // failures). Add a "failed" listener for PROCESSOR failures: jobs run with

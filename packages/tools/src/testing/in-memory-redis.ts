@@ -31,6 +31,29 @@
 // into LIFO with every ordering assertion still green. Deliberately NOT added:
 // `lRange` `lTrim` `rPop` `lRem` `blPop` — same rule as R5-S7, no consumer.
 //
+// The R5 jobs/subscribers rollout adds the two the outreach family reaches, and
+// both arrive with a NAMED consumer — the rule R5-S7 set and R5-S9 restated:
+//
+//   • `hScan` — `apps/api/src/jobs/abandoned-cart-checker.ts` walks the
+//     `rk("active:carts")` HASH cursor-wise ("uses HSCAN (never KEYS *)"), and
+//     the loop terminates on `cursor === 0`. A double that answers a constant
+//     cursor either loops forever or visits one page; both are invisible to an
+//     assertion on what the sweep PUBLISHED. Modelled on the same cursor-session
+//     snapshot `scan` uses, for the same reason: the sweep DELETES fields
+//     (`hDel`) while iterating, and an offset cursor over a shrinking hash
+//     silently skips entries.
+//   • `lRange` — R5-S9 listed it as "no consumer". It has one now, and NOT the
+//     obvious way: `abandoned-cart-checker` never issues it, but it hands its
+//     client to `session/store.ts`'s `loadSession`, whose client type is
+//     `Pick<…, "lRange">`. That is the fail-closed Pick rule (R5-S12) in its
+//     downstream-consumer form — see the seam comment in the checker.
+//
+// Still deliberately NOT added: `lTrim` `rPop` `lRem` `blPop` `zRangeByScore`
+// `zRem` `hIncrBy` `hKeys` — each has a class-(d) caller enumerated in
+// `apps/api/src/__tests__/helpers/redis-double-census.md`, but none is in the
+// family this slice threads, and an unmodelled command is not guesswork this
+// adapter is allowed to invent.
+//
 // ── rk() runs REAL through this adapter ───────────────────────────────────────
 //
 // This adapter knows nothing about key prefixes and rewrites no key. Callers
@@ -309,6 +332,13 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
   const calls: Array<{ command: string; args: readonly unknown[] }> = []
   /** Live SCAN sessions: cursor → the snapshot still to be walked. */
   const scanSessions = new Map<number, string[]>()
+  /**
+   * Live HSCAN sessions: cursor → the hash it belongs to and the fields still to
+   * be walked. Separate from `scanSessions` because the two walk different
+   * things, but they SHARE `nextScanCursor` so a cursor minted by one can never
+   * be mistaken for one minted by the other.
+   */
+  const hScanSessions = new Map<number, { readonly key: string; readonly rest: string[] }>()
   let nextScanCursor = 1
 
   for (const [key, value] of Object.entries(options?.seed ?? {})) {
@@ -711,6 +741,38 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       return entry === undefined ? 0 : (entry.value as string[]).length
     },
 
+    /**
+     * `lRange(key, start, stop)` — an INCLUSIVE slice, with real Redis' negative
+     * indices counting back from the tail (`-1` is the last element). An absent
+     * key is an empty list, not an error.
+     *
+     * The whole-list form `lRange(key, 0, -1)` is what `session/store.ts`'s
+     * `loadSession` issues, and inclusivity is load-bearing there: a JS
+     * `slice(0, -1)` — the obvious mistranslation — drops the newest message
+     * from every history it returns, silently.
+     */
+    async lRange(key: unknown, start: unknown, stop: unknown): Promise<string[]> {
+      assertKey("lRange", key)
+      for (const [name, v] of [
+        ["start", start],
+        ["stop", stop],
+      ] as const) {
+        if (typeof v !== "number" || !Number.isInteger(v)) {
+          throw new UnroutedRedisCall("lRange", `${name} must be an integer, got ${describe(v)}`)
+        }
+      }
+      record("lRange", [key, start, stop])
+      const entry = typed(key, "list")
+      if (entry === undefined) return []
+      const arr = entry.value as string[]
+      const len = arr.length
+      // Negative indices count from the tail; out-of-range clamps, as Redis does.
+      const from = Math.max(0, (start as number) < 0 ? len + (start as number) : (start as number))
+      const to = Math.min(len - 1, (stop as number) < 0 ? len + (stop as number) : (stop as number))
+      if (from > to) return []
+      return arr.slice(from, to + 1)
+    },
+
     async hGet(key: unknown, field: unknown): Promise<string | undefined> {
       assertKey("hGet", key)
       assertKey("hGet", field)
@@ -772,6 +834,92 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       for (const f of list as string[]) if (map.delete(f)) removed++
       if (map.size === 0) store.delete(key)
       return removed
+    },
+
+    /**
+     * Cursor-wise hash walk — node-redis v4's shape:
+     * `hScan(key, cursor, { COUNT, MATCH }) → { cursor, tuples: [{field, value}] }`,
+     * with `cursor === 0` meaning "the walk is complete".
+     *
+     * The cursor is a SESSION HANDLE over a snapshot taken at cursor 0, not an
+     * offset — same design as `scan`, and for the same measured reason. The one
+     * consumer (`jobs/abandoned-cart-checker.ts`) `hDel`s fields WHILE iterating,
+     * and an offset cursor over a shrinking hash silently skips the entry that
+     * slid into the vacated slot. Fields deleted since the snapshot are dropped
+     * rather than returned, which is real HSCAN's guarantee.
+     *
+     * MATCH filters the FIELD (real HSCAN matches the field, not the value).
+     */
+    async hScan(
+      key: unknown,
+      cursor: unknown,
+      opts?: unknown,
+    ): Promise<{ cursor: number; tuples: Array<{ field: string; value: string }> }> {
+      assertKey("hScan", key)
+      if (typeof cursor !== "number" || !Number.isInteger(cursor) || cursor < 0) {
+        throw new UnroutedRedisCall(
+          "hScan",
+          `cursor must be a non-negative integer, got ${describe(cursor)}`,
+        )
+      }
+      // TYPE is meaningless for a hash walk — every value is a string — so it is
+      // NOT accepted here even though `scan` takes it.
+      assertKnownOptions("hScan", opts, ["MATCH", "COUNT"])
+      const o = (opts ?? {}) as { MATCH?: unknown; COUNT?: unknown }
+      if (o.MATCH !== undefined && typeof o.MATCH !== "string") {
+        throw new UnroutedRedisCall("hScan", `MATCH must be a string, got ${describe(o.MATCH)}`)
+      }
+      if (
+        o.COUNT !== undefined &&
+        (typeof o.COUNT !== "number" || !Number.isInteger(o.COUNT) || o.COUNT <= 0)
+      ) {
+        throw new UnroutedRedisCall(
+          "hScan",
+          `COUNT must be a positive integer, got ${describe(o.COUNT)}`,
+        )
+      }
+      if (cursor !== 0 && !hScanSessions.has(cursor)) {
+        throw new UnroutedRedisCall(
+          "hScan",
+          `unknown cursor ${cursor} — an HSCAN cursor must come from a previous hScan() on this client`,
+        )
+      }
+      record("hScan", [key, cursor, opts])
+
+      const count = (o.COUNT as number | undefined) ?? 10
+      const matcher = o.MATCH === undefined ? null : globToRegExp(o.MATCH as string)
+
+      let remaining: string[]
+      if (cursor === 0) {
+        const entry = typed(key as string, "hash")
+        const fields = entry === undefined ? [] : [...(entry.value as Map<string, string>).keys()]
+        remaining = matcher === null ? fields : fields.filter((f) => matcher.test(f))
+      } else {
+        const session = hScanSessions.get(cursor)!
+        hScanSessions.delete(cursor)
+        if (session.key !== key) {
+          throw new UnroutedRedisCall(
+            "hScan",
+            `cursor ${cursor} belongs to key ${JSON.stringify(session.key)}, not ${describe(key)}`,
+          )
+        }
+        remaining = session.rest
+      }
+
+      // Re-read the hash on every step so a field `hDel`'d mid-walk is dropped.
+      const entryNow = typed(key as string, "hash")
+      const map =
+        entryNow === undefined ? new Map<string, string>() : (entryNow.value as Map<string, string>)
+      remaining = remaining.filter((f) => map.has(f))
+
+      const batch = remaining.slice(0, count)
+      const rest = remaining.slice(count)
+      const tuples = batch.map((field) => ({ field, value: map.get(field)! }))
+      if (rest.length === 0) return { cursor: 0, tuples }
+
+      const next = ++nextScanCursor
+      hScanSessions.set(next, { key: key as string, rest })
+      return { cursor: next, tuples }
     },
 
     async sAdd(key: unknown, members: unknown): Promise<number> {

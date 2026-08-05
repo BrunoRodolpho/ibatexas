@@ -17,6 +17,40 @@ function getConnection(): ConnectionOptions {
 const PREFIX = "ibx"; // BullMQ key prefix to namespace Redis keys
 
 /**
+ * Fail closed on a deps bag that is not one.
+ *
+ * **F-32** in `apps/api/src/__tests__/helpers/redis-double-census.md`. Any
+ * future R5 slice that gives a BullMQ processor a deps bag inherits this
+ * hazard — it is a property of BullMQ's calling convention, not of any one job.
+ *
+ * Lives here because the hazard is BullMQ's, not any one job's. `createWorker`
+ * types its processor as `(job) => Promise<void>`, but BullMQ CALLS it as
+ * `(job, token)` with a lock-token STRING. A processor that also takes an
+ * options bag in its second positional slot — the R5 client-seam shape — will
+ * therefore receive that token as its `deps` if it is registered BARE.
+ *
+ * `("tok").redis` is `undefined`, so the failure is SILENT: the module falls
+ * back to the singleton and nothing observable changes, right up until someone
+ * destructures `deps` or makes a client required. This turns the silent version
+ * into a loud one, so the one-argument wrapper each registration site uses is
+ * ENFORCED rather than remembered.
+ *
+ * Note for anyone tempted to pin this with `processor.length`: a parameter with
+ * a DEFAULT does not count toward `Function.length`, so `(job, deps = {})` has
+ * length 1 and an arity assertion is vacuous. It was written that way first and
+ * passed against the bare registration. This guard is the non-vacuous form.
+ */
+export function assertDepsBag(command: string, deps: unknown): void {
+  if (typeof deps !== "object" || deps === null || Array.isArray(deps)) {
+    throw new TypeError(
+      `[${command}] deps must be an options object, got ${typeof deps} — ` +
+        `a BullMQ processor must be registered behind a one-argument wrapper so ` +
+        `its lock token cannot land in the deps slot`,
+    );
+  }
+}
+
+/**
  * Create a BullMQ Queue for scheduling repeatable/delayed jobs.
  */
 export function createQueue(name: string): Queue {

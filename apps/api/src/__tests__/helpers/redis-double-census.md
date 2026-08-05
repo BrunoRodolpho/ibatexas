@@ -851,3 +851,321 @@ made every ownership claim succeed; and a cross-suite LEAK in
 by an earlier describe (`vi.clearAllMocks()` does not clear implementations).
 
 The `redisFake` cluster (12) and the class (i) seven are untouched.
+
+---
+
+## R5 rollout, family 2 — the jobs / subscribers / shared-lib class (d)
+
+Measured on branch `refactor/r5-rollout-jobs-family`, off `dev @ b1ebbe70`.
+This section enumerates **all of class (d)** and threads a bounded sub-family of
+it. Read the census before the slice: the enumeration is the deliverable, the
+threading is a bounded first cut at it.
+
+### Reconciliation against Correction 1
+
+Correction 1 records class (d) as **21 files** (`jobs/*` ×15, `subscribers/*`
+×5, `lib/defer-resuming-lock.ts`). Re-derived here with the same grep, from
+`apps/api/src`, excluding `__tests__`:
+
+| Directory | Expected | Measured | Agrees |
+|---|---|---|---|
+| `jobs/*` | 15 | 15 | YES |
+| `subscribers/*` | 5 | 5 | YES |
+| `lib/defer-resuming-lock.ts` | 1 | 1 | YES |
+
+**21 reproduced, no correction needed.** The per-file call-site counts are new
+(Correction 1 gave only the class total), and they sum to **44 runtime
+`getRedisClient()` calls** — 26% of the 167 in the whole direct-caller
+population, in 34% of its files.
+
+### The full class-(d) enumeration
+
+`Deps?` = the module already accepts an injected client.
+
+| # | File | Sites | Commands issued | Deps? | Class |
+|---|---|---|---|---|---|
+| 1 | `jobs/abandoned-cart-checker.ts` | 1 | hScan exists ttl hDel get hGet hSet **(+ lRange downstream)** | no → **YES** | **(i) THREADED** |
+| 2 | `jobs/anonymize-medusa-retry.ts` | 1 | set **eval** (CAD) | no | (ii) owner-gated — Lua |
+| 3 | `jobs/defer-timeout-sweeper.ts` | 2 | scanIterator get ttl del; reaches CAD via `lib/defer-resuming-lock` | no | (ii) owner-gated — Lua |
+| 4 | `jobs/dlq-depth-checker.ts` | 1 | scanIterator lLen | YES | already threaded (inline bag) |
+| 5 | `jobs/escalation-park-expiry-sweeper.ts` | 1 | scanIterator get exists | YES | already threaded (`SweeperRedis`) |
+| 6 | `jobs/follow-up-poller.ts` | 1 | zRangeByScore zRem | no | (i) migratable — **deferred**, needs 2 adapter commands |
+| 7 | `jobs/hesitation-nudge.ts` | 2 | get del / set | no → **YES** | **(i) THREADED** |
+| 8 | `jobs/observability-liveness-checker.ts` | 1 | incr expire del | YES | already threaded (inline bag) |
+| 9 | `jobs/outbox-retry.ts` | 1 | set **eval** (CAD) lRange lRem | no | (ii) owner-gated — Lua |
+| 10 | `jobs/pix-expiry-monitor.ts` | 3 | get / set / get+set | no → **YES** | **(i) THREADED** |
+| 11 | `jobs/proactive-engagement.ts` | 1 | exists hGetAll set incr expire | no → **YES** | **(i) THREADED** |
+| 12 | `jobs/reservation-reminder.ts` | 1 | set | no → **YES** | **(i) THREADED** |
+| 13 | `jobs/review-prompt-poller.ts` | 1 | zRangeByScore zRem get **multi** | no | (ii) owner-gated — `multi` |
+| 14 | `jobs/review-prompt.ts` | 1 | **multi** | no | (ii) owner-gated — `multi` |
+| 15 | `jobs/weather-helper.ts` | 1 | get set | no → **YES** | **(i) THREADED** |
+| 16 | `subscribers/cart-intelligence.ts` | 14 | get set del expire hGet hSet hDel hIncrBy hKeys scan zRem **multi** | no | (ii) owner-gated — `multi` |
+| 17 | `subscribers/dedup.ts` | 4 | set del | no | (i) migratable — **deferred** |
+| 18 | `subscribers/defer-resolver.ts` | 3 | get set del incr decr scanIterator | YES | already threaded (R5-S12) |
+| 19 | `subscribers/dlq.ts` | 1 | lPush lTrim expire | no | (i) migratable — **deferred**, needs `lTrim` |
+| 20 | `subscribers/incident-notification-subscriber.ts` | 1 | set **(+ eval downstream via `atomicIncr`)** | no | (ii) owner-gated — Lua |
+| 21 | `lib/defer-resuming-lock.ts` | 2 | set del **eval** (CAD) | YES | already threaded (R5-S12) |
+
+**Arithmetic, files: 21 = 6 threaded + 3 deferred-migratable + 7 owner-gated +
+5 already threaded.**
+Rows: threaded 1,7,10,11,12,15 · deferred 6,17,19 · owner-gated 2,3,9,13,14,16,20 ·
+already threaded 4,5,8,18,21.
+
+**Arithmetic, call sites: 44 = 9 + 6 + 21 + 8**, in the same order —
+(1+2+3+1+1+1) + (1+4+1) + (1+2+1+1+1+14+1) + (1+1+1+3+2).
+
+Item 20 is worth reading twice, because the honest Pick is what CLASSIFIES it.
+`incident-notification-subscriber.ts` issues exactly one command, `set`. A Pick
+of `{set}` would compile. But it hands its client to
+`atomicIncr(redis, key, ttl)` from `@ibatexas/tools`, which is an **`eval`** of
+the INCR+EXPIRE script — so the honest Pick is `{set} ∪ {eval}`, the adapter
+refuses `eval` (W4 RULE 3), and the file is owner-gated rather than a one-line
+migration. Nothing in the module's own text says so.
+
+### The bounded slice: the customer-outreach send-guard cluster (6 of 9)
+
+Nine files were migratable now, which exceeds the ~8 bound, so the slice took
+the highest-value coherent sub-family and left an exact remainder map.
+
+**The membership rule**, stated before the enumeration: a background job whose
+output is a customer-facing WhatsApp message (or the event that produces one),
+where a **Redis key is the only thing suppressing a duplicate or unwanted
+send**. Items 1, 7, 10, 11, 12, 15 qualify — 9 call sites. `weather-helper` is
+in because `proactive-engagement` calls it and a family that threads one without
+the other leaks its seam.
+
+**Deferred, with the reason (3):**
+
+| File | Sites | Blocked on |
+|---|---|---|
+| `jobs/follow-up-poller.ts` | 1 | adapter lacks `zRangeByScore` + `zRem`. Sorted-set RANGE semantics are the fiddliest addition of the three and belong with `review-prompt-poller` (item 13), which issues the same pair — except that one ALSO issues `multi`, so it is owner-gated. Modelling a zset range for one migratable caller is the next slice's call. |
+| `subscribers/dlq.ts` | 1 | adapter lacks `lTrim`. The module's cap logic (`lPush` → `if (newLen > MAX_DLQ) lTrim`) is the only thing `lTrim` would serve, and it is exactly the kind of property worth pinning — deferred rather than rushed. |
+| `subscribers/dedup.ts` | 4 | Adapter-complete (`set` NX/EX + `del`); no blocker. Excluded ONLY by the size bound — it is not in the outreach family (it guards every NATS subscriber), and it is the single highest-value remaining item in class (d): 4 call sites, a fail-CLOSED contract, and the widest blast radius in the class. It should lead the next slice. |
+
+### The seams, and the Pick decision each one records
+
+Named types throughout, following `SweeperRedis` (the stronger of the two in-repo
+precedents) rather than the inline `readonly redis?: {...}` bag.
+
+| Module | Type(s) | Pick = issued ∪ downstream |
+|---|---|---|
+| `weather-helper.ts` | `WeatherCacheRedis` | {get,set} ∪ ∅ |
+| `reservation-reminder.ts` | `ReservationReminderRedis` | {set} ∪ ∅ |
+| `hesitation-nudge.ts` | `NudgeProcessorRedis`, `MarkRepliedRedis` | {get,del} ∪ ∅ / {set} ∪ ∅ |
+| `pix-expiry-monitor.ts` | `PixPaidReadRedis`, `PixPaidWriteRedis`, `PixExpiryProcessorRedis` | {get} / {set} / **{set} ∪ {get}** |
+| `proactive-engagement.ts` | `OutreachRedis` | {exists,hGetAll,set,incr,expire} ∪ ∅ |
+| `abandoned-cart-checker.ts` | `AbandonedCartRedis` | {hScan,exists,ttl,hDel,get,hGet,hSet} ∪ **{lRange}** |
+
+**Two of the six carry a command the module never issues**, and both were found
+by reading what the module hands the client TO — never from the module's own
+text:
+
+1. `processPixExpiry` declares `get` because it passes its client to
+   `isPixPaid`. Without it the paid-check throws and a customer who already
+   paid is told "O PIX expirou".
+2. `checkAbandonedCarts` declares `lRange` because it passes its client to
+   `session/store.ts`'s `loadSession`, whose own type is `Pick<…,"lRange">`.
+
+Case 2 is the family's clearest instance of the R5-S12 rule and is **measured,
+not argued**: the seam suite runs the sweep with a client whose `lRange` is
+removed and nothing else, over two seeded idle carts. The sweep **resolves**
+(BullMQ sees success), and **zero** `cart.abandoned` events are published — each
+cart's throw is absorbed by `checkAbandonedCarts`' per-cart `try/catch` into a
+log line. The naive Pick compiles, typechecks, passes tsc, and silently kills
+the entire abandoned-cart pipeline.
+
+**Feature detection: MEASURED, none.** `typeof … === "function"` was swept over
+`apps/api/src/{jobs,subscribers,lib,session}` and `packages/tools/src`: zero
+hits in this family's graph. The repo-wide production hits are the four already
+known (two `unref` probes, one Prisma-delegate probe, one taint probe) plus the
+`park-redis-capabilities.ts` comments describing F-22 — none reachable here.
+
+**One resolution deliberately NOT collapsed.** `checkDormantCustomers` does not
+hand its client to `fetchWeatherCondition`; each keeps its own seam and its own
+default resolution. Folding them would drop the default path's singleton
+resolutions from two to one — a behaviour change smuggled under a refactor. The
+standing rule from family 1 (`trackCartId`), and it is pinned as a test.
+
+### Adapter extension — two commands, each with a named consumer
+
+`hScan` (consumer: item 1's `do…while (cursor !== 0)` walk) and `lRange`
+(consumer: `loadSession`, reached THROUGH item 1). R5-S9 listed `lRange` as
+"no consumer"; it has one now, and not by being issued — by being consumed
+downstream. Both are modelled on the existing `scan` cursor-session design so a
+field deleted mid-walk is never handed back, which is item 1's actual caller
+pattern (`hDel` while iterating). 14 cases added to the adapter's own suite
+(`packages/tools/src/catalog/__tests__/delivery-cache-seam.test.ts`, 50 → 64).
+
+Still NOT added, each with a class-(d) caller enumerated above but none in this
+family: `lTrim` `zRangeByScore` `zRem` `hIncrBy` `hKeys` `rPop` `lRem` `blPop`.
+
+### The metric, and what it does NOT cover
+
+**Doubles in the family that SUPPLY a Redis client: 4 → 0.**
+
+| File | Before | After |
+|---|---|---|
+| `__tests__/jobs/weather-helper.test.ts` | 2-command constant double + faked `rk` (`test:`) | `createInMemoryRedis`, injected; `getRedisClient` is a rejecting TRIPWIRE; real `rk` |
+| `__tests__/abandoned-cart-checker.test.ts` | 7 bare `vi.fn()`s + faked `rk` (`test:`) + whole-module mock of `session/store.js` | in-memory adapter injected; **`session/store.js` mock DELETED**; real `rk` |
+| `jobs/__tests__/pix-expiry-monitor.test.ts` | hand-rolled Map double in 3 different shapes + faked `rk` (`ibatexas:`) | in-memory adapter injected; real `rk` |
+| `__tests__/proactive-engagement.test.ts` | already the adapter, but installed OVER `getRedisClient` | injected through the seam; `getRedisClient` is a TRIPWIRE |
+
+Three wrong-prefix `rk` fictions died: two `test:` and one `ibatexas:` — none of
+which production has ever written (apps/api's vitest resolves `rk` to
+`development:`).
+
+**What this does NOT cover, stated as the bound:**
+
+- **Zero new Lua coverage**, exactly as R5-S12's family bought none. Nothing in
+  this family reaches an `eval`; the 7 owner-gated class-(d) files are untouched
+  and remain gated on the real-Redis / `multi` decisions.
+- **Two files in the family still mock `getRedisClient`** and were NOT migrated:
+  `__tests__/sentry-background-jobs.test.ts` and
+  `__tests__/jobs/cart-recovery-tiers.test.ts`. Both drive `checkAbandonedCarts`
+  / `sendReminders` through the DEFAULT path, which the threading preserves
+  exactly, so they pass unedited. They are constant-answering `vi.fn()` stubs
+  (the `mockRedis` class), not behavioural doubles, and migrating them is a
+  separate call.
+- **The `mockRedis` metric (27) is unchanged**, for the fourth slice running.
+- The `redisFake` cluster (12) and the class (i) seven are untouched.
+
+### Remainder map for the next slice
+
+| Bucket | n | Files |
+|---|---|---|
+| Migratable now, adapter-complete | 1 | `subscribers/dedup.ts` (4 sites) — **lead with this** |
+| Migratable, needs `lTrim` | 1 | `subscribers/dlq.ts` |
+| Migratable, needs `zRangeByScore`+`zRem` | 1 | `jobs/follow-up-poller.ts` |
+| Owner-gated — Lua (`eval`) | 4 | items 2, 3, 9, 20 |
+| Owner-gated — `multi` | 3 | items 13, 14, 16 (item 13 also needs the zset pair) |
+| Already threaded | 5 | items 4, 5, 8, 18, 21 |
+| Threaded by this slice | 6 | items 1, 7, 10, 11, 12, 15 |
+| **Total** | **21** | |
+
+### Suite arithmetic
+
+Branch-local `apps/api`, run FROM `apps/api` (the root config has no
+`setupFiles` and false-reds the audit sink — a recorded trap):
+
+| | Files | Tests |
+|---|---|---|
+| baseline (`dev @ b1ebbe70`) | 489 | 7617 passed, 3 skipped |
+| after | 490 | 7650 passed, 3 skipped |
+| **delta** | **+1** | **+33** |
+
+Closes exactly, per file:
+
+| File | Before | After | Δ |
+|---|---|---|---|
+| `jobs/__tests__/outreach-client-seam.test.ts` (NEW) | — | 24 | +24 |
+| `__tests__/jobs/weather-helper.test.ts` | 12 | 13 | +1 |
+| `__tests__/abandoned-cart-checker.test.ts` | 15 | 18 | +3 |
+| `jobs/__tests__/pix-expiry-monitor.test.ts` | 19 | 23 | +4 |
+| `__tests__/proactive-engagement.test.ts` | 25 | 26 | +1 |
+| **sum** | | | **+33** |
+
+`packages/tools` moves separately: the adapter's own suite
+`src/catalog/__tests__/delivery-cache-seam.test.ts` goes **50 → 64 (+14)** for
+the `hScan` and `lRange` additions.
+
+**An exact TTL assertion needs an INJECTED clock, or it is a full-suite flake.**
+Caught here, in this slice's own new tests, and worth recording because the
+isolated run is GREEN. The adapter's `ttlMs` is `expiresAtMs - now()`; with the
+default `Date.now`, milliseconds elapse between the module's SET and the test's
+read, so `toBe(120_000)` reads back `119_868` under a loaded full-suite run
+(measured: the case took 132ms). Three assertions were affected — the nudge
+marker and both PIX TTLs — and all three now run on a frozen clock.
+
+The weakening that is NOT the fix: `toBeGreaterThan(0)`. That is precisely the
+fiction the migration killed (a double that "answered a truthy `1` and recorded
+nothing" — R5-S9, item 16), and it cannot tell a 2-hour marker from a 2-second
+one. The exact equalities are kept and proved non-vacuous by mutation: changing
+the production TTLs by ONE SECOND (`EX: 120 → 121`, `EX: 7200 → 7201`) reds
+exactly three cases.
+
+### Revert-to-red, per seam, with per-assertion attribution
+
+Each module's `deps.redis ?? (await getRedisClient())` was neutered to
+`await getRedisClient()` one module at a time (copy-then-restore, never
+`git checkout --` against uncommitted work), plus the two client HAND-OFFS
+(`isPixPaid(…, { redis: deps.redis })` and `loadSession(…, { client: redis })`).
+
+| Neutered | RED | of | The cases that did NOT flip |
+|---|---|---|---|
+| `weather-helper` | 2 | 3 | its default-fallback control |
+| `reservation-reminder` | 2 | 3 | its default-fallback control |
+| `hesitation-nudge` | 3 | 4 | its default-fallback control |
+| `pix-expiry-monitor` | 3 | 4 | its default-fallback control |
+| `proactive-engagement` | 3 | 4 | its default-fallback control |
+| `abandoned-cart-checker` | 3 | 4 | its default-fallback control |
+| the BullMQ wrapper (F-32 below) | 1 | 2 | the treatment arm |
+| `assertDepsBag`'s body (F-32 below) | 1 | 2 | the control arm |
+| **total (client seams)** | **16** | **22** | **6** |
+
+The 6 that a seam-neutering cannot flip are exactly the six
+*"resolves the singleton when NO client is threaded"* arms — they assert the
+FALLBACK, so a neutered module (which always falls back) keeps them green by
+construction. Counting them as seam evidence would be the recurring error;
+they are the arms that make the other 16 non-vacuous, not evidence themselves.
+Control run before and after: 22/22 green, 0 red.
+
+**The seam suite caught an unwired seam on its first run**, which is the
+cheapest available proof it is not vacuous: `markPixPaid` had its
+`MarkPixPaidDeps` type declared but its body never rewired, and two cases went
+red immediately.
+
+### F-32 — a deps bag in a BullMQ processor's 2nd slot collides with the lock token
+
+> **Cross-reference — read this before threading any BullMQ processor.** Every
+> future R5 slice that gives a BullMQ processor a deps bag INHERITS this hazard,
+> because the collision is BullMQ's calling convention, not any one job's bug.
+> The guard and the full note live in `apps/api/src/jobs/queue.ts`
+> (`assertDepsBag`); the registration pattern is the one-argument wrapper in
+> `jobs/hesitation-nudge.ts` and `jobs/pix-expiry-monitor.ts`.
+
+(Numbered F-32, not F-29: **F-29 was already assigned** — the owner's PR #535
+census finding that `tenant_binding_violation` is both a refusal CODE and a
+basis REASON, same string across two fields with two different guards. Unrelated
+class; this one is renumbered to clear the collision.)
+
+Found by threading, not by the census. Two of this family's entry points are
+BullMQ processors: `processNudge` and `processPixExpiry`. `jobs/queue.ts` types
+a processor as `(job) => Promise<void>`, but **BullMQ calls it as
+`(job, token)`** with a lock-token STRING — exactly where the R5 seam shape puts
+its `deps`.
+
+Registering the processor bare therefore hands a string to `deps`. The failure
+is **silent**: `("tok").redis` is `undefined`, the module falls back to the
+singleton, and nothing observable changes — until someone destructures `deps`,
+validates it, or makes the client required, at which point every queued nudge
+and every PIX reminder breaks at once. It is the same shape as the R5-S12
+Pick class: correct-looking code whose defect only surfaces on a later edit.
+
+**Two dead ends, recorded because both look convincing and one was written and
+believed:**
+
+1. `expect(processor.length).toBe(1)`. **Vacuous** — a parameter with a DEFAULT
+   does not count toward `Function.length`, so `processNudge(job, deps = {})`
+   already has length 1. It passed GREEN against the bare registration.
+2. "drive the registered processor with a token, assert the singleton was
+   used." Also vacuous: that is what BOTH spellings do today.
+
+**The fix makes the collision observable rather than merely commented.**
+`assertDepsBag(command, deps)` in `jobs/queue.ts` throws a `TypeError` on a
+non-object deps, and each registration site passes a one-argument wrapper. The
+guard lives in the chassis, not in a job, because the hazard is BullMQ's.
+
+Pinned as a control/treatment pair, each with its own revert-to-red:
+
+| Arm | Asserts | Reds when |
+|---|---|---|
+| treatment | the BARE processor REFUSES a token | `assertDepsBag`'s body is neutered |
+| control | what `startX()` REGISTERS survives a token | the wrapper is replaced by the bare processor |
+
+Neither arm can be green for the other's reason: the treatment measures the
+guard exists, the control measures production clears it.
+
+**Scope of the fix.** Only the two processors this slice threaded carry the
+guard, because only they have a second positional slot. Any future R5 slice that
+threads a BullMQ processor inherits the same collision — `jobs/queue.ts` is
+where to look.
