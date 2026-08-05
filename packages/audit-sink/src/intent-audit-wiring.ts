@@ -60,13 +60,16 @@
 //
 //   1. ESLint `no-restricted-imports` — REPO-WIDE. The ban is defined once in
 //      `@ibatexas/eslint-config/restricted-imports.js`
-//      (`AUDIT_RAW_SINK_IMPORT_BAN`) and is in effect in all 24 workspaces;
-//      `scripts/check-audit-sink-import-ban.mjs` (a CI step) re-measures that
-//      coverage by resolving each workspace's EFFECTIVE config, and fails if a
-//      workspace ever stops inheriting it. Note ESLint REPLACES rule options
-//      rather than merging them, so a workspace declaring its own
-//      `no-restricted-imports` must splice the ban in — apps/api, apps/web and
-//      packages/tools do.
+//      (`AUDIT_RAW_SINK_IMPORT_BAN`). Do not take a coverage count from this
+//      comment: `scripts/check-audit-sink-import-ban.mjs` (a CI step) is the
+//      authority, and it re-measures every workspace's EFFECTIVE config on
+//      each run, failing if one stops inheriting the ban.
+//      Two ways a workspace silently falls out, both of which that guard
+//      catches: it declares its own `no-restricted-imports` (ESLint REPLACES
+//      rule options rather than merging them, so the base ban vanishes for
+//      that whole workspace), or it is built on a different base config and
+//      never inherited it at all. Either way the fix is to splice
+//      `AUDIT_RAW_SINK_IMPORT_BAN` into that workspace's own `paths`.
 //      Exactly one file is allowlisted: `packages/audit-sink/src/index.ts`,
 //      the composer that wires redactor -> persistentBufferedSink -> multiSink
 //      and hands the result out via `getAuditSink()`. The allowlist lives in
