@@ -589,6 +589,248 @@ describe("classifyRequestSpans — BKL-285 reservation CREATE vs the STATUS read
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// F-27 — the `mud` root's PAST-TENSE lookahead: a preterite READ is not a command.
+//
+// THE DEFECT, measured at c9e871c4: `mud` was the one EDIT root with no past-tense
+// lookahead, so `hasMutationImperative("meu histórico de pedidos mudou?")` was TRUE
+// and `classifyRequestSpans` returned `[]` — a genuine READ, phrased in the preterite,
+// classified as a command and stripped of every read span. `"meu pedido mudou?"` lost
+// ORDER_STATUS_Q the same way. The fix shape was already in the file one line below:
+// `fech(?!ad|ament|ou|am)` has always excluded its own `ou` preterite.
+//
+// EVERY CASE BELOW IS A PAIR ON ONE AXIS — the verb form — with the OBJECT held
+// constant, so a treatment that passes for an unrelated reason fails its control.
+// Both halves of each pair assert `hasMutationImperative` directly AND the span, so
+// neither half can go vacuous if a span net moves underneath it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("classifyRequestSpans — F-27 the `mud` past-tense lookahead", () => {
+  /**
+   * [preterite READ, imperative COMMAND, the span the read must keep].
+   * Every utterance here is FRESH pt-BR authored for this ticket: each was checked
+   * for exact-match absence from the frozen 6889-utterance in-repo harvest, so none
+   * is lifted from a fixture the net was tuned against.
+   */
+  const PAIRS: ReadonlyArray<readonly [string, string, string]> = [
+    // THE HEADLINE — the filed utterance and its singular sibling.
+    ["meu histórico de pedidos mudou?", "muda meu histórico de pedidos", "ORDER_HISTORY_Q"],
+    ["meu pedido mudou?", "muda meu pedido", "ORDER_STATUS_Q"],
+    // The same axis across the other classify-only-eligible read families, so the fix
+    // is pinned as a property of the NET and not of one span.
+    ["meu pagamento mudou?", "muda meu pagamento", "PAYMENT_STATUS_Q"],
+    ["minha reserva mudou?", "muda minha reserva", "RESERVATION_STATUS_Q"],
+    ["o que mudou no meu carrinho?", "muda o meu carrinho", "CART_CONTENTS_Q"],
+    ["o cardápio mudou?", "muda o cardápio", "MENU_OVERVIEW_Q"],
+  ];
+
+  it("TREATMENT — a preterite READ is not a mutation, keeps its span AND the route", () => {
+    for (const [read, , span] of PAIRS) {
+      expect(hasMutationImperative(read), read).toBe(false);
+      expect(classifyRequestSpans(read), read).toContain(span);
+      // THE DELIVERABLE: the classify-only route ACCEPTS the turn, so the read is
+      // answered deterministically instead of the whole turn being dropped.
+      expect(classifyOnlyRequiredTypes(read), read).toBeDefined();
+    }
+  });
+
+  it("CONTROL — the imperative on the SAME object still routes to mutation", () => {
+    for (const [, command, span] of PAIRS) {
+      expect(hasMutationImperative(command), command).toBe(true);
+      expect(classifyRequestSpans(command), command).not.toContain(span);
+      expect(classifyOnlyRequiredTypes(command), command).toBeUndefined();
+    }
+  });
+
+  // The ticket's own named control, verbatim, plus the rest of the imperative family.
+  // These are the forms pt-BR actually uses to give an order, and the lookahead must
+  // not reach any of them — `(?!ou|ad|aram)` cannot, since none continues with those
+  // three suffixes. `muda o preço do brisket` and `muda meu pedido pra entrega` are
+  // ATTESTED corpus mutations, not authored probes.
+  it("the whole IMPERATIVE family is untouched (muda / mudar / mude / mudem)", () => {
+    for (const text of [
+      "muda o preço do brisket",
+      "muda meu pedido pra entrega",
+      "mudar o endereço de entrega",
+      "mude o horário de funcionamento",
+      "mudem a reserva para 20h",
+    ]) {
+      expect(hasMutationImperative(text), text).toBe(true);
+      expect(classifyOnlyRequiredTypes(text), text).toBeUndefined();
+    }
+  });
+
+  // ONE ARM PER LOOKAHEAD ALTERNATIVE. `ou` is covered by every PAIR above; these two
+  // cover `ad` and `aram`, which no other case in this file reaches. Deleting either
+  // alternative from the lookahead reds exactly its own row here.
+  it("ARM `ad` — the PARTICIPLE is a status report, not a command", () => {
+    for (const [text, span] of [
+      ["meu pedido foi mudado?", "ORDER_STATUS_Q"],
+      ["minha reserva foi mudada?", "RESERVATION_STATUS_Q"],
+    ] as const) {
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).toContain(span);
+    }
+  });
+
+  it("ARM `aram` — the 3rd-person PLURAL preterite is a question, not a command", () => {
+    for (const [text, span] of [
+      ["meus pedidos mudaram?", "ORDER_HISTORY_Q"],
+      ["vocês mudaram meu pedido?", "ORDER_STATUS_Q"],
+    ] as const) {
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).toContain(span);
+    }
+  });
+
+  // THE FALSE-NEGATIVE GUARD, and the half a carelessly-widened lookahead breaks
+  // first. These three forms were CONSIDERED and REJECTED for the lookahead (see
+  // `hasMutationImperative`'s docblock): `ei` because BKL-271 kept `cancelei` and the
+  // 1st-person amend frame is real; `anç` because BKL-271 kept `cancelamento` and
+  // "quero uma mudança no meu pedido" is that same request; `am` because there is no
+  // attested `mudam` read to buy. Each MUST still classify as a mutation — a future
+  // edit that folds any of them in reds here rather than silently dropping an edit.
+  it("REJECTED arms still fire — mudei / mudança / mudam stay mutations", () => {
+    for (const text of [
+      "mudei de ideia, cancela o pedido",
+      "mudei de ideia",
+      "quero uma mudança no meu pedido",
+      "vocês mudam o preço da costela?",
+    ]) {
+      expect(hasMutationImperative(text), text).toBe(true);
+    }
+  });
+
+  // THE ROLL CALL, hand-written and by NAME — not derived from the regex source, so a
+  // deleted alternative cannot delete its own coverage. Three arms, three names.
+  it("the lookahead declares exactly THREE arms, and each one is behaviourally live", () => {
+    const ARMS = {
+      ou: "meu pedido mudou?",
+      ad: "meu pedido foi mudado?",
+      aram: "meus pedidos mudaram?",
+    } as const;
+    expect(Object.keys(ARMS)).toEqual(["ou", "ad", "aram"]);
+    for (const [arm, probe] of Object.entries(ARMS)) {
+      expect(hasMutationImperative(probe), `${arm}: ${probe}`).toBe(false);
+      // and the minimally-different COMMAND on the same stem is still caught, so the
+      // arm is a narrowing of `mud` rather than its deletion.
+      expect(hasMutationImperative(probe.replace(/mud\w+/, "muda")), arm).toBe(true);
+    }
+  });
+
+  // THE 16-ROOT ROLL CALL — one probe per root across all THREE literals, by NAME
+  // and hand-written. It carries two jobs at once:
+  //
+  //   1. F-27's blast radius: every OTHER root is unmoved by the lookahead.
+  //   2. THE SPLIT GUARD. `hasMutationImperative` is spelled as three literals for
+  //      Sonar S5843 (see its docblock). A re-split, a "tidy" back into one, or a
+  //      root dropped in the shuffle reds HERE, by the name of the root that went
+  //      missing — which no corpus-level identity check can do, because a corpus can
+  //      only witness the roots it happens to contain.
+  //
+  // The roll call is hand-written on purpose: deriving it from the regex source would
+  // mean a deleted root deletes its own coverage.
+  it("the 16-root ROLL CALL — every root in all three literals still fires", () => {
+    const ROOTS: Readonly<Record<string, string>> = {
+      // MEMBERSHIP — which items are in the order
+      adicion: "adiciona uma coca no carrinho",
+      acrescent: "acrescenta batata frita",
+      remov: "remove a costela do pedido",
+      tir: "tira o refrigerante",
+      "colo[cq]": "coloca 2 cocas no carrinho",
+      "p[õo]e": "põe mais uma porção",
+      ponh: "ponha o brisket no lugar",
+      // AMEND — change what is already there
+      mud: "muda a costela para 3 unidades",
+      "tro[cq]": "troca a costela por brisket",
+      limp: "limpa o carrinho",
+      esvazi: "esvazia o carrinho",
+      aument: "aumenta pra 3 unidades",
+      diminu: "diminui pra 1 unidade",
+      // LIFECYCLE
+      cancel: "cancela meu pedido",
+      fech: "fecha o pedido",
+      finaliz: "finaliza a compra",
+    };
+    expect(Object.keys(ROOTS)).toHaveLength(16);
+    for (const [root, probe] of Object.entries(ROOTS)) {
+      expect(hasMutationImperative(probe), `${root}: ${probe}`).toBe(true);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-31 — the ADDRESS-CHANGE family rides a STORE_INFO read. A CHANGE DETECTOR,
+// recording a DEFECT. Everything asserted below is WRONG behaviour, pinned at its
+// measured value so that FIXING it is loud instead of silent.
+//
+// WHAT IS WRONG. A customer asking to change THEIR delivery address is answered
+// with the RESTAURANT's address. `STORE_INFO_Q` fires on the possessed "meu
+// endereço" and STORE_INFO is classify-only-eligible, so the whole turn is answered
+// deterministically and the address change is dropped — a wrong-FAMILY render, not a
+// mild over-inclusion.
+//
+// WHY IT IS NOT F-27's DEFECT, and why F-27 still records it. The mutation verbs in
+// this family — `atualiz` / `corrig` / `cadastr` / `alter` — are in NEITHER literal
+// of `hasMutationImperative`, so seven of the eight phrasings below already routed to
+// STORE_INFO at c9e871c4, before F-27 existed. F-27 moves exactly ONE of them,
+// "meu endereço mudou[, atualiza por favor]", by no longer treating the preterite
+// REPORT as a command. That is the file's stated fail-safe boundary (a preterite is
+// not an imperative — see `hasMutationImperative`) applied consistently, and it does
+// not open the family: it joins a hole that is already seven phrasings wide.
+//
+// WHAT CLOSING F-31 LOOKS LIKE, so this pin names its own exit: give the address
+// family its own read/mutation discriminator — most likely an ADDRESS-SCOPED span
+// that a possessive ("meu/minha") routes AWAY from STORE_INFO, plus the missing
+// `atualiz|corrig|cadastr|alter` roots — and then DELETE this describe block, do not
+// update its expectations. A row here flipping to `undefined`/a different span is
+// F-31 being fixed; it must be reviewed as such, never re-baselined.
+//
+// SCOPE NOTE: the ATTESTED corpus mutations in this family ("muda o endereço de
+// entrega", "muda o endereço do restaurante") carry a real root and are NOT affected
+// — the last case pins that, so this block cannot be read as "addresses are broken".
+// ─────────────────────────────────────────────────────────────────────────────
+describe("F-31 (CHANGE DETECTOR, records a DEFECT) — address changes ride STORE_INFO", () => {
+  /** PRE-EXISTING at c9e871c4 — identical before and after F-27. */
+  const PRE_EXISTING = [
+    "atualiza meu endereço por favor",
+    "atualiza meu endereço",
+    "corrige meu endereço",
+    "cadastra meu endereço novo",
+    "quero atualizar meu endereço",
+    "meu endereço agora é rua das flores 123",
+    "meu novo endereço é rua das flores 123",
+  ];
+
+  /** The ONE phrasing F-27 moved into the family. Separated so the ledger is honest. */
+  const MOVED_BY_F27 = ["meu endereço mudou", "meu endereço mudou, atualiza por favor"];
+
+  it("PRE-EXISTING — seven phrasings already answered with the STORE's address", () => {
+    for (const text of PRE_EXISTING) {
+      // The verbs are in NEITHER literal — that is the actual mechanism, pinned
+      // directly so this block cannot be misread as a lookahead problem.
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).toContain("STORE_INFO_Q");
+      expect([...(classifyOnlyRequiredTypes(text) ?? [])], text).toContain("STORE_INFO");
+    }
+  });
+
+  it("MOVED BY F-27 — the preterite report joins the same pre-existing hole", () => {
+    for (const text of MOVED_BY_F27) {
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).toContain("STORE_INFO_Q");
+      expect([...(classifyOnlyRequiredTypes(text) ?? [])], text).toContain("STORE_INFO");
+    }
+  });
+
+  it("NOT AFFECTED — the attested address mutations carry a root and stay mutations", () => {
+    // Both are real corpus utterances, not authored probes.
+    for (const text of ["muda o endereço de entrega", "muda o endereço do restaurante"]) {
+      expect(hasMutationImperative(text), text).toBe(true);
+      expect(classifyOnlyRequiredTypes(text), text).toBeUndefined();
+    }
+  });
+});
+
 // BKL-139 — CART_CONTENTS_Q (anchored marker; read-vs-mutation split). The marker
 // fires on a cart-READ question and is SUPPRESSED by a cart-mutation verb, so
 // classify-only never mis-frames a cart write ("adicione ao carrinho") as a read.
