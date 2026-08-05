@@ -215,6 +215,26 @@ const confirmRepeatedHandoff = nameGuard(
  * business phase is first-non-null-wins. `__tests__/whatsapp-pack.test.ts`
  * pins that relative order.
  *
+ * # Known, ACCEPTED side effect — compound turns (owner-ruled, F-43)
+ *
+ * Multi-envelope plans are kill-all-or-execute-all: `adjudicatePlan`
+ * (`apps/api/src/claustrum-bootstrap.ts`) returns on the FIRST envelope
+ * whose decision is not EXECUTE. So on a compound turn — a customer who
+ * asks for a human AND requests another mutation in one message — a
+ * REWRITE here ends the loop and the sibling envelopes are not executed.
+ *
+ * This guard does NOT introduce that behaviour; it joins it. Any REFUSE,
+ * REQUEST_CONFIRMATION or DEFER in the same position does the same, and
+ * `pack-orders`' `clampUpdateToStockCap` is an existing production REWRITE
+ * under identical plan semantics. The direction is fail-safe: a dropped
+ * sibling is a turn that does LESS, never a turn that does something
+ * wrong, and the customer can restate the dropped request.
+ *
+ * Bounded: `whatsapp.handoff.request` is not a workflow activity (every
+ * workflow in `packages/catalog/src/workflows/definitions.ts` is `order.*`),
+ * so the workflow-runtime REWRITE gap — where a REWRITE halts the run
+ * instead of executing either payload — does not apply here.
+ *
  * Per CLAUDE.md rule #4 the REWRITE's user-facing reason string is pt-BR.
  */
 const sanitizeHandoffReason: WhatsAppGuard = (envelope) => {
