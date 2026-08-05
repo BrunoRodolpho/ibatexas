@@ -41,6 +41,10 @@ import {
   prisma,
 } from "@ibatexas/domain";
 import { parseAgentSessionNamespace } from "./agent-guards.js";
+// F-9 — the ONE owner of "which cart is this conversation working on?". The
+// three cart lookups below used to spell out `rk("cart:active:session:<id>")`
+// and its fail-posture by hand; they now consume one resolution.
+import { resolveActiveCart } from "./active-cart-resolution.js";
 // LE2-021 — the single owner-scoped "last order" read, shared with the
 // workflow-scoped reorder handler so the confirm and the act cannot name
 // different orders.
@@ -520,69 +524,71 @@ export async function loadCartCtx(
   payload: Ctx,
   opts: { sessionId?: string; cartId?: string },
 ): Promise<Ctx> {
-  // HTTP supplies cartId explicitly; the conductor resolves it from the session key.
+  // HTTP supplies cartId explicitly; the conductor resolves it from the session
+  // key via `active-cart-resolution.ts`, the ONE owner of that lookup.
+  //
+  // POSTURE: ABSENT and UNAVAILABLE both fold to "no cart", because this loader's
+  // consumers are GUARDS — `requireCartItemsForCheckout` and friends REFUSE on a
+  // null cart either way, so an unresolvable cart is an honest stop rather than a
+  // mutation aimed at a cart nobody could name. (`""` stays a cart id here, as it
+  // was before — see the module's empty-string note.)
   let cartId = opts.cartId ?? null;
   if (cartId === null && opts.sessionId !== undefined) {
-    try {
-      const redis = await getRedisClient();
-      cartId = await redis.get(rk(`cart:active:session:${opts.sessionId}`));
-    } catch {
-      cartId = null;
-    }
+    const resolution = await resolveActiveCart({ sessionId: opts.sessionId });
+    cartId = resolution.outcome === "resolved" ? resolution.cartId : null;
   }
   if (cartId === null) return buildCartCtx(base, payload, null);
   return buildCartCtx(base, payload, await loadCart(cartId));
 }
 
-/**
+/* NOTE — this doc block belongs to `hasNonEmptyActiveCart` (below
+ * `readSessionCartId`), not to the function immediately following it.
+ *
  * FE-T09b review fix (MAJOR-1) — "does this session have a cart with items
- * in it RIGHT NOW?" Reuses the exact same BKL-028 active-cart key + fetch
- * as `loadCartCtx` (never a second source of truth for "what is the
- * active cart"). Exported for `amend-preference-correction.ts`'s
- * both-states disambiguation: a bare "no pedido" reference from a
- * mid-cart customer ("põe mais uma coca no pedido") colloquially means
- * their IN-PROGRESS cart, not a placed order — favor the cart. Fail-
- * CLOSED to `false` (no cart) on any read error, same posture as
- * `loadCartCtx` itself.
+ * in it RIGHT NOW?" Resolves the active cart through the SAME
+ * `active-cart-resolution.ts` seam `loadCartCtx` uses (never a second source of
+ * truth for "what is the active cart"). Exported for
+ * `amend-preference-correction.ts`'s both-states disambiguation: a bare "no
+ * pedido" reference from a mid-cart customer ("põe mais uma coca no pedido")
+ * colloquially means their IN-PROGRESS cart, not a placed order — favor the
+ * cart. Fail-CLOSED to `false` (no cart) on an unresolvable read, same posture
+ * as `loadCartCtx` itself.
  */
 /**
  * The cart id this session is currently working on, or `undefined` — LE2-023.
  *
- * The same `rk("cart:active:session:<sessionId>")` key `loadCartCtx` reads and
- * `getOrCreateCart` / `order.reorder`'s handler write. Exported so the workflow
- * composition can stamp a `cartId` onto an activity payload without opening a
- * FOURTH inline copy of the key string in this file — the drift that Hard Rule
- * #7 and the shared `rk()` helper exist to prevent.
+ * Resolved through `active-cart-resolution.ts`, the ONE owner of the
+ * session→active-cart lookup (`getOrCreateCart` / `order.reorder`'s handler are
+ * its writers). Exported so the workflow composition can stamp a `cartId` onto
+ * an activity payload without re-deriving the lookup.
  *
- * FAIL-CLOSED to `undefined` on any read error, the same posture as
+ * FAIL-CLOSED to `undefined` on an unresolvable read, the same posture as
  * `loadCartCtx` and `hasNonEmptyActiveCart`: an unresolvable cart makes the
  * guard REFUSE, which is an honest stop rather than a mutation aimed at a cart
- * nobody could name.
+ * nobody could name. This is ALSO the one site that reads `""` as "no cart" —
+ * preserved verbatim, see the resolution module's empty-string note.
  */
 export async function readSessionCartId(
   sessionId: string | undefined,
 ): Promise<string | undefined> {
   if (sessionId === undefined) return undefined;
-  try {
-    const redis = await getRedisClient();
-    const cartId = await redis.get(rk(`cart:active:session:${sessionId}`));
-    return cartId === null || cartId === "" ? undefined : cartId;
-  } catch {
-    return undefined;
-  }
+  const resolution = await resolveActiveCart({ sessionId });
+  if (resolution.outcome !== "resolved") return undefined;
+  return resolution.cartId === "" ? undefined : resolution.cartId;
 }
 
 export async function hasNonEmptyActiveCart(sessionId: string | undefined): Promise<boolean> {
   if (sessionId === undefined) return false;
-  try {
-    const redis = await getRedisClient();
-    const cartId = await redis.get(rk(`cart:active:session:${sessionId}`));
-    if (cartId === null) return false;
-    const { cart } = await loadCart(cartId);
-    return cart !== null && !cart.completed_at && (cart.items?.length ?? 0) > 0;
-  } catch {
-    return false;
-  }
+  const resolution = await resolveActiveCart({ sessionId });
+  // ABSENT and UNAVAILABLE both fold to "no cart" — this is a TIE-BREAKER
+  // (cart-vs-placed-order), and failing to the order side on an unreadable cart
+  // is the safer half of the tie.
+  if (resolution.outcome !== "resolved") return false;
+  // No catch around the fetch: `loadCart` swallows its own IO failure and
+  // returns `{cart: null}`, so the only throw the old try/catch could ever have
+  // caught was the Redis read now folded into `resolution`.
+  const { cart } = await loadCart(resolution.cartId);
+  return cart !== null && !cart.completed_at && (cart.items?.length ?? 0) > 0;
 }
 
 // ── Reservations (reservation.* targeting a slot / existing reservation) ─────

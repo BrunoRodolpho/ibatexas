@@ -85,6 +85,16 @@ interface CartSummary {
  * "who decides which cart this conversation is on" is a question a reader
  * arrives at THIS function to answer, and an out-of-date answer here sent the
  * last reader looking in the wrong place.
+ *
+ * THE OTHER END OF THIS KEY (F-9). Everything on the claustrum/turn plane that
+ * reads or writes it now goes through ONE module,
+ * `apps/api/src/claustrum/active-cart-resolution.ts`, which owns the key's
+ * SEMANTICS (the resolved/absent/unavailable trichotomy) and is where a rule
+ * about who may resolve a session's cart would be installed. This function is
+ * NOT routed through it and cannot be: apps/api is downstream of
+ * `@ibatexas/tools`, so the import would invert the dependency. Any such rule
+ * therefore binds the claustrum plane, NOT this function — read that module
+ * before assuming a wall you found there also covers this path.
  */
 function cartRedisKey(ctx: AgentContext): string {
   // Session-scoped: each sessionId gets its own cart binding

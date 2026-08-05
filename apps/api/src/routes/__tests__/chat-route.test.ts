@@ -42,6 +42,12 @@ const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockCreateSessionToken = vi.hoisted(() => vi.fn());
 const mockVerifySessionToken = vi.hoisted(() => vi.fn());
 
+// F-9 Phase B — the DURABLE session-owner read behind the `session:owner` key.
+// Mocked at the DOMAIN boundary rather than at `session-claim.js`, so the real
+// `decideSessionClaim` runs on every request this suite drives: the wall under
+// test is production's, not a stub's.
+const mockFindOwnerBySessionId = vi.hoisted(() => vi.fn());
+
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockOpenCapsule = vi.hoisted(() => vi.fn());
@@ -145,6 +151,10 @@ vi.mock("../../incidents/incident-auto-close.js", () => ({
   closeIncidentOnDeliveredReply: mockCloseIncidentOnDeliveredReply,
 }));
 
+vi.mock("@ibatexas/domain", () => ({
+  createConversationService: () => ({ findOwnerBySessionId: mockFindOwnerBySessionId }),
+}));
+
 import { chatRoutes } from "../chat.js";
 // R4-S2 — the per-turn ambient contexts, read through their OWN APIs so the probes
 // below observe what the real route actually established (none of these three
@@ -200,6 +210,10 @@ beforeEach(() => {
 
   mockCreateSessionToken.mockReturnValue("session-token-xyz");
   mockVerifySessionToken.mockReturnValue(null);
+
+  // F-9: no durable conversation record by default — the backstop finds nothing
+  // and every pre-existing case claims exactly as it did before.
+  mockFindOwnerBySessionId.mockResolvedValue(null);
 
   mockLoadSession.mockResolvedValue([]);
   mockAppendMessages.mockResolvedValue(undefined);
@@ -337,6 +351,144 @@ describe("POST /api/chat/messages — auth, ownership & lock guards", () => {
 
     expect(res.statusCode).toBe(403);
     expect(res.json().message).toBe("Sessão pertence a outro usuário.");
+    await app.close();
+  });
+
+  // ── F-9 Phase B — the claimed-once invariant, DRIVEN through the real route ──
+  //
+  // The fast-path cases above cover an owner key that is PRESENT. These cover the
+  // hole: the key is ABSENT (expired after 24h idle, or never written) and the
+  // pre-F-9 gate therefore ALLOWED the claim and handed the session over — along
+  // with its active cart, which is what a checkout buys.
+  //
+  // Every case here drives the production Fastify handler and the production
+  // `decideSessionClaim`; only Redis and the domain read are doubled. The three
+  // cases form a discriminating set on ONE axis (what the durable record says),
+  // with the request otherwise identical — so the refusal cannot pass by the
+  // suite being unable to produce a successful claim.
+
+  it("HIJACK: an expired owner key does NOT let a different customer claim the session (F-9)", async () => {
+    mockRedisGet.mockResolvedValue(null); // session:owner expired / absent
+    mockFindOwnerBySessionId.mockResolvedValue({ customerId: "cust_A" }); // durably A's
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_B" }, // …but B is asking
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    // Refused through the EXISTING mismatch path — same status, same pt-BR
+    // sentence a foreign-session customer has always seen. No new surface.
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toBe("Sessão pertence a outro usuário.");
+    // …and the claim did NOT stick: B must not own the key on the way out.
+    expect(mockRedisSet).not.toHaveBeenCalledWith(
+      "ibatexas:session:owner:" + SID,
+      "cust_B",
+      expect.anything(),
+    );
+    await app.close();
+  });
+
+  it("CONTROL: the session's OWN customer re-claims it after the key expired", async () => {
+    // MUST VALIDATE. This is how a returning customer reaches the backstop at
+    // all, and refusing it would lock people out of their own conversations —
+    // a worse failure than the one being fixed. Identical request to the hijack
+    // above except for WHO is asking.
+    mockRedisGet.mockResolvedValue(null);
+    mockFindOwnerBySessionId.mockResolvedValue({ customerId: "cust_A" });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_A" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "ibatexas:session:owner:" + SID,
+      "cust_A",
+      { EX: 86400 },
+    );
+    await app.close();
+  });
+
+  it("CONTROL: a guest-archived session stays claimable (first login after guest shopping)", async () => {
+    // MUST VALIDATE. `findOrCreateBySessionId` is create-only for `customerId`,
+    // so a session first archived as a guest is permanently `null` here — and
+    // that designed flow must keep working. Same absent key, same authenticated
+    // caller as the hijack; ONLY the record differs.
+    mockRedisGet.mockResolvedValue(null);
+    mockFindOwnerBySessionId.mockResolvedValue({ customerId: null });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_B" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "ibatexas:session:owner:" + SID,
+      "cust_B",
+      { EX: 86400 },
+    );
+    await app.close();
+  });
+
+  it("an unreadable durable record FAILS OPEN — a DB hiccup never locks a customer out", async () => {
+    mockRedisGet.mockResolvedValue(null);
+    mockFindOwnerBySessionId.mockRejectedValue(new Error("db down"));
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_B" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("SLIDING REFRESH: an authenticated turn on an ALREADY-OWNED session re-asserts the TTL", async () => {
+    // The property that makes "owner key absent" mean "idle for 24h" rather than
+    // "claimed a day ago" — and therefore the reason the archiver's async write
+    // lag can never reach the backstop (inside the lag window this key was JUST
+    // written, so the fast path answers). Distinct from the first-claim case
+    // above, where the key was absent: here it is PRESENT and held by the same
+    // customer, which is the sliding half.
+    mockRedisGet.mockResolvedValue("cust_A"); // already owned, by the caller
+    // The durable read must not even be consulted on the fast path.
+    mockFindOwnerBySessionId.mockRejectedValue(new Error("must not be consulted"));
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_A" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Bounded, not exact: the assertion is that the key is re-written WITH a
+    // TTL on an already-owned session, not that the TTL is any given number.
+    const ownerWrites = mockRedisSet.mock.calls.filter(
+      (c) => c[0] === "ibatexas:session:owner:" + SID,
+    );
+    expect(ownerWrites.length).toBeGreaterThan(0);
+    for (const call of ownerWrites) {
+      expect(call[1]).toBe("cust_A");
+      expect(call[2]).toMatchObject({ EX: expect.any(Number) });
+      expect((call[2] as { EX: number }).EX).toBeGreaterThan(0);
+    }
     await app.close();
   });
 
