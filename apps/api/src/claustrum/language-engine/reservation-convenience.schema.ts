@@ -91,10 +91,17 @@ const PARTY_SIZE_JSON_SCHEMA = {
 // by `toPayloadJsonSchema`, so this string is live prompt text. That makes the
 // date here two things at once: a format illustration the model reads, and — via
 // `toolSurface` — a DIGESTED component of the L1 parse-cache key
-// (`buildParseCacheKey`, parse-memo.ts). Do not make it render-time: a value
-// that changes daily rotates the digest daily, collapsing the 7-day
-// `PARSE_CACHE_TTL_SECONDS` to under one. The format is already stated
-// symbolically ("YYYY-MM-DD"); the literal is reinforcement, not the carrier.
+// (`buildParseCacheKey`, parse-memo.ts).
+//
+// If this date is ever MEASURED to anchor the model's output year, the fix is to
+// remove its ANCHORING ROLE — symbolic spec only, or a placeholder whose
+// concreteness is not load-bearing — NOT to derive it from the turn clock. That
+// distinction is the whole ruling: de-anchoring costs ONE digest rotation at
+// deploy, a trade this program takes deliberately; a render-time value rotates
+// the digest EVERY DAY, collapsing the 7-day `PARSE_CACHE_TTL_SECONDS` to under
+// one. The format is already stated symbolically ("YYYY-MM-DD"), so the literal
+// is reinforcement rather than the carrier — which is what makes de-anchoring
+// cheap here.
 const RESERVATION_DATE_JSON_SCHEMA = {
   type: "string" as const,
   description:
@@ -183,7 +190,8 @@ export const RESERVATION_MODIFY_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
         name: "newDate",
         trustClass: "directive",
         // F-65 — live wire text and a digested parse-cache key component, same
-        // as RESERVATION_DATE_JSON_SCHEMA above; not render-time.
+        // as RESERVATION_DATE_JSON_SCHEMA above — de-anchor if ever measured to
+        // bias the output year; never derive from the turn clock.
         jsonSchema: {
           type: "string",
           description:
