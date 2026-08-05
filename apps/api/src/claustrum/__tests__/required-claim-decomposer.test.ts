@@ -927,12 +927,14 @@ describe("hasMutationImperative — F-31 the RECORD-EDIT roots", () => {
     ["corrig(?!id) [2]", "minha reserva foi corrigida?", "RESERVATION_STATUS_Q"],
     // ATTESTED: a live read-harness fixture. A bare `cadastr` kills its span.
     ["cadastr(?!…|ad)", "quais sao minhas reservas cadastradas", "RESERVATION_STATUS_Q"],
-    // ATTESTED: an extraction-corpus utterance. `cadastro` is the NOUN here.
-    [
-      "cadastr(?!o|…)",
-      "posso passar meu email e cpf agora pro cadastro do pix?",
-      "PAYMENT_STATUS_Q",
-    ],
+    // AUTHORED, and it REPLACED an attested probe — see F-36 below. The original
+    // probe here was "posso passar meu email e cpf agora pro cadastro do pix?", which
+    // F-36 has since established is a SAVE request that must NOT keep a read span; it
+    // now lives in the F-36 block as that ticket's headline case. What this arm still
+    // owes is a `cadastro`-the-NOUN read that stays live, so the probe is re-authored
+    // WITHOUT the 1st-person possessive F-36's conjunct keys on. Deleting the `o` arm
+    // makes `cadastro` a mutation and reds exactly this row.
+    ["cadastr(?!o|…)", "o cadastro do pix já foi confirmado?", "PAYMENT_STATUS_Q"],
     ["alter(?!n|…)", "tem alguma alternativa vegetariana?", "MENU_DIETARY_Q"],
     ["alter(?!…|ad)", "minha reserva foi alterada?", "RESERVATION_STATUS_Q"],
   ];
@@ -3303,6 +3305,212 @@ describe("classifyRequestSpans — BKL-271 mutation-root false positives", () =>
       "finaliza o meu pedido",
     ]) {
       expect(classifyRequestSpans(text), text).toEqual([]);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-36 — the SELF-SCOPED PERSONAL-DATA conjunct on PAYMENT_STATUS_Q.
+//
+// THE DEFECT: a customer OFFERING their own identity fields for the pix
+// registration ("posso passar meu email e cpf agora pro cadastro do pix?") is a SAVE
+// request against the real, mutating, planner-advertised `customer.pix.details.save`
+// capability. A bare `pix` fired the dual-use payment token, PAYMENT_STATUS is
+// classify-only-eligible, and the whole turn answered a payment STATUS question the
+// customer never asked while the save was SILENTLY DROPPED — the BKL-201/206/217 +
+// F-8 read-span-captures-mutation shape on the one span family they did not cover.
+//
+// WHAT THE FIX IS NOT: a `pass` mutation root. F-36 as filed proposed one; the sweep
+// over the frozen 182,833-row / 63,424-distinct harvest REFUSED it (2 attested true
+// positives against 5 attested reads killed). The REJECTED-ROOT guard below is what
+// keeps that refusal falsifiable rather than a comment — it reds if anyone adds one.
+//
+// WHAT IS ASSERTED, and deliberately not more: this module is PURE, so the deliverable
+// it can witness is the ROUTE — `classifyOnlyRequiredTypes` declining the turn, which
+// is what sends it to the model/intent path where the planner can see the save. It is
+// NOT asserted here that the planner then proposes `customer.pix.details.save`; that
+// is a planner fact and this file cannot see it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("classifyRequestSpans — F-36 the self-scoped personal-data conjunct", () => {
+  // THE HEADLINE — the filed utterance, and the exact routing change it buys.
+  it("THE FILED UTTERANCE — the save stops riding the payment read", () => {
+    const filed = "posso passar meu email e cpf agora pro cadastro do pix?";
+    // BEFORE (measured at 7ccc8bc8): ["PAYMENT_STATUS_Q"] / {PAYMENT_STATUS}.
+    expect(classifyRequestSpans(filed)).toEqual([]);
+    expect(classifyOnlyRequiredTypes(filed)).toBeUndefined();
+    // The conjunct makes NO claim that this is an imperative — that is precisely why
+    // it is not a root in the shared net (see the conjunct's own header).
+    expect(hasMutationImperative(filed)).toBe(false);
+  });
+
+  /**
+   * EVERY ROW THE FROZEN CORPUS MOVES, enumerated by NAME so the changed-row count is
+   * a roll call and not a number. Eight rows, all eight INPUT-utterance corpus rows,
+   * all eight mutations that were riding a read; ZERO rows move the other way.
+   * Five are the `customer.pix.details.save` extraction corpus, two are that
+   * capability's OWN `conversationTriggers` (i.e. the advertised phrasing was
+   * unreachable on the classify-only route), one is `payment.pix.regenerate`.
+   */
+  const MOVED: ReadonlyArray<readonly [string, string]> = [
+    ["extraction-corpus/customer.pix.details.save", "posso passar meu email e cpf agora pro cadastro do pix?"],
+    ["capability-definitions conversationTrigger", "quero salvar meus dados do pix"],
+    ["capability-definitions conversationTrigger", "minha chave pix é meu cpf"],
+    ["extraction-corpus/customer.pix.details.save", "pode salvar meu nome, João Silva, pros dados do pix"],
+    ["extraction-corpus/customer.pix.details.save", "meu email pro pix é joao@example.com"],
+    [
+      "extraction-corpus/customer.pix.details.save",
+      "Meus dados para o PIX são: nome completo João da Silva, e-mail joao.silva@example.com, CPF 987.654.321-00.",
+    ],
+    ["extraction-corpus/customer.pix.details.save", "quero configurar meus dados de pix"],
+    ["extraction-corpus/payment.pix.regenerate", "meu cpf é 123.456.789-00, preciso de um pix novo"],
+  ];
+
+  it("THE CHANGED-ROW ROLL CALL — all 8 leave the classify-only route", () => {
+    expect(MOVED).toHaveLength(8);
+    for (const [provenance, text] of MOVED) {
+      const label = `${provenance}: ${text}`;
+      expect(classifyRequestSpans(text), label).not.toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(text), label).toBeUndefined();
+    }
+  });
+
+  /**
+   * THE VERBLESS HALF — the reason no verb root could ever have closed this family,
+   * and the reason the instrument is a conjunct. Two of the five corpus rows are
+   * COPULAR DECLARATIVES with no verb to key on at all; a third spells `configurar`
+   * and a fourth `salvar`, so even a perfect `passar` root reaches ONE of five.
+   */
+  it("the VERBLESS members move too — what a verb root structurally cannot reach", () => {
+    for (const text of [
+      "meu email pro pix é joao@example.com",
+      "Meus dados para o PIX são: nome completo João da Silva, e-mail joao.silva@example.com, CPF 987.654.321-00.",
+    ]) {
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyOnlyRequiredTypes(text), text).toBeUndefined();
+    }
+  });
+
+  /**
+   * ONE ARM PER NOUN, hand-written and by NAME — the F-31 arm-roll-call shape. Every
+   * probe is reached by EXACTLY ONE arm (verified by ablation over the frozen corpus),
+   * so deleting that arm reds exactly this row and nothing else.
+   *
+   * Two arms are AUTHORED rather than corpus-rescued, and that is stated rather than
+   * dressed up — the `corrig(?!id)` precedent. `chave` moves ZERO corpus rows today
+   * (its one payment row is already caught by `cpf`); the `-?` in `e-?mail` likewise
+   * moves zero (`e-mail` occurs 7 times corpus-wide but never after a possessive).
+   * Both are kept because dropping them plants a fresh BKL-205-shaped defect — an
+   * unspelled variant with an EMPTY true-positive set — with the probe in hand.
+   */
+  const NOUN_ARMS: ReadonlyArray<readonly [string, string, "corpus" | "authored"]> = [
+    ["nome", "pode salvar meu nome, João Silva, pros dados do pix", "corpus"],
+    ["e-?mail (plain)", "meu email pro pix é joao@example.com", "corpus"],
+    ["e-?mail (hyphen sub-arm)", "meu e-mail do pix é joao@example.com", "authored"],
+    ["cpf", "meu cpf é 123.456.789-00, preciso de um pix novo", "corpus"],
+    ["dados", "quero configurar meus dados de pix", "corpus"],
+    ["chave", "minha chave pix é 11999998888", "authored"],
+  ];
+
+  it("the NOUN-ARM ROLL CALL — every arm suppresses a save, by name", () => {
+    expect(NOUN_ARMS).toHaveLength(6);
+    for (const [arm, probe, provenance] of NOUN_ARMS) {
+      const label = `${arm} (${provenance}): ${probe}`;
+      // Each probe fires the payment net, so it WOULD ride the read without the arm.
+      expect(/pix|pagamento/.test(probe.toLowerCase()), label).toBe(true);
+      expect(classifyRequestSpans(probe), label).not.toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(probe), label).toBeUndefined();
+    }
+  });
+
+  /**
+   * THE POSSESSIVE IS THE WHOLE GUARD. Each pair holds the personal-data noun CONSTANT
+   * and varies ONLY the determiner, so a treatment that passed for an unrelated reason
+   * fails its control. The control half must keep the read — these are the genuine
+   * payment questions the conjunct must never touch.
+   */
+  const DETERMINER_PAIRS: ReadonlyArray<readonly [string, string]> = [
+    // [SUPPRESSED — self-scoped offer, KEPT — third-person / store-scoped read]
+    ["quero configurar meus dados de pix", "os dados do pix de vocês estão certos?"],
+    ["minha chave pix é 11999998888", "qual a chave pix de vocês?"],
+  ];
+
+  it("TREATMENT vs CONTROL — only the 1st-person possessive suppresses", () => {
+    for (const [offer, read] of DETERMINER_PAIRS) {
+      expect(classifyOnlyRequiredTypes(offer), `offer: ${offer}`).toBeUndefined();
+      expect(classifyRequestSpans(read), `read: ${read}`).toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(read), `read: ${read}`).toBeDefined();
+    }
+  });
+
+  /**
+   * THE ADVERSARIAL CONTROL: a payment STATUS read that states a CPF. The possessive
+   * attaches to `pagamento`, not to `cpf`, so the conjunct must decline it. This is
+   * the single probe most likely to break if someone loosens the adjacency.
+   */
+  it("ADVERSARIAL — a payment read that merely STATES a cpf keeps its span", () => {
+    const text = "meu pagamento com o cpf 123 foi aprovado?";
+    expect(classifyRequestSpans(text)).toContain("PAYMENT_STATUS_Q");
+    expect(classifyOnlyRequiredTypes(text)).toBeDefined();
+  });
+
+  /**
+   * THE CANONICAL PAYMENT READS — the false-positive direction, which the frozen
+   * corpus measured at ZERO. `pagamento` and `pix` are deliberately NOT nouns in the
+   * conjunct; if either is ever added, every row here reds.
+   */
+  it("UNMOVED — every canonical payment read keeps its span AND its route", () => {
+    for (const text of [
+      "meu pagamento foi aprovado?",
+      "meu pix já caiu?",
+      "e aí, meu pagamento passou ou não?",
+      "qual o status do meu pagamento?",
+      "paguei no pix, meu pagamento caiu?",
+      "o cadastro do pix já foi confirmado?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(text), text).toBeDefined();
+    }
+  });
+
+  /**
+   * THE REJECTED-ROOT GUARD — the F-27 widening-guard pattern, and the half that keeps
+   * the refusal of candidate (a) falsifiable. Every row is a LIVE read carrying a
+   * `pass` stem; adding `pass` (or any of its verb forms) to `hasMutationImperative`
+   * turns each of them into a command and reds here BY NAME rather than silently
+   * dropping a read. The last row is the sharpest: it is a payment READ whose only
+   * mutation-looking token is the preterite `passou`, and it is a LIVE fixture in
+   * `read-tool-corpus/get_payment_status.yaml`.
+   */
+  it("REJECTED ROOT — `pass` is NOT a mutation root, and these live reads prove why", () => {
+    for (const [text, span] of [
+      ["me passa o endereço do restaurante", "STORE_INFO_Q"],
+      ["pode passar o preço da costela?", "MENU_ITEM_PRICE_Q"],
+      ["me passa o endereço de entrega do pedido 933869", "ORDER_STATUS_Q"],
+      ["e aí, meu pagamento passou ou não?", "PAYMENT_STATUS_Q"],
+    ] as const) {
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).toContain(span);
+      expect(classifyOnlyRequiredTypes(text), text).toBeDefined();
+    }
+    // The polysemy controls the finding named. Neither is a mutation, and neither
+    // carries a payment read for the conjunct to touch.
+    for (const text of ["posso passar o cartão?", "vou passar aí mais tarde pra buscar"]) {
+      expect(hasMutationImperative(text), text).toBe(false);
+      expect(classifyRequestSpans(text), text).not.toContain("PAYMENT_STATUS_Q");
+    }
+  });
+
+  /**
+   * THE SHARED PREDICATE IS UNTOUCHED, asserted rather than argued. `hasMutationImperative`
+   * has two consumers outside this file (`ops-write-twin-rescue.ts` conjunct 4 and the
+   * `ibatexas-responder.ts` BKL-262 Stage-2 abstain); the conjunct is span-local, so
+   * every changed row must still report FALSE here. Re-classifying the frozen corpus
+   * across the change measured ZERO `hasMutationImperative` deltas over all 63,423
+   * distinct rows — this is that claim's per-row witness.
+   */
+  it("SHARED-NET NEUTRALITY — no changed row became a mutation imperative", () => {
+    for (const [, text] of MOVED) {
+      expect(hasMutationImperative(text), text).toBe(false);
     }
   });
 });

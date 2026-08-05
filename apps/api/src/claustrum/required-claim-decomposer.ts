@@ -1092,10 +1092,20 @@ export function carriesSafetyMarker(text: string): boolean {
  *     The `ad` arm is not a judgement call: "quais sao minhas reservas cadastradas" is
  *     a LIVE read-harness fixture whose RESERVATION_STATUS_Q a bare root would have
  *     killed. TP kept: "quero cadastrar minha chave pix".
- *     KNOWN RESIDUAL, measured and named: "posso passar meu email e cpf agora pro
- *     cadastro do pix?" is a SAVE request that keeps riding PAYMENT_STATUS_Q, because
- *     the `o` arm excludes it. Its verb is `passar`, not a `cadastr` command; widening
- *     a NOUN is not the narrow instrument for it, and the defect pre-dates F-31.
+ *     F-36 — **CLOSED**, and NOT here. "posso passar meu email e cpf agora pro cadastro
+ *     do pix?" is a SAVE request that used to keep riding PAYMENT_STATUS_Q because the
+ *     `o` arm excludes it. F-31 was right twice: widening a NOUN is not the instrument,
+ *     and neither is a `pass` verb root — swept over the frozen 182,833-row harvest, a
+ *     `pass` root scores 2 attested true positives against 5 attested reads KILLED
+ *     (including the LIVE `read-tool-corpus` fixture "e aí, meu pagamento passou ou
+ *     não?"), and the utterance's own family of five spells three different verbs plus
+ *     TWO verbless copular declaratives no root can reach. It is closed by the
+ *     SELF-SCOPED PERSONAL-DATA conjunct on PAYMENT_STATUS_Q's guard in
+ *     {@link classifyRequestSpans} — the F-31 `notSelfScopedAddress` shape — which is
+ *     deliberately NOT in this predicate for the identical reason: a copular
+ *     declarative is not an imperative, and this net is shared with two other
+ *     consumers. The full per-arm evidence lives at that conjunct.
+ *     TP kept here, unchanged: "quero cadastrar minha chave pix".
  *   · `alter(?!n|ad)` — IN, and the riskiest, so it carries two arms. 11 attested INPUT
  *     utterances, EVERY ONE a mutation ("Gostaria de alterar minha reserva para 3
  *     pessoas", "por gentileza, altere a quantidade do pedido 12345"); `alteração` is
@@ -2140,7 +2150,120 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   if (orderPhrasing && !mutationImperative) {
     classes.push(ORDER_FULFILLMENT_STAGE_CLOSURE.spanClass);
   }
-  if (paymentPhrasing && !mutationImperative) {
+  // F-36 — the SELF-SCOPED PERSONAL-DATA conjunct: a customer OFFERING their own
+  // identity fields in a payment frame is making a SAVE request, not asking a payment
+  // status question. This is the F-31 `notSelfScopedAddress` shape, applied to the one
+  // other classify-only-eligible span where a mutation family had no verb root that
+  // could reach it.
+  //
+  // THE DEFECT. `customer.pix.details.save` is a REAL, MUTATING, planner-advertised
+  // capability (`packages/catalog/src/capability-definitions/definitions.ts` — legacy
+  // name `save_pix_details`, "Salvar os dados PIX do cliente para reembolsos"). A bare
+  // `pix` fires `paymentPhrasing` through the DUAL-USE token above, PAYMENT_STATUS is
+  // classify-only-eligible, so the whole turn rendered deterministically as a payment
+  // STATUS answer and the save was SILENTLY DROPPED with no model call and no proposed
+  // intent — the BKL-201/206/217 + F-8 read-span-captures-mutation shape, on the one
+  // span family those tickets did not cover. Measured at 7ccc8bc8:
+  // `classifyRequestSpans("posso passar meu email e cpf agora pro cadastro do pix?")`
+  // → `["PAYMENT_STATUS_Q"]` and `classifyOnlyRequiredTypes(…)` → `{PAYMENT_STATUS}`.
+  //
+  // THE FAMILY IS FIVE, NOT ONE, and that is what chooses the instrument. Of the ten
+  // utterances in `packages/journeys/extraction-corpus/customer.pix.details.save.yaml`
+  // FIVE rode this span; the other five name no payment token and already took the
+  // model path. Two of the five carry NO VERB AT ALL — "meu email pro pix é
+  // joao@example.com" and "Meus dados para o PIX são: …" are copular declaratives — so
+  // no root in {@link hasMutationImperative} can reach them, exactly as three of F-31's
+  // nine address phrasings could not be reached by a root. The remaining three spell
+  // three DIFFERENT verbs (`passar`, `salvar`, `configurar`). A verb-root instrument
+  // therefore cannot close this family; a possessive-noun conjunction can.
+  //
+  // WHY NOT A `pass` MUTATION ROOT (F-36 as filed proposed one; it is REJECTED on its
+  // own sweep, so nobody re-proposes it). Over the frozen 182,833-row / 63,424-distinct
+  // harvest, `(?<![a-z])pass` matches 569 distinct rows, 24 of them span-bearing, and
+  // on ATTESTED INPUT utterances the ledger is 2 true positives against 5 false
+  // negatives-created: it KILLS the live reads "me passa o endereço do cliente"
+  // (STORE_INFO_Q), "me passa o endereço de entrega do pedido 933869" (ORDER_STATUS_Q),
+  // "me passaram o pedido errado" (ORDER_STATUS_Q), "vou te passar o endereço depois"
+  // (STORE_INFO_Q) and — worst — "e aí, meu pagamento passou ou não?", a LIVE
+  // `read-tool-corpus/get_payment_status.yaml` fixture. Narrowing to the verb forms
+  // `pass(ar|a|o|e|ei|em)` still loses 3 of those 5; narrowing to the bare infinitive
+  // `passar` buys exactly ONE row (this one) at the cost of one ("vou te passar o
+  // endereço depois") and reaches NONE of the other four family members. `passar` is
+  // the polysemy case BKL-271 already ruled on for `pôr`: the modal frame "posso
+  // passar" is a READ frame in this domain ("posso pôr no lugar?" is a SUBSTITUTION
+  // question pinned by LE2-029's e2e). The discriminator is not the verb, it is the
+  // OBJECT — which is what this conjunct spells.
+  //
+  // WHY IT IS SPAN-LOCAL AND `hasMutationImperative` IS UNTOUCHED. Same placement
+  // ruling F-31 made for `notSelfScopedAddress` and BKL-285 made for the
+  // reservation-create net: a copular declarative is not an imperative, so claiming it
+  // in the shared net would be FALSE about the text, and the net has two other
+  // consumers (`ops-write-twin-rescue.ts` conjunct 4, the `ibatexas-responder.ts`
+  // BKL-262 Stage-2 abstain) where a customer-plane PII-offer discrimination means
+  // nothing. Untouched here means ZERO movement there BY CONSTRUCTION.
+  //
+  // THE NOUN LIST, per arm, over the frozen harvest. Suppressed rows are counted
+  // against the 2056 rows that carry PAYMENT_STATUS_Q at baseline; the "alone" figure
+  // is the arm's whole corpus blast radius, so an arm cannot hide behind the union:
+  //
+  //   · `dados` — 3 rows, the largest contributor ("quero salvar meus dados do pix" —
+  //     a `customer.pix.details.save` conversationTrigger, i.e. the capability's OWN
+  //     advertised phrasing was unreachable; "Meus dados para o PIX são: …"; "quero
+  //     configurar meus dados de pix"). 9 rows corpus-wide, 3 payment-bearing.
+  //   · `e-?mail` — 2 rows (the FILED utterance, and "meu email pro pix é
+  //     joao@example.com"). 6 rows corpus-wide, 2 payment-bearing. The `-?` SUB-arm is
+  //     BYTE-PIN-ONLY and is labelled so rather than folded into that count: `e-mail`
+  //     occurs 7 times corpus-wide but NEVER after a possessive, so ZERO rows need it
+  //     today. It is kept because the same corpus file spells the word both ways in
+  //     adjacent lines, which makes the possessive-form collision a matter of time, and
+  //     an unspelled accent/hyphen variant is the BKL-205/BKL-270 failure exactly — an
+  //     EMPTY true-positive set on the real phrasing that no false-positive sweep can
+  //     reveal. Pinned by an AUTHORED probe in the roll call, not by a rescued row.
+  //   · `cpf` — 1 row ("meu cpf é 123.456.789-00, preciso de um pix novo", a
+  //     `payment.pix.regenerate` corpus row — a DIFFERENT mutation capability riding
+  //     the same read; recorded below). 9 rows corpus-wide, 2 payment-bearing.
+  //   · `nome` — 1 row ("pode salvar meu nome, João Silva, pros dados do pix"). The
+  //     riskiest-looking arm and the measurement says otherwise: 4 rows carry
+  //     `possessive + nome` corpus-wide and the other three classify to `[]` already,
+  //     so they cannot move. It is safe HERE only because this conjunct is span-local —
+  //     it is never consulted unless the payment net has already fired.
+  //   · `chave` — ZERO marginal rows: its one payment-bearing row ("minha chave pix é
+  //     meu cpf", another `customer.pix.details.save` trigger) is already caught by
+  //     `cpf`. Stated plainly rather than folded into the union, per the R2-S5
+  //     byte-pin-only-arm rule. KEPT on the `corrig(?!id)` precedent — it buys a
+  //     demonstrable behaviour on an AUTHORED probe ("minha chave pix é 11999998888"
+  //     is suppressed only by this arm) and dropping it plants a fresh defect with the
+  //     probe already in hand. The roll call in the test file pins it by NAME.
+  //
+  // THE POSSESSIVE IS THE WHOLE GUARD, and it is what keeps the false-positive
+  // direction empty. Measured over the frozen corpus: EIGHT rows change, all eight are
+  // INPUT-utterance corpus rows, and all eight are mutations that were riding a read —
+  // ZERO reads lost. The adversarial authored probe is "meu pagamento com o cpf 123 foi
+  // aprovado?", a payment READ that states a CPF: it is NOT suppressed, because the
+  // possessive attaches to `pagamento`, not to `cpf`. Likewise "os dados do pix de
+  // vocês estão certos?" and "qual a chave pix de vocês?" — a customer asking about the
+  // RESTAURANT's data never says "MEUS dados", the same asymmetry F-31 relied on. The
+  // canonical payment reads are untouched by construction ("meu pagamento foi
+  // aprovado?", "meu pix já caiu?", "e aí, meu pagamento passou ou não?", "qual o
+  // status do meu pagamento?" — `pagamento` and `pix` are deliberately NOT nouns here).
+  //
+  // THE ONE MEASURED FALSE POSITIVE, recorded rather than buried: the authored "meus
+  // dados de pagamento estão certos?" is suppressed and takes the model path. It has no
+  // corpus attestation, and it is the mild direction twice over — PAYMENT_STATUS would
+  // have answered "o status do seu pagamento é: pago", a wrong-FAMILY answer to a
+  // question about stored RECORDS.
+  //
+  // KNOWN RESIDUAL, measured and named so it is not re-discovered as new: this conjunct
+  // is span-local to PAYMENT_STATUS_Q, so a save offer that ALSO fires another
+  // classify-only-eligible span ("meus dados do pix pro pedido 123" would keep
+  // ORDER_STATUS_Q) still rides that other read. ZERO such rows exist in the frozen
+  // harvest. Separately, the `payment.pix.regenerate` family is a DISTINCT mutation
+  // riding this same span — one of its rows is rescued here incidentally by `cpf`, but
+  // its verbless members ("meu pix venceu e eu não consegui pagar a tempo, e agora?")
+  // are NOT, and closing that family is not this instrument's job.
+  const notSelfScopedPersonalData =
+    !/(?<![a-z])(meu|minha|meus|minhas)\s+(?:nome|e-?mail|cpf|dados|chave)/.test(t);
+  if (paymentPhrasing && !mutationImperative && notSelfScopedPersonalData) {
     classes.push(PAYMENT_STATUS_CLOSURE.spanClass);
   }
 
