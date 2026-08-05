@@ -110,14 +110,22 @@ async function checkQueues(): Promise<{ dlq: Record<string, number>; outbox: Rec
   let hasOutboxBacklog = false;
   try {
     const redis = await getRedisClient();
-    const envPrefix = process.env.APP_ENV || "development";
     for (const event of DLQ_EVENTS) {
       const len = await redis.lLen(rk(`dlq:${event}`));
       if (len > 0) { dlq[event] = len; hasDlqEntries = true; }
     }
     for (const event of OUTBOX_EVENTS) {
-      const key = `${envPrefix}:outbox:${event}`;
-      const len = await redis.lLen(key);
+      // Hard Rule #7 — through `rk()`, like the dlq loop above. This used to
+      // interpolate `process.env.APP_ENV || "development"` inline, which made
+      // this the only reader of the outbox key family using `||`: canonical
+      // `rk` and the WRITER (`outboxKey` in @ibatexas/nats-client, called with
+      // `?? "development"`) both treat an empty APP_ENV as PRESENT, so on an
+      // empty APP_ENV the route read `development:outbox:…` while the writer
+      // wrote `:outbox:…` — a clean bill of health over a real backlog, and
+      // two namespaces inside this one function. `rk("outbox:" + event)` is
+      // byte-identical to `outboxKey(process.env.APP_ENV ?? "development",
+      // event)` for EVERY value of APP_ENV, empty and unset included.
+      const len = await redis.lLen(rk(`outbox:${event}`));
       if (len > 0) { outbox[event] = len; if (len > 100) hasOutboxBacklog = true; }
     }
   } catch { /* non-fatal */ }
