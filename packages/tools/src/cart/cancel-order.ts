@@ -17,6 +17,7 @@ import {
   type PaymentStatusTransitionPayload,
 } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
+import { publishOrderEscalation } from "./_escalation.js";
 import { createTooledOrderService } from "./_shared.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 
@@ -108,13 +109,19 @@ export async function cancelOrder(
     }
   }
 
-  // Escalate to admin if PONR expired or status prevents cancellation
+  // Escalate to staff if PONR expired or status prevents cancellation.
+  //
+  // F-48 — `svc.cancelOrder` sets needsEscalation on its past-PONR refusal
+  // (which tells the customer "Um atendente foi notificado e vai ajudar.") and
+  // on its in-preparation refusal. This publishes on the RATIFIED staff spine;
+  // the previous `order.escalation_needed` subject had no subscriber at all.
+  // No displayId is threaded here: `svc.cancelOrder` does not return the order,
+  // and an extra Medusa GET on the customer's reply path is not worth the
+  // nicer staff reference — the order id is a working lookup handle.
   if (result.needsEscalation) {
-    void publishNatsEvent("order.escalation_needed", {
+    publishOrderEscalation({
+      situation: "cancel_past_ponr",
       orderId: parsed.orderId,
-      customerId: ctx.customerId,
-      reason: "cancel_past_ponr",
-      timestamp: new Date().toISOString(),
     });
   }
 

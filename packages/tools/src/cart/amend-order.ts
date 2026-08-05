@@ -39,6 +39,7 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdjudicated } from "../medusa/adjudicated.js";
 import { withLock } from "../redis/distributed-lock.js";
 import { stripeAdjudicated } from "../stripe/adjudicated.js";
+import { publishOrderEscalation } from "./_escalation.js";
 import { createTooledOrderService } from "./_shared.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 
@@ -321,13 +322,14 @@ async function handleRemoveItem(
   }
   const result = await svc.cancelItem(parsed.orderId, customerId, parsed.itemTitle);
 
+  // F-48 — `svc.cancelItem` sets needsEscalation on BOTH its past-PONR refusal
+  // and its order-edit failure, and both tell the customer an attendant was
+  // notified (order.service.ts). Reach the staff spine so that is TRUE.
   if (result.needsEscalation) {
-    void publishNatsEvent("order.escalation_needed", {
+    publishOrderEscalation({
+      situation: "amend_remove_past_ponr",
       orderId: parsed.orderId,
-      customerId,
-      reason: "amend_remove_past_ponr",
-      itemTitle: parsed.itemTitle,
-      timestamp: new Date().toISOString(),
+      displayId: order.display_id,
     });
   }
 
@@ -378,12 +380,12 @@ async function handleUpdateQty(
       : undefined;
     const ponr = getEffectivePonr({ amendMinutes });
     if (!isWithinPonr(new Date(order.created_at), ponr.amendMinutes)) {
-      void publishNatsEvent("order.escalation_needed", {
+      // F-48 — the message below promises an attendant was notified; this is
+      // the publish that makes it true (staff spine, not the dead subject).
+      publishOrderEscalation({
+        situation: "amend_qty_past_ponr",
         orderId: parsed.orderId,
-        customerId,
-        reason: "amend_qty_past_ponr",
-        itemTitle: parsed.itemTitle,
-        timestamp: new Date().toISOString(),
+        displayId: order.display_id,
       });
       return {
         success: false,
