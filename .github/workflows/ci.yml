@@ -46,6 +46,20 @@ jobs:
         run: node scripts/check-no-nul-bytes.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ibatexas/domain db:generate
+      # F-53 reach guard. `pnpm lint` below is what actually ENFORCES the
+      # audit-redaction import ban; this proves the ban is in effect in every
+      # workspace, which lint itself cannot tell you — a workspace that never
+      # inherited the rule lints clean precisely because the rule is missing.
+      #
+      # Runs BEFORE `pnpm lint` so a coverage hole reports in seconds instead of
+      # behind the full fan-out, and stays answerable while lint is red for
+      # unrelated reasons. Not a package test on purpose: `test` is a CACHEABLE
+      # turbo task with package-scoped inputs, so a cross-workspace assertion
+      # living in one package's suite certifies workspaces it never re-read
+      # (measured on this branch: planting a bypass in apps/api and re-running
+      # `turbo test --filter=@ibatexas/audit-sink` reported FULL TURBO, 2 cached).
+      - name: Audit-sink import ban covers every workspace (F-53)
+        run: node scripts/check-audit-sink-import-ban.mjs
       - run: pnpm lint
       # Fail-fast diagnostic: T4 / R2-2 / T6 conformance suites use Postgres +
       # Redis testcontainers. ubuntu-latest ships with Docker preinstalled, but
