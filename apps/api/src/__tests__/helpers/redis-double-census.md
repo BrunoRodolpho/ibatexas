@@ -1893,17 +1893,30 @@ has no spyable own properties.) All three files kept their case counts exactly:
 
 - **Zero new Lua coverage.** Nothing in this family reaches an `eval`. The 7
   owner-gated class-(d) files are untouched.
-- **The producer of the follow-up zset is NOT driven.**
-  `packages/tools/src/intelligence/schedule-follow-up.ts` resolves its client
-  through a RELATIVE import inside the built package (`../redis/client.js`), so
-  a `vi.mock("@ibatexas/tools")` — a mock of the package SPECIFIER — cannot
-  reach it. The seam suite therefore seeds the zset by hand in the producer's
-  shape, and the producer/consumer agreement rides on two independent
-  assertions of the same key literal (`schedule-follow-up.test.ts` pins
-  `development:follow-up:scheduled`; the seam suite reads the real `rk`), NOT on
-  a driven path. This is the "parity contracts need BOTH real paths" class and
-  it is OPEN here; a `deps` bag on `scheduleFollowUp` would close it and is the
-  cheapest next step.
+- **The producer of the follow-up zset is NOT driven.** ~~OPEN~~ **— CLOSED by
+  F-35.** The bound as filed: `packages/tools/src/intelligence/schedule-follow-up.ts`
+  resolves its client through a RELATIVE import inside the built package
+  (`../redis/client.js`), so a `vi.mock("@ibatexas/tools")` — a mock of the
+  package SPECIFIER — cannot reach it. The seam suite therefore seeds the zset
+  by hand in the producer's shape, and the producer/consumer agreement rode on
+  two independent assertions of the same key literal
+  (`schedule-follow-up.test.ts` pins `development:follow-up:scheduled`; the seam
+  suite reads the real `rk`), NOT on a driven path — the "parity contracts need
+  BOTH real paths" class. The predicted fix landed as predicted: an options bag
+  on `scheduleFollowUp` (`ScheduleFollowUpOptions`, `Pick<RedisClientType, "zAdd">`
+  — the honest Pick, issued ∪ handed-to, measured by reading every line; nothing
+  eval-bearing), and
+  `apps/api/src/__tests__/jobs/follow-up-producer-consumer-parity.test.ts` drives
+  both ends against ONE `createInMemoryRedis` keyspace. That file never writes
+  the key literal and never calls `rk`: agreement is the mechanism under test, so
+  a third assertion of the same string would have re-created the defect. The
+  seam suite's own hand-seeding STAYS — the consumer's cases keep their
+  independence from the producer.
+  **Attribution measured both directions:** corrupt the producer's key and
+  update its own pin to match (a consistent rename) → all 35 pre-existing tests
+  GREEN, parity 4/4 RED; corrupt the CONSUMER's key → parity 4/4 RED.
+  No adapter change was needed — `zAdd` was already present from the seeding
+  path, so this closed with zero widening of the double's surface.
 - **`__tests__/sentry-background-jobs.test.ts` still mocks `getRedisClient`**
   and was NOT migrated: it drives `processFollowUps` through the DEFAULT path,
   which the threading preserves exactly, so it passes unedited. It is a
