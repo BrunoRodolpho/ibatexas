@@ -2059,3 +2059,283 @@ Three notes for whoever takes the next slice:
    which is the trap a name-based sweep falls into.
 3. **The three admin dedup routes are the cheapest remaining win in class (c)**
    and share one command shape, so they are a family rather than three errands.
+
+---
+
+## R5 rollout, family 5 — the ADMIN DEDUP family
+
+Measured on branch `refactor/r5-rollout-admin-dedup-family`, off `dev @ ee5490f1`.
+Briefed as the three routes #548's remainder map named "migratable now,
+adapter-complete": `admin/delivery-zones.ts`, `admin/orders.ts`,
+`admin/products.ts`, on the claim that *all three issue the SAME idempotency-dedup
+`set(key,"1",{EX:300,NX:true})` and nothing else*.
+
+### Family verification vs the remainder map's claim — CONFIRMED, exactly
+
+Re-derived rather than trusted. Every `redis` occurrence (case-insensitive) in
+each file was read, not just the call sites the map counted:
+
+| File | `getRedisClient()` calls | Redis commands issued | `eval`/`multi`/`evalSha` | `atomicIncr`/`withLock`/`acquireLock` |
+|---|---|---|---|---|
+| `admin/delivery-zones.ts` | 1 (:38) | `set` ×1 (:39) | none | none |
+| `admin/orders.ts` | 1 (:208) | `set` ×1 (:210) | none | none |
+| `admin/products.ts` | 1 (:127) | `set` ×1 (:129) | none | none |
+
+All three literally issue `SET <rk'd key> "1" {EX:300, NX:true}` and nothing
+else. **The map's claim is accurate on every axis it asserted** — the first
+briefed family in this rollout for which that is true (compare family 4, where
+2 of the 4 briefed files turned out Lua-gated). 3 files, 3 sites, one shape.
+
+### The HAND-IT-TO read (#548's rule), and its NEGATIVE half
+
+The rule that caught the governor in #548 is "read what the module hands the
+client TO, not only what it calls". Applied here:
+
+**The downstream half of every Pick is EMPTY.** In all three files the client is
+bound to a local `const` and its single command issued on it directly; no site
+passes `redis` to anything. So `{issued} ∪ {optionally consumed downstream}` =
+`{set}` for each.
+
+**Three callees LOOK like they could carry a client. The negative measurement,
+reported rather than assumed:**
+
+| Callee | File | Verdict |
+|---|---|---|
+| `invalidateDeliveryCache()` | delivery-zones | **ACCEPTS a client — and is called with ZERO arguments** at all 3 sites, so it resolves its own singleton. Not downstream of this Pick. See the boundary note below. |
+| `medusaAdjudicated({...})` | products | Takes NO client. `MedusaAdjudicatedArgs` has no Redis member, and `packages/tools/src/medusa/adjudicated.ts` issues no Redis command at all — `adjudicate()` is pure and the file's three "Redis"/"ledger" mentions are comments. |
+| `commandSvc.transitionStatusFromEnvelope(envelope)` | orders | Envelope only. `createOrderCommandService(log, {auditSink, authGuards})` has no Redis member. (`medusaAdmin` is HTTP; `publishNatsEvent` is NATS; `getAuditSink()` takes no arguments.) |
+
+**No file in this family reaches Lua by any route** — not in its own text, not
+through a hand-off. `atomicIncr` is imported by none of the three.
+
+### The one client-ACCEPTING callee, and why the boundary stays
+
+`invalidateDeliveryCache(options?: DeliveryCacheOptions)` accepts
+`options.client: Pick<RedisClientType, "get"|"set"|"scan"|"del">`. This is a
+DIFFERENT shape from #548's `withLock` negative (which takes no client at all)
+and from `order-actions.ts`'s CONSUME store (whose `eval` would have
+re-classified the file). Here the boundary is a SCOPE call, not a
+classification one — threading it would stay safe, because its commands are
+`scan`/`del` with no Lua. It is left out for two reasons:
+
+1. It already HAS its own client seam and its own suite
+   (`packages/tools/src/catalog/__tests__/delivery-cache-seam.test.ts`).
+   Threading it from the route would give one path two composition roots.
+2. **Filed for whoever does thread it:** its body is a bare
+   `try { … } catch { /* Best-effort */ }`. That is the #539 swallowing shape
+   exactly. A Pick derived from what the ROUTE issues would leave `scan`
+   absent, the TypeError would be absorbed by that catch, and the delivery
+   cache would silently never be invalidated — green. The honest Pick for that
+   future slice is `{set, scan, del}`, not `{set}`.
+
+### The seams, and the Pick decision each one records
+
+| Module | Type(s) | Pick = issued ∪ downstream | Composition root |
+|---|---|---|---|
+| `admin/delivery-zones.ts` | `ZoneDedupRedis`; union `DeliveryZoneRouteRedisClient` | {set} ∪ **∅** | NEW (`DeliveryZoneRouteDeps`, redis-only) |
+| `admin/orders.ts` | `StatusDedupRedis`; union `AdminOrderRouteRedisClient` | {set} ∪ **∅** | EXISTING R5-S5 `AdminOrderRouteDeps` + a 5th member |
+| `admin/products.ts` | `ProductDedupRedis`; union `AdminProductRouteRedisClient` | {set} ∪ **∅** | NEW (`AdminProductRouteDeps`, redis-only) |
+
+Each union is hand-written rather than derived from its per-consumer type — a
+derived union can never disagree with its consumer, so it could not catch a
+consumer that grew a command nobody declared (F-14).
+
+Both new roots are `redis`-only on purpose: the Medusa collaborators
+(`medusaAdmin`, `medusaAdjudicated`) and the delivery-zone service are a
+separate seam question and are untouched, so nothing about this slice changes
+what those two files construct or when.
+
+**Feature detection: MEASURED, none.** `typeof … === "function"` swept over
+`apps/api/src` and `packages/tools/src`. `packages/tools/src` has none at all;
+the `apps/api` hits are SIX comments describing the F-22 rule
+(`park-redis-capabilities.ts` ×2, `park-nx.ts`, `subscribers/dedup.ts`,
+`jobs/weather-helper.ts`, `routes/cart.ts`) plus FIVE non-Redis probes (two
+`unref` timer probes, a Prisma-delegate probe, a taint probe, a thenable
+probe). Reproduces #548's measurement exactly.
+
+### Adapter extension — NONE
+
+All three unions are `{set}`, which the adapter already models with full
+`EX`/`NX` semantics (`in-memory-redis.ts:455-489`: `NX` with an existing key
+returns `null`, and `EX` records a real TTL against the injected clock).
+`packages/tools` is untouched by this slice; its suite does not move.
+
+### The fail-CLOSED contract, stated and pinned DIRECTIONALLY
+
+These are the double-submit gates for every mutating admin write in the three
+files. The direction that matters is therefore FAIL-OPEN: a `set` that answers
+"OK" and records nothing turns the gate into no gate, while every happy path
+stays green. That is not hypothetical — it is precisely the fiction in all
+three pre-existing suites, whose double is
+`{ set: vi.fn().mockResolvedValue("OK") }` and whose duplicate arms PLANT the
+verdict (`mockResolvedValue(null)`). Both arms pass identically against a
+write-only gate.
+
+So each module's directional case submits the SAME `x-request-id` TWICE against
+a real NX keyspace and requires three things together:
+
+1. the second response is 409,
+2. the underlying MUTATION ran exactly ONCE (`create` /
+   `transitionStatusFromEnvelope` / `medusaAdjudicated` — the property the gate
+   exists for; a 409 alone is satisfied by a route that refuses everything), and
+3. a CONTROL **in the same test** — a different `x-request-id` — that must get
+   through, which is what rules out "refuses everything".
+
+### Clock discipline
+
+Every TTL assertion is an EXACT remaining lifetime on a FROZEN clock
+(`createInMemoryRedis({ now: () => FROZEN })`): `300_000` ms, the `EX: 300` all
+three sites share. Never `toBeGreaterThan(0)` — it cannot tell a 5-minute
+replay window from a 5-second one, and a 5-second one is a dedup gate that
+stops nothing.
+
+### The metric — doubles in the family that SUPPLY a Redis client: 3 → 2
+
+| File | Class | Disposition |
+|---|---|---|
+| `routes/admin/__tests__/delivery-zones.test.ts` | constant `vi.fn()` | **RETIRED** — adapter injected through `deps.redis`; `getRedisClient` is a rejecting TRIPWIRE; real `rk`. 14 → 14 cases. |
+| `routes/admin/__tests__/orders-routes.test.ts` | constant | unblocked, not migrated |
+| `routes/admin/__tests__/products-routes.test.ts` | constant | unblocked, not migrated |
+
+The two "unblocked, not migrated" drive their handlers through the DEFAULT
+path, which the threading preserves exactly, so they pass unedited. Each is now
+a one-file migration needing no further seam work.
+
+**Two fictions killed in the one that was retired:**
+
+1. **The verdict was PLANTED.** `createMockRedis(null)` made SET NX answer
+   "already exists" without anything ever having existed, at all three action
+   arms (create / update / delete). They now seed the reservation through the
+   SAME command the route issues and let real NX semantics produce the null.
+   The fresh-id arm's `expect(redis.set).toHaveBeenCalledWith(...)` — which a
+   write-only gate satisfies — became `peek(key) === "1"` plus an exact
+   `ttlMs(key) === 300_000`.
+2. **`rk` was faked to `ibatexas:`** — a prefix production has never written
+   (under apps/api's vitest the real `rk` resolves to `development:`). The same
+   `ibatexas:` fiction survives in `orders-routes.test.ts` and
+   `products-routes.test.ts`, which are unblocked but not migrated.
+
+**What this does NOT cover, stated as the bound:**
+
+- **Zero new Lua coverage.** Nothing threaded here reaches an `eval`, and no
+  owner-gated file was re-classified in either direction.
+- **The delivery-cache invalidation stays unseamed from the route.** The
+  retired double still replaces `invalidateDeliveryCache` with a `vi.fn()` —
+  honest, because the route `void`s it and it resolves its own client, but it
+  means "the cache was invalidated" is still a call assertion in that file.
+- **The `mockRedis` metric (27) is unchanged**, for the seventh slice running.
+- The `redisFake` cluster (12) and the class (i) seven are untouched.
+
+### Revert-to-red, per seam, with per-assertion attribution
+
+Each site's `await deps.redis()` / `await resolveRedis()` was neutered to
+`await getRedisClient()` one at a time. Copy-then-restore throughout — never
+`git checkout HEAD --` (errors on an untracked file and leaves the neutering in
+place) and never `git stash` (shared across worktrees). All three files were
+verified BYTE-IDENTICAL by `diff` against their snapshots after every restore,
+and an `RTR-NEUTERED` marker grep over `apps/api/src` returns nothing.
+
+Population: the 25 cases this slice owns — 11 in the new seam suite + 14 in the
+retired-double file.
+
+| Neutered seam | RED | Attribution |
+|---|---|---|
+| `delivery-zones.ts` `ZoneDedupRedis` | 7 | 3 in the seam suite (reservation+TTL, directional, per-action key) + 4 in the retired double (the TRIPWIRE fires: 3 duplicate arms + the fresh-id arm) |
+| `orders.ts` `StatusDedupRedis` | 2 | reservation+TTL + the directional transition-once case |
+| `products.ts` `ProductDedupRedis` | 2 | reservation+TTL + the directional egress-once case |
+| **total** | **11** | |
+
+Control run before and after the whole sweep: **green, 0 red.**
+
+**Four cases no seam-neutering can flip, and why they are EXCLUDED rather than
+counted:**
+
+- **THREE are the *"[default arm] with no deps.redis … the SINGLETON"* arms**,
+  one per module. They assert the FALLBACK, so a neutered route — which always
+  falls back — keeps them green by construction. They are what makes the other
+  11 non-vacuous; counting them as seam evidence would be the recurring error.
+  Verified, not assumed: no red list above contains a `[default arm` title.
+- **ONE is the *"with NO x-request-id the gate is skipped entirely"* case.** It
+  is NOT a fallback arm — it is a guard-SHAPE property: the guard returns
+  before resolving any client, so no client-threading mutation can reach it. It
+  earns its place by pinning the early return as observable (without it, "the
+  gate wrote a key" is compatible with a gate that writes one for every
+  request), but it is not seam evidence and is not counted.
+
+The `delivery-zones` row is the one worth reading twice. Neutering that seam
+reds cases in the RETIRED double, because that file now injects through
+`deps.redis` and its `getRedisClient` is a rejecting tripwire — the cheapest
+available proof that the migration is load-bearing rather than decorative.
+
+### Suite arithmetic
+
+Branch-local `apps/api`, run FROM `apps/api` (the root config has no
+`setupFiles` and false-reds the audit sink — a recorded trap):
+
+| | Files | Tests |
+|---|---|---|
+| baseline (`dev @ ee5490f1`) | 497 | 7821 passed, 3 skipped |
+| after | 498 | 7832 passed, 3 skipped |
+| **delta** | **+1** | **+11** |
+
+Closes exactly, per file:
+
+| File | Before | After | Δ |
+|---|---|---|---|
+| `routes/admin/__tests__/admin-dedup-client-seam.test.ts` (NEW) | — | 11 | +11 |
+| `routes/admin/__tests__/delivery-zones.test.ts` | 14 | 14 | 0 |
+| `routes/admin/__tests__/orders-routes.test.ts` | 23 | 23 | 0 |
+| `routes/admin/__tests__/products-routes.test.ts` | 6 | 6 | 0 |
+| `routes/admin/__tests__/orders-route-deps-seam.test.ts` | 1 | 1 | 0 |
+| **sum** | | | **+11** |
+
+The zeroes are the point: the retired double kept its exact case list while its
+keyspace became real, and the pre-existing R5-S5 deps-seam suite gained `redis`
+as a rejecting TRIPWIRE member plus one assertion on its existing case (*"the
+Redis resolver is per-REQUEST, so registration must not call it"*) rather than a
+new case. `packages/tools` does not move: no adapter command was added.
+
+### The counterfeit-signal trap, carried forward not re-paid
+
+The new seam suite deliberately carries NO `vi.resetModules()`, and says so in
+its own `afterEach`. #548 recorded this at ~10 red cases of diagnosis cost:
+resetting modules drops the audit-sink singleton that `apps/api`'s `setupFiles`
+initialises ONCE, so every adjudicated write after the first case 500s — a
+PERFECT counterfeit of a broken seam, reddening exactly the injected cases and
+leaving every fallback arm green. Not re-encountered here, because the warning
+was read first.
+
+### Remainder map — `routes/*` class (c), all 19 files / 67 call sites
+
+| Bucket | n | Files (sites) |
+|---|---|---|
+| Threaded — family 1 (#524) | 2 | `cart.ts` (6), `checkout-confirmation-store.ts` (2) |
+| Threaded — family 4 (#548) | 2 | `me.ts` (3), `order-actions.ts` (5) |
+| **Threaded — family 5 (this slice)** | **3** | **`admin/delivery-zones.ts` (1), `admin/orders.ts` (1), `admin/products.ts` (1)** |
+| Owner-gated — Lua via the `atomicIncr` HAND-OFF | 3 | `auth.ts` (10), `analytics.ts` (1), `whatsapp-webhook.ts` (4) |
+| Owner-gated — Lua in the module's own text | 5 | `me/anonymize-otp-gate.ts` (16), `me/anonymize-active-lock.ts` (2), `order-cancel-confirmation-store.ts` (2), `admin/admin-confirmation-store.ts` (4), `admin/payments.ts` (2) |
+| Migratable, pending the hand-off read — **LEAD THE NEXT SLICE** | 3 | `stripe-webhook.ts` (2), `chat.ts` (2), `admin/analytics.ts` (1) |
+| Needs an adapter command first | 1 | `health.ts` (2) — issues `ping`, which the adapter does not model, plus `lLen`, which it does |
+| **Total** | **19** | **67 sites** |
+
+**Arithmetic, files: 19 = 2 + 2 + 3 + 3 + 5 + 3 + 1.**
+**Arithmetic, call sites: 67 = 8 + 8 + 3 + 15 + 26 + 5 + 2**, in the same order —
+(6+2) + (3+5) + (1+1+1) + (10+1+4) + (16+2+2+4+2) + (2+2+1) + 2.
+
+**Class (c) `routes/*` is now 7 of 19 files threaded (12 of 67 sites).** The
+"migratable now, adapter-complete" bucket is EMPTY: every remaining migratable
+file needs its hand-it-to read done first.
+
+Three notes for whoever takes the next slice:
+
+1. **`stripe-webhook.ts` is still NOT gated by its `withLock` calls** (#548's
+   negative measurement stands: `withLock` takes no client and invokes `fn()`
+   with no arguments). Its own two `getRedisClient()` sites need the standard
+   read.
+2. **`health.ts` needs `ping` on the adapter.** That is the one remaining
+   adapter-extension request in class (c), and per the standing rule it needs a
+   named production consumer — which `health.ts` itself is.
+3. **`invalidateDeliveryCache` is a filed #539-class hazard**, not a resolved
+   one. It accepts a client, swallows every error in a bare catch, and its
+   honest Pick is `{set, scan, del}` — see the boundary note above before
+   threading it from `admin/delivery-zones.ts`.

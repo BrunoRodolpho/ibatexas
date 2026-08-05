@@ -32,6 +32,13 @@ function buildDeps(): {
     orderQueryService: vi.fn(() => ({}) as unknown as OrderQueryService),
     paymentQueryService: vi.fn(() => ({}) as unknown as PaymentQueryService),
     fiscalDocumentService: vi.fn(() => ({}) as unknown as FiscalDocumentService),
+    // R5 family 5 — a rejecting TRIPWIRE, not a client. The Redis resolver is
+    // per-REQUEST; registration must never call it, and this file drives no
+    // request. Anything that resolves it here fails loudly instead of
+    // silently succeeding against a stub.
+    redis: vi.fn(() =>
+      Promise.reject(new Error("deps.redis resolved at REGISTRATION time")),
+    ),
   };
   return { factories, deps: factories as unknown as AdminOrderRouteDeps };
 }
@@ -60,6 +67,10 @@ describe("admin/orders.ts — R5-S5 registration-level deps seam", () => {
       expect(factories.orderQueryService).toHaveBeenCalledTimes(1);
       expect(factories.paymentQueryService).toHaveBeenCalledTimes(1);
       expect(factories.fiscalDocumentService).toHaveBeenCalledTimes(1);
+      // The Redis resolver is per-REQUEST, so neither the plugin body nor
+      // onReady may call it. (Had it been called, the tripwire's rejection
+      // would have surfaced as an unhandled rejection rather than a count.)
+      expect(factories.redis).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
