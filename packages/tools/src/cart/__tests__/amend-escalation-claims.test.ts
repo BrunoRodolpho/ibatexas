@@ -208,6 +208,33 @@ describe("F-48 measurement — the validator's PONR-expired arm is UNREACHABLE f
     expect(reasons).toContain(VALIDATOR_PREPARING_COPY)
   })
 
+  // The recommendation, pinned. For the SAME `preparing` state and the SAME
+  // PONR-expiry condition, this validator's sibling arms tell the customer the
+  // truth — "Entre em contato com o restaurante." — and only the
+  // remove/update_qty arms claim a notification. That makes :77/:79 look like a
+  // copy defect rather than a policy decision, and it means the honest wording
+  // an OWNER would need already exists in the same file. If a sibling's copy
+  // ever changes, this reds and the recommendation must be re-derived.
+  it("sibling arms for the SAME states already use honest copy (the precedent for fixing :77/:79)", () => {
+    const cancelPreparing = canPerformAction("cancel_order", { fulfillmentStatus: "preparing" })
+    const addressPreparing = canPerformAction("change_delivery_address", {
+      fulfillmentStatus: "preparing",
+      orderType: "delivery",
+    })
+    const cancelPonr = canPerformAction("cancel_order", {
+      fulfillmentStatus: "pending",
+      orderCreatedAt: new Date(Date.now() - 120 * 60_000),
+      ponrMinutes: 30,
+    })
+
+    for (const r of [cancelPreparing, addressPreparing, cancelPonr]) {
+      expect(r.allowed).toBe(false)
+      const reason = (r as { reason: string }).reason
+      expect(reason).toContain("Entre em contato com o restaurante")
+      expect(reason).not.toContain(CLAIM)
+    }
+  })
+
   // CONTROL — the arm is live code, not dead code. Without this the treatment
   // above would pass just as happily against a validator with the arm DELETED.
   it("CONTROL: the same validator DOES produce that copy once PONR context is supplied", () => {
