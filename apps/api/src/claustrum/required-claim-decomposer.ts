@@ -1673,6 +1673,37 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
   storeHoursForDate: STORE_HOURS_FOR_DATE_CLOSURE.markers.map((m) => m.source).join("|"),
 } as const;
 
+/**
+ * F-46 — the PIX-REGENERATION REQUEST net, consumed ONLY by the span-local
+ * `notPixRegenerationRequest` conjunct on PAYMENT_STATUS_Q in
+ * {@link classifyRequestSpans}. Four arms; see that conjunct's header for the
+ * measurement that chose each one and for the arm REJECTED on its own sweep.
+ *
+ * WHY IT IS A NET AND NOT A SINGLE LITERAL, the F-27/F-31 forcing move: Sonar S5843
+ * scores each literal, and arms 1 and 4 each carry their own nested groups plus a
+ * lookaround. Kept apart, an edit to one arm cannot move another arm's score, and
+ * `.some()` over the array is character-for-character the `||` disjunction the
+ * conjunct would otherwise spell.
+ *
+ * Every arm is INDIVIDUALLY FALSIFIABLE: each is reached by at least one probe that
+ * NO other arm reaches (the roll call in `__tests__/required-claim-decomposer.test.ts`
+ * pins them by name), so deleting any one arm reds exactly its own row.
+ */
+const PIX_REGENERATION_REQUEST: readonly RegExp[] = [
+  // ARM 1 — NOVELTY, pre-posed: "novo/outro [código|QR code] pix". The workhorse.
+  /(?<![a-z])(?:nov[oa]|outr[oa])\s+(?:c[óo]digo\s+(?:de\s+|do\s+)?|qr\s*-?\s*code\s+(?:do\s+|de\s+)?)?pix/,
+  // ARM 2 — NOVELTY, post-posed: "pix novo". pt-BR puts the adjective either side.
+  /(?<![a-z])pix\s+nov[oa]/,
+  // ARM 3 — NOVELTY as a REPETITION adverbial: "manda o pix de novo".
+  /(?<![a-z])pix\s+de\s+novo/,
+  // ARM 4 — NOVELTY with the noun ELIDED: "gera outro pra mim", "manda outro".
+  // CLAUSE-FINAL by construction — see the conjunct header's V0/V1/V2 ladder. The
+  // lookahead is the whole safety property: it is what keeps "manda outro
+  // comprovante" / "manda outro atendente" (payment READS with a non-pix object)
+  // out of the net.
+  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:um\s+|uma\s+)?outr[oa](?![a-zà-ÿ])(?=\s*(?:$|[?!.,;]|pra(?![a-zà-ÿ])|para(?![a-zà-ÿ])|pro(?![a-zà-ÿ])|a[íi](?![a-zà-ÿ])|agora(?![a-zà-ÿ])|por\s+favor))/,
+];
+
 export function classifyRequestSpans(text: string): SpanClass[] {
   const t = text.toLowerCase();
   const classes: SpanClass[] = [];
@@ -2258,12 +2289,150 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // classify-only-eligible span ("meus dados do pix pro pedido 123" would keep
   // ORDER_STATUS_Q) still rides that other read. ZERO such rows exist in the frozen
   // harvest. Separately, the `payment.pix.regenerate` family is a DISTINCT mutation
-  // riding this same span — one of its rows is rescued here incidentally by `cpf`, but
-  // its verbless members ("meu pix venceu e eu não consegui pagar a tempo, e agora?")
-  // are NOT, and closing that family is not this instrument's job.
+  // riding this same span — one of its rows is rescued here incidentally by `cpf`.
+  // That residual is now CLOSED by the F-46 conjunct immediately below; what it
+  // measured is recorded there, including the ONE row F-46 deliberately leaves
+  // behind. This note is kept (rather than deleted) because the "one row rescued
+  // incidentally by `cpf`" fact is still true and still explains why
+  // `adversarial-cpf-mentioned` is absent from F-46's own changed-row roll call.
   const notSelfScopedPersonalData =
     !/(?<![a-z])(meu|minha|meus|minhas)\s+(?:nome|e-?mail|cpf|dados|chave)/.test(t);
-  if (paymentPhrasing && !mutationImperative && notSelfScopedPersonalData) {
+
+  // F-46 — the PIX-REGENERATION conjunct: a customer asking for ANOTHER pix code is
+  // making a MUTATION request, not asking a payment status question. Same shape as
+  // F-31's `notSelfScopedAddress` and F-36's `notSelfScopedPersonalData` directly
+  // above, and the THIRD mutation family found riding this one classify-only span.
+  //
+  // THE DEFECT. `payment.pix.regenerate` is a REAL, MUTATING, planner-advertised
+  // CUSTOMER-plane capability (`packages/catalog/src/capability-definitions/
+  // definitions.ts` — `auth: "customer"`, `surfaces: ["chat"]`, legacy name
+  // `regenerate_pix`, "Gerar um novo código PIX para um pagamento pendente."). A bare
+  // `pix` fires `paymentPhrasing` through the DUAL-USE token above, PAYMENT_STATUS is
+  // classify-only-eligible, so a customer whose pix expired asking for a new one got a
+  // deterministic payment-STATUS answer and the regeneration was SILENTLY DROPPED with
+  // no model call — the BKL-201/206/217 + F-8 + F-36 read-span-captures-mutation shape.
+  //
+  // THE FAMILY IS NINETEEN, NOT TWO, and that is the headline correction to F-46 AS
+  // FILED. The finding named two verbless members. Classifying the WHOLE corpus
+  // (`packages/journeys/extraction-corpus/payment.pix.regenerate.yaml`, 22 cases) at
+  // 6ad3f4e2 measured **19 of 22 CAPTURED** — including `informal-basic`, the corpus's
+  // own "canonical trigger phrasing". Only 3 escaped, and ALL THREE escape by ACCIDENT,
+  // not recognition:
+  //   · `broken-code-framing` — "não tá funcionando" trips STORE_OPEN_NOW_Q, which is
+  //     classify-only-INELIGIBLE, so the turn declines WHOLESALE. A schedule marker is
+  //     what saved it.
+  //   · `formal-plural-precisamos` — "finalizar o pagamento" trips the BKL-238 checkout
+  //     root in `hasMutationImperative`. A checkout verb is what saved it.
+  //   · `adversarial-cpf-mentioned` — F-36's `cpf` arm, as that ticket recorded.
+  // Worse, SIX of this capability's own EIGHT `conversationTriggers` were captured:
+  // the advertised phrasing was unreachable on the classify-only route, the same
+  // F-36 finding at three times the scale.
+  //
+  // WHY NOVELTY AND NOT THE EXPIRY FRAME. F-46 as filed proposed an expiry conjunct
+  // (`pix` + a `venc`/`expir` token); it is REJECTED on its own sweep, so nobody
+  // re-proposes it. Two measurements force it:
+  //   1. IT BUYS ONE MARGINAL ROW. Over the frozen 164,963-row / 114,684-distinct
+  //      harvest, a bare `venc|expir` arm rescues 5 captured corpus rows — but FOUR of
+  //      those five ALSO carry a novelty token and are already rescued by the arms
+  //      below. Its marginal contribution is exactly `context-embedded-complaint`.
+  //   2. IT KILLS A READ FRAME. Expiry is a STATE DESCRIPTION that a status question
+  //      and a regeneration request SHARE. "meu pix venceu?" / "meu pix já venceu?" are
+  //      genuine PAYMENT_STATUS reads (both classify to PAYMENT_STATUS_Q today) and BOTH
+  //      the bare arm and a pix-ADJACENT narrowing (`pix\s+(já\s+)?venceu`) suppress
+  //      them. The live read corpus's own idiom is a bare yes/no about pix state —
+  //      "meu pix já caiu?" (`read-tool-corpus/get_payment_status.yaml`) — so the frame
+  //      is attested even though the expiry SPELLING of it is authored. This is the
+  //      `pass`/`pôr` polysemy ruling (F-36, BKL-271) a third time: the discriminator is
+  //      not the STATE the customer describes, it is the THING they ask for.
+  // The rejected arm is guarded by a widening test, not by this comment.
+  //
+  // THE ARMS, per arm, over the frozen harvest. "Blast" is the arm ALONE across every
+  // payment-bearing row (3,561 of them at baseline), so no arm hides behind the union;
+  // "input" counts only the 47 payment-bearing rows that occupy a real INPUT position
+  // (corpus `utterance:`, `conversationTriggers`, webhook `Body=`, direct classifier
+  // calls) — the only population where a match can cost a read. Every other blast row
+  // is OUTPUT copy (reply text, tool descriptions, error strings) that no code path
+  // ever hands to this function. "uniq" is the rows reached by THIS arm and no other:
+  //
+  //   arm                        blast   input   uniq
+  //   ARM 1 novelty-PREPOSED       40       9       9
+  //   ARM 2 novelty-POSTPOSED      16       7       7
+  //   ARM 3 novelty-DE NOVO         8       4       4
+  //   ARM 4 novelty-ELIDED         14       6       6
+  //   UNION                        76      26      —
+  //
+  // NO ARM IS SHADOWED — 9+7+4+6 = 26 = the union, i.e. the four arms PARTITION the
+  // rows they move. That is the byte-pin-shadowing hazard closed by measurement rather
+  // than by assertion: deleting any one arm reds exactly its own rows, which is what
+  // makes the roll call in the test file falsifiable arm by arm.
+  //
+  //   · ARM 1 carries the canonical phrasing ("gera um novo código pix pra mim, o
+  //     antigo expirou") and 2 conversationTriggers. Its optional `código`/`QR code`
+  //     head is load-bearing: `noun-form-qr-code` ("preciso de um novo QR code do pix")
+  //     is reachable by NO other arm.
+  //   · ARM 2 exists because pt-BR permits either adjective position and the corpus
+  //     uses BOTH; dropping it loses seven rows including "quero um pix novo pra
+  //     pagar", a conversationTrigger.
+  //   · ARM 3 is a THIRD syntactic frame (a repetition adverbial), not a spelling of
+  //     arms 1-2.
+  //   · ARM 4 was chosen from a measured V0/V1/V2 ladder, and the ladder is the point.
+  //     The LOOSE form (`(ger|mand|envi|bot)\w*\s+(um\s+)?outr[oa]`, blast 17) leaked
+  //     all FIVE authored must-not-fire probes — "meu pagamento não caiu, manda outro
+  //     comprovante", "o pagamento falhou, manda outro método pra eu tentar", "meu pix
+  //     não caiu, manda outro atendente falar comigo" and two more, every one a genuine
+  //     payment READ whose object simply is not a pix. The CLAUSE-FINAL lookahead
+  //     closes all five and still fires on 6 of 7 must-fire probes; the 7th ("manda
+  //     outro pix") is covered by ARM 1, which is why the union loses nothing. A
+  //     STRICTER form (V2, no continuation permitted at all) drops to 4 of 7 and was
+  //     refused. The allowlisted continuations are the attested ones only.
+  //
+  // WHAT THE MEASUREMENT SAYS ABOUT THE FALSE-POSITIVE DIRECTION: over the 783
+  // attested-input rows the change moves 26, and every single one is a
+  // `payment.pix.regenerate` request — 19 corpus cases, 6 of the capability's own
+  // conversationTriggers, and one WhatsApp webhook fixture ("novo pix"). ZERO rows move
+  // in the READ-GAINING direction, over the attested inputs AND over all 114,684
+  // distinct harvest rows. The canonical payment reads are untouched by construction:
+  // `pix` and `pagamento` are never sufficient on their own, only in a NOVELTY frame.
+  //
+  // WHY IT IS SPAN-LOCAL AND `hasMutationImperative` IS UNTOUCHED. The F-31/F-36/
+  // BKL-285 placement ruling, and here the sweep independently forces it: `manda`,
+  // `gera` and `bota` are NOT mutation imperatives in the shared net's sense — that net
+  // has two other consumers (`ops-write-twin-rescue.ts` conjunct 4, the
+  // `ibatexas-responder.ts` BKL-262 Stage-2 abstain) where a customer-plane
+  // pix-regeneration discrimination means nothing, and "me manda o cardápio" / "gera o
+  // relatório" are READ imperatives that adding those roots would break. Untouched here
+  // means ZERO movement there BY CONSTRUCTION, asserted per-row in the test file.
+  //
+  // KNOWN RESIDUAL, measured and named so it is not re-discovered as new — the SAME
+  // multi-span shape F-36 named one line above, now with an attested member. This
+  // conjunct is span-local to PAYMENT_STATUS_Q, so a regeneration request that ALSO
+  // fires another classify-only-eligible span still rides that other read:
+  // `adversarial-explicit-order-number` ("gera um pix novo pro pedido 12345") keeps
+  // ORDER_STATUS_Q and stays on the classify-only route. It is the ONE corpus row this
+  // instrument moves off PAYMENT_STATUS_Q without moving off the classify-only path.
+  // Closing it means gating ORDER_STATUS_Q on a payment-capability predicate, which is
+  // a different instrument with a different blast radius; it is NOT folded in here.
+  //
+  // AND THE ONE ROW LEFT BEHIND ENTIRELY: `context-embedded-complaint` ("meu pix venceu
+  // e eu não consegui pagar a tempo, e agora?") stays captured, because the only
+  // instrument that reaches it is the expiry frame rejected above. Its severity is the
+  // MILD end of this family and that is why the trade goes this way: a payment-status
+  // answer is PARTIALLY RESPONSIVE to it (it truthfully reports that the payment is
+  // pending/expired, which is what the customer just said happened); what is lost is
+  // the regeneration PROPOSAL, i.e. the next step. Contrast the 17 corpus rows this
+  // conjunct moves clean off the classify-only route, which are EXPLICIT requests
+  // ("gera um novo código pix pra mim") answered with a status line — a flat
+  // non-answer, not a partial one. Corpus arithmetic: 19 captured at 6ad3f4e2, 17 move
+  // off the route, 1 narrows to ORDER_STATUS_Q and stays captured, 1 is left behind;
+  // 19 − 17 = 2 still captured.
+  const notPixRegenerationRequest = !PIX_REGENERATION_REQUEST.some((re) => re.test(t));
+
+  if (
+    paymentPhrasing &&
+    !mutationImperative &&
+    notSelfScopedPersonalData &&
+    notPixRegenerationRequest
+  ) {
     classes.push(PAYMENT_STATUS_CLOSURE.spanClass);
   }
 
