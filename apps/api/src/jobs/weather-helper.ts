@@ -22,7 +22,41 @@ interface OpenMeteoResponse {
 
 const WEATHER_CACHE_TTL = 3600; // 1 hour
 
-export async function fetchWeatherCondition(): Promise<WeatherCondition> {
+// ── The Redis client seam (R5 rollout, jobs/subscribers family) ──────────────
+//
+// Deps-bag shape, following the in-repo class-(d) precedent
+// (`jobs/escalation-park-expiry-sweeper.ts`'s NAMED `SweeperRedis`, the stronger
+// of the two forms — a named type is greppable and documents its own surface,
+// where an inline `readonly redis?: {...}` cannot be referred to by a caller).
+//
+// FAIL-CLOSED PICK ANALYSIS (R5-S12's rule):
+//   • commands ISSUED here: `get`, `set`.
+//   • commands consumed DOWNSTREAM: none — this module hands the client to
+//     nothing. Its only other awaits are `fetch` and Sentry.
+//   • feature detection: none (`typeof client.X === "function"` appears nowhere
+//     in this module's graph — measured, not assumed).
+// So {issued} ∪ {downstream} = {get, set}, and the Pick below is complete.
+//
+// The swallow to know about: the whole API-fetch block, INCLUDING the cache
+// `set`, sits inside one `try/catch` that returns "normal". A client that cannot
+// serve `set` therefore degrades to an un-cached "normal" forecast rather than
+// throwing — so this seam's tests must assert the WRITE, not just the verdict.
+// The cache `get`, by contrast, is outside that catch and throws to the caller.
+
+/** The node-redis v4 surface this cache reads and writes. */
+export type WeatherCacheRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "get" | "set"
+>;
+
+export interface FetchWeatherConditionDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: WeatherCacheRedis;
+}
+
+export async function fetchWeatherCondition(
+  deps: FetchWeatherConditionDeps = {},
+): Promise<WeatherCondition> {
   const lat = process.env.RESTAURANT_LAT;
   const lng = process.env.RESTAURANT_LNG;
 
@@ -30,7 +64,7 @@ export async function fetchWeatherCondition(): Promise<WeatherCondition> {
     return "normal";
   }
 
-  const redis = await getRedisClient();
+  const redis: WeatherCacheRedis = deps.redis ?? (await getRedisClient());
   const cacheKey = rk("weather:current");
 
   // Check cache first

@@ -634,3 +634,172 @@ describe("in-memory-redis — decr", () => {
     await expect(redis.client.decr("test:list")).rejects.toThrow(WrongTypeError)
   })
 })
+
+// ── (6) HSCAN — the cursor-wise hash walk (R5 jobs/subscribers rollout) ───────
+//
+// Consumer: `apps/api/src/jobs/abandoned-cart-checker.ts`, which walks
+// `rk("active:carts")` with `do { … } while (cursor !== 0)` and `hDel`s entries
+// as it goes. Two properties decide whether that loop is testable at all — the
+// cursor must TERMINATE, and a field removed mid-walk must not come back — and
+// a hand-rolled `hScan` that answers a constant `{cursor: 0}` has neither.
+
+describe("in-memory-redis — hScan", () => {
+  it("returns cursor 0 and no tuples for an absent hash", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.hScan("nope", 0)).toEqual({ cursor: 0, tuples: [] })
+  })
+
+  it("pages with a non-zero cursor and TERMINATES on 0, visiting every field once", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.hSet("h", "a", "1")
+    await redis.client.hSet("h", "b", "2")
+    await redis.client.hSet("h", "c", "3")
+
+    const seen: string[] = []
+    let cursor = 0
+    let pages = 0
+    do {
+      const res = await redis.client.hScan("h", cursor, { COUNT: 2 })
+      cursor = res.cursor
+      for (const t of res.tuples) seen.push(`${t.field}=${t.value}`)
+      pages++
+      if (pages > 10) throw new Error("hScan did not terminate")
+    } while (cursor !== 0)
+
+    // Two pages at COUNT 2 over 3 fields — so the non-zero cursor really was
+    // handed out, and the loop really did end.
+    expect(pages).toBe(2)
+    expect(seen.sort()).toEqual(["a=1", "b=2", "c=3"])
+  })
+
+  it("never hands back a field hDel'd mid-walk (the delete-while-iterating guarantee)", async () => {
+    const redis = createInMemoryRedis()
+    for (const f of ["a", "b", "c", "d"]) await redis.client.hSet("h", f, f)
+
+    const seen: string[] = []
+    let cursor = 0
+    do {
+      const res = await redis.client.hScan("h", cursor, { COUNT: 2 })
+      cursor = res.cursor
+      for (const t of res.tuples) seen.push(t.field)
+      // Remove a field the walk has not reached — the exact caller pattern in
+      // abandoned-cart-checker (it hDels stale carts as it scans).
+      if (seen.length === 2) await redis.client.hDel("h", "d")
+    } while (cursor !== 0)
+
+    expect(seen).not.toContain("d")
+  })
+
+  it("MATCH filters the FIELD, not the value", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.hSet("h", "cart_01", "keep")
+    await redis.client.hSet("h", "cart_02", "keep")
+    await redis.client.hSet("h", "other_01", "cart_99")
+
+    const res = await redis.client.hScan("h", 0, { MATCH: "cart_*", COUNT: 100 })
+    expect(res.cursor).toBe(0)
+    expect(res.tuples.map((t) => t.field).sort()).toEqual(["cart_01", "cart_02"])
+  })
+
+  it("refuses a cursor that did not come from this client, and one from another key", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.hSet("h", "a", "1")
+    await redis.client.hSet("h", "b", "2")
+    await redis.client.hSet("other", "z", "9")
+
+    await expect(redis.client.hScan("h", 999)).rejects.toThrow(/unknown cursor 999/)
+
+    const page = await redis.client.hScan("h", 0, { COUNT: 1 })
+    expect(page.cursor).not.toBe(0)
+    await expect(redis.client.hScan("other", page.cursor)).rejects.toThrow(/belongs to key/)
+  })
+
+  it("validates arguments on an EMPTY store, and refuses TYPE (meaningless for a hash)", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    await expect(loose(redis.client).hScan(5, 0)).rejects.toThrow(/key must be a string/)
+    await expect(loose(redis.client).hScan("h", "0")).rejects.toThrow(
+      /cursor must be a non-negative integer/,
+    )
+    await expect(loose(redis.client).hScan("h", -1)).rejects.toThrow(
+      /cursor must be a non-negative integer/,
+    )
+    await expect(loose(redis.client).hScan("h", 0, { MATCH: 5 })).rejects.toThrow(
+      /MATCH must be a string/,
+    )
+    await expect(loose(redis.client).hScan("h", 0, { COUNT: 0 })).rejects.toThrow(
+      /COUNT must be a positive integer/,
+    )
+    await expect(loose(redis.client).hScan("h", 0, { TYPE: "hash" })).rejects.toThrow(
+      /unsupported option "TYPE"/,
+    )
+  })
+
+  it("refuses a WRONGTYPE key instead of answering an empty hash", async () => {
+    const redis = createInMemoryRedis({ seed: { str: "plain" } })
+    await expect(redis.client.hScan("str", 0)).rejects.toThrow(WrongTypeError)
+  })
+})
+
+// ── (7) LRANGE — the whole-history read (R5 jobs/subscribers rollout) ─────────
+//
+// Consumer: `apps/api/src/session/store.ts`'s `loadSession`, reached from
+// `jobs/abandoned-cart-checker.ts` through the client it is HANDED — the
+// downstream half of the fail-closed Pick rule. Its call is `lRange(key, 0, -1)`
+// and the range is INCLUSIVE, which is precisely what a JS `slice(start, stop)`
+// mistranslation gets wrong: `slice(0, -1)` drops the last message from every
+// history, and no assertion on "we loaded a history" can see it.
+
+describe("in-memory-redis — lRange", () => {
+  it("is an empty array for an absent list", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.lRange("nope", 0, -1)).toEqual([])
+  })
+
+  it("(0, -1) returns the WHOLE list — the inclusive end, not slice()'s", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("l", ["a", "b", "c"])
+    // A `slice(0, -1)` implementation answers ["a","b"] here and stays green in
+    // any test that only checks "the history is non-empty".
+    expect(await redis.client.lRange("l", 0, -1)).toEqual(["a", "b", "c"])
+  })
+
+  it("both endpoints are inclusive, and negatives count back from the tail", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("l", ["a", "b", "c", "d"])
+    expect(await redis.client.lRange("l", 1, 2)).toEqual(["b", "c"])
+    expect(await redis.client.lRange("l", -2, -1)).toEqual(["c", "d"])
+    expect(await redis.client.lRange("l", 0, 0)).toEqual(["a"])
+  })
+
+  it("clamps out-of-range endpoints and answers [] for an inverted range", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("l", ["a", "b"])
+    expect(await redis.client.lRange("l", 0, 99)).toEqual(["a", "b"])
+    expect(await redis.client.lRange("l", -99, -1)).toEqual(["a", "b"])
+    expect(await redis.client.lRange("l", 2, 1)).toEqual([])
+    expect(await redis.client.lRange("l", 5, 9)).toEqual([])
+  })
+
+  it("reads the order lPush and rPush actually produce", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("l", "tail")
+    await redis.client.lPush("l", "head")
+    expect(await redis.client.lRange("l", 0, -1)).toEqual(["head", "tail"])
+  })
+
+  it("validates arguments on an EMPTY store", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    await expect(loose(redis.client).lRange(5, 0, -1)).rejects.toThrow(/key must be a string/)
+    await expect(loose(redis.client).lRange("l", "0", -1)).rejects.toThrow(
+      /start must be an integer/,
+    )
+    await expect(loose(redis.client).lRange("l", 0, 1.5)).rejects.toThrow(/stop must be an integer/)
+  })
+
+  it("refuses a WRONGTYPE key instead of answering an empty history", async () => {
+    const redis = createInMemoryRedis({ seed: { str: "plain" } })
+    await expect(redis.client.lRange("str", 0, -1)).rejects.toThrow(WrongTypeError)
+  })
+})

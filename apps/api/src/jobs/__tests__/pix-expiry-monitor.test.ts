@@ -6,37 +6,52 @@
 // under the order id is a key `isPixPaid` never reads and the customer who just
 // paid still gets "O PIX expirou".
 //
-// The Redis double here is KEY-SENSITIVE (a real Map, NX honoured) rather than a
-// blanket mockResolvedValue: a marker written under one key and read under
-// another has to actually miss, or the test cannot see the defect at all. The
-// first describe block pins that by driving markPixPaid → processPixExpiry
-// through the same store, and includes the revert-to-red case.
+// The Redis double is KEY-SENSITIVE — the BKL-241 defect is invisible to a `get`
+// that resolves the same value for every key. It is now the canonical in-memory
+// adapter (`@ibatexas/tools/testing`), INJECTED through the module's own seam
+// rather than installed over `getRedisClient`.
 //
 // PIXPAIDFLAG: isPixPaid() must not rely solely on the best-effort Redis flag
 // (set AFTER the DB write and catch-and-ignored on failure, 2h TTL). When the
 // flag is absent it falls back to the Payment projection — the billing source of
 // truth — so a customer who already paid never receives a spurious reminder.
 //
-// Mocks: @ibatexas/tools (getRedisClient, rk, medusaAdmin),
+// ── R5 rollout, family 2 — what the migration killed here ───────────────────
+//
+//   1. `rk` was faked to `ibatexas:${k}` — a prefix production has NEVER
+//      written (the real `rk()` under apps/api's vitest resolves to
+//      `development:`). Both key assertions in the idempotency block asserted
+//      against a keyspace that does not exist.
+//   2. The hand-rolled Map double was honest about NX but existed in three
+//      DIFFERENT shapes across the file — `{get, set}` here, `{get}` there — so
+//      which commands a case could reach depended on which `beforeEach` ran.
+//   3. Two whole describes drove `set` from `mockResolvedValue`/`…Once`, so the
+//      NX claim's KEYSPACE was never involved: "a retry sends exactly once"
+//      was pinned by a scripted `"OK"` then `null`, not by the second SET
+//      finding the first one's key. The claim is now real.
+//
+// Mocks: @ibatexas/tools (getRedisClient TRIPWIRE + medusaAdmin; `rk` is REAL),
 //        @ibatexas/domain (createPaymentQueryService),
 //        ../../whatsapp/client.js (sendText), ../../lib/logger.js,
 //        ../queue.js (BullMQ factories), @sentry/node.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PaymentStatus } from "@ibatexas/types";
+// `rk` is the REAL one — the `vi.mock` below spreads the actual module and
+// replaces only the client resolver. `vi.mock` is hoisted, so importing here
+// binds the mocked namespace either way.
+import { rk } from "@ibatexas/tools";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
 
-const mockRedisGet = vi.hoisted(() => vi.fn());
-const mockRedisSet = vi.hoisted(() => vi.fn());
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockGetByStripePaymentIntentId = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
 const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: mockGetRedisClient,
-  rk: (key: string) => `ibatexas:${key}`,
-  medusaAdmin: mockMedusaAdmin,
-}));
+vi.mock("@ibatexas/tools", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ibatexas/tools")>();
+  return { ...actual, getRedisClient: mockGetRedisClient, medusaAdmin: mockMedusaAdmin };
+});
 
 vi.mock("@ibatexas/domain", () => ({
   createPaymentQueryService: vi.fn(() => ({
@@ -52,10 +67,16 @@ vi.mock("../../lib/logger.js", () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock("../queue.js", () => ({
-  createQueue: vi.fn(() => ({ add: vi.fn(), close: vi.fn() })),
-  createWorker: vi.fn(() => ({ on: vi.fn(), close: vi.fn() })),
-}));
+// Only the BullMQ FACTORIES are replaced; `assertDepsBag` is spread through
+// REAL, so `processPixExpiry`'s deps guard is the production one here too.
+vi.mock("../queue.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../queue.js")>();
+  return {
+    ...actual,
+    createQueue: vi.fn(() => ({ add: vi.fn(), close: vi.fn() })),
+    createWorker: vi.fn(() => ({ on: vi.fn(), close: vi.fn() })),
+  };
+});
 
 vi.mock("@sentry/node", () => ({
   withScope: vi.fn(),
@@ -76,22 +97,36 @@ function buildJob(stage: "reminder" | "expired", paymentIntentId: string): Job<P
   } as Job<PixExpiryJobData>;
 }
 
+let redis: InMemoryRedis;
+
 /**
- * A Map-backed Redis double. Distinguishing keys is the whole point: the BKL-241
- * defect is invisible to a `get` that resolves the same value for every key.
+ * A FROZEN clock, not `Date.now`.
+ *
+ * The TTL cases below assert an EXACT remaining lifetime (`toBe(7_200_000)`),
+ * which is the whole point — a `toBeGreaterThan(0)` cannot tell a 2-hour marker
+ * from a 2-second one. Against a wall clock that equality is a flake: under a
+ * loaded full-suite run, milliseconds elapse between the module's SET and the
+ * test's read, and 7_200_000 becomes 7_199_998. Measured, not theorised — the
+ * first draft of the sibling seam suite failed exactly this way at 132ms.
+ * Freeze the clock and the exact assertion is both strict and deterministic.
  */
-function installFakeRedis(): Map<string, string> {
-  const store = new Map<string, string>();
-  mockGetRedisClient.mockResolvedValue({
-    get: async (key: string) => store.get(key) ?? null,
-    set: async (key: string, value: string, opts?: { NX?: boolean }) => {
-      if (opts?.NX && store.has(key)) return null;
-      store.set(key, value);
-      return "OK";
-    },
-  });
-  return store;
+const FROZEN_NOW = 1_700_000_000_000;
+
+/**
+ * Arms the singleton TRIPWIRE and returns a fresh keyspace. Every case in this
+ * file injects; a resolution means the seam stopped working.
+ */
+function freshKeyspace(): InMemoryRedis {
+  const r = createInMemoryRedis({ now: () => FROZEN_NOW });
+  mockGetRedisClient.mockRejectedValue(
+    new Error("getRedisClient() resolved — the pix-expiry-monitor seam is unwired"),
+  );
+  return r;
 }
+
+const paid = (pi: string) => isPixPaid(pi, { redis: redis.client });
+const mark = (pi: string) => markPixPaid(pi, { redis: redis.client });
+const process_ = (job: Job<PixExpiryJobData>) => processPixExpiry(job, { redis: redis.client });
 
 describe("BKL-241 — marker and monitor share one canonical id", () => {
   const PI_ID = "pi_3RstubPIXattempt";
@@ -99,7 +134,7 @@ describe("BKL-241 — marker and monitor share one canonical id", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    installFakeRedis();
+    redis = freshKeyspace();
     // No Payment row yet — the unpaid create_checkout PIX case, where the cart
     // is completed only on payment. Isolates the Redis marker as the signal.
     mockGetByStripePaymentIntentId.mockResolvedValue(null);
@@ -107,20 +142,29 @@ describe("BKL-241 — marker and monitor share one canonical id", () => {
 
   it("silences the monitor scheduled with the PI id once the webhook marks that PI paid", async () => {
     // Exactly what the Stripe webhook does on payment_intent.succeeded.
-    await markPixPaid(PI_ID);
+    await mark(PI_ID);
 
-    await processPixExpiry(buildJob("reminder", PI_ID));
-    await processPixExpiry(buildJob("expired", PI_ID));
+    await process_(buildJob("reminder", PI_ID));
+    await process_(buildJob("expired", PI_ID));
 
     expect(mockSendText).not.toHaveBeenCalled();
   });
 
-  it("writes the marker under the PI id the monitor reads", async () => {
-    const store = installFakeRedis();
-    await markPixPaid(PI_ID);
+  it("writes the marker under the PI id the monitor reads, through the REAL rk()", async () => {
+    await mark(PI_ID);
 
-    expect([...store.keys()]).toEqual([`ibatexas:pix:paid:${PI_ID}`]);
-    expect(await isPixPaid(PI_ID)).toBe(true);
+    // `development:pix:paid:pi_…` — the key production writes. The retired
+    // double asserted an `ibatexas:` prefix nothing has ever written.
+    expect(redis.keys()).toEqual([rk(`pix:paid:${PI_ID}`)]);
+    expect(await paid(PI_ID)).toBe(true);
+  });
+
+  it("gives the paid marker a 2h TTL (the window pending jobs have to check)", async () => {
+    await mark(PI_ID);
+
+    // An exact remaining lifetime, not an echo of the EX argument the module
+    // passed in — the double could only ever have re-asserted its own input.
+    expect(redis.ttlMs(rk(`pix:paid:${PI_ID}`))).toBe(7_200_000);
   });
 
   it("reverts to red: a marker written under the ORDER id leaves the paid customer messaged", async () => {
@@ -128,12 +172,12 @@ describe("BKL-241 — marker and monitor share one canonical id", () => {
     // markPixPaid(orderId) while the job had been scheduled with the `pi_…` id.
     // The two sides key on different ids, so the paid flag never matches — this
     // is the live-reproduced defect, and it must still be detectable here.
-    await markPixPaid(ORDER_ID);
+    await mark(ORDER_ID);
 
-    await processPixExpiry(buildJob("expired", PI_ID));
+    await process_(buildJob("expired", PI_ID));
 
     expect(mockSendText).toHaveBeenCalledTimes(1);
-    expect(await isPixPaid(PI_ID)).toBe(false);
+    expect(await paid(PI_ID)).toBe(false);
   });
 
   it("keeps attempts independent — paying attempt #2 does not silence attempt #1", async () => {
@@ -141,17 +185,17 @@ describe("BKL-241 — marker and monitor share one canonical id", () => {
     // schedule their own monitor pair. Attempt-scoped keys are what make the
     // two monitors separable at all.
     const SECOND_PI = "pi_3RstubPIXretry";
-    await markPixPaid(SECOND_PI);
+    await mark(SECOND_PI);
 
-    await processPixExpiry(buildJob("expired", SECOND_PI));
+    await process_(buildJob("expired", SECOND_PI));
     expect(mockSendText).not.toHaveBeenCalled();
 
-    await processPixExpiry(buildJob("expired", PI_ID));
+    await process_(buildJob("expired", PI_ID));
     expect(mockSendText).toHaveBeenCalledTimes(1);
   });
 
   it("still reads jobs enqueued before the rename (in-flight compat)", async () => {
-    await markPixPaid(PI_ID);
+    await mark(PI_ID);
 
     // A delayed job that survived the deploy: the id sits under `orderId` and
     // already held the `pi_…` value.
@@ -159,7 +203,7 @@ describe("BKL-241 — marker and monitor share one canonical id", () => {
       data: { phone: "+5511999999999", phoneHash: "hash", orderId: PI_ID, stage: "expired" },
     } as unknown as Job<PixExpiryJobData>;
 
-    await processPixExpiry(legacyJob);
+    await process_(legacyJob);
 
     expect(mockSendText).not.toHaveBeenCalled();
   });
@@ -169,81 +213,107 @@ describe("BKL-241 — marker and monitor share one canonical id", () => {
       data: { phone: "+5511999999999", phoneHash: "hash", stage: "expired" },
     } as unknown as Job<PixExpiryJobData>;
 
-    await processPixExpiry(idlessJob);
+    await process_(idlessJob);
 
     expect(mockSendText).not.toHaveBeenCalled();
+    // The guard short-circuits BEFORE any client is touched.
+    expect(redis.calls).toHaveLength(0);
   });
 });
 
 describe("isPixPaid — PIXPAIDFLAG DB fallback", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetRedisClient.mockResolvedValue({ get: mockRedisGet });
+    redis = freshKeyspace();
   });
 
   it("returns true from the Redis flag without consulting the DB", async () => {
-    mockRedisGet.mockResolvedValue("1");
+    await redis.client.set(rk("pix:paid:pi_1"), "1");
 
-    expect(await isPixPaid("pi_1")).toBe(true);
+    expect(await paid("pi_1")).toBe(true);
     expect(mockGetByStripePaymentIntentId).not.toHaveBeenCalled();
   });
 
   it("falls back to the DB and returns true when the PI's Payment is PAID", async () => {
-    mockRedisGet.mockResolvedValue(null); // flag absent (SET failed / TTL-evicted / restart)
+    // Flag absent — SET failed / TTL-evicted / restart. An EMPTY keyspace is the
+    // honest expression of that; the retired double stubbed `get → null`.
     mockGetByStripePaymentIntentId.mockResolvedValue({ status: PaymentStatus.PAID });
 
-    expect(await isPixPaid("pi_2")).toBe(true);
+    expect(await paid("pi_2")).toBe(true);
     // BKL-241: the fallback asks about THIS attempt — a findUnique on the unique
     // stripePaymentIntentId column, not the order's most-recent non-terminal row.
     expect(mockGetByStripePaymentIntentId).toHaveBeenCalledWith("pi_2");
   });
 
+  it("falls back once the flag's own TTL has really lapsed", async () => {
+    let clock = 1_700_000_000_000;
+    redis = createInMemoryRedis({ now: () => clock });
+    mockGetByStripePaymentIntentId.mockResolvedValue({ status: PaymentStatus.PAID });
+
+    await mark("pi_ttl");
+    expect(await paid("pi_ttl")).toBe(true);
+    expect(mockGetByStripePaymentIntentId).not.toHaveBeenCalled();
+
+    // Past the 2h marker window: the flag is gone and the DB is consulted.
+    clock += 7_200_001;
+    expect(await paid("pi_ttl")).toBe(true);
+    expect(mockGetByStripePaymentIntentId).toHaveBeenCalledWith("pi_ttl");
+  });
+
   it("returns false when the flag is absent and the PI's Payment is not yet paid", async () => {
-    mockRedisGet.mockResolvedValue(null);
     mockGetByStripePaymentIntentId.mockResolvedValue({ status: PaymentStatus.PAYMENT_PENDING });
 
-    expect(await isPixPaid("pi_3")).toBe(false);
+    expect(await paid("pi_3")).toBe(false);
     expect(mockGetByStripePaymentIntentId).toHaveBeenCalledWith("pi_3");
   });
 
   it("returns false when the flag is absent and there is no Payment for the PI", async () => {
-    mockRedisGet.mockResolvedValue(null);
     mockGetByStripePaymentIntentId.mockResolvedValue(null);
 
-    expect(await isPixPaid("pi_4")).toBe(false);
+    expect(await paid("pi_4")).toBe(false);
     expect(mockGetByStripePaymentIntentId).toHaveBeenCalledWith("pi_4");
   });
 
   it("returns false (never throws) when the DB fallback query fails", async () => {
-    mockRedisGet.mockResolvedValue(null);
     mockGetByStripePaymentIntentId.mockRejectedValue(new Error("db unavailable"));
 
-    await expect(isPixPaid("pi_5")).resolves.toBe(false);
+    await expect(paid("pi_5")).resolves.toBe(false);
+  });
+
+  it("uses the singleton when NO client is threaded (the default is preserved)", async () => {
+    // The fallback control for every injected case above: without it, the
+    // tripwire is compatible with a module that resolves nothing at all.
+    const singleton = createInMemoryRedis();
+    mockGetRedisClient.mockResolvedValue(singleton.client);
+    await singleton.client.set(rk("pix:paid:pi_default"), "1");
+
+    expect(await isPixPaid("pi_default")).toBe(true);
+    expect(mockGetByStripePaymentIntentId).not.toHaveBeenCalled();
+    expect(redis.calls).toHaveLength(0);
   });
 });
 
 describe("processPixExpiry — suppresses messaging on DB-confirmed payment", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetRedisClient.mockResolvedValue({ get: mockRedisGet, set: mockRedisSet });
-    // Default: NX claim succeeds (first run for this {paymentIntentId,stage}).
-    mockRedisSet.mockResolvedValue("OK");
+    redis = freshKeyspace();
   });
 
   it("does NOT send a reminder when the flag is absent but the Payment is PAID", async () => {
-    mockRedisGet.mockResolvedValue(null);
     mockGetByStripePaymentIntentId.mockResolvedValue({ status: PaymentStatus.PAID });
 
-    await processPixExpiry(buildJob("reminder", "pi_paid"));
+    await process_(buildJob("reminder", "pi_paid"));
 
     expect(mockSendText).not.toHaveBeenCalled();
+    // A suppressed send never claims the NX key either — so a later run that
+    // legitimately needs to message is not locked out by this one.
+    expect(redis.keys()).toEqual([]);
   });
 
   it("sends a reminder when neither the flag nor the Payment indicate payment", async () => {
-    mockRedisGet.mockResolvedValue(null);
     mockGetByStripePaymentIntentId.mockResolvedValue(null);
 
-    await processPixExpiry(buildJob("reminder", "pi_unpaid"));
+    await process_(buildJob("reminder", "pi_unpaid"));
 
     expect(mockSendText).toHaveBeenCalledTimes(1);
   });
@@ -252,9 +322,7 @@ describe("processPixExpiry — suppresses messaging on DB-confirmed payment", ()
 describe("processPixExpiry — scheduled-pickup copy resolves PI → order", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetRedisClient.mockResolvedValue({ get: mockRedisGet, set: mockRedisSet });
-    mockRedisSet.mockResolvedValue("OK");
-    mockRedisGet.mockResolvedValue(null);
+    redis = freshKeyspace();
   });
 
   it("reads the order through the Payment projection, never GET /admin/orders/pi_…", async () => {
@@ -266,7 +334,7 @@ describe("processPixExpiry — scheduled-pickup copy resolves PI → order", () 
       order: { metadata: { scheduledPickup: "true" } },
     });
 
-    await processPixExpiry(buildJob("expired", "pi_sched"));
+    await process_(buildJob("expired", "pi_sched"));
 
     expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/orders/order_01JSCHEDULED");
     const [, reply] = mockSendText.mock.calls[0] as [string, { text: string }];
@@ -279,7 +347,7 @@ describe("processPixExpiry — scheduled-pickup copy resolves PI → order", () 
     // nothing to resolve and no admin read to make.
     mockGetByStripePaymentIntentId.mockResolvedValue(null);
 
-    await processPixExpiry(buildJob("expired", "pi_no_order"));
+    await process_(buildJob("expired", "pi_no_order"));
 
     expect(mockMedusaAdmin).not.toHaveBeenCalled();
     const [, reply] = mockSendText.mock.calls[0] as [string, { text: string }];
@@ -290,53 +358,63 @@ describe("processPixExpiry — scheduled-pickup copy resolves PI → order", () 
 describe("processPixExpiry — P3-NET-PIXREMINDER per-stage send idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockGetRedisClient.mockResolvedValue({ get: mockRedisGet, set: mockRedisSet });
+    redis = freshKeyspace();
     // Unpaid in every case here — we are isolating the NX send guard.
-    mockRedisGet.mockResolvedValue(null);
     mockGetByStripePaymentIntentId.mockResolvedValue(null);
   });
 
   it("claims the send with SET NX before messaging (keyed by paymentIntentId+stage)", async () => {
-    mockRedisSet.mockResolvedValue("OK");
+    await process_(buildJob("reminder", "pi_idem"));
 
-    await processPixExpiry(buildJob("reminder", "pi_idem"));
-
-    expect(mockRedisSet).toHaveBeenCalledWith(
-      "ibatexas:pix:reminder-sent:pi_idem:reminder",
+    const sets = redis.calls.filter((c) => c.command === "set");
+    expect(sets.map((c) => c.args)).toContainEqual([
+      rk("pix:reminder-sent:pi_idem:reminder"),
       "1",
       { NX: true, EX: 3600 },
-    );
+    ]);
     expect(mockSendText).toHaveBeenCalledTimes(1);
+    expect(redis.ttlMs(rk("pix:reminder-sent:pi_idem:reminder"))).toBe(3_600_000);
   });
 
-  it("does NOT re-send when the NX claim fails (key already set by a prior run)", async () => {
-    mockRedisSet.mockResolvedValue(null); // NX → null: another run already sent it
+  it("does NOT re-send when the claim key is already present (a prior run sent it)", async () => {
+    // Seeded the way a prior run would have left it, not by scripting `set` to
+    // answer null.
+    await redis.client.set(rk("pix:reminder-sent:pi_dupe:reminder"), "1");
 
-    await processPixExpiry(buildJob("reminder", "pi_dupe"));
+    await process_(buildJob("reminder", "pi_dupe"));
 
     expect(mockSendText).not.toHaveBeenCalled();
   });
 
   it("a retry of the same {paymentIntentId,stage} sends exactly once across two invocations", async () => {
-    // First invocation claims the key; the second sees it already set.
-    mockRedisSet.mockResolvedValueOnce("OK").mockResolvedValueOnce(null);
-
-    await processPixExpiry(buildJob("expired", "pi_retry"));
-    await processPixExpiry(buildJob("expired", "pi_retry"));
+    // The SECOND invocation's NX genuinely finds the FIRST one's key — the
+    // retired version scripted "OK" then null and never connected them.
+    await process_(buildJob("expired", "pi_retry"));
+    await process_(buildJob("expired", "pi_retry"));
 
     expect(mockSendText).toHaveBeenCalledTimes(1);
   });
 
   it("uses a stage-scoped key so reminder and expired are independent claims", async () => {
-    mockRedisSet.mockResolvedValue("OK");
+    await process_(buildJob("reminder", "pi_two_stage"));
+    await process_(buildJob("expired", "pi_two_stage"));
 
-    await processPixExpiry(buildJob("reminder", "pi_two_stage"));
-    await processPixExpiry(buildJob("expired", "pi_two_stage"));
-
-    const keys = mockRedisSet.mock.calls.map((c) => c[0]);
-    expect(keys).toContain("ibatexas:pix:reminder-sent:pi_two_stage:reminder");
-    expect(keys).toContain("ibatexas:pix:reminder-sent:pi_two_stage:expired");
+    expect(redis.keys()).toEqual([
+      rk("pix:reminder-sent:pi_two_stage:expired"),
+      rk("pix:reminder-sent:pi_two_stage:reminder"),
+    ]);
     // Both distinct stages send (the guard is per-stage, not per-order).
+    expect(mockSendText).toHaveBeenCalledTimes(2);
+  });
+
+  it("the claim expires with its own TTL, so a much later retry can send again", async () => {
+    let clock = 1_700_000_000_000;
+    redis = createInMemoryRedis({ now: () => clock });
+
+    await process_(buildJob("reminder", "pi_lapse"));
+    clock += 3_600_001; // past PIX_REMINDER_SENT_TTL_SECONDS
+    await process_(buildJob("reminder", "pi_lapse"));
+
     expect(mockSendText).toHaveBeenCalledTimes(2);
   });
 });

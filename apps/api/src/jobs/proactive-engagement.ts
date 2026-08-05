@@ -28,8 +28,47 @@ type DormantCustomer = Awaited<
   ReturnType<ReturnType<typeof createCustomerService>["findDormantCustomers"]>
 >[number];
 
+// ── The Redis client seam (R5 rollout, jobs/subscribers family) ──────────────
+//
+// Named-type deps bag, per the `SweeperRedis` precedent in this same directory.
+//
+// FAIL-CLOSED PICK ANALYSIS (R5-S12's rule):
+//   • commands ISSUED here: `exists` (cooldown probe), `hGetAll` (risk profile),
+//     `set` (cooldown write), `incr` + `expire` (the weekly cap counter).
+//   • commands consumed DOWNSTREAM: none. The client goes into
+//     `OutreachRunContext` and no further — `processCustomerOutreach` is
+//     module-local. `fetchWeatherCondition()` DOES take a client now, and is
+//     deliberately NOT handed this one; see below.
+//   • feature detection: none in this module's graph (measured).
+// So the Pick is {exists, hGetAll, set, incr, expire}.
+//
+// WHY `fetchWeatherCondition` KEEPS ITS OWN RESOLUTION. Collapsing the two into
+// one client would change the default path's singleton-resolution COUNT from two
+// to one — a behaviour change smuggled in under a refactor. The R5 rollout's
+// standing rule (family 1, `trackCartId`) is that a callee's own resolution is
+// not folded into its caller's client; the count is pinned as a test rather than
+// asserted in prose.
+//
+// SWALLOWING: every command here is awaited without a local catch. The
+// per-customer `try/catch` in `checkDormantCustomers` DOES swallow (it logs +
+// Sentry-reports and moves to the next customer), so a client missing one of
+// these five degrades to "zero outreach sent, N errors logged" rather than a
+// job failure — which is why the seam test asserts the WRITES landed, not just
+// that the run completed.
+
+/** The node-redis v4 surface this job's cooldown + weekly-cap guards use. */
+export type OutreachRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "exists" | "hGetAll" | "set" | "incr" | "expire"
+>;
+
+export interface CheckDormantCustomersDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: OutreachRedis;
+}
+
 interface OutreachRunContext {
-  redis: Awaited<ReturnType<typeof getRedisClient>>;
+  redis: OutreachRedis;
   log: FastifyBaseLogger | null;
   now: Date;
   dayOfWeek: number;
@@ -185,7 +224,10 @@ function reportOutreachError(
 }
 
 /** Core job logic — exported for direct testing. */
-export async function checkDormantCustomers(log?: FastifyBaseLogger | null): Promise<void> {
+export async function checkDormantCustomers(
+  log?: FastifyBaseLogger | null,
+  deps: CheckDormantCustomersDeps = {},
+): Promise<void> {
   const effectiveLogger = log ?? logger;
 
   // Time-of-day guard — only send during lunch (10-13) or dinner (17-20) windows in Brazil
@@ -201,7 +243,7 @@ export async function checkDormantCustomers(log?: FastifyBaseLogger | null): Pro
   // Fetch weather condition once for all customers in this run
   const weatherCondition = await fetchWeatherCondition();
 
-  const redis = await getRedisClient();
+  const redis: OutreachRedis = deps.redis ?? (await getRedisClient());
   const customerSvc = createCustomerService();
 
   const dormantCustomers = await customerSvc.findDormantCustomers(DORMANT_THRESHOLD_DAYS);
