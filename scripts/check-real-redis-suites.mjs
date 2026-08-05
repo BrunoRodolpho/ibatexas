@@ -30,15 +30,25 @@
  * ---------------------------------
  * A gate whose expectations are derived from the same mechanism it polices
  * cannot fail: enumerate the suites by asking "which files are gated?" and
- * deleting a gate deletes its own coverage requirement. So `ROLL_CALL` below
- * is typed out by hand — file names AND the per-file count of real-Redis
- * cases that must actually execute. Deleting a case, or letting a suite skip,
- * reds this gate and forces an explicit, reviewed edit to this file.
+ * deleting a gate deletes its own coverage requirement. So each package's roll
+ * call below is typed out by hand — file names AND the per-file count of
+ * real-Redis cases that must actually execute. Deleting a case, or letting a
+ * suite skip, reds this gate and forces an explicit, reviewed edit to this file.
  *
- * `discoverRealRedisSuites()` DOES read the source tree, but it can only ever
- * ADD a requirement (an un-enumerated real-Redis suite is an error). It can
- * never satisfy one. That asymmetry is the whole point — it is an alarm for
- * suites added later (the ruling's M1 adds eight), not the gate's evidence.
+ * The completeness alarm (step 2 of the per-package loop) DOES read the source
+ * tree, but it can only ever ADD a requirement (an un-enumerated real-Redis
+ * suite is an error). It can never satisfy one. That asymmetry is the whole
+ * point — it is an alarm for suites added later (the ruling's M1 added six,
+ * M2 moved one into another package), not the gate's evidence.
+ *
+ * PACKAGES, not just apps/api (M2)
+ * -------------------------------
+ * M2 retired the last eval-emulating double by moving `journey-lock.test.ts`
+ * onto a real Redis container — in `packages/journeys`. A real-Redis suite
+ * living in a tree this gate never scanned would be the M0 hole reopened one
+ * package over, so the existence check, the completeness alarm and the
+ * drive-and-count step all run per package. Add a package to `PACKAGES` when
+ * the first container-backed suite lands in it.
  *
  * USAGE
  *   node scripts/check-real-redis-suites.mjs

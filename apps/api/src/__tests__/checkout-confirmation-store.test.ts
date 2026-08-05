@@ -48,7 +48,6 @@ import {
   createLuaCallObserver,
   expectLuaCall,
   expectLuaCallCount,
-  type LuaCallObserver,
   type LuaSiteRef,
 } from "./helpers/lua-call-observer.js";
 import {
