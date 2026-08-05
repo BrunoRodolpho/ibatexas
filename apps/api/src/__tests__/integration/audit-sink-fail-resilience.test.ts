@@ -71,31 +71,31 @@ function orderEnv(nonce: string) {
   });
 }
 
-// Spill-queue key prefix — mirrors the inlined `rk()` in
-// `@ibatexas/audit-sink/redis-spill-storage.ts`, which captures `APP_ENV` ONCE
-// at module-load time into a const, NOT per-call. `@ibatexas/audit-sink` is
-// imported by the global `src/__tests__/setup.ts` before any `beforeEach` runs,
-// so the leaf's prefix is frozen to whatever `APP_ENV` is at that first import
-// (`"development"` here, since nothing sets `APP_ENV` before setup). The
-// per-test `vi.stubEnv("APP_ENV", "test")` therefore CANNOT change the spill
-// key — it is far too late. We resolve the spill key the same way the SUT
-// does so the assertion reads the queue the SUT actually writes to. (Pre-fix
-// this hardcoded `test:audit:spill:queue` and silently read an empty list.)
+// Spill-queue key — mirrors the inlined `rk()` in
+// `@ibatexas/audit-sink/redis-spill-storage.ts`, which reads `APP_ENV` at CALL
+// time (like the canonical `rk` in `packages/tools/src/redis/key.ts`, and for
+// the same FE-D26 reason). The leaf resolves its queue key when
+// `createRedisSpillStorage` runs — here, inside the `it`, via
+// `_setAuditSinkDependencies`, i.e. AFTER `beforeEach` installs
+// `vi.stubEnv("APP_ENV", "test")`. So this must be a call-time read too: a
+// module-scope `const` would freeze to `"development"` (nothing sets APP_ENV
+// before this file loads) and assert against a queue the SUT never writes.
 //
-// R5-S9 correction to this comment's own premise: it claimed the canonical
-// `rk()` in `@ibatexas/tools` freezes the same way. It does NOT — `redis/key.ts`
-// reads `process.env.APP_ENV` at CALL time, deliberately (FE-D26). So importing
-// the real `rk` here and calling it under the `beforeEach` stub would return
-// `test:audit:spill:queue` while the leaf writes `development:audit:spill:queue`,
-// which is the empty-list bug above with a real function instead of a hardcoded
-// string. The leaf's own header asserts it "MUST stay byte-identical to
-// packages/tools/src/redis/key.ts"; on the capture-time axis it is not. Filed in
-// helpers/redis-double-census.md — not fixed here, since either fix is a
-// behaviour change to a leaf-purity invariant and belongs to its owner.
+// History, because the shape here is easy to get wrong twice (F-23):
+//   - Originally this hardcoded `test:audit:spill:queue` and silently read an
+//     empty list, because the leaf really did capture APP_ENV at module load
+//     and so wrote `development:`.
+//   - R5-S9 then froze this const the same way the leaf did. That matched the
+//     leaf's behaviour but entrenched its defect: the leaf's own header claimed
+//     byte-identity with the canonical `rk`, and on the capture-time axis it
+//     was false.
+//   - F-23 fixed the leaf instead of the mirror. With the leaf reading at call
+//     time, the stub finally means something: APP_ENV=test => `test:` keys.
 //
-// The adapter rewrites no key, so whatever the leaf's real (inlined) `rk`
-// produces is exactly what lands in the keyspace asserted below.
-const SPILL_QUEUE_KEY = `${process.env.APP_ENV ?? "development"}:audit:spill:queue`;
+// The adapter rewrites no key, so whatever the leaf's inlined `rk` produces is
+// exactly what lands in the keyspace asserted below.
+const spillQueueKey = (): string =>
+  `${process.env.APP_ENV ?? "development"}:audit:spill:queue`;
 
 function orderState(): OrderState {
   return {
@@ -177,18 +177,18 @@ describe("Audit-sink fail-mid-decision resilience (W6-3)", () => {
     // First record evicted to Redis spill. The spill list is the ONLY key the
     // sink wrote, and it is the one the leaf's real `rk()` derived — nothing
     // rewrote it on the way in.
-    expect(redis.keys()).toEqual([SPILL_QUEUE_KEY]);
-    expect(await redis.client.lLen(SPILL_QUEUE_KEY)).toBeGreaterThanOrEqual(1);
+    expect(redis.keys()).toEqual([spillQueueKey()]);
+    expect(await redis.client.lLen(spillQueueKey())).toBeGreaterThanOrEqual(1);
 
     // The 7-day backlog window, now that EXPIRE is real. Under the constant-`1`
     // stub this assertion could not be written at all.
-    expect(redis.ttlMs(SPILL_QUEUE_KEY)).toBe(SEVEN_DAYS_MS);
+    expect(redis.ttlMs(spillQueueKey())).toBe(SEVEN_DAYS_MS);
 
     // Read the head with LPOP — the same command, off the same end, that the
     // storage's own `readAll()` drain uses. RPUSH-tail/LPOP-head is the module's
     // stated FIFO contract, so reading any other way would assert against an
     // order production never serves.
-    const head = await redis.client.lPop(SPILL_QUEUE_KEY);
+    const head = await redis.client.lPop(spillQueueKey());
     expect(head).not.toBeNull();
 
     // The spilled record contains a recognizable JSON envelope with a
