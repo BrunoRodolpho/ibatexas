@@ -64,6 +64,18 @@
 //     due-vs-future boundary is a real SCORE comparison rather than a stubbed
 //     array — see the deliberate refusals on `zRangeByScore` below.
 //
+// The R5 webhook/chat-family slice adds exactly ONE, and it is the last
+// adapter-extension request class (c) `routes/*` had outstanding:
+//
+//   • `ping` — `apps/api/src/routes/health.ts`'s `checkRedis`. It is the only
+//     command in this adapter that touches no keyspace at all, which is
+//     precisely why it needed modelling rather than faking: the health route's
+//     Redis check writes nothing, reads nothing, and its ENTIRE contract is
+//     "did this throw" — mapped by `withTimeout` to `"ok"`/`"fail"`, and
+//     `"fail"` on Redis is a CRITICAL dependency that turns the endpoint's 200
+//     into a 503. See the command's own note for why a FAILING ping is not
+//     modelled here (it belongs to the caller's client, not to this adapter).
+//
 // Still deliberately NOT added: `rPop` `lRem` `blPop` `hIncrBy` `hKeys` — each
 // has a class-(d) caller enumerated in
 // `apps/api/src/__tests__/helpers/redis-double-census.md`, but none is in the
@@ -1143,6 +1155,48 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       for (const m of list) if (zset.delete(String(m))) removed++
       if (zset.size === 0) store.delete(key)
       return removed
+    },
+
+    /**
+     * `ping()` — the LIVENESS probe, answering real Redis' `"PONG"`.
+     *
+     * Named consumer: `apps/api/src/routes/health.ts`'s `checkRedis`, which is
+     * the whole reason this command is here (the R5 rule since S7: an
+     * unmodelled command arrives with a caller or not at all). That caller
+     * DISCARDS the return value — `await redis.ping()` inside a `withTimeout`
+     * wrapper whose `catch` maps any throw to `"fail"`, and `"fail"` on Redis
+     * is a CRITICAL dependency, so it is the difference between HTTP 200 and
+     * HTTP 503 on the endpoint every prober and load balancer reads.
+     *
+     * So the only thing this command's return value can do is be wrong, and
+     * the only behaviour under test is the throw/no-throw axis. It is still
+     * `"PONG"` rather than `undefined`: a consumer that ever starts comparing
+     * (real node-redis answers `"PONG"`) must not be silently told otherwise,
+     * and `record` makes "the probe actually issued PING" an assertable
+     * keyspace-independent fact — this is the one health check that writes
+     * nothing, so the call log is the ONLY evidence it ran.
+     *
+     * A FAILING ping is deliberately NOT modelled here. This adapter cannot
+     * lose a connection, and a `failNextPing()` knob would be a behaviour no
+     * production caller can trigger — invented surface validated by nothing.
+     * The honest way to drive the 503 half is a client whose `ping` rejects,
+     * which is what a real outage hands `checkRedis`; the health seam suite
+     * does exactly that, wrapping this adapter rather than replacing it.
+     *
+     * The `PING message` echo form is REFUSED rather than guessed: no consumer
+     * issues it, and answering the message back would be modelling a protocol
+     * nobody exercises.
+     */
+    async ping(message?: unknown): Promise<string> {
+      if (message !== undefined) {
+        throw new UnroutedRedisCall(
+          "ping",
+          `the PING <message> echo form is not modelled (got ${describe(message)});` +
+            ` no consumer issues it — routes/health.ts calls ping() with no arguments`,
+        )
+      }
+      record("ping", [])
+      return "PONG"
     },
 
     // ── Connection lifecycle — no-ops, so a consumer that closes is fine ──────
