@@ -87,6 +87,21 @@ const PARTY_SIZE_JSON_SCHEMA = {
 // `date` mirrors CHECK_AVAILABILITY_READ_SCHEMA's own ISO field (the precedent that
 // the 4B emits YYYY-MM-DD); the resolver (resolve-and-assemble.ts) grounds date+time
 // → a REAL timeSlotId via the SAME `checkAvailability` lookup check_availability uses.
+// F-65 — UNLIKE `example` below, a field `description` IS copied onto the wire
+// by `toPayloadJsonSchema`, so this string is live prompt text. That makes the
+// date here two things at once: a format illustration the model reads, and — via
+// `toolSurface` — a DIGESTED component of the L1 parse-cache key
+// (`buildParseCacheKey`, parse-memo.ts).
+//
+// If this date is ever MEASURED to anchor the model's output year, the fix is to
+// remove its ANCHORING ROLE — symbolic spec only, or a placeholder whose
+// concreteness is not load-bearing — NOT to derive it from the turn clock. That
+// distinction is the whole ruling: de-anchoring costs ONE digest rotation at
+// deploy, a trade this program takes deliberately; a render-time value rotates
+// the digest EVERY DAY, collapsing the 7-day `PARSE_CACHE_TTL_SECONDS` to under
+// one. The format is already stated symbolically ("YYYY-MM-DD"), so the literal
+// is reinforcement rather than the carrier — which is what makes de-anchoring
+// cheap here.
 const RESERVATION_DATE_JSON_SCHEMA = {
   type: "string" as const,
   description:
@@ -133,6 +148,9 @@ export const RESERVATION_CREATE_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
         required: false,
       },
     ],
+    // F-65 — the year here is ILLUSTRATIVE, not an anchor: `example` is
+    // author-facing and never reaches the model (see ExtractionSchemaExample).
+    // Its staleness is therefore inert; leave it alone.
     example: {
       utterance: "quero uma mesa pra 4 pessoas dia 20/03 às 20h",
       payload: { date: "2026-03-20", time: "20:00", partySize: 4 },
@@ -171,6 +189,9 @@ export const RESERVATION_MODIFY_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
         // new date/time and the resolver grounds it to a real newTimeSlotId.
         name: "newDate",
         trustClass: "directive",
+        // F-65 — live wire text and a digested parse-cache key component, same
+        // as RESERVATION_DATE_JSON_SCHEMA above — de-anchor if ever measured to
+        // bias the output year; never derive from the turn clock.
         jsonSchema: {
           type: "string",
           description:
@@ -192,6 +213,7 @@ export const RESERVATION_MODIFY_EXTRACTION_SCHEMA: CapabilityExtractionSchema =
         required: false,
       },
     ],
+    // F-65 — illustrative year, never on the wire (see ExtractionSchemaExample).
     example: {
       utterance: "muda minha reserva pra sexta, dia 20/03, às 20h",
       payload: { newDate: "2026-03-20", newTime: "20:00" },
