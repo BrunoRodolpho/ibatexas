@@ -1982,14 +1982,53 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // fire ("qual o status de tudo: meus pedidos e meus pagamentos?" → both singulars
   // removed, leaving `[ORDER_HISTORY_Q, PAYMENT_HISTORY_Q]`), which is precisely the kind
   // of fact that lives in an interpreter and not in data.
+  //
+  // F-8 — the two history spans now carry the SAME `!mutationImperative` conjunct every
+  // other classify-only-eligible READ span in this function has carried since #349 /
+  // BKL-201 (cart), BKL-206 (order/payment status) and BKL-217 (reservation status). They
+  // were the outliers: the residual was recorded at R2-S5 in both def sources and left
+  // open because adding a guard is a BEHAVIOUR change outside an adoption slice's remit.
+  //
+  // WHAT WAS OPEN. Both ORDER_HISTORY and PAYMENT_HISTORY are classify-only-eligible
+  // (`classify-only-reads.ts` CLASSIFY_ONLY_ELIGIBLE_TYPES), so an unguarded history span
+  // does not merely over-include — it hands the whole turn to the DETERMINISTIC route
+  // with ZERO model call. Measured at fd589e10: `classifyRequestSpans("cancela meus
+  // pedidos")` → `["ORDER_HISTORY_Q"]` and `classifyOnlyRequiredTypes("cancela meus
+  // pedidos")` → `{ORDER_HISTORY}`, i.e. the turn answers the history READ and the
+  // order.cancel is SILENTLY DROPPED — exactly the read-span-captures-mutation shape
+  // those three tickets closed elsewhere, on the one span family they did not cover. The
+  // singular sibling already declines: `classifyOnlyRequiredTypes("cancela meu pedido")`
+  // → undefined, because ORDER_STATUS_Q is guarded. That asymmetry is what this closes.
+  //
+  // WHY THE GUARD IS ON THE `if` AND NOT THE `Ref` CONST: the const is the GENERATED
+  // marker predicate (pinned byte-for-byte by `__SPAN_NET_SOURCES_FOR_TEST.orderHistory` /
+  // `.paymentHistory`) and must keep meaning exactly "the marker net matched". The guard
+  // is a SUPPRESSION CONTEXT — the R2-S1 division this block's own header states — so it
+  // sits at the push, in the identical shape as the status twins above
+  // (`if (orderPhrasing && !mutationImperative)`).
+  //
+  // THE SPLICE IS UNAFFECTED. Under `mutationImperative` the singular sibling was never
+  // pushed in the first place (ORDER_STATUS_Q / PAYMENT_STATUS_Q are gated on the same
+  // boolean at BKL-206, and so is the bare-"status" fallback), so the branch this guard
+  // now skips had nothing to splice — verified: the pre-change output for "cancela meus
+  // pedidos" is `["ORDER_HISTORY_Q"]`, with no ORDER_STATUS_Q present.
+  //
+  // FALSE-POSITIVE COST, measured over a 6857-utterance harvest of every pt-BR string in
+  // apps/ + packages/ (source, tests and corpora): 49 utterances fire a history span and
+  // exactly TWO of them carry a mutation imperative — "cancela meus pedidos" and "cancela
+  // meus pagamentos", which are F-8's own filed examples. The other 47 are unchanged. The
+  // BKL-271 `cancel(?!ad)` lookahead is what keeps the participle READS ("meus pedidos
+  // foram cancelados?", "meus últimos pedidos estão cancelados?") on this span. A
+  // genuinely mixed turn now takes the model path — this file's stated FAIL-SAFE
+  // direction: mild inefficiency, never a wrong render.
   const orderHistoryRef = ORDER_HISTORY_CLOSURE.markers.some((m) => m.test(t));
   const paymentHistoryRef = PAYMENT_HISTORY_CLOSURE.markers.some((m) => m.test(t));
-  if (orderHistoryRef) {
+  if (orderHistoryRef && !mutationImperative) {
     classes.push(ORDER_HISTORY_CLOSURE.spanClass);
     const i = classes.indexOf(ORDER_FULFILLMENT_STAGE_CLOSURE.spanClass);
     if (i !== -1) classes.splice(i, 1);
   }
-  if (paymentHistoryRef) {
+  if (paymentHistoryRef && !mutationImperative) {
     classes.push(PAYMENT_HISTORY_CLOSURE.spanClass);
     const i = classes.indexOf(PAYMENT_STATUS_CLOSURE.spanClass);
     if (i !== -1) classes.splice(i, 1);

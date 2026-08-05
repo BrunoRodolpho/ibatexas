@@ -47,9 +47,15 @@
  * prefix list and `OWNER_SCOPED_BASE_TO_RESOURCE_KIND`
  * (`ibatexas-claims-kernel-deps.ts`), the P2 pair table and the planner personas.
  *
- * The pre-existing NO-`!mutationImperative`-GUARD residual recorded in
- * `./order-history.claim.ts` applies to this span identically (measured:
- * `classifyRequestSpans("cancela meus pagamentos")` fires `PAYMENT_HISTORY_Q`).
+ * The NO-`!mutationImperative`-GUARD residual recorded in `./order-history.claim.ts`
+ * applied to this span identically (measured: `classifyRequestSpans("cancela meus
+ * pagamentos")` fired `PAYMENT_HISTORY_Q`), and F-8 CLOSED both together at the
+ * classifier. The twins needed the same guard for the same reason and the measurement
+ * came out symmetric despite the arm-count asymmetry above: across a 6857-utterance
+ * harvest, exactly ONE utterance leaves each span — "cancela meus pagamentos" here,
+ * "cancela meus pedidos" there. The reversed arm the order net has and this one lacks
+ * turns out not to matter to the guard, because both nets' mutation-carrying population
+ * is reached through their shared possessive-plural arm.
  *
  * pt-BR markers + literals live HERE as DATA, never in the interpreter as code.
  */

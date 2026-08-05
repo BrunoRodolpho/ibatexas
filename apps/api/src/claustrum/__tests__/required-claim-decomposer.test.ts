@@ -772,6 +772,98 @@ describe("classifyRequestSpans — FE-D03 history spans (suppress the singular)"
   });
 });
 
+// F-8 — the two history spans carry the `!mutationImperative` guard every other
+// classify-only-eligible READ span has. Before the fix, `classifyRequestSpans("cancela
+// meus pedidos")` returned ["ORDER_HISTORY_Q"], and because ORDER_HISTORY is
+// classify-only-eligible the whole turn took the deterministic route: the history READ
+// was answered and the order.cancel was SILENTLY DROPPED with zero model call. The
+// singular sibling already declined (BKL-206 guards ORDER_STATUS_Q) — this closes the
+// asymmetry, the same read-vs-mutation split #349/BKL-201 (cart), BKL-206 (status) and
+// BKL-217 (reservation) closed on their own spans.
+//
+// EVERY case below is a PAIR ON ONE AXIS: identical text except the mutation imperative.
+// The control MUST still classify as the history read, or the treatment proves nothing —
+// a guard that suppressed the whole span family would pass the negative arm alone.
+describe("classifyRequestSpans — F-8 history spans take the mutation-imperative guard", () => {
+  it("ORDER: 'cancela meus pedidos' does NOT classify as the history read; the plain ask does", () => {
+    // TREATMENT — the filed utterance. Not merely missing ORDER_HISTORY_Q: NO read span
+    // fires at all, so the turn goes to the model/mutation path where the cancel lives.
+    expect(classifyRequestSpans("cancela meus pedidos")).toEqual([]);
+    // CONTROL — same axis, a plain history ask, which must be untouched.
+    expect(classifyRequestSpans("quais meus últimos pedidos?")).toContain("ORDER_HISTORY_Q");
+  });
+
+  it("PAYMENT: 'cancela meus pagamentos' does NOT classify as the history read; the plain ask does", () => {
+    expect(classifyRequestSpans("cancela meus pagamentos")).toEqual([]);
+    expect(classifyRequestSpans("quais meus últimos pagamentos?")).toContain(
+      "PAYMENT_HISTORY_Q",
+    );
+  });
+
+  // The MINIMAL pair — the two members differ by exactly the leading imperative token, so
+  // nothing but the mutation verb can explain the difference in outcome.
+  it("the axis is the imperative alone: 'meus pedidos' fires, 'cancela meus pedidos' does not", () => {
+    expect(classifyRequestSpans("meus pedidos")).toEqual(["ORDER_HISTORY_Q"]);
+    expect(classifyRequestSpans("cancela meus pedidos")).toEqual([]);
+    expect(classifyRequestSpans("meus pagamentos")).toEqual(["PAYMENT_HISTORY_Q"]);
+    expect(classifyRequestSpans("cancela meus pagamentos")).toEqual([]);
+  });
+
+  // The guard reads the SAME local gate as every sibling span, so the whole mutation
+  // family is covered, not just `cancel`. One row per root family that reaches these nets.
+  it.each([
+    ["cancelar meus últimos pedidos", "ORDER_HISTORY_Q"],
+    ["cancele todos os meus pedidos", "ORDER_HISTORY_Q"],
+    ["quero o cancelamento dos meus pedidos", "ORDER_HISTORY_Q"],
+    ["remove meus pedidos", "ORDER_HISTORY_Q"],
+    ["limpa meu histórico de pedidos", "ORDER_HISTORY_Q"],
+    ["cancela meu histórico de pedidos", "ORDER_HISTORY_Q"],
+    ["cancela o histórico de pagamentos", "PAYMENT_HISTORY_Q"],
+  ])("a mutation imperative keeps %s off the history span", (text, span) => {
+    expect(classifyRequestSpans(text), text).not.toContain(span);
+  });
+
+  // BKL-271's `cancel(?!ad)` lookahead is what makes this guard safe to add: the STATUS
+  // PARTICIPLE is not an imperative, so a genuine history question about cancelled orders
+  // still classifies as the read. Without that lookahead this guard would have eaten them.
+  it.each([
+    "meus pedidos foram cancelados?",
+    "meus últimos pedidos estão cancelados?",
+    "quais dos meus pedidos foram cancelados?",
+  ])("the cancelad* PARTICIPLE is a READ and still fires ORDER_HISTORY_Q: %s", (text) => {
+    expect(classifyRequestSpans(text), text).toContain("ORDER_HISTORY_Q");
+  });
+
+  // The SPLICE is unaffected: under a mutation imperative the singular sibling was never
+  // pushed either (BKL-206 gates it on the same boolean), so skipping the history branch
+  // cannot leave an orphaned ORDER_STATUS_Q/PAYMENT_STATUS_Q behind.
+  it("suppressing the history span leaves NO singular sibling behind", () => {
+    for (const text of ["cancela meus pedidos", "cancela meus pagamentos"]) {
+      const spans = classifyRequestSpans(text);
+      expect(spans, text).not.toContain("ORDER_STATUS_Q");
+      expect(spans, text).not.toContain("PAYMENT_STATUS_Q");
+    }
+  });
+
+  // The 47 other history-firing utterances in the repo-wide harvest are unchanged. This
+  // pins the ones that carry a mutation ROOT SUBSTRING without an imperative reading, plus
+  // the plain family, so a widened guard cannot pass this suite.
+  it.each([
+    ["meu histórico de pedidos", "ORDER_HISTORY_Q"],
+    ["meus últimos pedidos", "ORDER_HISTORY_Q"],
+    ["quero ver o histórico dos meus pedidos", "ORDER_HISTORY_Q"],
+    ["me mostra todos os meus pedidos", "ORDER_HISTORY_Q"],
+    ["pedidos no meu histórico", "ORDER_HISTORY_Q"],
+    ["qual o status dos meus pedidos?", "ORDER_HISTORY_Q"],
+    ["meu histórico de pagamentos", "PAYMENT_HISTORY_Q"],
+    ["meus últimos pagamentos", "PAYMENT_HISTORY_Q"],
+    ["histórico de pagamentos por favor", "PAYMENT_HISTORY_Q"],
+    ["qual o status dos meus pagamentos?", "PAYMENT_HISTORY_Q"],
+  ])("UNCHANGED by the guard: %s still fires %s", (text, span) => {
+    expect(classifyRequestSpans(text), text).toContain(span);
+  });
+});
+
 describe("classifyRequestSpans — BKL-204 capability questions don't force the owner read", () => {
   it("delivery COVERAGE questions do NOT fire ORDER_STATUS_Q (capability, not the customer's order)", () => {
     for (const text of [
