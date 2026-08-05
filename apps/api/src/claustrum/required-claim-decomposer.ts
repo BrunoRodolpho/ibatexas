@@ -1684,16 +1684,26 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
  * score, and `.some()` over the array is character-for-character the `||` disjunction
  * the conjunct would otherwise spell.
  *
- * WHY EIGHT ARMS AND NOT FOUR — MEASURED ON CI ACROSS TWO ROUNDS, exactly as this
- * file's three earlier splits were. The first shipped form of this net expressed the same language in FOUR
+ * WHY NINE ARMS AND NOT FOUR — MEASURED, ACROSS THREE ROUNDS, exactly as this file's
+ * three earlier splits were. The first shipped form of this net expressed the same language in FOUR
  * literals, folding the three novelty HEAD-NOUN shapes into one optional group and the
  * two elided-novelty CONTINUATION shapes into one allowlist lookahead. SonarCloud
  * scored that (PR #560, run 1): the pre-posed arm at **complexity 59** and the elided
  * arm at **55**, against the budget of 20, plus S8786 super-linear BACKTRACKING on the
- * pre-posed arm. Run 2 cleared both and left ONE residual — the elided arm's
- * continuation allowlist still at **29** — which is why arm 4b sheds `por favor` into
- * its own arm 4c and spells its alternation FLAT. Two rounds, because the budget is
- * only ever knowable from CI — `qr\s*-?\s*code` is ambiguous, a single space can be matched by
+ * pre-posed arm. Run 2 cleared both and left ONE residual at **29**, run 3 one more at
+ * **21** — which is why the elided arm's continuation allowlist ends up cut THREE ways:
+ * 4b (directional prepositions), 4c (`por favor`) and 4d (adverbials).
+ *
+ * HOW THE SCORES WERE OBTAINED, and the correction that matters for the next person:
+ * `eslint-plugin-sonarjs`'s `regex-complexity` rule IS the S5843 implementation, and
+ * run against these literals it reproduces CI's numbers EXACTLY (it independently
+ * reported the 21 that CI reported). So the score is measurable locally after all —
+ * this file's older "a local model predicted 20 and was wrong by 3" note refers to a
+ * hand-built estimate, not to the real rule. Use the plugin, not intuition: flattening
+ * `p(?:ra|ara|ro)` to `pra|para|pro` was predicted here to REDUCE the score and in fact
+ * left it unchanged at 21, while `pra|para|pro` → `pr[ao]|para` (one fewer alternative,
+ * same language) drops it to 18. Alternation COUNT dominates; nesting depth does not
+ * behave the way a reader expects — `qr\s*-?\s*code` is ambiguous, a single space can be matched by
  * either `\s*`, so the engine explores both. A local complexity model was NOT
  * consulted; CI is the authority (the F-27 lesson, where a local prediction was wrong
  * by 3).
@@ -1710,9 +1720,9 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
  * ambiguity, no backtracking); that is included in the zero-difference measurement.
  *
  * Every arm is INDIVIDUALLY FALSIFIABLE: they still PARTITION the rows they move
- * (5+3+1+7+4+4+2+0 = 26 attested-input rows = the union), so no arm is shadowed by an
- * earlier one and deleting any one arm reds exactly its own probe. ARM 4c is the one
- * arm whose count is ZERO — byte-pin-only, labelled as such at the conjunct. The roll call in
+ * (5+3+1+7+4+2+0+0 = 26 attested-input rows = the union), so no arm is shadowed by an
+ * earlier one and deleting any one arm reds exactly its own probe. ARMS 4c and 4d are
+ * the two whose count is ZERO — byte-pin-only, labelled as such at the conjunct. The roll call in
  * `__tests__/required-claim-decomposer.test.ts` pins each by name.
  */
 const PIX_REGENERATION_REQUEST: readonly RegExp[] = [
@@ -1735,12 +1745,17 @@ const PIX_REGENERATION_REQUEST: readonly RegExp[] = [
   // / "manda outro atendente" (payment READS with a non-pix object) out of the net.
   // ARM 4a — the pronoun ends its clause: "manda outro", "gera outro."
   /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:uma?\s+)?outr[oa]\s*(?:[?!.,;]|$)/,
-  // ARM 4b — followed only by an ATTESTED function word, never a noun: "gera outro
-  // pra mim", "manda outro aí". The allowlist is the attested continuations ONLY;
-  // widening it to a general word is the V0 form the ladder refused. The alternation
-  // is FLAT (`pra|para|pro`, not `p(?:ra|ara|ro)`) — a nested alternative costs S5843
-  // by its depth, and this arm is the one CI scored at 29 in run 2.
-  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:uma?\s+)?outr[oa]\s+(?:pra|para|pro|agora|a[íi])(?![a-zà-ÿ])/,
+  // ARMS 4b/4d — followed only by an ATTESTED function word, never a noun: "gera outro
+  // pra mim", "bota outro aí". The allowlist is the attested continuations ONLY;
+  // widening it to a general word is the V0 form the ladder refused. The trailing
+  // `(?![a-zà-ÿ])` guard is what stops the allowlist matching a NOUN that merely
+  // starts with one of these ("gera outro prato", "manda outro parceiro" — both
+  // authored probes, both correctly declined).
+  // ARM 4b — the DIRECTIONAL prepositions: "pra", "para", "pro".
+  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:uma?\s+)?outr[oa]\s+(?:pr[ao]|para)(?![a-zà-ÿ])/,
+  // ARM 4d — the ADVERBIALS: "agora", "aí"/"ai". Its own arm purely for S5843 (see the
+  // net's header, round 3); it is the same allowlist, cut at a part-of-speech seam.
+  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:uma?\s+)?outr[oa]\s+(?:agora|a[íi])(?![a-zà-ÿ])/,
   // ARM 4c — the one MULTI-WORD continuation, split out of 4b for the same S5843
   // reason. Needs no trailing guard: `favor` already ends the match at a word it
   // spells in full.
@@ -2404,20 +2419,23 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   //   ARM 2  pix + novelty postposed    7       7
   //   ARM 3  pix de novo                4       4
   //   ARM 4a elided, clause-FINAL       4       4
-  //   ARM 4b elided + function word     2       2
+  //   ARM 4b elided + preposition       2       2
   //   ARM 4c elided + "por favor"       0       0   (byte-pin-only — see below)
+  //   ARM 4d elided + adverbial         0       0   (byte-pin-only — see below)
   //   UNION                            26       —
   //
   // (Whole-net blast radius over the payment-bearing harvest: 76. The 1a/1b/1c and
   // 4a/4b groups are the S5843 SPLIT of what began as two arms — see the net's own
   // header; the split moved ZERO rows, so these counts describe both forms.)
   //
-  // NO ARM IS SHADOWED — 5+3+1+7+4+4+2+0 = 26 = the union, i.e. the arms PARTITION the
-  // rows they move. ARM 4c is the one BYTE-PIN-ONLY arm and is LABELLED so rather than
-  // folded into a count (the R2-S5 rule): it moves ZERO rows today because no attested
-  // "gera outro por favor" exists, and it is kept only because splitting it out of 4b
-  // is what bought 4b's S5843 headroom — deleting it would silently narrow 4b's
-  // language. It is pinned by an AUTHORED probe in the roll call, not a rescued row. That is the byte-pin-shadowing hazard closed by measurement
+  // NO ARM IS SHADOWED — 5+3+1+7+4+2+0+0 = 26 = the union, i.e. the arms PARTITION the
+  // rows they move. ARMS 4c AND 4d are BYTE-PIN-ONLY and are LABELLED so rather than
+  // folded into a count (the R2-S5 rule): each moves ZERO rows today, because no
+  // attested "gera outro por favor" / "manda outro aí" exists. Both are kept because
+  // splitting them out of 4b is exactly what bought 4b its S5843 headroom — deleting
+  // either would silently NARROW the language 4b used to have, which is the one thing
+  // a complexity split must never do. Each is pinned by an AUTHORED probe in the roll
+  // call, not by a rescued row. That is the byte-pin-shadowing hazard closed by measurement
   // rather than by assertion: deleting any one arm reds exactly its own rows, which is
   // what makes the roll call in the test file falsifiable arm by arm.
   //

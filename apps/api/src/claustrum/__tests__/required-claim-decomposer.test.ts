@@ -3608,16 +3608,18 @@ describe("classifyRequestSpans — F-46 the pix-regeneration conjunct", () => {
    * attested-input rows they move, 5+3+1+7+4+4+2 = 26), so deleting that arm reds
    * exactly its own rows and nothing else. No arm is shadowed by an earlier one.
    *
-   * EIGHT, not four: the pre-posed novelty arm split by HEAD NOUN and the elided arm
-   * split by CONTINUATION under Sonar S5843 (complexity 59 and 55 against a budget of
-   * 20 in run 1; a residual 29 on the continuation allowlist in run 2 — measured on CI
-   * across two rounds, see the net's header). Both splits moved ZERO rows, so this roll
-   * call gained rows without any of them being a new behaviour.
+   * NINE, not four: the pre-posed novelty arm split by HEAD NOUN and the elided arm
+   * split by CONTINUATION under Sonar S5843 (59 and 55 against a budget of 20 in run 1,
+   * a residual 29 in run 2, one more at 21 in run 3 — see the net's header, which also
+   * records that `eslint-plugin-sonarjs` reproduces these scores locally). Every split
+   * moved ZERO rows, so this roll call gained rows without any of them being new
+   * behaviour.
    *
-   * ONE arm is AUTHORED rather than corpus-rescued, and that is stated rather than
-   * dressed up — the `chave` / `corrig(?!id)` precedent. ARM 4c ("por favor") moves
-   * ZERO rows today; it exists because splitting it out of 4b is what bought 4b's
-   * S5843 headroom, and dropping it would silently narrow 4b's language.
+   * TWO arms are AUTHORED rather than corpus-rescued, and that is stated rather than
+   * dressed up — the `chave` / `corrig(?!id)` precedent. ARM 4c ("por favor") and ARM
+   * 4d ("aí"/"agora") move ZERO rows today; they exist because splitting them out of
+   * 4b is what bought 4b its S5843 headroom, and dropping either would silently NARROW
+   * the language 4b used to have.
    */
   const FRAME_ARMS: ReadonlyArray<readonly [string, string, "corpus" | "authored"]> = [
     ["ARM 1a novelty + bare pix", "outro pix", "corpus"],
@@ -3626,12 +3628,13 @@ describe("classifyRequestSpans — F-46 the pix-regeneration conjunct", () => {
     ["ARM 2 novelty-POSTPOSED", "bota um pix novo aí pra mim", "corpus"],
     ["ARM 3 novelty-DE NOVO", "manda o pix de novo", "corpus"],
     ["ARM 4a elided, clause-FINAL", "o pix expirou porque demorei pra pagar, manda outro", "corpus"],
-    ["ARM 4b elided + function word", "o código pix expirou, gera outro pra mim", "corpus"],
+    ["ARM 4b elided + preposition", "o código pix expirou, gera outro pra mim", "corpus"],
     ["ARM 4c elided + por favor", "meu pix expirou, gera outro por favor", "authored"],
+    ["ARM 4d elided + adverbial", "meu pix expirou, manda outro aí", "authored"],
   ];
 
   it("the FRAME-ARM ROLL CALL — every arm suppresses a regeneration, by name", () => {
-    expect(FRAME_ARMS).toHaveLength(8);
+    expect(FRAME_ARMS).toHaveLength(9);
     for (const [arm, probe, provenance] of FRAME_ARMS) {
       const label = `${arm} (${provenance}): ${probe}`;
       // Each probe fires the payment net, so it WOULD ride the read without the arm.
@@ -3675,6 +3678,16 @@ describe("classifyRequestSpans — F-46 the pix-regeneration conjunct", () => {
       "o pagamento falhou, manda outro método pra eu tentar",
       "meu pix não caiu, manda outro atendente falar comigo",
       "paguei e não caiu, gera outro relatório do pagamento",
+      // ARMS 4b/4d's TRAILING GUARD, and these probes are chosen so they actually
+      // EXERCISE it: each noun begins with a spelling the allowlist admits — pra(to),
+      // pro(tocolo), para(da), ai(pim) — so deleting `(?![a-zà-ÿ])` makes every one of
+      // them satisfy the arm and lose its payment read. An earlier draft of this block
+      // used nouns like "parceiro"/"arquivo" that the allowlist could not match with or
+      // without the guard; revert-to-red caught that they proved nothing (RTR-5b/5c).
+      "meu pagamento não caiu, manda outro prato",
+      "meu pix não caiu, gera outro protocolo do atendimento",
+      "o pagamento não passou, manda outra parada da cozinha",
+      "meu pagamento não caiu, manda outro aipim",
     ]) {
       expect(classifyRequestSpans(text), text).toContain("PAYMENT_STATUS_Q");
       expect(classifyOnlyRequiredTypes(text), text).toBeDefined();
