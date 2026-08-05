@@ -33,6 +33,12 @@ import {
   // the keys production writes, prefix included.
   rk,
 } from "@ibatexas/tools";
+import {
+  createLuaCallObserver,
+  expectLuaCall,
+  expectLuaCallCount,
+  type LuaSiteRef,
+} from "./helpers/lua-call-observer.js";
 import { cartRoutes, type CartRouteRedisClient } from "../routes/cart.js";
 import {
   createCheckoutConfirmationStore,
@@ -324,13 +330,35 @@ function createMockRedis(overrides: Record<string, unknown> = {}) {
   };
 }
 
-// Map-backed Redis with NX-aware `set` + a GET+DEL `eval` so the checkout
-// park→confirm round-trip (idempotency gate, cart-owner claim, single-use
-// confirmation receipt) can be exercised against one consistent store.
+// Map-backed Redis with NX-aware `set` so the checkout park→confirm round-trip
+// (idempotency gate, cart-owner claim, confirmation receipt) runs against one
+// consistent store.
+//
+// ── M2: the Lua emulation is GONE (census class (i), item 6) ───────────────
+//
+// Ruling: docs/architecture/redis-lua-testing-decision.md (Q2). Census:
+// `apps/api/src/__tests__/helpers/redis-double-census.md`.
+//
+// `eval` used to be an unconditional Map GET+DEL standing in for
+// `checkout-confirmation-store.ts`'s CONSUME_RECEIPT_SCRIPT, script-blind. The
+// census named this file the closest to the script-blindness edge, "since the
+// cart route family is the one that grows new lock-bearing paths" — and it was
+// right to: `cart.ts:2067` already reaches a SECOND, opposite-contract script
+// (`packages/tools/.../distributed-lock.ts`'s CAD) on its `releaseGate` path.
+// A CAD routed through the old CONSUME emulation would have been answered
+// "released, here is the value" for a lock the caller does not own. That is now
+// impossible by construction: `expectLuaCall` matches the observed script
+// against a NAMED production anchor, so a second shape cannot arrive unnoticed.
+//
+// Where the invariant went: `lua-shape-consume-contract.test.ts` runs this
+// site's own CONSUME text against a real Redis (20 concurrent redemptions,
+// exactly one winner) with a non-atomic control.
 function createStatefulRedis() {
   const kv = new Map<string, string>();
+  const lua = createLuaCallObserver(null); // default nil = "no such receipt"
   return {
     kv,
+    lua,
     hSet: vi.fn().mockResolvedValue(1),
     hDel: vi.fn().mockResolvedValue(1),
     hGetAll: vi.fn().mockResolvedValue({}),
@@ -342,16 +370,34 @@ function createStatefulRedis() {
     }),
     get: vi.fn(async (key: string) => kv.get(key) ?? null),
     del: vi.fn(async (key: string) => (kv.delete(key) ? 1 : 0)),
-    eval: vi.fn(async (_script: string, opts: { keys: string[] }) => {
-      const key = opts.keys[0];
-      const val = kv.get(key);
-      if (val !== undefined) {
-        kv.delete(key);
-        return val;
-      }
-      return null;
-    }),
+    eval: lua.eval,
   };
+}
+
+/** The production CONSUME site the checkout confirm route runs. */
+const CHECKOUT_CONSUME_SITE: LuaSiteRef = {
+  file: "apps/api/src/routes/checkout-confirmation-store.ts",
+  anchor: "const CONSUME_RECEIPT_SCRIPT =",
+};
+
+/** The rk()-namespaced receipt key, through the REAL `rk`. */
+const receiptKeyFor = (confirmationId: string): string =>
+  rk(`checkout:confirmation:${confirmationId}`);
+
+/**
+ * Declare the CONSUME script's answer for the NEXT consume: the receipt the
+ * park wrote, redeemed successfully.
+ *
+ * Stated as a test input rather than computed by a Map. Whether the same
+ * receipt could be redeemed twice is the script's property and belongs to
+ * `lua-shape-consume-contract.test.ts`; which HTTP status the route returns for
+ * each answer is this file's.
+ */
+function receiptRedeems(
+  redis: ReturnType<typeof createStatefulRedis>,
+  confirmationId: string,
+): void {
+  redis.lua.replyOnce(redis.kv.get(receiptKeyFor(confirmationId)) ?? null);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -1536,6 +1582,7 @@ describe("POST /api/cart/checkout — large-ticket confirmation", () => {
     const confirmationId = parkRes.json().confirmationId as string;
 
     // 2) Confirm: the audited verb resolves the receipt to EXECUTE → 200.
+    receiptRedeems(redis, confirmationId);
     const confirmRes = await app.inject({
       method: "POST",
       url: "/api/cart/checkout/confirm",
@@ -1545,6 +1592,12 @@ describe("POST /api/cart/checkout — large-ticket confirmation", () => {
     expect(confirmRes.statusCode).toBe(200);
     expect(confirmRes.json().success).toBe(true);
     expect(mockAdjudicateAndAudit).toHaveBeenCalledTimes(1);
+    // The receipt was reached through THIS site's CONSUME script and key.
+    expectLuaCall(redis.lua, 0, {
+      site: CHECKOUT_CONSUME_SITE,
+      keys: [receiptKeyFor(confirmationId)],
+      arguments: [],
+    });
   });
 
   it("confirm when the cart now ≥ R$10.000 → 403 (override does NOT rescue REFUSE)", async () => {
@@ -1569,6 +1622,9 @@ describe("POST /api/cart/checkout — large-ticket confirmation", () => {
     });
 
     const app = await buildTestServer();
+    // The receipt REDEEMS — otherwise the route would answer 410 (drained) and
+    // this case would never reach the cap refusal it is named for.
+    receiptRedeems(redis, confirmationId);
     const res = await app.inject({
       method: "POST",
       url: "/api/cart/checkout/confirm",
@@ -1588,6 +1644,9 @@ describe("POST /api/cart/checkout — large-ticket confirmation", () => {
     );
 
     const app = await buildTestServer();
+    // Redeems, so the 403 is the OWNERSHIP refusal and not the 410 a drained
+    // receipt would produce — without this the case would pass vacuously.
+    receiptRedeems(redis, confirmationId);
     const res = await app.inject({
       method: "POST",
       url: "/api/cart/checkout/confirm",
@@ -1701,7 +1760,11 @@ describe("[seam] cart routes + their confirmation store drive the INJECTED clien
     });
   });
 
-  it("the park→confirm round trip reads and drains OUR keyspace, never the singleton", async () => {
+  // RENAMED from "…reads and drains OUR keyspace…": the DEL half was performed
+  // by the retired emulation, so "drains" was never this file's to claim. The
+  // seam property is unchanged and just as strong — every command, including
+  // the CONSUME eval, landed on the INJECTED double and never on the singleton.
+  it("the park→confirm round trip reads and CONSUMES OUR keyspace, never the singleton", async () => {
     const redis = setRedisDouble(createStatefulRedis());
     mockAdjudicate.mockReturnValue({
       kind: "REQUEST_CONFIRMATION",
@@ -1728,6 +1791,7 @@ describe("[seam] cart routes + their confirmation store drive the INJECTED clien
     expect(receiptKey.startsWith("development:")).toBe(true);
 
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE", basis: [] });
+    receiptRedeems(redis, confirmationId);
     const confirmed = await app.inject({
       method: "POST",
       url: "/api/cart/checkout/confirm",
@@ -1736,10 +1800,16 @@ describe("[seam] cart routes + their confirmation store drive the INJECTED clien
     });
     expect(confirmed.statusCode).toBe(200);
 
-    // Single-use: the consume DRAINED our key, so the receipt is gone from the
-    // injected keyspace. A store still bound to the singleton would leave it.
-    expect(redis.kv.has(receiptKey)).toBe(false);
-    expect(redis.eval).toHaveBeenCalledTimes(1);
+    // The consume ran on OUR client: exactly one Lua call, and it was the
+    // checkout store's own CONSUME script against the key the park wrote into
+    // this keyspace. A store still bound to the singleton would have issued it
+    // somewhere else, and this observer would have recorded nothing.
+    expectLuaCallCount(redis.lua, 1);
+    expectLuaCall(redis.lua, 0, {
+      site: CHECKOUT_CONSUME_SITE,
+      keys: [receiptKey],
+      arguments: [],
+    });
 
     // …and nothing anywhere in the round trip resolved the singleton.
     expect(mockGetRedisClient).not.toHaveBeenCalled();

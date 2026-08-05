@@ -53,12 +53,20 @@ Redis).
 
 ---
 
-## Class (i) — EVAL-BEARING. The double emulates a Lua script. **Owner-gated.**
+## Class (i) — EVAL-BEARING. The double emulates a Lua script. **RETIRED by M2.**
 
-These are the W4 RULE 3 theater cases: a JS `eval` stub returns a plausible
+> **STATUS: all 7 retired (M2).** No file in this table emulates a Lua script
+> any more. The table below is kept as the record of what each one WAS and what
+> now holds its invariant — see "M2 — the class (i) retirement" further down for
+> the per-file dispositions, the revert-to-red measurements, and the
+> script-blindness finding. Six went to unit observation
+> (`helpers/lua-call-observer.ts`); item 7 went to real Redis.
+
+These were the W4 RULE 3 theater cases: a JS `eval` stub returned a plausible
 value for a script whose entire reason for existing is server-side atomicity.
 The in-memory adapter deliberately **refuses** these (`LuaAtomicityNotEmulated`),
-so none of them can migrate — they need real Redis or a different design.
+so none of them could migrate to it — they needed real Redis or a different
+design. M2 gave six of them the different design and the seventh real Redis.
 
 | # | File | Script emulated (production site) | Script-blind? | Keys | Invariant riding on the emulation |
 |---|---|---|---|---|---|
@@ -71,6 +79,10 @@ so none of them can migrate — they need real Redis or a different design.
 | 7 | `packages/journeys/src/runner/__tests__/journey-lock.test.ts` | CAD (`journey-lock.ts:58`) **and** CAE (`:67`, PEXPIRE) | **No — the only script-DISPATCHING double in the repo** (`script.includes("DEL")` / `("PEXPIRE")`, throws on an unknown script) | `{env}:journey:lock:{journeyId}` | Same-journey serialization + heartbeat extension by the owner only |
 
 ### The script-blindness hazard
+
+> **CLOSED STRUCTURALLY by M2**, and the population was LARGER than this section
+> says — see "M2 — the class (i) retirement" below. Four production modules run
+> two or more distinct scripts through one client, one of them three.
 
 Six of the seven ignore the script argument. That is safe only while a SUT
 reaches exactly one script *family*. The two families have **opposite**
@@ -183,7 +195,7 @@ its SUT documents most loudly.
 
 | Bucket | Count | Files |
 |---|---|---|
-| Owner-gated, class (i) — eval-bearing atomicity theater | 7 | items 1-7 |
+| ~~Owner-gated, class (i) — eval-bearing atomicity theater~~ **RETIRED in M2** | 7 | items 1-7 |
 | Owner-gated, class (i-b) — SUT reaches Lua, double omits `eval` | 6 | items 8-13 |
 | Refused — leaf-purity edge, no fiction to kill | 1 | `packages/audit-sink/.../redis-spill-storage.test.ts` |
 | **Remaining** | **14** | |
@@ -440,7 +452,8 @@ call, not a count and not a derivation from the table itself (F-14).
 ### Remainder map for M2 / M3
 
 **M2 (class (i), the 7 eval-emulating doubles) is unblocked, and the shape
-suites now hold the invariant each double was faking:**
+suites now hold the invariant each double was faking** — **M2 is DONE; see "M2
+— the class (i) retirement" below for the per-file dispositions:**
 
 | Census item | Double emulates | Inherits from |
 |---|---|---|
@@ -472,6 +485,118 @@ two shapes, so it is where a script-blind swap would do the most damage.
   claims "the mocked redis.eval … emulates the Lua script". It does not — that
   suite forwards `eval` verbatim to a real container, and it is the only
   real-Redis coverage any CONSUME site had before M1 (the admin store).
+  **FIXED in M2** — the comment now records what the file actually does. Both
+  findings were re-verified before acting: `sweeper-resolver-race.test.ts` has
+  no `eval` anywhere in it (F-37 stands, left to M3 — it did not block M2,
+  because M2 re-homed the CAD onto the CAD SHAPE suite, never onto that file).
+
+---
+
+## M2 — the class (i) retirement
+
+**All 7 eval emulations are gone.** Six files kept their in-memory doubles for
+the non-atomic commands and replaced `eval` with unit observation; the seventh
+moved to real Redis. No case was deleted. Three were renamed, because their
+names claimed a property the file no longer proves.
+
+| # | File | Disposition | What the emulation was providing | Where that coverage lives now |
+|---|---|---|---|---|
+| 1 | `subscribers/__tests__/defer-resolver.test.ts` | (b) unit observation | 3 cases asserted the `defer:resuming:*` marker was GONE after commit / rollback / park-missing-after-lock | CAD deletion semantics → `lua-shape-cad-contract.test.ts`. That the resolver ISSUES the release, on all 3 paths, with its own token → `expectResumingLockReleased()`, same 3 cases |
+| 2 | `jobs/__tests__/defer-timeout-sweeper.test.ts` | (b) unit observation | 1 case asserted the sweeper's mutex key was GONE after commit | as above → CAD suite + `expectSweeperMutexReleased()`. (`recovery:fired:*` releases are a plain `del` and never touched the emulation) |
+| 3 | `escalation/__tests__/escalation-park-store.test.ts` | (b) unit observation | "consume() is single-use" | single-use → CONSUME suite. Split into "issues THIS site's CONSUME script against the rk() park key" + "parses what the script returned, null once it returns nil" |
+| 4 | `__tests__/checkout-confirmation-store.test.ts` | (b) unit observation | "consume() returns the pending exactly once (single-use)" | single-use → CONSUME suite. RENAMED to "issues THIS site's CONSUME script against the receipt key, and parses what it returns" |
+| 5 | `__tests__/order-cancel-confirm.test.ts` | (b) unit observation + declared postconditions | "410 on a REUSED receipt — single-use consume" | single-use → CONSUME suite. RENAMED to "410 CONFIRMATION_EXPIRED when the CONSUME script reports the receipt already drained" — the ROUTE's half, which no shape suite covers |
+| 6 | `__tests__/cart-routes.test.ts` | (b) unit observation + declared postconditions | the seam case asserted the receipt key was DRAINED from the injected keyspace | single-use → CONSUME suite. RENAMED to "…reads and CONSUMES OUR keyspace…"; the seam property (every command, eval included, landed on the INJECTED client) is unchanged and pinned by `expectLuaCallCount` + `expectLuaCall` |
+| 7 | `packages/journeys/.../journey-lock.test.ts` | **(c) real Redis** | ALL of it — CAD ownership, CAE heartbeat, and the orchestration (contention, wait deadline, distinct keys) that needs a release which really frees the key | its own 9 cases, now container-backed. Script shapes additionally held by the CAD + CAE suites, which read this file's own bytes |
+
+**Why not disposition (a) anywhere.** "Delete the emulation and let the call
+fail loudly" does not fail loudly at these sites: `releaseDeferResumingLock`
+swallows by design, so a throwing `eval` is absorbed and the case passes having
+observed nothing. That is F-37's mechanism; (a) would have manufactured it at
+two more sites. `lua-call-observer.ts` therefore offers no throwing mode at all.
+
+**Why not (d) anywhere.** Docker was available; the one file that genuinely
+needed the script's effect got real Redis.
+
+### The seam — `helpers/lua-call-observer.ts`
+
+Unit observation is worth something only if it names WHICH script the site
+issued. `expectLuaCall(observer, i, { site, keys, arguments })` requires the
+observed script to be byte-identical to the production text at a named anchor —
+the SAME anchor the shape suite reads. What each half can and cannot catch is
+written in the helper's header; in short:
+
+- **the observation** catches: the site stopped issuing the script; the site
+  issues a DIFFERENT script (the script-blindness hazard); the site issues the
+  right script against the wrong KEY or wrong ARGV (F-21's constant lock value).
+- **the shape suite** catches: a semantic corruption of the script constant.
+  The observation is deliberately blind to that — it compares a runtime value
+  against the source text it was compiled from, so a consistent edit moves both
+  sides.
+
+Neither is sufficient. The pair is.
+
+### The script-blindness hazard is bigger than this census said
+
+The section above ("The script-blindness hazard") treats a script-blind double
+as safe while its SUT reaches one script family, and names `cart-routes` as the
+closest to the edge. Measured across production, the exposure is wider: **four
+modules run two or more distinct scripts through a single client.**
+
+| Module | Scripts | Shapes |
+|---|---|---|
+| `apps/api/src/whatsapp/session.ts` | `ROTATE_SESSION_SCRIPT`, `RELEASE_LOCK_SCRIPT`, `EXTEND_LOCK_SCRIPT` | **3** |
+| `apps/api/src/streaming/execution-queue.ts` | `RELEASE_LOCK_SCRIPT`, `EXTEND_LOCK_SCRIPT` | 2 (CAD + CAE) |
+| `apps/api/src/adapters/park-redis-capabilities.ts` | `COMPARE_AND_DELETE_SCRIPT`, `EVAL_INCR_CHECK_SCRIPT` | 2 (CAD + quota) |
+| `packages/journeys/src/runner/journey-lock.ts` | `RELEASE_LOCK_SCRIPT`, `HEARTBEAT_SCRIPT` | 2 (CAD + CAE) |
+
+So journey-lock's dispatching double was not an oddity — it was the only
+class-(i) file whose SUT forced a question the other six were quietly ducking.
+Its dispatch was genuinely load-bearing: a CAD-shaped blind double handed the
+HEARTBEAT script deletes the lock instead of extending it, and a CONSUME-shaped
+one tells a foreign holder "released, here is the value". Any future double
+standing in for one of the four modules above needs the named-anchor
+observation, not a script-blind stub.
+
+### Revert-to-red
+
+Five experiments; two are control/treatment pairs run against the RETIRED
+doubles (restored from `2d5b7336` with the production defect held constant), so
+they measure whether M2 preserved coverage or added it. Every production edit
+was restored and verified by content.
+
+| # | Production defect injected | Retired (M1) double | M2 |
+|---|---|---|---|
+| 1 | `lib/defer-resuming-lock.ts:85` lock value → the constant `holder` (F-21's exact defect) | **35/35 GREEN** | **4 RED** |
+| 2 | `escalation-park-store.ts` consume EVALs a CAD instead of its own CONSUME | **5/5 GREEN** | **1 RED** |
+| 3 | `journey-lock.ts` CAD → `if true then` | — (retired to real Redis) | 2 RED |
+| 4 | `journey-lock.ts` CAE → `if false then` | — | 1 RED |
+| 5 | `checkout-confirmation-store.ts` consume key drops `rk()` (rule #7) | — | 3 RED, across both consuming files |
+
+Rows 1 and 2 are the point. Row 1 is F-21 reproduced: a constant lock value
+compares equal to itself, so the emulation deleted the key and every assertion
+held. Row 2 is the script-blindness hazard reproduced: the double never looked
+at the script, and the SHAPE SUITE does not catch it either — the suite reads
+the anchor's constant, which is still correct CONSUME text that nothing
+dispatches. The unit observation is the only thing in the repo that reds.
+
+### Roll call
+
+`scripts/check-real-redis-suites.mjs` now walks a LIST OF PACKAGES rather than
+`apps/api` alone. Moving `journey-lock.test.ts` to a container put a real-Redis
+suite in `packages/journeys`, and a suite that can skip in a tree the gate never
+scans is the M0 hole reopened one package over. Both the existence check, the
+completeness alarm and the drive-and-count step run per package.
+
+| Package | Suites | Enrolled cases |
+|---|---|---|
+| `apps/api` | 20 | ≥147 (137 container-backed) |
+| `packages/journeys` | 1 (`journey-lock.test.ts`, `minExecuted: 9`) | 9 (9 container-backed) |
+| **Total** | **21** | **≥156 (146 container-backed)** |
+
+`packages/journeys` gained `redis` as a devDependency (it already had
+`testcontainers`); the suite drives the same three-method wrapper
+`journey-lock.ts`'s own `defaultRedis()` builds.
 
 ---
 

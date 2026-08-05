@@ -54,6 +54,7 @@ import { fileURLToPath } from "node:url"
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const API_DIR = path.join(REPO_ROOT, "apps", "api")
+const JOURNEYS_DIR = path.join(REPO_ROOT, "packages", "journeys")
 
 /**
  * THE ROLL CALL — hand-written, not derived.
@@ -219,6 +220,44 @@ const EXCLUSIONS = [
   },
 ]
 
+/**
+ * THE ROLL CALL FOR `packages/journeys` — M2.
+ *
+ * Until M2 this gate only ever looked at `apps/api`, because that is where
+ * every real-Redis suite lived. M2's retirement of census class (i) item 7
+ * moved `journey-lock.test.ts` onto a real Redis container in ANOTHER package,
+ * and a suite that can skip in a directory the gate does not scan is precisely
+ * the hole M0 closed — reopened one package over. So the gate now walks a list
+ * of packages, and this is the second entry.
+ *
+ * 9 cases: 3 same-journey contention, 1 distinct-keys, 3 ownership-checked
+ * release, 2 heartbeat. All container-backed.
+ */
+const JOURNEYS_ROLL_CALL = [
+  { file: "src/runner/__tests__/journey-lock.test.ts", minExecuted: 9, realRedis: 9 },
+]
+
+/**
+ * The packages this gate polices, each with its own hand-written roll call.
+ * `scan` is the tree the completeness alarm walks for that package.
+ */
+const PACKAGES = [
+  {
+    name: "apps/api",
+    dir: API_DIR,
+    scan: "apps/api/src",
+    rollCall: ROLL_CALL,
+    exclusions: EXCLUSIONS,
+  },
+  {
+    name: "packages/journeys",
+    dir: JOURNEYS_DIR,
+    scan: "packages/journeys/src",
+    rollCall: JOURNEYS_ROLL_CALL,
+    exclusions: [],
+  },
+]
+
 /** Markers that make a file a real-Redis suite. Used ONLY by the alarm. */
 const REAL_REDIS_MARKERS = [
   "setupRedisTestContainer",
@@ -229,93 +268,104 @@ const REAL_REDIS_MARKERS = [
 const failures = []
 const fail = (msg) => failures.push(msg)
 
-// ── 1. Every enumerated file must still exist ────────────────────────────────
-// A rename that silently drops a suite from the run is the failure mode this
-// catches: without it, the vitest invocation below would just not match the
-// path and could be argued away as "no results for that file".
-for (const { file } of ROLL_CALL) {
-  if (!existsSync(path.join(API_DIR, file))) {
-    fail(
-      `ROLL CALL names a file that does not exist: apps/api/${file}\n` +
-        `      If the suite was renamed or retired, update ROLL_CALL in ` +
-        `scripts/check-real-redis-suites.mjs deliberately.`,
-    )
-  }
-}
+const outDir = mkdtempSync(path.join(tmpdir(), "ibx-real-redis-gate-"))
 
-// ── 2. Completeness alarm (adds requirements only; never satisfies one) ──────
-function discoverRealRedisSuites() {
+for (const pkg of PACKAGES) {
+  // ── 1. Every enumerated file must still exist ──────────────────────────────
+  // A rename that silently drops a suite from the run is the failure mode this
+  // catches: without it, the vitest invocation below would just not match the
+  // path and could be argued away as "no results for that file".
+  for (const { file } of pkg.rollCall) {
+    if (!existsSync(path.join(pkg.dir, file))) {
+      fail(
+        `ROLL CALL names a file that does not exist: ${pkg.name}/${file}\n` +
+          `      If the suite was renamed or retired, update the roll call in ` +
+          `scripts/check-real-redis-suites.mjs deliberately.`,
+      )
+    }
+  }
+
+  // ── 2. Completeness alarm (adds requirements only; never satisfies one) ────
   // --others --exclude-standard so a real-Redis suite that is written but not
   // yet committed is caught by the author, not left for CI to miss.
   const ls = spawnSync(
     "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "apps/api/src"],
+    ["ls-files", "--cached", "--others", "--exclude-standard", pkg.scan],
     { cwd: REPO_ROOT, encoding: "utf8" },
   )
+  let discovered = []
   if (ls.status !== 0) {
-    fail(`completeness alarm could not list files: ${ls.stderr || ls.stdout}`)
-    return []
+    fail(
+      `completeness alarm could not list files for ${pkg.name}: ${ls.stderr || ls.stdout}`,
+    )
+  } else {
+    discovered = ls.stdout
+      .split("\n")
+      .filter((p) => p.endsWith(".ts"))
+      .map((p) => p.replace(new RegExp(`^${pkg.name}/`), ""))
+      .filter((rel) => {
+        const abs = path.join(pkg.dir, rel)
+        if (!existsSync(abs)) return false
+        const src = readFileSync(abs, "utf8")
+        return REAL_REDIS_MARKERS.some((m) => src.includes(m))
+      })
   }
-  return ls.stdout
-    .split("\n")
-    .filter((p) => p.endsWith(".ts"))
-    .map((p) => p.replace(/^apps\/api\//, ""))
-    .filter((rel) => {
-      const abs = path.join(API_DIR, rel)
-      if (!existsSync(abs)) return false
-      const src = readFileSync(abs, "utf8")
-      return REAL_REDIS_MARKERS.some((m) => src.includes(m))
-    })
-}
 
-const known = new Set([...ROLL_CALL.map((r) => r.file), ...EXCLUSIONS.map((e) => e.file)])
-const unlisted = discoverRealRedisSuites().filter((f) => !known.has(f))
-if (unlisted.length > 0) {
-  fail(
-    `real-Redis suite(s) not accounted for in this gate:\n` +
-      unlisted.map((f) => `        apps/api/${f}`).join("\n") +
-      `\n      Add each to ROLL_CALL (with the count of cases that must execute)` +
-      `\n      or to EXCLUSIONS with a reason. An unlisted real-Redis suite can` +
-      `\n      skip in CI without anything noticing — the exact hole M0 closes.`,
+  const known = new Set([
+    ...pkg.rollCall.map((r) => r.file),
+    ...pkg.exclusions.map((e) => e.file),
+  ])
+  const unlisted = discovered.filter((f) => !known.has(f))
+  if (unlisted.length > 0) {
+    fail(
+      `real-Redis suite(s) not accounted for in this gate:\n` +
+        unlisted.map((f) => `        ${pkg.name}/${f}`).join("\n") +
+        `\n      Add each to that package's roll call (with the count of cases` +
+        `\n      that must execute) or to its exclusions with a reason. An` +
+        `\n      unlisted real-Redis suite can skip in CI without anything` +
+        `\n      noticing — the exact hole M0 closes.`,
+    )
+  }
+
+  // ── 3. Drive the suites for real and read what actually executed ───────────
+  const outFile = path.join(outDir, `${pkg.name.replace(/\//g, "-")}.json`)
+
+  console.log(
+    `[real-redis-gate] driving the enumerated real-Redis suites from ${pkg.name} …`,
   )
-}
-
-// ── 3. Drive the suites for real and read what actually executed ─────────────
-const outDir = mkdtempSync(path.join(tmpdir(), "ibx-real-redis-gate-"))
-const outFile = path.join(outDir, "results.json")
-
-console.log("[real-redis-gate] driving the enumerated real-Redis suites from apps/api …")
-const run = spawnSync(
-  "pnpm",
-  [
-    "exec",
-    "vitest",
-    "run",
-    "--reporter=default",
-    "--reporter=json",
-    `--outputFile.json=${outFile}`,
-    ...ROLL_CALL.map((r) => r.file),
-  ],
-  { cwd: API_DIR, encoding: "utf8", stdio: ["ignore", "inherit", "inherit"] },
-)
-
-if (!existsSync(outFile)) {
-  fail(
-    `vitest produced no JSON report (exit ${run.status}). The suites did not run at all — ` +
-      `treat this as the zero-count failure this gate exists to raise.`,
+  const run = spawnSync(
+    "pnpm",
+    [
+      "exec",
+      "vitest",
+      "run",
+      "--reporter=default",
+      "--reporter=json",
+      `--outputFile.json=${outFile}`,
+      ...pkg.rollCall.map((r) => r.file),
+    ],
+    { cwd: pkg.dir, encoding: "utf8", stdio: ["ignore", "inherit", "inherit"] },
   )
-} else {
+
+  if (!existsSync(outFile)) {
+    fail(
+      `vitest produced no JSON report for ${pkg.name} (exit ${run.status}). The suites ` +
+        `did not run at all — treat this as the zero-count failure this gate exists to raise.`,
+    )
+    continue
+  }
+
   const report = JSON.parse(readFileSync(outFile, "utf8"))
   const byFile = new Map()
   for (const tr of report.testResults ?? []) {
-    byFile.set(path.relative(API_DIR, tr.name), tr.assertionResults ?? [])
+    byFile.set(path.relative(pkg.dir, tr.name), tr.assertionResults ?? [])
   }
 
-  console.log("\n[real-redis-gate] executed cases per enumerated suite:")
-  for (const { file, minExecuted } of ROLL_CALL) {
+  console.log(`\n[real-redis-gate] ${pkg.name} — executed cases per enumerated suite:`)
+  for (const { file, minExecuted } of pkg.rollCall) {
     const results = byFile.get(file)
     if (results === undefined) {
-      fail(`no vitest result at all for apps/api/${file} — the suite never ran.`)
+      fail(`no vitest result at all for ${pkg.name}/${file} — the suite never ran.`)
       continue
     }
     const executed = results.filter(
@@ -335,18 +385,18 @@ if (!existsSync(outFile)) {
 
     if (executed < minExecuted) {
       fail(
-        `apps/api/${file}: ${executed} case(s) executed, roll call requires >= ${minExecuted}.\n` +
+        `${pkg.name}/${file}: ${executed} case(s) executed, roll call requires >= ${minExecuted}.\n` +
           `      ${executed === 0 ? "ZERO executed — the suite skipped wholesale." : "Cases went missing."}`,
       )
     }
     if (skipped > 0) {
       fail(
-        `apps/api/${file}: ${skipped} case(s) SKIPPED. Real-Redis coverage may not be ` +
+        `${pkg.name}/${file}: ${skipped} case(s) SKIPPED. Real-Redis coverage may not be ` +
           `silently opted out of; remove the skip or amend the roll call on purpose.`,
       )
     }
     if (failed > 0) {
-      fail(`apps/api/${file}: ${failed} case(s) FAILED (see the vitest output above).`)
+      fail(`${pkg.name}/${file}: ${failed} case(s) FAILED (see the vitest output above).`)
     }
   }
 }
@@ -364,9 +414,11 @@ if (failures.length > 0) {
   process.exit(1)
 }
 
-const totalExecuted = ROLL_CALL.reduce((n, r) => n + r.minExecuted, 0)
-const totalRealRedis = ROLL_CALL.reduce((n, r) => n + r.realRedis, 0)
+const allRows = PACKAGES.flatMap((p) => p.rollCall)
+const totalExecuted = allRows.reduce((n, r) => n + r.minExecuted, 0)
+const totalRealRedis = allRows.reduce((n, r) => n + r.realRedis, 0)
 console.log(
-  `\n✅ real-Redis loud-skip gate PASSED: ${ROLL_CALL.length} enumerated suites ran, ` +
-    `>= ${totalExecuted} cases executed (${totalRealRedis} of them container-backed), 0 skipped.\n`,
+  `\n✅ real-Redis loud-skip gate PASSED: ${allRows.length} enumerated suites ran across ` +
+    `${PACKAGES.length} package(s), >= ${totalExecuted} cases executed ` +
+    `(${totalRealRedis} of them container-backed), 0 skipped.\n`,
 )
