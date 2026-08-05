@@ -658,28 +658,43 @@ anything, per the brief. `defer-resume-integrity` is on the shared harness and
 enrolled; `park-nx-hoist` is a unit file whose SUT provably never reaches
 `parkDeferredIntent`.
 
+### The two lessons worth keeping
+
+**1. A green metric produced by a broken instrument (F-40).** This is the find
+of the phase and the mechanism is the whole point.
+`sweeper-resolver-race.test.ts` exists to police one invariant — that the
+sweeper and the resolver never both mutate the same parked envelope — and it
+reported HARD ZERO across five separate 100-iteration runs. That zero was an
+**artifact of the broken release**. The interleaving the test is written to
+catch requires the sweeper's SETNX to succeed *inside* an iteration, which
+requires the mutex to have been released; while F-37 kept every release dead the
+mutex could only end by TTL, so the window could not open and the regression was
+physically unreproducible in the file built to reproduce it. Restore the release
+and the violation appears immediately, at ~0.8% (4 / 500 iterations).
+
+The generalisation: **a passing measurement is only as good as the instrument's
+ability to produce a failing one.** Before trusting a zero, ask what would have
+had to happen for it to be non-zero, and whether the harness can do that at all.
+This is the same shape as a negative test that passes with the enforcement
+deleted — the assertion is fine, the reachability is not.
+
+**2. Classify by the property, not by the artefact.** The census classifies by
+*what kind of double is it*. F-37 shows the property that actually matters is
+*does the SUT's Lua execute* — and those come apart exactly once here: **a file
+can wear a real container and still be class (i-b)**. That is why the one
+genuinely open row sat in class (iii) as "Already real Redis" and was invisible
+to a reading of the class (i-b) table. The sweep that bounds it is one line: of
+22 container-backed `apps/api` suites, exactly one wraps its container in a
+`@ibatexas/tools` mock that mentions `eval` nowhere.
+
 ### What F-37 cost, beyond the one file
 
 Fixing it exposed **F-39** (a dead `mockAuditSinkEmit` spy — three vacuous
-assertions and one unsatisfiable one) and **F-40** (a live ~0.8%
-double-mutation window: the sweeper had no post-SETNX parkKey re-check, the
-mirror of the resolver's E2 Fix-b). Both are written up at the F-37 entry in
-"Two findings M2/M3 should not rediscover" above. F-40 is the load-bearing one:
-**the file's headline "hard zero" invariant was an artifact of the broken
-release**, because a mutex that only ever ends by TTL cannot produce the
-interleaving the test was written to catch.
+assertions and one unsatisfiable one) and **F-40** above. Both are written up in
+full at the F-37 entry in "Two findings M2/M3 should not rediscover".
 
-### The classification lesson
-
-The census classifies by *what kind of double is it*. F-37 shows the property
-that actually matters is *does the SUT's Lua execute* — and those come apart
-exactly once here: a file can wear a real container and still be class (i-b).
-The sweep that bounds it is one line: of 22 container-backed `apps/api` suites,
-exactly one wraps its container in a `@ibatexas/tools` mock that mentions
-`eval` nowhere.
-
-Two gate changes follow from it, both general and both measured (see the ruling
-doc): the roll-call gate now fails on a **non-zero vitest exit** — previously a
+Two gate changes follow, both general and both measured (see the ruling doc):
+the roll-call gate now fails on a **non-zero vitest exit** — previously a
 throwing `afterAll` left every case reading "passed" and the gate certified the
 run — and `setupRedisTestContainer({ expectLuaCalls: true })` fails teardown
 when **zero** scripts reach the container. Proof they were both needed: with
@@ -687,11 +702,33 @@ when **zero** scripts reach the container. Proof they were both needed: with
 reports **6 passed / 0 failed** and exits 1 on the alarm. The old gate read only
 the case counts, and would have called that green.
 
+A per-suite expected-EVAL COUNT was considered and refused: 21 hand-maintained
+figures across the roll call, each a fresh way to red spuriously, to catch a
+failure mode that is always "the Lua stopped entirely". Disproportionate gate
+mechanisms are how a gate becomes noise and then gets ignored.
+
 Roll call after M3: **21 suites / ≥159 cases (149 container-backed)**.
 
 ---
 
 ## Filed, not fixed
+
+### F-41 — `scripts/` is covered by NO eslint config (M3)
+
+There is no root `eslint.config.*`, and no package's lint task owns the
+repo-root `scripts/` directory, so `scripts/check-real-redis-suites.mjs` — the
+loud-skip gate itself — **cannot be linted from anywhere**. `npx eslint` at the
+root fails with `eslint: command not found`; the binary only resolves inside a
+package that declares the devDependency.
+
+This is **F-38's class one directory over** (`packages/journeys` has no eslint
+either: its `lint` script is `tsc --noEmit` only). The shared shape is a tree
+whose lint gate silently covers nothing, so an unused import or variable reaches
+CI unflagged — and `tsc` does not flag unused imports.
+
+M3 verified its own edit to that file with `node --check` instead and added no
+new identifiers. Filed rather than fixed because the fix is a repo-level lint
+decision (a root config, or a `scripts` workspace) that is not M3's call.
 
 ### F-21 class — `releaseNxPlaceholder` degrades to a plain `del`
 
