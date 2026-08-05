@@ -123,6 +123,52 @@ const ROLL_CALL = [
   // 3 cases, of which 1 is inside the RUN_REAL_REDIS describe.
   { file: "src/__tests__/ledger-replay-suppression.test.ts", minExecuted: 3, realRedis: 1 },
   { file: "src/__tests__/audit-2026-05-24/sweeper-resolver-race.test.ts", minExecuted: 3, realRedis: 3 },
+  // ── M1 — THE SCRIPT-SHAPE CONTRACT SUITES (Q2) ─────────────────────────────
+  //
+  // Everything above this line is a SITE suite: it drives one call site's
+  // production functions. The four below are SHAPE suites — each reads the Lua
+  // TEXT out of every production site that runs that shape (via
+  // `helpers/lua-script-sources.ts`) and runs one contract against all of them
+  // on a real Redis. They are what licenses Q2's "call sites inherit the shape's
+  // invariant from the contract suite": the contract runs the site's own bytes,
+  // so a divergent copy reds at that site's row whether or not the site has a
+  // suite of its own.
+  //
+  // Each carries a per-site CONTROL that removes the shape's conjunct from that
+  // site's own script and requires the damage to appear — so a case that stopped
+  // testing anything cannot stay green.
+  //
+  // CAD, 11 sites (the census inventory said 10; it missed
+  // claustrum/trigger-dedup-redis.ts). 2 population/extractor cases + 11
+  // contract + 11 conjunct-removal controls + 2 atomicity + 1 shape identity.
+  { file: "src/__tests__/lua-shape-cad-contract.test.ts", minExecuted: 27, realRedis: 24 },
+  // CONSUME, 4 sites. 1 population + 4 contract + 4 atomicity + 4 non-atomic
+  // controls + 1 shape identity + 1 CAD/CONSUME family-confusion case.
+  { file: "src/__tests__/lua-shape-consume-contract.test.ts", minExecuted: 15, realRedis: 13 },
+  // CAE, 3 sites (2 EXPIRE/seconds, 1 PEXPIRE/ms). 1 population + 3 contract +
+  // 3 unit + 3 conjunct-removal controls + 1 heartbeat scenario + 1 identity.
+  { file: "src/__tests__/lua-shape-cae-contract.test.ts", minExecuted: 12, realRedis: 10 },
+  // Rate limit, 2 sites (different scripts, same conjunct: INCR and the TTL-set
+  // are indivisible). 1 population + 2 immortality + 2 conjunct-removal
+  // controls + 2 non-atomic controls + 2 concurrency + 3 plugin-window cases.
+  { file: "src/__tests__/lua-shape-rate-limit-contract.test.ts", minExecuted: 12, realRedis: 11 },
+  // WhatsApp session rollover, 1 site. 6 boundary/stamping cases + 1 burst
+  // atomicity + 1 non-atomic control + 1 conjunct-removal control + 1 blast
+  // radius. `now` and the idle threshold are both ARGV, so no sleeps.
+  {
+    file: "src/__tests__/lua-shape-session-rollover-contract.test.ts",
+    minExecuted: 10,
+    realRedis: 10,
+  },
+  // Token bucket, 1 site — the only shape whose script does arithmetic, so the
+  // contract is a refill CURVE. 5 curve/boundary cases + 1 concurrency + 1
+  // non-atomic control + 2 TTL (incl. the conjunct-removal control) + 1 state
+  // round-trip. `now` is ARGV, so no sleeps.
+  {
+    file: "src/__tests__/lua-shape-token-bucket-contract.test.ts",
+    minExecuted: 10,
+    realRedis: 10,
+  },
 ]
 
 /**

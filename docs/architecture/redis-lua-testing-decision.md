@@ -104,10 +104,84 @@ measured cost of that blind spot. Rejected.
 | Phase | Content | Est. slices |
 |---|---|---|
 | M0 | Q1: CI Redis service + loud-skip gate — **DONE** | 1 |
-| M1 | The 8 script-shape contract suites | 2–3 |
+| M1 | The 8 script-shape contract suites — **DONE (8/8)** | 2–3 |
 | M2 | Class (i): the 7 eval-emulating doubles retired onto shape suites + unit observation | 2 |
 | M3 | Class (i-b) bound cases + the two F-22-deferred migrations (after the F-22 ruling lands) | 1–2 |
 | M4 | The 12 `multi()` redisFake files, per-file disposition | 2–3 |
+
+### M1 status — all 8 shapes covered
+
+**Six shape suites written; two shapes found ALREADY SERVED by an existing
+suite and left alone.** The six new suites add 86 executing cases to the M0 roll
+call (61 → 147; 137 container-backed) and are the repo's FIRST shape suites:
+every one of the 14 suites M0 enrolled is a SITE suite in Q2's sense, driving
+one call site's production functions. Q2 estimated "8 container suites, not 20";
+the actual cost was 6, because OTP-lockout and refund-cap are single-site shapes
+whose site suite already IS the shape contract.
+
+**The seam that makes Q2's inheritance real.** Q2 says call sites "inherit the
+shape's invariant from the contract suite". That only holds if the contract
+suite runs the bytes the site runs — otherwise a site could drop `== ARGV[1]`
+tomorrow and every shape assertion would stay green, which is the ruling's own
+green-lie shape one layer out. Only 3 of ~20 production script constants are
+exported, and two sites have no constant at all (inline literals in the `eval()`
+call), so importing them was not available. `apps/api/src/__tests__/helpers/lua-script-sources.ts`
+reads each script out of its production source by a hand-written anchor and
+throws on miss, ambiguity, or interpolation. The extractor is itself controlled:
+the CAD suite requires its output to be byte-identical to the imported value for
+all three exported constants.
+
+| Shape | Sites | Status | Suite |
+|---|---|---|---|
+| CAD | **11** (not 10) | **DONE** | `lua-shape-cad-contract.test.ts` (27) |
+| CONSUME | 4 | **DONE** | `lua-shape-consume-contract.test.ts` (15) |
+| CAE | 3 | **DONE** | `lua-shape-cae-contract.test.ts` (12) |
+| Rate limit | 2 | **DONE** | `lua-shape-rate-limit-contract.test.ts` (12) |
+| OTP lockout | 1 | **DONE — already served** | `otp-brute-force-atomic.test.ts` (4) + `-before` control (1) |
+| Refund cap | 1 | **DONE — already served** | `refund-drip-cap-atomic.test.ts` (3) + `-before` control (1) |
+| WhatsApp session rollover | 1 | **DONE** | `lua-shape-session-rollover-contract.test.ts` (10) |
+| Token bucket | 1 | **DONE** | `lua-shape-token-bucket-contract.test.ts` (10) |
+
+The two shapes marked *already served* were checked, not assumed. Both scripts
+are single-site and module-private, and both site suites drive the real
+production bytes through the exported function that evals them
+(`acquireOtpAttempt`, `tryReserveDailyRefund`) against a container, with the cap
+boundary asserted on both sides and a sibling `-before` file standing as the
+pre-fix control. Rewriting either for uniformity would buy nothing.
+
+**Each suite fails when its shape's conjunct is removed — measured, not
+asserted.** Every new suite carries a per-site CONTROL that rewrites that site's
+own extracted script with the conjunct deleted and requires the damage to
+appear, so a case that stopped testing anything cannot stay green. Each was also
+verified by corrupting the PRODUCTION source and observing the red, at a site
+with no site-suite of its own:
+
+| Shape | Production edit | Result |
+|---|---|---|
+| CAD | `packages/cli/src/lib/lock.ts` → `if true then` | 3 red, only that site's rows |
+| CONSUME | removed the `DEL` from `escalation-park-store.ts` | 5 red, only that site's rows |
+| CAE | `packages/journeys/.../journey-lock.ts` `HEARTBEAT_SCRIPT` → `if true then` | 3 red, only that site's rows |
+| Rate limit | removed the `EXPIRE` from `packages/tools/.../atomic-rate-limit.ts` | 3 red, only that site's rows |
+| Session rollover | `whatsapp/session.ts` idle test → `if lastMsg then` | 5 red |
+| Token bucket | removed the `PEXPIRE` from `whatsapp/client.ts` | 2 red |
+
+Every corrupted file was restored and verified by content; `git status` is clean
+of production edits.
+
+**Clock discipline.** No shape suite sleeps to advance time. The two
+time-dependent scripts (rollover, token bucket) take `now` as an ARGV and have
+no other source of time, so elapsed time is driven by passing it — which is what
+makes "wait exactly the `waitMs` the script quoted, then one ms less" expressible
+as a boundary at all. TTL assertions are two-sided bands throughout; the one
+place `-1` appears it is asserted NEGATIVELY (`not.toBe(-1)`, "no expiry"), never
+as `> 0`.
+
+**Population correction: CAD has ELEVEN sites, not ten.** The inventory in the
+census omits `apps/api/src/claustrum/trigger-dedup-redis.ts:59`
+(`TRIGGER_DEDUP_COMPARE_AND_DELETE_SCRIPT`). Total production Lua sites are 25,
+not 20, once the CAD correction and the park-quota script
+(`EVAL_INCR_CHECK_SCRIPT`, covered by `park-nx-release-failure-mode.test.ts`) are
+counted. The census records this.
 
 Estimated total: **8–11 slices** at the program's measured per-slice pace.
 F-21's competing-clients regression tests do not wait on any of this — they
