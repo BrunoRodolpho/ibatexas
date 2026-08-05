@@ -1101,15 +1101,29 @@ function translateToolCalls(args: {
  *  - `ownedByBaseKey`   — the owner-scoped resource ids that resolved PRESENT this
  *    turn, grouped by base key (`ownedResourceIdsByBaseKey`). The ONLY admissible
  *    subjects for an owner-scoped candidate (FIX 2): exactly one → bind it; many →
- *    CLARIFY; none → no resolution (degrade SAFE to UNKNOWN — never the model's id).
+ *    the NAMED resolution below, else CLARIFY; none → no resolution (degrade SAFE to
+ *    UNKNOWN — never the model's id).
+ *  - `namedOwnedSubjectByBaseKey` — F-19 / BKL-203: for a base key whose ≥2-owned set
+ *    is ambiguous, the ONE owned id THIS message explicitly NAMES by display number,
+ *    already resolved by the read plane's own `resolveNamedOwnedOrderSubject`
+ *    (classify-only-reads.ts) against the SAME turn's ledger. It is a RESULT, not an
+ *    input to a second resolver: this planner never parses a display number itself,
+ *    so there is exactly one such heuristic in the codebase (BKL-216's
+ *    `matchNamedOwnedOrders`, which that function delegates to). Owner-scoped /
+ *    IDOR-safe by construction — the resolver can only ever return an id drawn from
+ *    the authenticated owned set, and 0-or-≥2 matches yield NO entry (the ambiguity
+ *    CLARIFY stands — never a guess).
  *
- * Both OPTIONAL: absent (unit tests / a non-owner-scoped turn) ⟹ the planner keeps
+ * All OPTIONAL: absent (unit tests / a non-owner-scoped turn) ⟹ the planner keeps
  * the model's subject and stamps an `"unauthenticated"` actor that owns nothing
  * (fail-closed), so a missing auth context can never validate an owner-scoped claim.
+ * An absent `namedOwnedSubjectByBaseKey` is byte-identical to the pre-F-19 planner
+ * (the ≥2-owned branch falls straight through to CLARIFY).
  */
 export interface ClaimAuthContext {
   readonly customerId?: string;
   readonly ownedByBaseKey?: ReadonlyMap<string, readonly string[]>;
+  readonly namedOwnedSubjectByBaseKey?: ReadonlyMap<string, string>;
 }
 
 export interface ClaimAwarePlannerPort extends PlannerPort {
@@ -2332,6 +2346,12 @@ export function createIbatexasPlanner(
       // to a SINGLE owned resource because the authenticated customer owns ≥2
       // relevant ones → CLARIFY (ask which), never a guess.
       let ownerScopedAmbiguous = false;
+      // F-20 — the PUBLIC per-item twin of the flag above: a public per-item claim
+      // whose deterministic derivation found ≥2 admissible subjects (today reachable
+      // only for MENU_DIETARY, whose text can name two diets) is DROPPED and the turn
+      // CLARIFYs. The same disposition `buildClassifyOnlyCandidates`'s `publicAmbiguity`
+      // has always had for the ≥2-present case — never a guess between two items.
+      let publicPerItemAmbiguous = false;
       // BKL-209 — the safety markers are the UNION of (a) what the 4B flagged via
       // `propose_claim.safetyMarkers` (a bounded probabilistic §O#8 input) and (b) a
       // DETERMINISTIC medical-emergency net over the request text. Relying on (a)
@@ -2377,10 +2397,37 @@ export function createIbatexasPlanner(
             // customer owns exactly ONE relevant resource → bind it (FIX 2).
             subject = owned[0] as string;
           } else if (owned.length > 1) {
-            // ≥2 owned relevant resources and no unambiguous model match → CLARIFY,
-            // never guess. Drop this owner-scoped proposal (no candidate emitted).
-            ownerScopedAmbiguous = true;
-            continue;
+            // F-19 (BKL-203 on the model route) — before dropping to the ≥2-owned
+            // CLARIFY, honor an EXPLICITLY-NAMED owned order, exactly as the
+            // classify-only route does. The model can only ever emit the DISPLAY
+            // number it read in the text ("933869"), which is never an internal
+            // resource id, so `owned.includes(modelSubject)` above is always false
+            // for a named order and a multi-order customer dead-ended here — the
+            // very dead-end BKL-203 exists to remove, but only ever removed on the
+            // deterministic route (recorded as R7 residual 1).
+            //
+            // The resolution is NOT re-spelled here: `auth.namedOwnedSubjectByBaseKey`
+            // carries the RESULT of the read plane's own `resolveNamedOwnedOrderSubject`
+            // (classify-only-reads.ts), computed by the claim-planner adapter off the
+            // SAME turn ledger + text it hands the classify-only route. So both routes
+            // run ONE matcher (BKL-216's `matchNamedOwnedOrders`) over one input, and
+            // the ambiguity contract is inherited rather than re-implemented: 0 or ≥2
+            // matched owned orders → no entry → the CLARIFY below stands, never a guess.
+            //
+            // IDOR-safe by construction: the map's values are drawn from the
+            // authenticated owner-scoped PRESENT set, so a message naming SOMEONE
+            // ELSE's display number is unrepresentable here. The re-check against
+            // `owned` is defense-in-depth for a future caller that builds the map
+            // from a wider set than this base key's owned ids.
+            const named = auth?.namedOwnedSubjectByBaseKey?.get(baseKey);
+            if (named !== undefined && owned.includes(named)) {
+              subject = named;
+            } else {
+              // ≥2 owned relevant resources and no unambiguous model or NAMED match →
+              // CLARIFY, never guess. Drop this owner-scoped proposal (no candidate).
+              ownerScopedAmbiguous = true;
+              continue;
+            }
           } else {
             // 0 owned → no admissible subject. Keep the model's id; the kernel's
             // owner-scoped `owns` refuses it → honest UNKNOWN/REFUSED, never a leak.
@@ -2419,6 +2466,33 @@ export function createIbatexasPlanner(
           );
           if (resolvedItem === undefined) continue;
           subject = resolvedItem.id;
+        } else if (canonicalType === "MENU_DIETARY") {
+          // F-20 (subject) — the dietary claim's SUBJECT is the requested dietary TAG,
+          // detected DETERMINISTICALLY from the request text via the SHARED
+          // `detectDietaryPreferenceTags` — the SAME pure function the investigator
+          // keys its `menu:dietary:{tag}` read by, so the candidate subject == the
+          // ledger key suffix by construction (exactly the BKL-142 menu-item and
+          // BKL-138 date shapes above).
+          //
+          // MENU_DIETARY joined the public per-item class in BKL-214 with a
+          // classify-only subject derivation and an in-planner VALUE deriver, but
+          // WITHOUT this branch — so it was the ONE public per-item type whose
+          // model-route subject was model-AUTHORED (`menu:dietary:{whatever the 4B
+          // said}`). Fail-safe (an unrecognised tag keys nothing recorded → ABSENT →
+          // honest UNKNOWN) but not sound-by-construction, and recorded as R7
+          // residual 2. The model now only CLASSIFIES; the detector disposes.
+          //
+          // NO recognised tag → DROP the proposal (no candidate), the same honest
+          // degrade the two branches above take when their resolver finds nothing —
+          // never the model's string. ≥2 recognised tags ("vegetariano ou vegano?")
+          // → DROP + CLARIFY, mirroring the classify-only route's ≥2-present public
+          // ambiguity: ask which diet, never silently answer about one of the two.
+          const tags = detectDietaryPreferenceTags(state.perception.text);
+          if (tags.length !== 1) {
+            if (tags.length > 1) publicPerItemAmbiguous = true;
+            continue;
+          }
+          subject = tags[0] as string;
         }
 
         proposals.push({
@@ -2650,9 +2724,13 @@ export function createIbatexasPlanner(
       // FIX 2 — an owner-scoped claim the authenticated customer owns ≥2 relevant
       // resources for forces CLARIFY (ask which order), exactly like an unmapped P4
       // span: never a guess. §O#9 ESCALATE still outranks it (safety > clarify).
+      // F-20 — a ≥2-subject PUBLIC per-item ambiguity joins it on the same footing
+      // (ask which diet), the classify-only route's `publicAmbiguity` disposition.
       const forcedTerminal: Extract<TurnTerminal, "ESCALATE" | "CLARIFY"> | undefined =
         safetyTerminal ??
-        (hasUnmappedSpan(completeness) || ownerScopedAmbiguous ? "CLARIFY" : undefined);
+        (hasUnmappedSpan(completeness) || ownerScopedAmbiguous || publicPerItemAmbiguous
+          ? "CLARIFY"
+          : undefined);
 
       // F2 observability (claim-planner visibility): the Q6b `proposeClaims`
       // model call was previously INVISIBLE in `turn_trace` (only the intent
