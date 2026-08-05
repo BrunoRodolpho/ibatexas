@@ -42,7 +42,7 @@
 // full-suite flake (milliseconds elapse between the module's SET and the read),
 // so the clock is injected instead of the assertion being weakened.
 //
-// ── One bound this file does NOT close ───────────────────────────────────────
+// ── One bound this file does NOT close — CLOSED ELSEWHERE (F-35) ─────────────
 //
 // The follow-up zset's PRODUCER is `packages/tools/src/intelligence/schedule-follow-up.ts`
 // (`zAdd(rk("follow-up:scheduled"), {score, value})`). It cannot be driven here:
@@ -52,7 +52,19 @@
 // zset by hand, and the producer/consumer agreement rides on two independent
 // assertions of the same key literal (its own suite pins
 // `development:follow-up:scheduled`; this one reads the real `rk`), not on a
-// driven path. Recorded as a gap in the census rather than dressed up as a pin.
+// driven path.
+//
+// That bound STILL DESCRIBES THIS FILE — the seeding below is still by hand, and
+// deliberately so: these cases are the CONSUMER's, and rewriting them to drive
+// the producer would cost their independence from it. What changed is that the
+// gap is no longer the repo's. F-35 gave `scheduleFollowUp` an injectable client
+// (`ScheduleFollowUpOptions`), and
+// `apps/api/src/__tests__/jobs/follow-up-producer-consumer-parity.test.ts` now
+// drives BOTH ends against ONE `createInMemoryRedis` keyspace without naming the
+// key at all. Measured: rename the key on the producer side AND update its own
+// literal pin to match — a consistent refactor — and all 35 tests across this
+// file, the poller suite and the producer suite stay GREEN while the parity
+// suite reds 4/4. That is what two assertions of one literal could never catch.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing"

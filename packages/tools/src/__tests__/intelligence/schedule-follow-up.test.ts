@@ -104,3 +104,62 @@ describe("scheduleFollowUp", () => {
     expect(mockZAdd).not.toHaveBeenCalled()
   })
 })
+
+// ── The injected-client seam (F-35) ──────────────────────────────────────────
+//
+// The four cases above are the DEFAULT arm: no options bag, so the module must
+// still resolve `getRedisClient()` from the relative import — that is what keeps
+// the seam's default a measured fact rather than a comment, and it is why the
+// existing suite was left untouched by this slice.
+//
+// This block is the other arm, and it asserts the one property that CANNOT be
+// asserted from apps/api: that injecting a client leaves the package singleton
+// UNRESOLVED. Over in apps/api the singleton is reached through a relative
+// import a package-specifier mock cannot intercept — the whole reason F-35 was
+// filed — so "the singleton was not touched" is only observable here, where the
+// relative module itself is mocked. The driven producer→consumer parity proof
+// lives in
+// `apps/api/src/__tests__/jobs/follow-up-producer-consumer-parity.test.ts`.
+
+describe("scheduleFollowUp — the injected-client seam", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetRedisClient.mockResolvedValue({ zAdd: mockZAdd })
+  })
+
+  it("writes through the INJECTED client and never resolves the singleton", async () => {
+    const injectedZAdd = vi.fn().mockResolvedValue(1)
+    const result = await scheduleFollowUp(
+      { delayHours: 4, reason: "thinking" },
+      makeCtx(),
+      { client: { zAdd: injectedZAdd } as never },
+    )
+
+    expect(result.success).toBe(true)
+    // The write landed on the injected client...
+    expect(injectedZAdd).toHaveBeenCalledOnce()
+    const [key] = injectedZAdd.mock.calls[0] as [string, { score: number; value: string }]
+    expect(key).toBe("development:follow-up:scheduled")
+    // ...and BOTH halves of the singleton path stayed cold. `mockZAdd` is the
+    // singleton's own command: asserting only `mockGetRedisClient` would leave a
+    // module that resolved the singleton and then discarded it indistinguishable
+    // from one that never asked.
+    expect(mockGetRedisClient).not.toHaveBeenCalled()
+    expect(mockZAdd).not.toHaveBeenCalled()
+  })
+
+  it("does not resolve ANY client on the unauthenticated arm, injected or not", async () => {
+    const injectedZAdd = vi.fn().mockResolvedValue(1)
+    const result = await scheduleFollowUp(
+      { delayHours: 4, reason: "thinking" },
+      makeCtx({ customerId: undefined }),
+      { client: { zAdd: injectedZAdd } as never },
+    )
+
+    expect(result.success).toBe(false)
+    expect(injectedZAdd).not.toHaveBeenCalled()
+    // The non-hoisting rule, as an assertion: resolution sits AFTER the auth
+    // guard, so the arm that reaches Redis never also asks for no client.
+    expect(mockGetRedisClient).not.toHaveBeenCalled()
+  })
+})
