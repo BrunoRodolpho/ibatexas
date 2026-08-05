@@ -225,13 +225,16 @@ describe("createRedisSpillStorage", () => {
 // pinned directly: set APP_ENV, build a key, change APP_ENV, build another,
 // and require the prefix to have moved.
 //
-// Revert-to-red for these two tests is the module-load capture itself —
-// restore `const RK_ENV_PREFIX = process.env.APP_ENV ?? "development"` and
-// `return `${RK_ENV_PREFIX}:${key}`` in redis-spill-storage.ts and both go
-// red, because the second read cannot see the mutated APP_ENV.
+// Revert-to-red for the two call-time tests is the module-load capture
+// itself — restore `const RK_ENV_PREFIX = process.env.APP_ENV ?? "development"`
+// and `return `${RK_ENV_PREFIX}:${key}`` in redis-spill-storage.ts and both go
+// red, because the second read cannot see the mutated APP_ENV. Revert-to-red
+// for the two fallback tests is flipping the `?? "development"` literal.
 //
 // `vitest.config.ts` pins APP_ENV="test" for this package, so these tests
-// save and restore it rather than assuming it is unset.
+// save and restore it rather than assuming it is unset. That restoration is
+// load-bearing, not hygiene: neutering the afterEach reds both the
+// stable-identity test and the explicit "restores APP_ENV" guard below.
 
 describe("inlined rk (F-23)", () => {
   const original = process.env.APP_ENV
@@ -304,6 +307,69 @@ describe("inlined rk (F-23)", () => {
     await getRedisSpillSize({ redis })
 
     expect([...redis._store.keys()]).toEqual(["test:audit:spill:queue"])
+    expect(redis._lLenCalls).toEqual(["test:audit:spill:queue"])
+  })
+
+  // ── The `?? "development"` fallback ──────────────────────────────────────
+  //
+  // The header promises APP_ENV "falls back to `development` so local runs
+  // work without extra config". That promise had NO test: `vitest.config.ts`
+  // pins `env: { APP_ENV: "test" }` for the whole run, so the right-hand side
+  // of the `??` never executed. Pre-F-23 the same `??` sat on a module-level
+  // const and was outside the new-code window, so nothing ever asked.
+  // SonarCloud on PR #534 did: `new_lines_to_cover=2`,
+  // `new_uncovered_lines=0`, `new_coverage=66.67%` — zero uncovered LINES but
+  // an uncovered CONDITION. Covered here rather than excluded: this is a real
+  // documented behaviour, so the gate was right.
+  //
+  // The fallback must be driven by REMOVING APP_ENV. `??` is nullish-only, so
+  // setting it to "" would take the LEFT branch and leave the condition just
+  // as uncovered (see the empty-string test below, which pins that).
+
+  it('falls back to "development" when APP_ENV is ABSENT (getRedisSpillSize)', async () => {
+    const redis = makeRedisStub()
+
+    delete process.env.APP_ENV
+    await getRedisSpillSize({ redis })
+
+    expect(redis._lLenCalls).toEqual(["development:audit:spill:queue"])
+  })
+
+  it('falls back to "development" when APP_ENV is ABSENT (createRedisSpillStorage)', async () => {
+    const redis = makeRedisStub()
+
+    delete process.env.APP_ENV
+    await createRedisSpillStorage({ redis }).append(makeRecord(1))
+
+    expect([...redis._store.keys()]).toEqual(["development:audit:spill:queue"])
+  })
+
+  it("treats an EMPTY APP_ENV as present, not absent — mirroring canonical `??`", async () => {
+    // Not a bug to fix HERE. `packages/tools/src/redis/key.ts` uses the same
+    // `?? "development"`, so an empty APP_ENV yields a leading-colon prefix
+    // there too. "Fixing" it in the leaf alone (e.g. `||`) would manufacture
+    // exactly the divergence F-23 exists to remove. Pinned so the shared
+    // quirk is visible and so any future change to it is made in BOTH files
+    // deliberately, not in one file by accident.
+    const redis = makeRedisStub()
+
+    process.env.APP_ENV = ""
+    await getRedisSpillSize({ redis })
+
+    expect(redis._lLenCalls).toEqual([":audit:spill:queue"])
+  })
+
+  it("restores APP_ENV for sibling tests (no leaked delete)", async () => {
+    // Order-independence guard. The tests above `delete process.env.APP_ENV`;
+    // if the afterEach restoration ever regressed, every `test:`-prefixed
+    // assertion in this file would silently move to `development:` depending
+    // on execution order — a whole-file failure mode that is invisible when
+    // the suite happens to run in declaration order. Verified against
+    // `--sequence.shuffle` as well.
+    expect(process.env.APP_ENV).toBe("test")
+
+    const redis = makeRedisStub()
+    await getRedisSpillSize({ redis })
     expect(redis._lLenCalls).toEqual(["test:audit:spill:queue"])
   })
 })
