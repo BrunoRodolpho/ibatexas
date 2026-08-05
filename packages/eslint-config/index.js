@@ -1,8 +1,15 @@
+const { AUDIT_RAW_SINK_IMPORT_BAN } = require("./restricted-imports.js");
+
 module.exports = {
   parser: "@typescript-eslint/parser",
   plugins: ["@typescript-eslint", "import"],
   extends: ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
   rules: {
+    /* ── Audit-redaction chokepoint (F-53) ──────────────────────────────── */
+    /* Repo-wide: only the audit composer may import raw sink primitives.   */
+    /* Workspaces that override no-restricted-imports must re-splice this — */
+    /* see packages/eslint-config/restricted-imports.js.                    */
+    "no-restricted-imports": ["error", { paths: [AUDIT_RAW_SINK_IMPORT_BAN] }],
     "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     "@typescript-eslint/no-explicit-any": "error",
     "import/order": ["warn", { groups: ["builtin", "external", "internal", "parent", "sibling", "index"], "newlines-between": "never" }],

@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@ibatexas/catalog": "workspace:*",
+    "@ibatexas/eslint-config": "workspace:*",
     "@tailwindcss/postcss": "^4.2.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
