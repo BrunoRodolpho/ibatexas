@@ -93,6 +93,47 @@ describe("BKL-262 Stage 1 — each conjunct independently declines the rescue", 
     ).toBe(false);
   });
 
+  // F-27 — conjunct 4 is the OPS-PLANE consumer of `hasMutationImperative`, so the
+  // `mud(?!ou|ad|aram)` narrowing lands HERE as well as on the customer plane. It is
+  // the same BKL-234 defect in the preterite: staff ask whether the hours changed, the
+  // roster's only schedule capability is the WRITE, the 4B mis-parses onto it, the
+  // kernel refuses — and before F-27 conjunct 4 read "mudou" as a command and let the
+  // fabricated prose ship even though the correct hours claim validated in the turn.
+  //
+  // Measured on this branch: rescue FALSE -> TRUE for all three question forms, and
+  // FALSE -> FALSE for every imperative. The PAIR is what makes this non-vacuous:
+  // treatment and control differ ONLY in the verb form of the same verb, so the
+  // treatment cannot be passing because conjuncts 1/2/5 were relaxed.
+  it("4. F-27 — a staff QUESTION in the past tense is question-shaped, not a mutation", () => {
+    const QUESTIONS = [
+      "o horário de funcionamento mudou?",
+      "vocês mudaram o horário de funcionamento?",
+      "o horário foi mudado?",
+    ];
+    const COMMANDS = [
+      "muda o horário de amanhã para 10h às 22h",
+      "mude o horário de funcionamento",
+      "mudar o horário de funcionamento",
+    ];
+    // Both arms must carry read spans, or the pair would be decided by conjunct 3
+    // rather than by conjunct 4 — the property this case is named for.
+    for (const text of [...QUESTIONS, ...COMMANDS]) {
+      expect(classifyRequestSpans(text).length, text).toBeGreaterThan(0);
+    }
+    for (const requestText of QUESTIONS) {
+      expect(
+        isOpsWriteTwinReadRescue({ ...HOURS_RESCUE, requestText }),
+        requestText,
+      ).toBe(true);
+    }
+    for (const requestText of COMMANDS) {
+      expect(
+        isOpsWriteTwinReadRescue({ ...HOURS_RESCUE, requestText }),
+        requestText,
+      ).toBe(false);
+    }
+  });
+
   it("5a. a refused kind absent from the twin table is never rescued", () => {
     for (const kind of [
       "payment.refund.issue",

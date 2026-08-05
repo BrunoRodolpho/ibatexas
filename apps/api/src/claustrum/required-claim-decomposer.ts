@@ -964,6 +964,63 @@ export function carriesSafetyMarker(text: string): boolean {
  * correction (this net has already absorbed BKL-206 / BKL-238 / BKL-271 fixes).
  * Callers may pass raw text — the lowercase is applied here and is idempotent.
  *
+ * ── F-27 — WHY `mud` CARRIES A PAST-TENSE LOOKAHEAD ──────────────────────────
+ *
+ * `mud` was the one EDIT root whose PAST forms could not be told from its imperative
+ * ones, so a genuine READ phrased in the preterite was classified as a command and
+ * lost every read span in {@link classifyRequestSpans}. Measured at c9e871c4:
+ * `classifyRequestSpans("meu histórico de pedidos mudou?")` → `[]` and
+ * `classifyRequestSpans("meu pedido mudou?")` → `[]` (ORDER_HISTORY_Q / ORDER_STATUS_Q
+ * both suppressed). The precedent for the fix shape sat one line below the whole time:
+ * `fech(?!ad|ament|ou|am)` already excludes its own `ou` preterite.
+ *
+ * THE THREE ARMS, and why each is exactly the set of forms that CANNOT be a command:
+ *
+ *   · `ou` — `mudou`. 3rd-person singular preterite, and pt-BR has NO imperative,
+ *     subjunctive or infinitive reading of it: the command forms are `muda` (tu/você),
+ *     `mude`/`mudem` (formal), `mudar` (infinitive-as-request), none of which this arm
+ *     can reach. The only mutation sense `mudou` can carry is the IMPLICATURE of a
+ *     report ("meu endereço mudou" ⇒ please update it) — the identical implicature
+ *     BKL-271 deliberately gave up for `cancelad*` and `fechou`. THE FILED DEFECT.
+ *   · `ad` — `mudado`/`mudada`/`mudad{os,as}`. The past participle, i.e. the SAME
+ *     `(?!ad)` all three ORDER-LIFECYCLE roots below already carry, for the same
+ *     reason: a participle is a status REPORT ("o horário foi mudado?"), never an
+ *     imperative. `mud` was simply the outlier that never got it.
+ *   · `aram` — `mudaram`. The plural of the filed preterite, one paraphrase away
+ *     ("vocês mudaram o cardápio?"), and equally incapable of being a command.
+ *
+ * REJECTED, with the reason, so nobody re-proposes them:
+ *
+ *   · `am` (`mudam`, `mudamos`). The `fech` sibling carries it, but only because
+ *     "que horas fecham?" is the commonest hours phrasing in this domain. There is no
+ *     comparable `mudam` READ — the sweep below attests ZERO — so adding it would
+ *     widen the lookahead surface for no measured true positive.
+ *   · `anç` (`mudança`, `mudanças`). REJECTED: BKL-271 explicitly KEPT `cancelamento`
+ *     as a mutation, and "quero uma mudança no meu pedido" is that same request shape.
+ *     Excluding it would be a false NEGATIVE on a real amend request — the dangerous
+ *     direction this file names below.
+ *   · `ei` (`mudei`). REJECTED for the same reason BKL-271 kept `cancelei`. The sweep
+ *     shows the arm would buy NOTHING: of the 16 `mudei` rows, 12 already carry
+ *     `cancel`/`tir` in the same utterance and so do not depend on `mud` at all, and
+ *     the 4 the arm would actually flip are the bare "mudei de ideia" reason clause,
+ *     which classifies to `[]` on both sides of the change. Zero gain, and it would
+ *     cost the 1st-person amend frame ("mudei o endereço, é esse aqui").
+ *
+ * THE SWEEP (frozen 6889-utterance harvest of every pt-BR string literal and YAML
+ * corpus utterance in apps/ + packages/, the #531 method): FIVE rows change, all five
+ * `mudou`, and every one is SYSTEM-AUTHORED OUTPUT prose (the admin approval mappers,
+ * the PIX regenerate message, an audit-redaction note fixture) that no code path ever
+ * feeds to a classifier. ZERO harvested INPUT utterances change: not one of the 106
+ * `mud`-stem rows that is a genuine mutation is phrased in the preterite — they are
+ * `muda` / `mudar` / `mudei de ideia` without exception.
+ *
+ * BOTH PLANES, since this predicate is shared. CUSTOMER: a preterite read regains its
+ * span. OPS: `ops-write-twin-rescue.ts` conjunct 4 stops treating a staff QUESTION
+ * ("o horário de funcionamento mudou?") as a mutation, which makes the BKL-234 rescue
+ * reachable for it — a preterite cannot be the "staff really tried to change the
+ * hours" case that conjunct exists to protect, and that case ("muda o horário de
+ * amanhã…") is untouched.
+ *
  * Pure. See the block comment inside the function for the full provenance of every
  * root and lookahead.
  */
@@ -974,7 +1031,7 @@ export function hasMutationImperative(text: string): boolean {
   // of 20 (S5843). BOTH carry the same `(?<![a-z])` left guard, so the union of
   // matched strings is exactly what the single literal matched.
   const MUTATION_EDIT_ROOTS =
-    /(?<![a-z])(adicion|acrescent|remov|tir|colo[cq]|p[õo]e|ponh|mud|tro[cq]|limp|esvazi|aument|diminu)/;
+    /(?<![a-z])(adicion|acrescent|remov|tir|colo[cq]|p[õo]e|ponh|mud(?!ou|ad|aram)|tro[cq]|limp|esvazi|aument|diminu)/;
   const MUTATION_LIFECYCLE_ROOTS =
     /(?<![a-z])(cancel(?!ad)|fech(?!ad|ament|ou|am)|finaliz(?!ad))/;
   return MUTATION_EDIT_ROOTS.test(t) || MUTATION_LIFECYCLE_ROOTS.test(t);
@@ -1519,6 +1576,11 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // {@link hasMutationImperative} (verbatim move, same two literals, same OR), so the
   // ops write-twin read rescue asks the SAME question rather than spelling a rival
   // one. Every span below still gates on this identical boolean.
+  // F-27 — `mud` gains the past-tense lookahead `(?!ou|ad|aram)` its `fech(?!…|ou|…)`
+  // sibling has always carried, so a preterite READ ("meu histórico de pedidos
+  // mudou?", "meu pedido mudou?") stops being read as a command and keeps its span.
+  // The three arms, the rejected ones, and the both-planes sweep are enumerated in
+  // {@link hasMutationImperative}'s docblock — it is a SHARED-net change.
   // BKL-285 — the RESERVATION-CREATE family joins the gate, but ONLY here, in this
   // function's LOCAL variable. The shared `hasMutationImperative` is deliberately
   // NOT widened: it has a second consumer on the OPS plane
