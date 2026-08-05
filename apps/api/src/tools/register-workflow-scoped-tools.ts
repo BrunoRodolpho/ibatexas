@@ -24,12 +24,14 @@
 // other half of that decision: the handler is not dead, it is
 // workflow-invocable.
 
-import { getRedisClient, reorder, rk } from "@ibatexas/tools";
+import { reorder } from "@ibatexas/tools";
 import type { ToolDefinition, ToolRegistry } from "@claustrum/core";
 import type { CapabilityId, IntentKind } from "@claustrum/core";
 import type { Capsule } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
 import { loadPreviousOrder } from "../claustrum/previous-order.js";
+// F-9 — the ONE owner of the session→active-cart key, reads AND this write.
+import { claimActiveCart } from "../claustrum/active-cart-resolution.js";
 import { agentCtxFromCapsule } from "./register-ibatexas-tool-packs.js";
 
 /**
@@ -112,10 +114,11 @@ async function executeReorder(input: unknown, capsule: Capsule): Promise<unknown
  *
  * ── SCOPE, AND WHAT IT COSTS ─────────────────────────────────────────────────
  *
- * The key is session-scoped and written with the shared `rk()` idiom (Hard Rule
- * #7), keyed on the SAME `ctx.sessionId` `getOrCreateCart` uses — this is now
- * the second writer of that key, and `cartRedisKey`'s doc in
- * `packages/tools/src/cart/get-or-create-cart.ts` records that.
+ * The key is session-scoped, keyed on the SAME `ctx.sessionId` `getOrCreateCart`
+ * uses — this is the second writer of that key, and `cartRedisKey`'s doc in
+ * `packages/tools/src/cart/get-or-create-cart.ts` records that. Since F-9 the
+ * key itself is spelled in exactly one place on this plane
+ * (`claustrum/active-cart-resolution.ts`), which this write now goes through.
  *
  * The previous cart is ABANDONED rather than deleted. That is what the cart
  * machinery already does for every superseded session cart — Medusa keeps it,
@@ -132,22 +135,23 @@ async function claimSessionCart(
 ): Promise<void> {
   const cartId = (result as { cartId?: unknown } | null)?.cartId;
   const sessionId = ctx.sessionId;
-  if (typeof cartId !== "string" || cartId === "" || sessionId === undefined) return;
-  try {
-    const redis = await getRedisClient();
-    await redis.set(rk(`cart:active:session:${sessionId}`), cartId);
-  } catch (error) {
-    logger.error(
-      {
-        component: "workflow",
-        event: "workflow.reorder.session_cart_unclaimed",
-        sessionId,
-        cartId,
-        error: error instanceof Error ? error.message : String(error),
-      },
-      "workflow: order.reorder rebuilt a cart but could NOT point the session at it — the customer's next checkout would target their previous basket",
-    );
-  }
+  // F-9 — the WRITE goes through `active-cart-resolution.ts` too, so ONE module
+  // owns both ends of this key on the claustrum plane: the guards (a missing
+  // session, a non-string or empty cart id) and the key's spelling live there
+  // with the reads that must agree with them. What stays HERE is the only part
+  // that is this caller's own: how loud a failed claim is.
+  const claim = await claimActiveCart({ sessionId, cartId });
+  if (claim.claimed || claim.error === undefined) return;
+  logger.error(
+    {
+      component: "workflow",
+      event: "workflow.reorder.session_cart_unclaimed",
+      sessionId,
+      cartId,
+      error: claim.error instanceof Error ? claim.error.message : String(claim.error),
+    },
+    "workflow: order.reorder rebuilt a cart but could NOT point the session at it — the customer's next checkout would target their previous basket",
+  );
 }
 
 /**

@@ -352,6 +352,8 @@ import {
   resolveCustomerOrderReference,
 } from "./claustrum/resolve-and-assemble.js";
 import { loadPreviousOrder } from "./claustrum/previous-order.js";
+// F-9 — the ONE owner of "which cart is this conversation working on?".
+import { resolveActiveCart } from "./claustrum/active-cart-resolution.js";
 import { projectCouponForOrder } from "./claustrum/coupon-price-projection.js";
 import {
   buildCustomerAuthority,
@@ -2340,8 +2342,15 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // writes/reads) and fetch only that; the model's `input.cartId` is ignored.
   get_cart: async (_input, state) => {
     const ctx = agentCtxFromState(state);
-    const redis = await getRedisClient();
-    const cartId = await redis.get(rk(`cart:active:session:${state.conversationId}`));
+    // Resolved through `active-cart-resolution.ts` — the ONE owner of the
+    // session→active-cart lookup. POSTURE: an UNAVAILABLE read RETHROWS, which is
+    // this site's pre-existing behaviour (the hand-copied read had no catch): the
+    // one-hop read loop turns a throw into an honest "(indisponível: …)" rather
+    // than the "nenhum carrinho ativo" note, and telling a customer they have no
+    // cart because Redis was down would be a confident wrong answer.
+    const resolution = await resolveActiveCart({ sessionId: state.conversationId });
+    if (resolution.outcome === "unavailable") throw resolution.error;
+    const cartId = resolution.outcome === "resolved" ? resolution.cartId : null;
     if (!cartId) {
       // No active cart for this session — never call Medusa on a model-chosen id.
       return { cart: null, note: "nenhum carrinho ativo nesta sessão" };

@@ -38,8 +38,6 @@ import {
   getTodayHoursText,
   getHoursTextForDate,
   loadSchedule,
-  getRedisClient,
-  rk,
   medusaStore,
   reaisToCentavos,
   type ScheduleSignal,
@@ -52,6 +50,10 @@ import {
   PAYMENT_STATUS_LABELS_PT,
   RESERVATION_STATUS_LABELS_PT_CUSTOMER,
 } from "@ibatexas/types";
+// F-9 — the ONE owner of "which cart is this conversation working on?". This
+// file's CART_CONTENTS read is the site whose ABSENT-vs-UNAVAILABLE distinction
+// makes that resolution a trichotomy rather than a `string | null`.
+import { resolveActiveCart } from "./active-cart-resolution.js";
 // (BKL-006 falsifier predicates moved into the domain service's findFirst
 // probes — see findRefundBearingByOrderId/findDisputedByOrderId; no status-enum
 // comparison happens in this file anymore.)
@@ -776,19 +778,19 @@ export function createDomainTriadReadBackend(
     let p = cartReads.get(cacheKey);
     if (p === undefined) {
       p = (async (): Promise<CartContentsRead | null> => {
-        // A2 (IDOR) — resolve the session's OWN active cart id from Redis (the SAME
-        // key resolve-and-assemble / get_cart use), NEVER a model-supplied cart id.
-        // A Redis failure is an UNAVAILABLE read → null → fail-closed ERROR (Inv 7).
-        let cartId: string | null;
-        try {
-          const redis = await getRedisClient();
-          cartId = await redis.get(rk(`cart:active:session:${conversationId}`));
-        } catch {
-          return null;
-        }
-        // No active cart for this session — a genuine ABSENCE (honest UNKNOWN), NOT an
-        // error: the customer simply has no cart right now.
-        if (cartId === null) return { itemsSummaryText: "", hasItems: false };
+        // A2 (IDOR) — resolve the session's OWN active cart id through
+        // `active-cart-resolution.ts` (the ONE owner of that lookup, shared with
+        // resolve-and-assemble / get_cart), NEVER a model-supplied cart id.
+        //
+        // THIS SITE IS THE REASON THE RESOLUTION IS A TRICHOTOMY. A Redis failure is
+        // an UNAVAILABLE read → null → fail-closed ERROR (Inv 7), while no active
+        // cart is a genuine ABSENCE (honest UNKNOWN) → `hasItems: false`. Collapsing
+        // them would render "seu carrinho está vazio" at a customer whose cart we
+        // simply could not read, which is a confident wrong answer.
+        const resolution = await resolveActiveCart({ sessionId: conversationId });
+        if (resolution.outcome === "unavailable") return null;
+        if (resolution.outcome === "absent") return { itemsSummaryText: "", hasItems: false };
+        const cartId = resolution.cartId;
         // Fetch ONLY the session-resolved cart. A Medusa failure is UNAVAILABLE → null.
         let cart: RawCart | null;
         try {
