@@ -67,6 +67,27 @@
 #     adversarial-cpf-mentioned.
 # payment.refund.issue's 2 boundary-leg cases (separate file) passed both
 # clean passes (2/2 each run) — no instability observed there.
+# F-46 (2026-08-05) — WHY THIS CORPUS'S CASES MAY NEVER HAVE REACHED A MODEL.
+# Measured at 6ad3f4e2: NINETEEN of the 22 cases below classified to
+# PAYMENT_STATUS_Q and were answered DETERMINISTICALLY by the classify-only read
+# path (`apps/api/src/claustrum/classify-only-reads.ts`) — no model call, no
+# extraction, no envelope. A bare `pix` fires the dual-use payment token in
+# `required-claim-decomposer.ts`, PAYMENT_STATUS is classify-only-eligible, and the
+# regeneration request was silently dropped. The three that escaped did so by
+# accident, not recognition (a schedule marker in `broken-code-framing`, a checkout
+# verb in `formal-plural-precisamos`, F-36's `cpf` arm in `adversarial-cpf-
+# mentioned`). SIX of this capability's own eight `conversationTriggers` were
+# captured the same way.
+#
+# The F-46 pix-regeneration conjunct closes 17 of the 19. TWO cases remain captured
+# and are NOT expected to reach a model on the classify-only route today:
+#   · `context-embedded-complaint` — reachable only by an expiry-frame instrument,
+#     which F-46 REJECTED because it also suppresses the genuine "meu pix venceu?"
+#     payment READ. Note this is the SAME case the live calibration above lists as a
+#     STABLE FAILURE, for an unrelated reason.
+#   · `adversarial-explicit-order-number` — also fires ORDER_STATUS_Q, which the
+#     span-local conjunct does not gate.
+# Both are pinned as residuals in `required-claim-decomposer.test.ts`'s F-46 block.
 capability: payment.pix.regenerate
 source: tickets/language-engine/issues/11-rollout-payments-money-tier.md
 plane: customer

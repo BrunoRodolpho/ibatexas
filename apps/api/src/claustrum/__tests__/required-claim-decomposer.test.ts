@@ -3514,3 +3514,307 @@ describe("classifyRequestSpans — F-36 the self-scoped personal-data conjunct",
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-46 — the PIX-REGENERATION conjunct on PAYMENT_STATUS_Q.
+//
+// THE DEFECT: a customer asking for ANOTHER pix code ("gera um novo código pix pra
+// mim, o antigo expirou") is a request against the real, mutating, planner-advertised
+// CUSTOMER-plane `payment.pix.regenerate` capability. A bare `pix` fired the dual-use
+// payment token, PAYMENT_STATUS is classify-only-eligible, and the turn answered a
+// payment STATUS question the customer never asked while the regeneration was SILENTLY
+// DROPPED — the F-36 shape on a THIRD mutation family riding this same span.
+//
+// THE CORRECTION TO THE FINDING AS FILED, and the reason the instrument is what it is:
+// F-46 named TWO verbless utterances. Classifying the WHOLE 22-case corpus at 6ad3f4e2
+// measured NINETEEN captured, including the corpus's own canonical trigger phrasing and
+// SIX of the capability's EIGHT conversationTriggers. All three escapes were ACCIDENTS
+// (a schedule marker, a checkout verb, F-36's `cpf` arm) — not one row escaped because
+// anything recognised a regeneration request.
+//
+// WHAT THE FIX IS NOT: the expiry conjunct F-46 as filed proposed. Its marginal
+// contribution over the novelty arms is exactly ONE row, and it kills the "meu pix
+// venceu?" READ frame. The REJECTED-ARM guard below is what keeps that refusal
+// falsifiable rather than a comment — it reds if anyone adds one.
+//
+// WHAT IS ASSERTED HERE, and deliberately not more: this module is PURE, so what it can
+// witness is the ROUTE. That the model path then PROPOSES `payment.pix.regenerate` is a
+// planner fact, measured in `apps/api/src/__tests__/ibatexas-planner.test.ts`'s own F-46
+// block against the REAL advertised customer capability set.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("classifyRequestSpans — F-46 the pix-regeneration conjunct", () => {
+  // THE HEADLINE — the corpus's canonical trigger phrasing, and the routing change.
+  it("THE CANONICAL TRIGGER — the regeneration stops riding the payment read", () => {
+    const canonical = "gera um novo código pix pra mim, o antigo expirou";
+    // BEFORE (measured at 6ad3f4e2): ["PAYMENT_STATUS_Q"] / {PAYMENT_STATUS}.
+    expect(classifyRequestSpans(canonical)).toEqual([]);
+    expect(classifyOnlyRequiredTypes(canonical)).toBeUndefined();
+    // The conjunct makes NO claim that this is an imperative in the shared net's
+    // sense — that is precisely why `gera` is not a root there.
+    expect(hasMutationImperative(canonical)).toBe(false);
+  });
+
+  /**
+   * EVERY ROW THE FROZEN CORPUS MOVES OFF THE CLASSIFY-ONLY ROUTE, enumerated by NAME
+   * so the changed-row count is a roll call and not a number, and HAND-WRITTEN rather
+   * than derived from the net (the F-14 derived-control rule: a list generated from
+   * the thing under test cannot witness a deletion).
+   *
+   * Seventeen are `payment.pix.regenerate` extraction-corpus rows; six are that
+   * capability's OWN `conversationTriggers` (the advertised phrasing was unreachable
+   * on the classify-only route — F-36's finding at three times the scale); one is a
+   * live WhatsApp webhook fixture.
+   */
+  const MOVED: ReadonlyArray<readonly [string, string]> = [
+    ["extraction-corpus", "gera um novo código pix pra mim, o antigo expirou"],
+    ["extraction-corpus", "Poderia gerar um novo código PIX? O anterior expirou."],
+    ["extraction-corpus", "manda outro pix"],
+    ["extraction-corpus", "consegue gerar um novo pix pra mim?"],
+    ["extraction-corpus", "dá pra mandar um pix novo?"],
+    ["extraction-corpus", "gera um pix novo pra mim, por favor"],
+    ["extraction-corpus", "bota um pix novo aí pra mim"],
+    ["extraction-corpus", "Solicito a geração de um novo código PIX para o pagamento pendente."],
+    ["extraction-corpus", "preciso de um novo QR code do pix"],
+    ["extraction-corpus", "meu pix já venceu faz um tempo, dá pra gerar outro?"],
+    ["extraction-corpus", "manda o pix de novo"],
+    ["extraction-corpus", "outro pix"],
+    ["extraction-corpus", "não consegui pagar a tempo, pode gerar um pix novo pra mim?"],
+    ["extraction-corpus", "sou eu, o João, manda o pix de novo"],
+    ["extraction-corpus", "meu telefone é 21999998888, manda o pix de novo"],
+    ["extraction-corpus", "manda um pix novo aí, o valor é 50 reais"],
+    ["extraction-corpus", "o pix expirou porque demorei pra pagar, manda outro"],
+    ["conversationTrigger", "o código pix expirou, gera outro pra mim"],
+    ["conversationTrigger", "o QR code do pix expirou, gera outro pra mim"],
+    ["conversationTrigger", "gera um novo pix"],
+    ["conversationTrigger", "o pix venceu, manda outro"],
+    ["conversationTrigger", "manda o código pix de novo"],
+    ["conversationTrigger", "quero um pix novo pra pagar"],
+    ["whatsapp-webhook fixture", "novo pix"],
+  ];
+
+  it("THE CHANGED-ROW ROLL CALL — all 24 leave the classify-only route", () => {
+    expect(MOVED).toHaveLength(24);
+    for (const [provenance, text] of MOVED) {
+      const label = `${provenance}: ${text}`;
+      expect(classifyRequestSpans(text), label).not.toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(text), label).toBeUndefined();
+    }
+  });
+
+  /**
+   * ONE PROBE PER ARM, hand-written and by NAME — the F-31/F-36 arm-roll-call shape.
+   * Each probe is reached by EXACTLY ONE arm (verified by ablation over the frozen
+   * 164,963-row / 114,684-distinct harvest: the seven arms PARTITION the 26
+   * attested-input rows they move, 5+3+1+7+4+4+2 = 26), so deleting that arm reds
+   * exactly its own rows and nothing else. No arm is shadowed by an earlier one.
+   *
+   * NINE, not four: the pre-posed novelty arm split by HEAD NOUN and the elided arm
+   * split by CONTINUATION under Sonar S5843 (59 and 55 against a budget of 20 in run 1,
+   * a residual 29 in run 2, one more at 21 in run 3 — see the net's header, which also
+   * records that `eslint-plugin-sonarjs` reproduces these scores locally). Every split
+   * moved ZERO rows, so this roll call gained rows without any of them being new
+   * behaviour.
+   *
+   * TWO arms are AUTHORED rather than corpus-rescued, and that is stated rather than
+   * dressed up — the `chave` / `corrig(?!id)` precedent. ARM 4c ("por favor") and ARM
+   * 4d ("aí"/"agora") move ZERO rows today; they exist because splitting them out of
+   * 4b is what bought 4b its S5843 headroom, and dropping either would silently NARROW
+   * the language 4b used to have.
+   */
+  const FRAME_ARMS: ReadonlyArray<readonly [string, string, "corpus" | "authored"]> = [
+    ["ARM 1a novelty + bare pix", "outro pix", "corpus"],
+    ["ARM 1b novelty + código pix", "gera um novo código pix pra mim, o antigo expirou", "corpus"],
+    ["ARM 1c novelty + QR code pix", "preciso de um novo QR code do pix", "corpus"],
+    ["ARM 2 novelty-POSTPOSED", "bota um pix novo aí pra mim", "corpus"],
+    ["ARM 3 novelty-DE NOVO", "manda o pix de novo", "corpus"],
+    ["ARM 4a elided, clause-FINAL", "o pix expirou porque demorei pra pagar, manda outro", "corpus"],
+    ["ARM 4b elided + preposition", "o código pix expirou, gera outro pra mim", "corpus"],
+    ["ARM 4c elided + por favor", "meu pix expirou, gera outro por favor", "authored"],
+    ["ARM 4d elided + adverbial", "meu pix expirou, manda outro aí", "authored"],
+  ];
+
+  it("the FRAME-ARM ROLL CALL — every arm suppresses a regeneration, by name", () => {
+    expect(FRAME_ARMS).toHaveLength(9);
+    for (const [arm, probe, provenance] of FRAME_ARMS) {
+      const label = `${arm} (${provenance}): ${probe}`;
+      // Each probe fires the payment net, so it WOULD ride the read without the arm.
+      expect(/pix|pagamento/.test(probe.toLowerCase()), label).toBe(true);
+      expect(classifyRequestSpans(probe), label).not.toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(probe), label).toBeUndefined();
+    }
+  });
+
+  /**
+   * THE NOVELTY FRAME IS THE WHOLE GUARD. Each pair holds the payment noun CONSTANT
+   * and varies ONLY whether another one is being asked for, so a treatment that passed
+   * for an unrelated reason fails its control. The control half MUST keep the read —
+   * these are the genuine payment questions the conjunct must never touch.
+   */
+  const FRAME_PAIRS: ReadonlyArray<readonly [string, string]> = [
+    // [SUPPRESSED — a regeneration request, KEPT — a genuine payment status read]
+    ["gera um pix novo pra mim, por favor", "meu pix já caiu?"],
+    ["manda o pix de novo", "meu pagamento foi aprovado?"],
+    ["preciso de um novo QR code do pix", "qual o status do meu pagamento?"],
+  ];
+
+  it("TREATMENT vs CONTROL — only the NOVELTY frame suppresses", () => {
+    for (const [request, read] of FRAME_PAIRS) {
+      expect(classifyOnlyRequiredTypes(request), `request: ${request}`).toBeUndefined();
+      expect(classifyRequestSpans(read), `read: ${read}`).toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(read), `read: ${read}`).toBeDefined();
+    }
+  });
+
+  /**
+   * THE ADVERSARIAL CONTROLS for ARM 4, which are the five probes that chose it. Each
+   * is a payment READ whose object is NOT a pix; the LOOSE form of the arm
+   * (`(ger|mand|envi|bot)\w*\s+(um\s+)?outr[oa]`, no clause-final lookahead) suppressed
+   * every one of them. These are the single most likely rows to break if someone
+   * "simplifies" the lookahead away.
+   */
+  it("ADVERSARIAL — 'manda outro <non-pix noun>' keeps its payment read", () => {
+    for (const text of [
+      "meu pagamento não caiu, manda outro comprovante",
+      "o pagamento falhou, manda outro método pra eu tentar",
+      "meu pix não caiu, manda outro atendente falar comigo",
+      "paguei e não caiu, gera outro relatório do pagamento",
+      // ARMS 4b/4d's TRAILING GUARD, and these probes are chosen so they actually
+      // EXERCISE it: each noun begins with a spelling the allowlist admits — pra(to),
+      // pro(tocolo), para(da), ai(pim) — so deleting `(?![a-zà-ÿ])` makes every one of
+      // them satisfy the arm and lose its payment read. An earlier draft of this block
+      // used nouns like "parceiro"/"arquivo" that the allowlist could not match with or
+      // without the guard; revert-to-red caught that they proved nothing (RTR-5b/5c).
+      "meu pagamento não caiu, manda outro prato",
+      "meu pix não caiu, gera outro protocolo do atendimento",
+      "o pagamento não passou, manda outra parada da cozinha",
+      "meu pagamento não caiu, manda outro aipim",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(text), text).toBeDefined();
+    }
+  });
+
+  /**
+   * THE CANONICAL PAYMENT READS — the false-positive direction, which the frozen
+   * harvest measured at ZERO over all 114,684 distinct rows. `pagamento` and `pix` are
+   * deliberately NOT sufficient on their own; if either is ever admitted as a bare
+   * marker, every row here reds.
+   */
+  it("UNMOVED — every canonical payment read keeps its span AND its route", () => {
+    for (const text of [
+      "meu pagamento foi aprovado?",
+      "meu pix já caiu?",
+      "e aí, meu pagamento passou ou não?",
+      "qual o status do meu pagamento?",
+      "paguei no pix, meu pagamento caiu?",
+      "o pagamento do pedido 1234 já caiu?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(text), text).toBeDefined();
+    }
+  });
+
+  /**
+   * THE REJECTED-ARM GUARD — the F-27/F-36 widening-guard pattern, and the half that
+   * keeps the refusal of the filed expiry conjunct falsifiable. Every row is a payment
+   * READ whose only regeneration-looking token is an EXPIRY verb; adding `venc`/`expir`
+   * to the net — bare OR narrowed to pix-adjacency — turns each into a request and reds
+   * here BY NAME rather than silently dropping a read.
+   *
+   * The frame is attested even though these exact spellings are authored: the live
+   * `read-tool-corpus/get_payment_status.yaml` idiom is a bare yes/no about pix state
+   * ("meu pix já caiu?"), which is the same speech act with a different verb.
+   */
+  it("REJECTED ARM — expiry is NOT a regeneration marker, and these reads prove why", () => {
+    for (const text of [
+      "meu pix venceu?",
+      "meu pix já venceu?",
+      "o pix venceu?",
+      "meu pix expirou?",
+      "meu pagamento venceu?",
+    ]) {
+      expect(classifyRequestSpans(text), text).toContain("PAYMENT_STATUS_Q");
+      expect(classifyOnlyRequiredTypes(text), text).toBeDefined();
+    }
+  });
+
+  /**
+   * THE SHARED PREDICATE IS UNTOUCHED, asserted rather than argued.
+   * `hasMutationImperative` has two consumers outside this file
+   * (`ops-write-twin-rescue.ts` conjunct 4 and the `ibatexas-responder.ts` BKL-262
+   * Stage-2 abstain); the conjunct is span-local, so every changed row must still
+   * report FALSE here. Re-classifying the frozen harvest across the change measured
+   * ZERO `hasMutationImperative` deltas over all 114,684 distinct rows AND over all
+   * 783 attested-input rows — this is that claim's per-row witness.
+   */
+  it("SHARED-NET NEUTRALITY — no changed row became a mutation imperative", () => {
+    for (const [, text] of MOVED) {
+      expect(hasMutationImperative(text), text).toBe(false);
+    }
+  });
+
+  /**
+   * THE TWO MEASURED RESIDUALS, pinned as residuals so they are not re-discovered as
+   * new findings — and so that CLOSING either one is a deliberate, visible edit here
+   * rather than a silent widening somewhere else.
+   */
+  it("RESIDUAL 1 — a multi-span request still rides the OTHER read (span-local by design)", () => {
+    // "gera um pix novo pro pedido 12345" also fires ORDER_STATUS_Q, which this
+    // conjunct does not gate. It leaves PAYMENT_STATUS_Q but STAYS classify-only.
+    const text = "gera um pix novo pro pedido 12345";
+    expect(classifyRequestSpans(text)).not.toContain("PAYMENT_STATUS_Q");
+    expect(classifyRequestSpans(text)).toContain("ORDER_STATUS_Q");
+    expect(classifyOnlyRequiredTypes(text)).toBeDefined();
+  });
+
+  it("RESIDUAL 2 — the pure expiry COMPLAINT is left behind, and that is the trade", () => {
+    // The one row only the REJECTED expiry arm reaches. A payment-status answer is
+    // PARTIALLY responsive here (it truthfully reports the payment state); what is
+    // lost is the regeneration proposal. This is the MILD end of the family, which is
+    // why it does not buy back the read frame the expiry arm would cost.
+    const text = "meu pix venceu e eu não consegui pagar a tempo, e agora?";
+    expect(classifyRequestSpans(text)).toContain("PAYMENT_STATUS_Q");
+    expect(classifyOnlyRequiredTypes(text)).toBeDefined();
+  });
+
+  /**
+   * THE CORPUS ARITHMETIC, closed. 22 cases; 19 captured at 6ad3f4e2; 17 move off the
+   * classify-only route; the 2 residuals above stay. This is the number the finding
+   * is worth, asserted rather than narrated — and it is what reds if a future edit
+   * quietly widens or narrows the net.
+   */
+  it("CORPUS ARITHMETIC — 19 captured before, exactly 2 captured after", () => {
+    const CORPUS_UTTERANCES: readonly string[] = [
+      "gera um novo código pix pra mim, o antigo expirou",
+      "Poderia gerar um novo código PIX? O anterior expirou.",
+      "manda outro pix",
+      "consegue gerar um novo pix pra mim?",
+      "dá pra mandar um pix novo?",
+      "meu pix venceu e eu não consegui pagar a tempo, e agora?",
+      "gera um pix novo pra mim, por favor",
+      "bota um pix novo aí pra mim",
+      "Solicito a geração de um novo código PIX para o pagamento pendente.",
+      "preciso de um novo QR code do pix",
+      "o código pix não tá funcionando mais, manda outro",
+      "meu pix já venceu faz um tempo, dá pra gerar outro?",
+      "manda o pix de novo",
+      "Precisamos de um novo código PIX para finalizar o pagamento.",
+      "outro pix",
+      "não consegui pagar a tempo, pode gerar um pix novo pra mim?",
+      "gera um pix novo pro pedido 12345",
+      "sou eu, o João, manda o pix de novo",
+      "meu telefone é 21999998888, manda o pix de novo",
+      "meu cpf é 123.456.789-00, preciso de um pix novo",
+      "manda um pix novo aí, o valor é 50 reais",
+      "o pix expirou porque demorei pra pagar, manda outro",
+    ];
+    expect(CORPUS_UTTERANCES).toHaveLength(22);
+    const stillCaptured = CORPUS_UTTERANCES.filter(
+      (u) => classifyOnlyRequiredTypes(u) !== undefined,
+    );
+    expect(stillCaptured).toEqual([
+      "meu pix venceu e eu não consegui pagar a tempo, e agora?",
+      "gera um pix novo pro pedido 12345",
+    ]);
+  });
+});
