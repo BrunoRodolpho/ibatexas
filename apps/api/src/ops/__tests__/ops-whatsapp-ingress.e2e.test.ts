@@ -49,6 +49,7 @@ import {
   noopMemoryProvider,
   noopGroundingProvider,
 } from "../../claustrum/noop-memory-grounding.js";
+import { carriesSafetyMarker } from "../../claustrum/required-claim-decomposer.js";
 import { composeOpsConductor, type OpsConductorContext } from "../ops-conductor.js";
 import { createOpsToolRegistry } from "../ops-tool-registry.js";
 import { createOpsResolver, buildOpsRefundResumeState } from "../ops-resolver.js";
@@ -745,5 +746,443 @@ describe("FE-D13 — honest stale-resume over the WhatsApp ingress", () => {
     expect(session.parksFor("system:staff:owner1")).toHaveLength(1);
     // The owner still gets an honest (non-notice) reply from the normal loop.
     expect(replies.length + errors.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── Part D: F-4 — the FRESH-park triage branches over the WhatsApp ingress ────
+//
+// F-4 (R4-S1 ledger finding). All four ingresses consume the SAME decision
+// (`triageParkReply`, ../../claustrum/park-reply-triage.ts), and ops-WhatsApp was
+// the LAST unguarded consumer of its two FRESH-park branches: probe A during R4-S1
+// neutered the ingress' triage consumption and landed red everywhere EXCEPT here.
+// Part C above guards the third branch (stale-resume) plus its exclusion parity, so
+// this part adds exactly what was missing — soft-affirmative RESTATE (FE-D32) and
+// pure-negative DECLINE (BKL-191) — at the ops-WA seam, in the shape the sibling
+// surfaces already use (src/__tests__/whatsapp-webhook-async.test.ts's "park-reply
+// triage" block, and routes/admin/__tests__/ops-chat.test.ts's ops-plane mirror).
+//
+// WHY THIS FILE AND NOT THE UNIT SUITE. These branches read `capsule.loadedSession
+// .pendingConfirmations` and write through `capsule.session.unpark` — the capsule's
+// PRODUCTION shape. The unit suite's `fakeConductor()` returns `{id, turnId}` with
+// neither field, which is precisely why the branches were invisible to it; guarding
+// them there would mean hand-authoring the very double whose shape is the contract
+// (and the decline ACK is load-bearing — it asserts a cancellation, so the unpark
+// must be a real SessionPort write, not an assertion about a stub). Here the
+// capsule comes from the REAL composeOpsConductor over a real SessionPort, and the
+// branches' sibling (stale-resume) already lives here with a working harness — one
+// place to read what ops-WA does with a park-bearing reply.
+//
+// THE OPS PLANE'S POLICY DIFFERS FROM THE CUSTOMER PLANE'S BY DESIGN, and these
+// cases pin the ops knobs rather than copying the customer expectations:
+//   · `softAffirmativeAdmission: "soft-shaped"` — a staff "ok muda o preço" that
+//     restates the park IS admitted here (the customer plane admits soft-ONLY).
+//   · a FRESHNESS clock (the confirm TTL) — hence the stale branch, Part C.
+//   · `excludedKindsForScope("whatsapp")` — the knob UNIQUE to this surface: a
+//     dashboard-only money park is never restated, declined, or pruned here.
+//   · NO `safetyMarkerDefersDecline` — deliberately not given to this plane (three
+//     measured grounds recorded at `opsParkTriagePolicy`). Pinned below as the
+//     declared difference it is, not as a defect.
+describe("F-4 — the ops-WhatsApp ingress' FRESH-park triage branches", () => {
+  const SESSION_ID = "system:staff:owner1";
+  /** An IN-SCOPE ops park: a reversible verb the WhatsApp plane may itself propose. */
+  const IN_SCOPE_KIND = "product.price.set";
+  const IN_SCOPE_HASH = "fresh1fresh1";
+  const IN_SCOPE_PROMPT = "Confirmar novo preço da costela para R$ 89,00?";
+  /** The DASHBOARD-ONLY money kind — the single member of WA_EXCLUDED_OPS_KINDS
+   *  (ops-verb-scope.ts). Spelled by hand, never imported, so this suite is an
+   *  independent statement of the exclusion rather than a projection of it. */
+  const EXCLUDED_KIND = "payment.refund.issue";
+  const EXCLUDED_HASH = "ref0ref0ref0";
+  const EXCLUDED_PROMPT = "Confirmar reembolso de R$ 50,00?";
+  /** The ops-register decline acknowledgment, spelled by hand (the ops-chat sibling
+   *  pins the same literal). A wording change must be a deliberate edit here. */
+  const OPS_DECLINE_ACK = "Ok, cancelei a ação pendente — nada foi executado.";
+
+  /** `secondsAgo` before now — the ingress stamps `inbound.receivedAt` off the real
+   *  clock, so a few seconds is comfortably inside the 900s confirm TTL. */
+  const ago = (secondsAgo: number): string =>
+    new Date(Date.now() - secondsAgo * 1000).toISOString();
+  const freshInScope = (parkedAtSecondsAgo = 10): ParkedEnvelope =>
+    seededParkedEnvelope(IN_SCOPE_KIND, IN_SCOPE_HASH, IN_SCOPE_PROMPT, ago(parkedAtSecondsAgo));
+  const freshExcluded = (parkedAtSecondsAgo = 1): ParkedEnvelope =>
+    seededParkedEnvelope(EXCLUDED_KIND, EXCLUDED_HASH, EXCLUDED_PROMPT, ago(parkedAtSecondsAgo));
+
+  /** Drive ONE staff WhatsApp message over the REAL scope-composed ops conductor,
+   *  capturing every surface the ingress can speak on. `model.complete` is the
+   *  load-bearing turn witness: a triage branch SKIPS handleTurn, so "the planner
+   *  was never invoked" is what separates an answered reply from a fallthrough. */
+  async function driveOpsWa(
+    session: SessionPort,
+    text: string,
+  ): Promise<{
+    replies: string[];
+    errors: string[];
+    appended: Array<{ role: string; content: string }>;
+    modelCalled: () => boolean;
+  }> {
+    const model = scriptedModel([]);
+    const { deps: conductorDeps } = buildPartBDeps(model, session);
+    const replies: string[] = [];
+    const errors: string[] = [];
+    const appended: Array<{ role: string; content: string }> = [];
+    const waDeps: OpsWhatsAppIngressDeps = {
+      findStaffByPhone: async () => ({ id: "owner1", role: "OWNER", active: true }),
+      composeConductor: (actor, context) =>
+        composeOpsConductor(conductorDeps as never, actor, context),
+      acquireLock: async () => "lock",
+      releaseLock: async () => {},
+      loadHistoryBlock: async () => undefined,
+      appendHistory: async (_s, msgs) => {
+        for (const m of msgs) appended.push({ role: m.role, content: m.content });
+      },
+      sendReply: async (t) => {
+        replies.push(t);
+      },
+      sendError: async (t) => {
+        errors.push(t);
+      },
+    };
+    const out = await handleOpsWhatsAppMessage(waDeps, {
+      phone: "+5511999999999",
+      hash: "h",
+      text,
+      log,
+    });
+    expect(out).toEqual({ consumed: true });
+    return {
+      replies,
+      errors,
+      appended,
+      modelCalled: () =>
+        (model.complete as unknown as ReturnType<typeof vi.fn>).mock.calls.length > 0,
+    };
+  }
+
+  // ── (a) SOFT-AFFIRMATIVE RESTATE (FE-D32) — the park SURVIVES ───────────────
+
+  it("(a) a bare soft 'pode' on a FRESH in-scope park RESTATES it, SKIPS the turn, and the park SURVIVES", async () => {
+    const session = seededSession([freshInScope()]);
+    // DURING-arm: the park is present and in scope BEFORE the reply, so the
+    // "survives / not unparked" assertions below cannot pass on an empty store.
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+
+    const { replies, errors, appended, modelCalled } = await driveOpsWa(session, "pode");
+
+    // The deterministic ops restatement, naming the park's own stored prompt.
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("Só confirmando");
+    expect(replies[0]).toContain(IN_SCOPE_PROMPT);
+    expect(replies[0]).toContain('"sim"');
+    expect(errors).toHaveLength(0);
+    // The turn was SKIPPED — the planner model was never invoked.
+    expect(modelCalled()).toBe(false);
+    // Money-safety: a soft affirmative NEVER executes and NEVER unparks. The park
+    // is still there (asserted present above), so a follow-up "sim" resumes it.
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+    expect(session.parksFor(SESSION_ID)[0]!.envelope.intentHash).toBe(IN_SCOPE_HASH);
+    // A deterministic notice IS a delivered reply: persisted to the shared thread.
+    expect(appended).toContainEqual({ role: "assistant", content: replies[0]! });
+  });
+
+  it.each(["ok", "beleza", "OK!", "claro", "manda", "isso"])(
+    "(a′) soft variant %j also restates instead of reaching the loop",
+    async (word) => {
+      const session = seededSession([freshInScope()]);
+      expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+      const { replies, modelCalled } = await driveOpsWa(session, word);
+      expect(replies[0]).toContain("Só confirmando");
+      expect(modelCalled()).toBe(false);
+      expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+    },
+  );
+
+  // (a″) THE OPS-vs-CUSTOMER KNOB, pinned as a positive assertion. The ops policy
+  // declares `softAffirmativeAdmission: "soft-shaped"` — a soft yes that ALSO
+  // carries content is admitted here, because a staff "ok muda o preço" restating
+  // the park is an acceptable prompt for an explicit confirm. The CUSTOMER plane
+  // declares "soft-only" and lets this exact shape through to the loop (pinned at
+  // whatsapp-webhook-async.test.ts (d′) "a soft yes carrying NEW content"), so
+  // copying the customer expectation here would assert the OPPOSITE of the policy.
+  it("(a″) OPS KNOB: a soft yes carrying NEW content ('ok muda o preço') RESTATES here — the customer plane's soft-ONLY rule does NOT apply", async () => {
+    const session = seededSession([freshInScope()]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+
+    const { replies, modelCalled } = await driveOpsWa(session, "ok muda o preço");
+
+    expect(replies[0]).toContain("Só confirmando");
+    expect(replies[0]).toContain(IN_SCOPE_PROMPT);
+    expect(modelCalled()).toBe(false);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+  });
+
+  // (a‴) THE ORDERING INVARIANT at this surface: a FRESH in-scope park the reply
+  // resumes takes precedence over an EXPIRED one — a legitimate fresh soft
+  // affirmative is never shadowed by an expiry notice. Both parks are in the SAME
+  // list, so this cannot pass with either one absent.
+  it("(a‴) with BOTH an expired and a fresh in-scope park, a soft 'pode' restates the FRESH one — no expiry notice", async () => {
+    const expired = seededParkedEnvelope(
+      IN_SCOPE_KIND,
+      "old0old0old0",
+      "Confirmar remoção da picanha do cardápio?",
+      ago(3600), // 1h ago → past the 15-min TTL
+    );
+    const session = seededSession([expired, freshInScope()]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(2);
+
+    const { replies, modelCalled } = await driveOpsWa(session, "pode");
+
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("Só confirmando");
+    expect(replies[0]).toContain(IN_SCOPE_PROMPT);
+    // The expiry notice is SUPPRESSED — neither its copy nor the expired park's
+    // own prompt appears (the fresh park won the ordering).
+    expect(replies[0]).not.toContain("expirou");
+    expect(replies[0]).not.toContain("Confirmar remoção da picanha do cardápio?");
+    expect(modelCalled()).toBe(false);
+    // The restate branch names NO prune, so BOTH parks survive this turn.
+    expect(session.parksFor(SESSION_ID)).toHaveLength(2);
+  });
+
+  // ── (b) PURE-NEGATIVE DECLINE (BKL-191) — unpark + acknowledge ──────────────
+
+  it("(b) a pure negative 'não' on a FRESH in-scope park DECLINES it: unparked, ACK sent, turn SKIPPED", async () => {
+    const session = seededSession([freshInScope()]);
+    // DURING-arm: the park exists before the reply, so "unparked" below is a
+    // measured removal and not an assertion about an empty store.
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+
+    const { replies, errors, appended, modelCalled } = await driveOpsWa(session, "não");
+
+    // The acknowledgment asserts a cancellation, so the unpark must have STUCK.
+    expect(session.parksFor(SESSION_ID)).toHaveLength(0);
+    expect(replies).toEqual([OPS_DECLINE_ACK]);
+    expect(errors).toHaveLength(0);
+    // The negative text never reached the planner (the BKL-191 re-prompt this closes).
+    expect(modelCalled()).toBe(false);
+    expect(appended).toContainEqual({ role: "assistant", content: OPS_DECLINE_ACK });
+  });
+
+  it.each(["não", "nao", "cancela", "cancelar", "negativo", "não, cancela essa ação"])(
+    "(b′) negative variant %j also declines and unparks",
+    async (word) => {
+      const session = seededSession([freshInScope()]);
+      expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+      const { replies, modelCalled } = await driveOpsWa(session, word);
+      expect(replies).toEqual([OPS_DECLINE_ACK]);
+      expect(session.parksFor(SESSION_ID)).toHaveLength(0);
+      expect(modelCalled()).toBe(false);
+    },
+  );
+
+  // (b″) FAIL-HONEST — the ACK asserts the pending action was cancelled, so it may
+  // only be sent once the unpark STUCK. A failure falls through to the normal loop
+  // (claustrum's own deny path still unparks there) rather than claiming a
+  // cancellation that did not happen.
+  it("(b″) an unpark FAILURE falls through to the loop instead of claiming a cancellation", async () => {
+    const base = seededSession([freshInScope()]);
+    const unparkAttempts: Array<[string, string]> = [];
+    const session: SessionPort = {
+      ...base,
+      unpark: async (sessionId, intentHash) => {
+        unparkAttempts.push([sessionId, intentHash]);
+        throw new Error("redis down");
+      },
+    };
+    expect(base.parksFor(SESSION_ID)).toHaveLength(1);
+
+    const { replies, errors } = await driveOpsWa(session, "não");
+
+    // The triage DID decide to decline and DID attempt the unpark on the parked
+    // envelope's own hash — this is what separates the fail-honest fallthrough from
+    // an ingress with no triage at all (which never touches the store), so the
+    // assertion is not satisfied by the unwired baseline.
+    expect(unparkAttempts[0]).toEqual([SESSION_ID, IN_SCOPE_HASH]);
+    // MEASURED, and the substantive half of the contract: the fallthrough really
+    // reaches claustrum's OWN deny path, which unparks the SAME target again. The
+    // promise "the loop still unparks there" is therefore a real recovery, not just
+    // a suppressed acknowledgment. Every attempt names the same park — the failure
+    // never widens the blast radius.
+    expect(unparkAttempts.length).toBeGreaterThanOrEqual(2);
+    expect(
+      unparkAttempts.every(([s, h]) => s === SESSION_ID && h === IN_SCOPE_HASH),
+    ).toBe(true);
+    // The park did NOT clear → no acknowledgment on ANY surface; the loop ran.
+    const allText = [...replies, ...errors].join("\n");
+    expect(allText).not.toContain(OPS_DECLINE_ACK);
+    expect(replies.length + errors.length).toBeGreaterThanOrEqual(1);
+    expect(base.parksFor(SESSION_ID)).toHaveLength(1);
+  });
+
+  // ── (c) THE KNOB UNIQUE TO OPS-WHATSAPP: excludedKindsForScope("whatsapp") ───
+  //
+  // Both cases seed the money park as the MOST RECENT one. `pickMostRecentlyParked`
+  // would therefore select IT if the exclusion were dropped from the policy, so each
+  // case reds on TWO independent mutations: neutering the triage consumption (no
+  // notice / no unpark at all), and removing `excludedKinds` from
+  // `opsParkTriagePolicy({...})` at the ingress (the notice would name the refund,
+  // the unpark would clear the refund hash). Both parks are in the SAME list, so
+  // neither "not restated" nor "not unparked" can pass with the money park absent.
+
+  it("(c) a fresh DASHBOARD-ONLY money park is NOT restated — a soft 'pode' restates the in-scope park beside it", async () => {
+    // The refund park is the MOST RECENT: without the WhatsApp exclusion it would
+    // be the restate target.
+    const session = seededSession([freshInScope(10), freshExcluded(1)]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(2);
+
+    const { replies, modelCalled } = await driveOpsWa(session, "pode");
+
+    expect(replies).toHaveLength(1);
+    // The IN-SCOPE park is restated…
+    expect(replies[0]).toContain("Só confirmando");
+    expect(replies[0]).toContain(IN_SCOPE_PROMPT);
+    // …and the dashboard-only money park — present in the very same list — is not
+    // named on any surface (BKL-086 parity: WhatsApp never restates what it could
+    // not resume in the first place).
+    expect(replies[0]).not.toContain(EXCLUDED_PROMPT);
+    expect(modelCalled()).toBe(false);
+    // Neither park is touched by the restate branch.
+    expect(session.parksFor(SESSION_ID)).toHaveLength(2);
+  });
+
+  it("(c′) a fresh DASHBOARD-ONLY money park is NOT declined — 'não' unparks ONLY the in-scope park beside it", async () => {
+    const session = seededSession([freshInScope(10), freshExcluded(1)]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(2);
+
+    const { replies } = await driveOpsWa(session, "não");
+
+    expect(replies).toEqual([OPS_DECLINE_ACK]);
+    // EXACTLY the in-scope park was cancelled; the dashboard-only money park
+    // survives untouched, resumable from the dashboard that CAN propose it.
+    const remaining = session.parksFor(SESSION_ID);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.envelope.intentHash).toBe(EXCLUDED_HASH);
+    expect(String(remaining[0]!.envelope.kind)).toBe(EXCLUDED_KIND);
+  });
+
+  it("(c″) a LONE fresh dashboard-only money park is invisible to BOTH branches — no notice, the normal loop runs", async () => {
+    const session = seededSession([freshExcluded()]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+
+    // Both fresh branches are exercised against the SAME out-of-scope park.
+    for (const text of ["pode", "não"]) {
+      const { replies, errors, modelCalled } = await driveOpsWa(session, text);
+      const allText = [...replies, ...errors].join("\n");
+      expect(allText).not.toContain("Só confirmando");
+      expect(allText).not.toContain(OPS_DECLINE_ACK);
+      // The turn RAN — the reply came from the loop, not from the triage.
+      expect(modelCalled()).toBe(true);
+      // The money park is untouched on every pass (present throughout, so the
+      // "not declined" claim above is about a park that was really there).
+      expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+    }
+  });
+
+  // ── (d) CONTROLS — the shapes the triage must let through ───────────────────
+
+  // Control + treatment in ONE test, against the SAME park: the "pode" arm MUST
+  // restate (so the harness is proven live), and the explicit "sim" arm must NOT be
+  // intercepted. Assertions are scoped to what this seam decides — an explicit
+  // confirm belongs to the conductor's own adjudicated resume path.
+  it("(d) CONTROL: an explicit 'sim, confirma' is NOT intercepted, while 'pode' on the SAME park IS", async () => {
+    const session = seededSession([freshInScope()]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+
+    // TREATMENT — the control's validator: the branch is live on this park.
+    const soft = await driveOpsWa(session, "pode");
+    expect(soft.replies[0]).toContain("Só confirmando");
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1); // restate keeps the park
+
+    // CONTROL — same session, same park, explicit confirm: no triage notice on any
+    // surface. The turn is handed to the conductor, which owns the resume.
+    const explicit = await driveOpsWa(session, "sim, confirma");
+    const allText = [...explicit.replies, ...explicit.errors].join("\n");
+    expect(allText).not.toContain("Só confirmando");
+    expect(allText).not.toContain(OPS_DECLINE_ACK);
+    expect(allText).not.toContain("expirou");
+  });
+
+  it.each([
+    ["an ordinary ops command", "muda o preço da costela para R$ 89"],
+    ["a MIXED affirmative + negative (ambiguous, money-safe)", "não, pode deixar"],
+  ])(
+    "(d′) CONTROL: %s runs the normal turn with the park untouched",
+    async (_label, text) => {
+      const session = seededSession([freshInScope()]);
+      expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+
+      const { replies, errors, modelCalled } = await driveOpsWa(session, text);
+
+      const allText = [...replies, ...errors].join("\n");
+      expect(allText).not.toContain("Só confirmando");
+      expect(allText).not.toContain(OPS_DECLINE_ACK);
+      // The loop ran, and the triage removed nothing.
+      expect(modelCalled()).toBe(true);
+      expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+    },
+  );
+
+  // A DEFER phrase is a control too, but its park outcome belongs to a different
+  // owner and is named rather than assumed. The triage has NO defer branch — a
+  // defer reply is deferred to the normal loop — and the loop's own `defer`
+  // resolution then unparks. Asserting "the park is untouched" here would be
+  // asserting the wrong owner; what this seam decides is that it did NOT intercept.
+  it("(d‴) CONTROL: a defer phrase ('amanhã') is NOT intercepted — the loop resolves it and owns the park", async () => {
+    const session = seededSession([freshInScope()]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+
+    const { replies, errors, modelCalled } = await driveOpsWa(session, "amanhã");
+
+    const allText = [...replies, ...errors].join("\n");
+    expect(allText).not.toContain("Só confirmando");
+    expect(allText).not.toContain(OPS_DECLINE_ACK);
+    expect(allText).not.toContain("expirou");
+    expect(modelCalled()).toBe(true);
+    // MEASURED: the park is gone — cleared by the CONDUCTOR's defer resolution
+    // (matchOpsReplyToParked resolves "amanhã" to `defer`), never by the triage.
+    expect(session.parksFor(SESSION_ID)).toHaveLength(0);
+  });
+
+  it.each(["pode", "não", "sim", "muda o preço da costela para R$ 89"])(
+    "(d″) CONTROL: with NO park at all, %j takes the normal path",
+    async (text) => {
+      const session = seededSession([]);
+      expect(session.parksFor(SESSION_ID)).toHaveLength(0);
+
+      const { replies, errors, modelCalled } = await driveOpsWa(session, text);
+
+      const allText = [...replies, ...errors].join("\n");
+      expect(allText).not.toContain("Só confirmando");
+      expect(allText).not.toContain(OPS_DECLINE_ACK);
+      expect(allText).not.toContain("expirou");
+      expect(modelCalled()).toBe(true);
+    },
+  );
+
+  // ── (e) THE DECLARED PLANE DIFFERENCE: ops has NO safetyMarkerDefersDecline ──
+  //
+  // PR #526 gave `safetyMarkerDefersDecline` to the CUSTOMER plane only, and the
+  // omission here is a recorded decision with three MEASURED grounds (see
+  // `opsParkTriagePolicy`'s docblock): the emergency template's staff-handoff
+  // promise is unbacked on ops (`onSafetyEmergency` is omitted from the ops seams),
+  // the BKL-184 abstain is frequently discarded by the ops read-render precedence,
+  // and both templates are customer-register pt-BR addressed to a staff member. So
+  // on this plane a marker-bearing negative is still an ordinary decline, and
+  // trading the honest "cancelei a ação pendente" for an unbacked promise would be
+  // the regression. This pins the DECLARED behaviour: the day ops grows its own
+  // safety surface, declaring the knob is a one-line change that flips this test —
+  // which is exactly what a change-detector on an owner-reversible decision is for.
+  it("(e) OPS KNOB: a negative carrying a SAFETY MARKER still DECLINES here (the customer plane's stand-down is not declared on ops)", async () => {
+    // Non-vacuity: the text really IS a marker by the same net the customer policy
+    // declares — without this the case would pass on any string.
+    expect(carriesSafetyMarker("não, sou celíaco")).toBe(true);
+
+    const session = seededSession([freshInScope()]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(1);
+
+    const { replies, modelCalled } = await driveOpsWa(session, "não, sou celíaco");
+
+    expect(replies).toEqual([OPS_DECLINE_ACK]);
+    expect(session.parksFor(SESSION_ID)).toHaveLength(0);
+    expect(modelCalled()).toBe(false);
   });
 });
