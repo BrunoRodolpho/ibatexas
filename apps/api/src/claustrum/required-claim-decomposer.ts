@@ -37,8 +37,9 @@ import {
 // markers are GENERATED from their ClaimDefinition sources by the claimdef-compiler
 // (./claimdefs/*.generated.ts — DO NOT EDIT). The previously-handwritten closure entries
 // + marker regexes collapse into these splices. What the compiler does NOT model is a
-// span GUARD: STORE_INFO_Q's `notResourceScoped && !mutationImperative` conjunction
-// stays hand-written below, wrapping the generated markers — as does
+// span GUARD: STORE_INFO_Q's `notResourceScoped && notSelfScopedAddress &&
+// !mutationImperative` conjunction (the middle term is F-31's half of the
+// address-change fix) stays hand-written below, wrapping the generated markers — as does
 // MENU_ITEM_CONTENTS_Q's THREE-conjunct guard (`notOrderScoped && !mutationImperative &&
 // !isMenuOverview`), whose third term is what keeps a whole-menu ask disjoint from the
 // per-item contents span.
@@ -1022,23 +1023,122 @@ export function carriesSafetyMarker(text: string): boolean {
  * amanhã…") is untouched.
  *
  * THE ONE MOVEMENT IN THE FALSE-NEGATIVE DIRECTION, recorded rather than buried:
- * "meu endereço mudou[, atualiza por favor]" leaves the model path for the STORE_INFO
- * read. It is UNATTESTED (0 corpus rows), and it joins a hole that is ALREADY seven
- * phrasings wide at c9e871c4 — `atualiz`/`corrig`/`cadastr`/`alter` are in NONE of the
- * three literals, so "atualiza meu endereço" already rode that same read before this
- * change. Of the 35 attested `endereço` rows, ZERO move, and both attested address
- * mutations ("muda o endereço de entrega/do restaurante") carry a root and stay
- * mutations. Filed as F-31 and pinned as a CHANGE DETECTOR in
- * `required-claim-decomposer.test.ts`, whose own RTR separates the two halves: under
- * a full lookahead neuter the MOVED-BY-F-27 arm reds and the PRE-EXISTING arm stays
- * green, so "pre-existing" is a measured claim and not a label.
+ * "meu endereço mudou[, atualiza por favor]" left the model path for the STORE_INFO
+ * read. It joined a hole that was ALREADY seven phrasings wide at c9e871c4 —
+ * `atualiz`/`corrig`/`cadastr`/`alter` were in NONE of the three literals, so
+ * "atualiza meu endereço" already rode that same read before F-27. Filed as F-31.
+ * **F-31 IS NOW CLOSED** (see below and the STORE_INFO_Q guard in
+ * {@link classifyRequestSpans}); the change detector that pinned the degraded routing
+ * has been DELETED rather than re-baselined, per its own stated exit condition.
+ *
+ * ── F-31 — THE RECORD-EDIT ROOTS, AND WHY THEY ARE A FOURTH LITERAL ──────────
+ *
+ * THE DEFECT: a customer asking to change THEIR delivery address was answered with
+ * the RESTAURANT's address. `endere[çc]o` is a STORE_INFO_Q marker and STORE_INFO is
+ * classify-only-eligible, so the whole turn rendered deterministically and the edit
+ * request was dropped — a wrong-FAMILY render, not a mild over-inclusion.
+ *
+ * THE FAMILY NEEDED BOTH HALVES, and the roots alone do not close it. Six of the nine
+ * pinned phrasings carry a verb and are fixed HERE; three carry NO verb at all
+ * ("meu endereço mudou", "meu endereço agora é rua X", "meu novo endereço é rua X")
+ * and no verb root can reach them. Those are closed by the SELF-SCOPED ADDRESS
+ * conjunct on STORE_INFO_Q's guard — a 1st-person possessive on `endereço` is never
+ * the store's address — which is deliberately NOT in this predicate: it is a
+ * customer-plane READ discrimination with no meaning on the ops plane. Forcing the
+ * verbless declaratives through `hasMutationImperative` would also be a FALSE claim
+ * about the text, and it is shared with two other consumers.
+ *
+ * WHY A FOURTH LITERAL rather than four more alternatives in the AMEND half: the cut
+ * is the same kind of pt-BR SPEECH ACT boundary the other three are. MEMBERSHIP
+ * changes WHICH items are in the order; AMEND changes WHAT IS ALREADY THERE; these
+ * change a RECORD — an address, a profile, a registration, a value that is simply
+ * WRONG. It also keeps the other three literals BYTE-IDENTICAL, so their measured
+ * S5843 scores (28 → split; the AMEND half at 23) cannot move, and the union identity
+ * is the trivial one: the OR gains a disjunct, no existing arm is touched.
+ *
+ * PER-ROOT DECISIONS, each with its own TP/FP sweep — the bar
+ * {@link hasReservationCreateImperative} set when it REJECTED `marc`/`agend` for
+ * riding on someone else's evidence. Sweep = the frozen 183,325-row / 61,378-distinct
+ * harvest of every string literal and YAML scalar in apps/ + packages/ (the #531/#537
+ * method, widened from #537's pt-BR-filtered 6,889 to the unfiltered superset, which
+ * is strictly harder).
+ *
+ *   · `atualiz(?!ad)` — IN. 12 attested INPUT utterances, EVERY ONE a mutation
+ *     ("coca pra 5, atualiza o carrinho", "quero atualizar minhas preferências, sou
+ *     vegano", "Solicito a atualização do pedido…"); ZERO attested input READ. The
+ *     participle arm is the `(?!ad)` all three lifecycle roots carry, for the identical
+ *     reason — "meu pedido foi atualizado?" is a status REPORT and keeps
+ *     ORDER_STATUS_Q. MEASURED LIVE: the arm rescues 17 span-bearing corpus rows.
+ *     `atualização` is KEPT (the BKL-271 `cancelamento` / F-27 `mudança` ruling — a
+ *     request shape), and "atualiza a página" is a NON-ISSUE, measured: it classifies
+ *     to `[]` on both sides, and every in-repo occurrence is system-authored output.
+ *   · `corrig(?!id)` — IN. 2 attested INPUT utterances, both mutations ("sobre o
+ *     pedido 12345, quero corrigir a quantidade"); the whole family is 5 rows and has
+ *     NO non-mutation sense in pt-BR (the noun is `correção`, a different stem). The
+ *     participle arm is the `(?!ad)` rule spelled for this stem's own participle
+ *     (`corrigido`). HONEST LIMIT: `corrigid*` has ZERO corpus attestation, so unlike
+ *     its three siblings this arm rescues no measured row — it is justified by grammar
+ *     (a participle cannot be an imperative) plus an AUTHORED live probe pinned in the
+ *     arm roll call ("meu pedido foi corrigido?" keeps ORDER_STATUS_Q). Kept rather
+ *     than dropped because dropping it plants a fresh F-27 with the probe in hand.
+ *   · `cadastr(?!o|ad)` — IN, and the most narrowed. `cadastro` is the NOUN for the
+ *     customer's RECORD in 8 of 8 attested rows and in ZERO as a 1st-person verb, so
+ *     the `o` arm follows the `fech(?!…|ament|…)` precedent (a noun naming a THING is
+ *     excluded) rather than the `cancelamento` one (a noun naming a REQUEST is kept).
+ *     The `ad` arm is not a judgement call: "quais sao minhas reservas cadastradas" is
+ *     a LIVE read-harness fixture whose RESERVATION_STATUS_Q a bare root would have
+ *     killed. TP kept: "quero cadastrar minha chave pix".
+ *     KNOWN RESIDUAL, measured and named: "posso passar meu email e cpf agora pro
+ *     cadastro do pix?" is a SAVE request that keeps riding PAYMENT_STATUS_Q, because
+ *     the `o` arm excludes it. Its verb is `passar`, not a `cadastr` command; widening
+ *     a NOUN is not the narrow instrument for it, and the defect pre-dates F-31.
+ *   · `alter(?!n|ad)` — IN, and the riskiest, so it carries two arms. 9 attested INPUT
+ *     utterances, EVERY ONE a mutation ("Gostaria de alterar minha reserva para 3
+ *     pessoas", "por gentileza, altere a quantidade do pedido 12345"); `alteração` is
+ *     KEPT for the `cancelamento` reason and is itself attested as a request
+ *     ("Solicito a alteração do número de pessoas da minha reserva para 4").
+ *     - `n` kills the ENTIRE `altern*` family in one character, and no pt-BR form of
+ *       `alterar` has an `n` there (altera/altere/alterem/alterar/alterei/alterou/
+ *       alteram/alteração — none). It is what keeps "tem alguma alternativa
+ *       vegetariana?" a MENU_DIETARY read; `alternativa`/`alternativo` are attested
+ *       in-repo pt-BR, though in no span-bearing row, so like `corrig(?!id)` this arm
+ *       is pinned by an AUTHORED live probe rather than a rescued corpus row.
+ *     - `ad` is the participle rule again, and here it is the most MEASURED of the
+ *       four: 20 span-bearing rows ("Pedido pronto — não pode ser alterado").
+ *     The English/SQL collision the stem invites (`ALTER TABLE`, `ALTER TYPE`) is
+ *     measured and inert: every occurrence is DDL inside migration code or a CLI test,
+ *     never classifier input, and the `(?<![a-z])` left guard already blocks the
+ *     within-word case.
+ *
+ * REJECTED ARMS, so nobody re-proposes them:
+ *
+ *   · `ou`/`aram` on any of the four (the F-27 preterite shape). REJECTED: ZERO
+ *     attested rows for `atualizou`/`alterou`/`cadastrou`/`corrigiu` and their plurals,
+ *     which is exactly the ground F-27 itself rejected `am` on — an arm nothing in the
+ *     sweep can witness, paid for out of a budget already measured at 23.
+ *   · `ação`/`amento` on `alter`/`atualiz`. REJECTED: `alteração`/`atualização` are
+ *     ATTESTED REQUESTS ("Solicito a alteração…"), so the arm would be a false
+ *     NEGATIVE on a real amend — the dangerous direction, and the same call BKL-271
+ *     made for `cancelamento`.
+ *
+ * BOTH SHARED-CONSUMER PLANES, since this predicate has three callers. Of the 72
+ * span-bearing rows that change, 70 are SYSTEM-AUTHORED OUTPUT prose (renders,
+ * refusals, admin labels, route summaries, tool descriptions) that no code path feeds
+ * to a classifier; the 2 that are real INPUT are both mutations that were riding a
+ * read. OPS (`ops-write-twin-rescue.ts` conjunct 4): the write-twin rescue becomes
+ * UNAVAILABLE for a staff record-edit ("Por favor, atualize o status do pedido mais
+ * recente para 'pronto'"), which is the conjunct working as designed — a genuine
+ * refused mutation must surface its refusal, not be answered with today's status.
+ * ZERO ops rows move in the read direction. RESPONDER (`ibatexas-responder.ts`
+ * BKL-262 Stage 2): the same turns stop appending the proposition-free abstain, which
+ * is the non-sequitur that guard exists to suppress.
  *
  * Pure. See the block comment inside the function for the full provenance of every
  * root and lookahead.
  */
 export function hasMutationImperative(text: string): boolean {
   const t = text.toLowerCase();
-  // ── THE NET IS THREE LITERALS, AND THEY MUST STAY THREE ─────────────────────
+  // ── THE NET IS FOUR LITERALS, AND THEY MUST STAY FOUR ───────────────────────
   //
   // DO NOT "tidy" these back into one. Every split here is a Sonar S5843
   // regex-complexity forcing move, each one MEASURED on CI rather than predicted:
@@ -1051,6 +1151,13 @@ export function hasMutationImperative(text: string): boolean {
   //     by 3 — hence "measured on CI", and hence NOT "drop an arm to fit": the arms
   //     are behaviour, the budget is a lint, and the lint does not get to decide
   //     which pt-BR reads keep their span.
+  //   · SPLIT 3 (F-31) — the RECORD-EDIT roots arrive as their OWN literal rather
+  //     than as four more alternatives in the AMEND half. That half is the one
+  //     already measured at 23, and the four roots carry five lookahead arms between
+  //     them; putting them there would have gambled a known-tight score. As a
+  //     separate literal the other three are BYTE-IDENTICAL, so their scores cannot
+  //     move at all and the union identity is the trivial one — the OR gains a
+  //     disjunct, no existing arm is touched.
   //
   // WHY THE SPLIT IS SEMANTICS-PRESERVING, not merely "equivalent": for a boolean
   // `.test()`, `(?<![a-z])(A|B)` matches iff `(?<![a-z])(A)` matches or
@@ -1064,25 +1171,32 @@ export function hasMutationImperative(text: string): boolean {
   // WHERE THE CUT IS, and why THERE. The boundary is a pt-BR SPEECH ACT, not a
   // score: MEMBERSHIP verbs change WHICH items are in the order ("põe uma coca",
   // "tira a batata"); AMEND verbs change WHAT IS ALREADY THERE — substitute it,
-  // move its quantity, or clear the lot. It also lands the one lookahead-bearing
-  // root next to the five verbs a future pt-BR correction would most likely touch
-  // alongside it, which is where a reader will go looking for it.
+  // move its quantity, or clear the lot; RECORD-EDIT verbs (F-31) change a stored
+  // RECORD rather than the order — an address, a profile, a registration, a value
+  // that is simply wrong. It also lands the one lookahead-bearing AMEND root next to
+  // the five verbs a future pt-BR correction would most likely touch alongside it,
+  // which is where a reader will go looking for it.
   //
-  // PROVEN, not asserted: re-classifying the FROZEN 6889-utterance corpus across the
-  // split gives 6889 byte-identical rows and ZERO delta on `hasMutationImperative`,
-  // the span list and the classify-only route (see this function's docblock for the
-  // harvest). The 16-root roll call in `required-claim-decomposer.test.ts` is the
-  // standing guard: it names every root in all three literals, so a root lost to a
-  // future re-split reds by NAME rather than vanishing silently.
+  // PROVEN, not asserted: re-classifying the FROZEN corpus across the split gives
+  // byte-identical rows and ZERO delta on `hasMutationImperative`, the span list and
+  // the classify-only route (see this function's docblock for the harvest). The
+  // 20-root roll call in `required-claim-decomposer.test.ts` is the standing guard:
+  // it names every root in all four literals, so a root lost to a future re-split
+  // reds by NAME rather than vanishing silently.
   const MUTATION_EDIT_MEMBERSHIP_ROOTS =
     /(?<![a-z])(adicion|acrescent|remov|tir|colo[cq]|p[õo]e|ponh)/;
   const MUTATION_EDIT_AMEND_ROOTS =
     /(?<![a-z])(mud(?!ou|ad|aram)|tro[cq]|limp|esvazi|aument|diminu)/;
+  // F-31 — the RECORD-EDIT roots. Every lookahead arm is enumerated, with its
+  // measured true/false-positive evidence, in this function's docblock.
+  const MUTATION_RECORD_EDIT_ROOTS =
+    /(?<![a-z])(atualiz(?!ad)|corrig(?!id)|cadastr(?!o|ad)|alter(?!n|ad))/;
   const MUTATION_LIFECYCLE_ROOTS =
     /(?<![a-z])(cancel(?!ad)|fech(?!ad|ament|ou|am)|finaliz(?!ad))/;
   return (
     MUTATION_EDIT_MEMBERSHIP_ROOTS.test(t) ||
     MUTATION_EDIT_AMEND_ROOTS.test(t) ||
+    MUTATION_RECORD_EDIT_ROOTS.test(t) ||
     MUTATION_LIFECYCLE_ROOTS.test(t)
   );
 }
@@ -1847,8 +1961,49 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // GUARD conjunction is NOT generated and stays here: the compiler models which markers
   // classify INTO a span, not which contexts must suppress it.
   const notResourceScoped = !/pedido|entrega|frete|carrinho|reserva|pagamento/.test(t);
+  // F-31 — the SELF-SCOPED ADDRESS conjunct, and the half of that defect no verb root
+  // can reach. `notResourceScoped` above already keeps "o endereço de entrega do meu
+  // PEDIDO" out; what it cannot see is the customer's OWN address named with nothing
+  // but a possessive, which is how three of the nine pinned phrasings are spelled:
+  //
+  //     "meu endereço mudou"                    (a preterite REPORT — F-27 correctly
+  //                                              refuses to read it as a command)
+  //     "meu endereço agora é rua das flores 123"
+  //     "meu novo endereço é rua das flores 123"
+  //
+  // None carries a mutation VERB, so no root in `hasMutationImperative` can reach
+  // them, and every one was answered with the RESTAURANT's address — a wrong-FAMILY
+  // render, because STORE_INFO is classify-only-eligible and the turn never reached
+  // the model. Suppressing the span leaves the turn with NO read span at all, which
+  // is the correct routing: the planner then sees an address-change turn.
+  //
+  // WHY A 1st-PERSON POSSESSIVE IS THE DISCRIMINATOR, and why it is not
+  // over-inclusive: a customer asking where the restaurant IS never says "MEU
+  // endereço". The BKL-136 must-fire list is untouched by construction — "onde fica o
+  // restaurante?", "qual o endereço de vocês?", "como chego até vocês?" carry no
+  // 1st-person possessive at all — and the STORE's own move stays a read ("vocês
+  // mudaram de endereço?" keeps STORE_INFO_Q; `mud(?!…|aram)` keeps it off the
+  // mutation path too). MEASURED over the frozen corpus: of the 63 rows that fire
+  // STORE_INFO_Q, exactly 11 are suppressed — ten are the F-31 family itself and the
+  // eleventh is the literal `"meu endereco"`, a `resolve-and-assemble.ts` marker
+  // FRAGMENT that is matched AGAINST utterances and is never one.
+  //
+  // WHY IT LIVES HERE AND NOT IN `hasMutationImperative`: that predicate has two
+  // other consumers (the ops write-twin rescue, the BKL-262 Stage-2 recovery), and a
+  // verbless declarative is NOT an imperative — claiming otherwise would be false
+  // about the text and would carry a customer-plane read discrimination onto the
+  // staff plane. This is the same placement ruling BKL-285 made for the
+  // reservation-create net, for the same reason.
+  //
+  // KNOWN RESIDUAL: an address edit that names neither a verb nor a possessive ("o
+  // endereço que eu cadastrei está errado" reaches this via `cadastr`, but a bare
+  // "endereço novo: rua X" does not) still rides the read.
+  const notSelfScopedAddress = !/(?<![a-z])(meu|minha|meus|minhas)\s+(?:nov[oa]\s+)?endere[çc]o/.test(
+    t,
+  );
   if (
     notResourceScoped &&
+    notSelfScopedAddress &&
     !mutationImperative &&
     STORE_INFO_CLOSURE.markers.some((m) => m.test(t))
   ) {

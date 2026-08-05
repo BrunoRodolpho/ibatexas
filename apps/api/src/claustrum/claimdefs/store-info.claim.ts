@@ -25,8 +25,11 @@
  * NOT COVERED BY THE COMPILER, and therefore still hand-written at their own sites
  * (unchanged by this migration): the BKL-270 `dietaryPosture` (spliced at
  * REGISTRY_SPECS — an owner ruling, not a projection), the span classifier's GUARD
- * conjunction (`notResourceScoped && !mutationImperative` — the compiler models
- * markers, not guards), classify-only eligibility (`classify-only-reads.ts`), the read
+ * conjunction (`notResourceScoped && notSelfScopedAddress && !mutationImperative` — the
+ * compiler models markers, not guards; F-31 added the middle term, which is why a
+ * possessed "meu endereço" no longer reaches the `endere[çc]o` marker below even
+ * though that marker is unchanged), classify-only eligibility
+ * (`classify-only-reads.ts`), the read
  * binding (`claim-registry.ts` `deriveBoundValue` + `store-info-resolver.ts`), the P2
  * pair table (`ibatexas-claims-kernel-deps.ts`) and the planner personas.
  *
