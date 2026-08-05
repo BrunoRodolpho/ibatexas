@@ -335,6 +335,25 @@ this repo's harness needs — it starts its own `redis:7-alpine` per file.
 
 ### The full production Lua inventory (20 sites, 8 script shapes)
 
+> **CORRECTED BY M1 — the count is 25 sites, not 20.** Two omissions, found by
+> grepping `redis.call` over the whole tree while building the shape suites:
+>
+> 1. **CAD has ELEVEN sites, not ten.** `apps/api/src/claustrum/trigger-dedup-redis.ts:59`
+>    (`TRIGGER_DEDUP_COMPARE_AND_DELETE_SCRIPT`, exported) is a CAD site and is
+>    missing from the list below. It is covered — `agent-trigger-dedup-ownership.test.ts`
+>    is one of the F-21 rollout suites — so this was a bookkeeping gap, not a
+>    coverage gap. It is now a row in the CAD shape suite's site table.
+> 2. **The park-quota script is a ninth shape.** `EVAL_INCR_CHECK_SCRIPT`
+>    (`adapters/park-redis-capabilities.ts:124` — INCR + EXPIRE + DECR-on-refuse)
+>    is not in the eight, but it is production Lua and it is covered by
+>    `park-nx-release-failure-mode.test.ts` (the atomicity race and the TTL
+>    refresh). Named here so the inventory is closed rather than merely long.
+>
+> Two line numbers below have also drifted: `park-nx.ts:66` is now
+> `adapters/park-redis-capabilities.ts:108` (moved by F-22) and
+> `lib/defer-resuming-lock.ts:40` is now `:50`. The shape suites anchor on
+> declaration TEXT rather than line numbers for exactly this reason.
+
 Any option chosen has to cover these, not just the defer/park ones:
 
 - **CAD** (`GET == ARGV[1] then DEL`) — 10 sites: `streaming/execution-queue.ts:23`,
@@ -357,6 +376,102 @@ Any option chosen has to cover these, not just the defer/park ones:
 - **Refund cap** (`GET` + cap check + `INCRBY` + `EXPIRE`) — `routes/admin/payments.ts:182`
 - **WhatsApp session rollover** (`HGET`/`HSET`) — `whatsapp/session.ts:76`
 - **Token bucket** (`HMGET`/`HSET`/`PEXPIRE`) — `whatsapp/client.ts:291`
+
+---
+
+## M1 — the script-shape contract suites (all 8 shapes)
+
+Six new suites, 86 executing cases, all enrolled in the M0 roll call (61 → 147
+cases; 137 container-backed). Two shapes needed no new suite. Ruling and the
+full status table: `docs/architecture/redis-lua-testing-decision.md`.
+
+| Shape | Sites | Suite | Cases |
+|---|---|---|---|
+| CAD | 11 | `lua-shape-cad-contract.test.ts` | 27 |
+| CONSUME | 4 | `lua-shape-consume-contract.test.ts` | 15 |
+| CAE | 3 | `lua-shape-cae-contract.test.ts` | 12 |
+| Rate limit | 2 | `lua-shape-rate-limit-contract.test.ts` | 12 |
+| Session rollover | 1 | `lua-shape-session-rollover-contract.test.ts` | 10 |
+| Token bucket | 1 | `lua-shape-token-bucket-contract.test.ts` | 10 |
+| OTP lockout | 1 | *already served* — `otp-brute-force-atomic.test.ts` + `-before` | — |
+| Refund cap | 1 | *already served* — `refund-drip-cap-atomic.test.ts` + `-before` | — |
+
+### What a shape suite does that a site suite cannot
+
+Every one of the 14 suites M0 enrolled is a SITE suite: it drives one call
+site's production functions and proves that site releases/consumes correctly.
+None can see a divergent script at a site it does not cover, and CAD alone has
+11 sites across 4 packages.
+
+The shape suites read the Lua TEXT out of each production site
+(`helpers/lua-script-sources.ts`, `extractLuaAfter(file, anchor)`) and run one
+contract against all of them on a real Redis. This is what makes Q2's
+"call sites inherit the shape's invariant from the contract suite" a fact rather
+than a hope — the contract runs the site's own bytes, so a site that drops
+`== ARGV[1]` reds at that site's row whether or not it has a suite. Reading
+source rather than importing is also what lets one apps/api suite cover
+`packages/tools`, `packages/cli` and `packages/journeys` sites without adding a
+dependency edge; only 3 of ~20 script constants are exported and two sites have
+no constant at all (inline literals in the `eval()` call).
+
+Three guards keep that seam honest: `extractLuaAfter` throws on a missing
+anchor, an AMBIGUOUS anchor, a literal with no `redis.call`, or an interpolated
+script (where source text would not be what runs); the CAD suite requires the
+extractor's output to be byte-identical to the imported value for all three
+EXPORTED constants; and each site table is pinned by a hand-written NAME roll
+call, not a count and not a derivation from the table itself (F-14).
+
+### Each suite fails when its conjunct is removed — in two independent ways
+
+1. **In-suite, per site.** Each suite rewrites each site's own script with the
+   conjunct deleted and requires the damage to appear: CAD/CAE strip the
+   ownership test and the foreign key must be destroyed / extended; CONSUME runs
+   the client-side GET-then-DEL and the same receipt must be redeemed more than
+   once; rate limit and token bucket strip the TTL-set and the key must go
+   immortal; rollover strips the idle test and every message must rotate. Each
+   mutation helper THROWS when it finds nothing to remove, so a control cannot
+   silently degenerate into a re-run of the unmutated script.
+2. **Against production source.** Each shape was verified by corrupting the real
+   file and observing the red — deliberately at sites with no site suite of
+   their own (`packages/cli/src/lib/lock.ts`, `escalation-park-store.ts`,
+   `journeys/journey-lock.ts`, `tools/atomic-rate-limit.ts`, `whatsapp/session.ts`,
+   `whatsapp/client.ts`). Reds were confined to the corrupted site's own rows.
+
+### Remainder map for M2 / M3
+
+**M2 (class (i), the 7 eval-emulating doubles) is unblocked, and the shape
+suites now hold the invariant each double was faking:**
+
+| Census item | Double emulates | Inherits from |
+|---|---|---|
+| 1 `defer-resolver.test.ts` | CAD ×2 | CAD suite |
+| 2 `defer-timeout-sweeper.test.ts` | CAD | CAD suite |
+| 3 `escalation-park-store.test.ts` | CONSUME | CONSUME suite |
+| 4 `checkout-confirmation-store.test.ts` | CONSUME | CONSUME suite |
+| 5 `order-cancel-confirm.test.ts` | CONSUME | CONSUME suite |
+| 6 `cart-routes.test.ts` | CONSUME | CONSUME suite |
+| 7 `journeys/journey-lock.test.ts` | CAD **and** CAE | CAD + CAE suites |
+
+Per Q2 each then needs only unit-level observation that the site issues the
+right script with the right arguments — the spy-delegate idiom, not a second
+container. Item 7 is the one to do first: it is the repo's only
+script-DISPATCHING double, and it is the only class-(i) file whose SUT reaches
+two shapes, so it is where a script-blind swap would do the most damage.
+
+**Two findings M2/M3 should not rediscover:**
+
+- **`sweeper-resolver-race.test.ts` is enrolled as real-Redis but its CAD never
+  runs.** Its `vi.mock("@ibatexas/tools")` (:107) returns a client with no
+  `eval`, and `releaseDeferResumingLock` swallows the resulting TypeError
+  (`lib/defer-resuming-lock.ts:128`, "best-effort cleanup"). Its 3 cases prove
+  SETNX exclusivity, not the `defer:resuming:*` compare-and-delete. That site's
+  only positive-arm coverage is `defer-resume-integrity.test.ts:327`; its
+  ownership arm now lives in the CAD shape suite. This is class (i-b) wearing a
+  container — worth a row in M3's disposition.
+- **A stale comment in `force-routes-governance.test.ts`** (:1643-1650) still
+  claims "the mocked redis.eval … emulates the Lua script". It does not — that
+  suite forwards `eval` verbatim to a real container, and it is the only
+  real-Redis coverage any CONSUME site had before M1 (the admin store).
 
 ---
 
