@@ -877,6 +877,14 @@ describe("F-31 — the address-change family reaches the mutation path", () => {
 // REJECTED `marc`/`agend` rather than let them ride someone else's evidence. The full
 // per-root evidence is in `hasMutationImperative`'s docblock; what is pinned here is
 // the BEHAVIOUR each decision buys, and one live read per lookahead arm.
+//
+// THE COUNTING RULE behind every "attested INPUT utterance" figure in that docblock,
+// stated once so the numbers are checkable rather than impressive: a DISTINCT string,
+// from an input-utterance corpus (`extraction-corpus/`, `capability-definitions.ts`,
+// the read-harness fixtures, `alias-mining.test.ts`, `refusal-corpus.yaml`), that is a
+// RECORDED TURN. Tool DESCRIPTIONS ("Atualizar a quantidade de um item no carrinho."),
+// YAML `notes:` metadata and case ids, and journey NARRATIVE prose are EXCLUDED — they
+// live in those files, but nothing ever feeds them to a classifier.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("hasMutationImperative — F-31 the RECORD-EDIT roots", () => {
   /**

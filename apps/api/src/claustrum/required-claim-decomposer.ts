@@ -1061,9 +1061,13 @@ export function carriesSafetyMarker(text: string): boolean {
  * riding on someone else's evidence. Sweep = the frozen 183,325-row / 61,378-distinct
  * harvest of every string literal and YAML scalar in apps/ + packages/ (the #531/#537
  * method, widened from #537's pt-BR-filtered 6,889 to the unfiltered superset, which
- * is strictly harder).
+ * is strictly harder). Every "attested INPUT utterance" count below uses ONE
+ * COUNTING RULE, spelled out in the test file's RECORD-EDIT header: a DISTINCT
+ * recorded TURN from an input-utterance corpus. Tool descriptions, YAML `notes:`
+ * metadata and journey narrative are EXCLUDED — they live in those files, but nothing
+ * ever feeds them to a classifier.
  *
- *   · `atualiz(?!ad)` — IN. 12 attested INPUT utterances, EVERY ONE a mutation
+ *   · `atualiz(?!ad)` — IN. 10 attested INPUT utterances, EVERY ONE a mutation
  *     ("coca pra 5, atualiza o carrinho", "quero atualizar minhas preferências, sou
  *     vegano", "Solicito a atualização do pedido…"); ZERO attested input READ. The
  *     participle arm is the `(?!ad)` all three lifecycle roots carry, for the identical
@@ -1092,7 +1096,7 @@ export function carriesSafetyMarker(text: string): boolean {
  *     cadastro do pix?" is a SAVE request that keeps riding PAYMENT_STATUS_Q, because
  *     the `o` arm excludes it. Its verb is `passar`, not a `cadastr` command; widening
  *     a NOUN is not the narrow instrument for it, and the defect pre-dates F-31.
- *   · `alter(?!n|ad)` — IN, and the riskiest, so it carries two arms. 9 attested INPUT
+ *   · `alter(?!n|ad)` — IN, and the riskiest, so it carries two arms. 11 attested INPUT
  *     utterances, EVERY ONE a mutation ("Gostaria de alterar minha reserva para 3
  *     pessoas", "por gentileza, altere a quantidade do pedido 12345"); `alteração` is
  *     KEPT for the `cancelamento` reason and is itself attested as a request
