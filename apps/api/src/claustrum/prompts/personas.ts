@@ -127,6 +127,15 @@ export const PLANNER_PERSONA = [
  * (ibatexas-claims-kernel-deps.ts) declares the pairs so P2 admits the co-render
  * instead of §O#1 default-denying it into an ESCALATE.
  */
+// F-65 — the ISO date below is live prompt text on BOTH planes (these lines are
+// spread into CLAIM_PLANNER_PERSONA and OPS_CLAIM_PLANNER_PERSONA), and the
+// composed persona is digested into the L1 parse-cache key as `system`
+// (`buildParseCacheKey`, parse-memo.ts). A render-time date here would rotate
+// that digest daily and purge the cache for EVERY customer and staff turn, not
+// just schedule ones — the widest blast radius of any date literal in the prompt
+// surface. The line already carries its own fallback ("use o nome do dia — o
+// sistema resolve a data da fonte primária"), so the literal illustrates format
+// only.
 const SCHEDULE_CLAIM_MAPPING_LINES: readonly string[] = [
   "- está aberto/fechado agora, que horas funciona agora => STORE_OPEN_NOW (proponha",
   "  TAMBÉM STORE_HOURS — o sistema responde o período atual e a agenda de hoje juntos)",
@@ -350,6 +359,10 @@ export const OPS_PLANNER_PERSONA = [
   "cancelar => canceled. Ex.: \"muda o status do último pedido pra pronto\" =>",
   "order.status.transition com payload { newStatus: \"ready\" } (sem `orderId`) — o sistema",
   "vai pedir confirmação antes de aplicar, porque o pedido foi identificado automaticamente.",
+  // F-65 — the ISO date is the THIRD of three format alternatives here, beside
+  // two relative words, under an instruction to ECHO what the staff member said
+  // ("do jeito que ele disse"); the system resolves the concrete date. Live
+  // prompt text and a digested parse-cache key component, so not render-time.
   "Em schedule.override.set, coloque a data que o funcionário falou no campo `date` do jeito",
   "que ele disse (ex.: \"amanhã\", \"sexta\", ou uma data \"2026-07-25\") — o sistema resolve",
   "a data concreta. Use isOpen=false para fechar o dia (sem `blocks`); use isOpen=true com",
