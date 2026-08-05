@@ -68,6 +68,9 @@ import {
   type TurnDisposition,
 } from "../conversation/no-delivery.js";
 import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
+// F-9 — the ONE owner of "may this customer claim this session?". The durable
+// backstop behind `session:owner` lives there; this route owns only the IO.
+import { decideSessionClaim } from "../session/session-claim.js";
 
 const PostMessageBody = z.object({
   sessionId: z.uuid(),
@@ -174,6 +177,21 @@ function sendForbidden(reply: FastifyReply, message: string): void {
  * Session-ownership verification (zero-trust). Returns true if the request was
  * rejected (a 403 has been sent) and the caller must stop. On success the owner
  * key is (re)asserted with a 24h TTL.
+ *
+ * F-9 — the ownership DECISION now lives in `session/session-claim.ts`, which
+ * adds a durable backstop behind this key so an expired owner key can no longer
+ * hand a claimed session to a different customer. Read that module for why the
+ * cart's own wall had to be built here instead of at the cart. What stays in
+ * this function is the IO and the HTTP: the key read, the token check (a
+ * separate concern — token VALIDITY, not ownership), the 403, and the sliding
+ * re-assert below.
+ *
+ * THE `redis.set` AT THE END IS LOAD-BEARING FOR THE BACKSTOP, not just
+ * bookkeeping. It runs on EVERY successful authenticated POST with a fresh
+ * `EX 86400`, so the owner key SLIDES. That is what makes "owner key absent"
+ * mean "genuinely idle for 24h" rather than merely "claimed a day ago", and it
+ * is why the archiver's async lag can never reach the backstop — inside the lag
+ * window this key was just written, so the fast path answers the request.
  */
 async function rejectOnOwnershipFailure(
   redis: Awaited<ReturnType<typeof getRedisClient>>,
@@ -181,6 +199,7 @@ async function rejectOnOwnershipFailure(
   customerId: string,
   tokenHeader: string | undefined,
   reply: FastifyReply,
+  log: FastifyInstance["log"],
 ): Promise<boolean> {
   const ownerKey = rk(`session:owner:${sessionId}`);
   const existingOwner = await redis.get(ownerKey);
@@ -193,7 +212,33 @@ async function rejectOnOwnershipFailure(
     }
   }
 
-  if (existingOwner && existingOwner !== customerId) {
+  const decision = await decideSessionClaim(
+    { sessionId, customerId, existingOwner: existingOwner ?? null },
+    {
+      onDurableReadError: (err) =>
+        log.warn(
+          { component: "session-claim", event: "session.claim.durable_read_failed", sessionId, err },
+          "[chat] durable session-owner read failed — claim ALLOWED (fail-open: an unreadable record must not lock a customer out of their own session)",
+        ),
+    },
+  );
+
+  if (decision.outcome === "refuse") {
+    // FORENSICS — only the NEW branch logs. The fast-path refusal is unchanged
+    // and stays silent, exactly as before, so this line means one specific
+    // thing: a claimed session was protected AFTER its owner key had lapsed.
+    if (decision.basis === "durable-record") {
+      log.warn(
+        {
+          component: "session-claim",
+          event: "session.claim.refused_by_durable_record",
+          sessionId,
+          attemptedByCustomerId: customerId,
+          incumbentCustomerId: decision.incumbentCustomerId,
+        },
+        "[chat] cross-session claim REFUSED by the durable conversation record — the session:owner key had expired but the conversation durably belongs to another customer (F-9)",
+      );
+    }
     sendForbidden(reply, "Sessão pertence a outro usuário.");
     return true;
   }
@@ -922,6 +967,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           request.customerId,
           tokenHeader,
           reply,
+          server.log,
         );
         if (rejected) return reply;
       }
