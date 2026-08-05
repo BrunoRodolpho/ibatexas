@@ -48,6 +48,12 @@ importers:
 
   .:
     devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:packages/eslint-config
       '@ibatexas/journeys':
         specifier: workspace:*
         version: link:packages/journeys
@@ -63,6 +69,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@22.19.15)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       prettier:
         specifier: ^3.0.0
         version: 3.8.1
@@ -558,6 +567,9 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -567,6 +579,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@22.19.15)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -592,9 +607,18 @@ importers:
         specifier: workspace:*
         version: link:../pii
     devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -854,9 +878,15 @@ importers:
         specifier: workspace:*
         version: link:../pack-whatsapp
     devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -940,6 +970,15 @@ importers:
         specifier: ^2.29.3
         version: 2.29.3
     devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       testcontainers:
         specifier: ^12.0.0
         version: 12.0.0
@@ -971,12 +1010,18 @@ importers:
       '@adjudicate/conformance':
         specifier: ^3.0.0
         version: 3.0.0(@adjudicate/core@1.9.0)
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -1002,12 +1047,18 @@ importers:
       '@adjudicate/conformance':
         specifier: ^3.0.0
         version: 3.0.0(@adjudicate/core@1.9.0)
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -1042,12 +1093,18 @@ importers:
       '@adjudicate/conformance':
         specifier: ^3.0.0
         version: 3.0.0(@adjudicate/core@1.9.0)
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -1079,12 +1136,18 @@ importers:
       '@adjudicate/conformance':
         specifier: ^3.0.0
         version: 3.0.0(@adjudicate/core@1.9.0)
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -1110,12 +1173,18 @@ importers:
       '@adjudicate/conformance':
         specifier: ^3.0.0
         version: 3.0.0(@adjudicate/core@1.9.0)
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -1184,6 +1253,9 @@ importers:
       '@adjudicate/pack-payments-pix':
         specifier: ^0.3.0
         version: 0.3.0
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
       '@ibatexas/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
@@ -1196,6 +1268,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1208,9 +1283,18 @@ importers:
 
   packages/pii:
     devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -1288,9 +1372,18 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
     devDependencies:
+      '@eslint/eslintrc':
+        specifier: ^3.0.0
+        version: 3.3.5
+      '@ibatexas/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      eslint:
+        specifier: ^9.0.0
+        version: 9.39.4(jiti@2.6.1)
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -15053,7 +15146,7 @@ snapshots:
 
   '@prisma/streams-local@0.1.2':
     dependencies:
-      ajv: 8.18.0
+      ajv: 8.20.0
       better-result: 2.7.0
       env-paths: 3.0.0
       proper-lockfile: 4.1.2
@@ -20026,7 +20119,7 @@ snapshots:
       '@humanfs/node': 0.16.7
       '@humanwhocodes/module-importer': 1.0.1
       '@humanwhocodes/retry': 0.4.3
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
       ajv: 6.14.0
       chalk: 4.1.2
       cross-spawn: 7.0.6

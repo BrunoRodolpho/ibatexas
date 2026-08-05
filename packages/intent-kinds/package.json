@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "tsc --outDir dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && eslint \"src/**/*.ts\""
   },
   "dependencies": {
     "@adjudicate/pack-payments-pix": "^0.3.0",
@@ -26,7 +26,9 @@
     "@ibatexas/pack-whatsapp": "workspace:*"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.0.0",
     "@ibatexas/eslint-config": "workspace:*",
+    "eslint": "^9.0.0",
     "typescript": "^5.9.0"
   }
 }
