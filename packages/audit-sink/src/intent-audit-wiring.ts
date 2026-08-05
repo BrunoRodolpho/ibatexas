@@ -75,6 +75,11 @@
 //      and hands the result out via `getAuditSink()`. The allowlist lives in
 //      this package's `eslint.config.mjs` and is hand-written; adding a file to
 //      it IS the act of authorising a new unredacted-emit path.
+//      Scope of the rule, measured: it catches named AND namespace
+//      (`import * as audit`) imports, but NOT `await import("...")` — ESLint
+//      has no importNames-aware check for an ImportExpression. That vector is
+//      closed by a source scan in the same guard script rather than by a second
+//      lint rule, which would carry the same inheritance hazard again.
 //
 //   2. The grep-test in `audit-redaction-contract.test.ts` — THIS PACKAGE ONLY.
 //      Its walker roots at `packages/audit-sink/src`, so it says nothing about

@@ -44,7 +44,7 @@
  * 2 cached, the suite never ran. This script is invoked directly by CI, so it
  * always executes against the working tree.
  */
-import { readdirSync, existsSync } from "node:fs"
+import { readdirSync, existsSync, readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execFileSync } from "node:child_process"
@@ -160,6 +160,53 @@ function missingPrimitivesFor(dir) {
   return REQUIRED_PRIMITIVES.filter((p) => !covered.has(p))
 }
 
+/**
+ * The one file permitted to reach the raw primitives, relative to the repo
+ * root. Mirrors AUDIT_COMPOSER_ALLOWLIST in
+ * packages/audit-sink/eslint.config.mjs and is hand-written for the same
+ * reason: it must not be derived from whichever files happen to import them.
+ */
+const COMPOSER_ALLOWLIST = ["packages/audit-sink/src/index.ts"]
+
+/**
+ * `no-restricted-imports` governs static `import` declarations — including
+ * namespace imports, measured — but NOT `await import("...")`. ESLint has no
+ * importNames-aware equivalent for an ImportExpression, and closing it with a
+ * `no-restricted-syntax` selector would add a second rule carrying the same
+ * replace-not-merge inheritance hazard across six configs. A source scan from
+ * the root has repo-wide reach with no inheritance surface at all, so the
+ * dynamic vector is closed here instead.
+ */
+function findDynamicImports() {
+  const offenders = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === "dist") continue
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(full)
+        continue
+      }
+      if (!/\.(ts|tsx|mts|cts|js|mjs|cjs)$/.test(entry.name)) continue
+      if (entry.name.endsWith(".d.ts")) continue
+      const rel = full.slice(REPO_ROOT.length + 1)
+      if (COMPOSER_ALLOWLIST.includes(rel)) continue
+      const src = readFileSync(full, "utf8")
+      if (
+        /\bimport\s*\(\s*["'`]@adjudicate\/audit["'`]\s*\)/.test(src) ||
+        /\brequire\s*\(\s*["'`]@adjudicate\/audit["'`]\s*\)/.test(src)
+      ) {
+        offenders.push(rel)
+      }
+    }
+  }
+  for (const group of WORKSPACE_GROUPS) {
+    const groupDir = join(REPO_ROOT, group)
+    if (existsSync(groupDir)) walk(groupDir)
+  }
+  return offenders
+}
+
 async function main() {
   const workspaces = discoverWorkspaces()
   const known = new Set(workspaces.map((w) => w.name))
@@ -197,6 +244,12 @@ async function main() {
         `${ws.name}: effective config does not restrict ${missing.join(", ")} from "${BANNED_MODULE}"`,
       )
     }
+  }
+
+  for (const file of findDynamicImports()) {
+    failures.push(
+      `${file}: dynamically imports "${BANNED_MODULE}", which the lint ban cannot see — route the emit through getAuditSink()`,
+    )
   }
 
   if (failures.length > 0) {
