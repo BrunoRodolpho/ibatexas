@@ -817,6 +817,79 @@ async function applyAmendChanges(
 
 const OrderIdParams = z.object({ id: z.string().min(1) });
 
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+// ── R5 rollout, family 4 — this route's Redis client seam ──────────────────
+//
+// The five `getRedisClient()` calls this module used to make directly now
+// resolve through `OrderActionRouteDeps.redis`. Per-consumer types below are
+// the R5-S1 NARROWING rule applied one site at a time.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the R5-S12 / #539 / #543 rule) ───────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream}. MEASURED for
+// this module: the downstream half is EMPTY. All five sites bind the client to
+// a handler-local `const redis` and issue every command on it directly; no site
+// passes `redis` to anything. (Verified by reading every `redis` occurrence in
+// the file, not by reading the five call sites.)
+//
+// ── The one resolution deliberately NOT collapsed, and why it decides the ───
+// ── whole file's CLASSIFICATION ────────────────────────────────────────────
+//
+// `createOrderCancelConfirmationStore()` — built once in the plugin body and
+// used by the PAID-cancel park/confirm round trip — resolves its OWN client per
+// command and is deliberately left doing so. Its `consume` is the single-use
+// CONSUME **Lua** (`order-cancel-confirmation-store.ts`, one of the census's
+// four CONSUME sites). Threading it off `deps.redis` — the shape `routes/cart.ts`
+// chose for its sibling checkout store, which is why `CartRouteRedisClient`
+// carries `eval` — would pull `eval` into the union below and move this entire
+// route into the owner-gated Lua bucket, un-servable by the in-memory adapter
+// (W4 RULE 3). Nothing here needs the store's client, so the Pick boundary is
+// what keeps this file migratable. A future slice that threads that store must
+// re-classify this file, not merely widen the type.
+//
+// ── Feature detection: MEASURED, none ──────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/middleware` and `packages/tools/src`: zero live Redis probes.
+//
+// ── Swallowing consumers: NONE ─────────────────────────────────────────────
+//
+// Unlike `me.ts`, every site here awaits its commands with no `catch`, so a
+// missing member surfaces as a 500 rather than degrading silently. The
+// direction that matters instead is FAIL-OPEN: these counters are the only
+// thing bounding cancel / amend / retry / PIX-regeneration attempts, so a
+// client whose `incr` does not actually count turns every cap into no cap. The
+// seam suite pins the counters against the INJECTED keyspace for that reason.
+
+/**
+ * The four attempt-capping rate limiters (cancel, amend ×2, PIX regeneration):
+ * `INCR` the counter, and `EXPIRE` it to open the window on first use.
+ */
+type OrderActionRateLimitRedis = Pick<RedisClient, "incr" | "expire">;
+
+/**
+ * The payment-retry DAILY cap. Distinct from the four above because it READS
+ * the count first — the value is projected into the kernel's
+ * `ctx.dailyRetryCount` for `retryDailyCapGuard` — and only bumps AFTER a retry
+ * actually executes. Same handler-scoped client for all three commands.
+ */
+type PaymentRetryCapRedis = Pick<RedisClient, "get" | "incr" | "expire">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route issues — the type
+ * `OrderActionRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived as an intersection of the
+ * per-consumer types above: a derived union can never disagree with its
+ * consumers, so it could not catch a consumer that grew a command nobody
+ * declared (F-14).
+ */
+export type OrderActionRouteRedisClient = Pick<
+  RedisClient,
+  "get" | "incr" | "expire"
+>;
+
 // ── R5-S5 — this route's composition root ──────────────────────────────────
 //
 // Four of the five members replace plugin-body constructions and keep that
@@ -846,6 +919,17 @@ export interface OrderActionRouteDeps {
    * action paths or drop it from the note path — both behavior changes.
    */
   readonly noteOrderCommandService: () => OrderCommandService;
+  /**
+   * Resolves the Redis client the five rate-limit / retry-cap sites issue
+   * against.
+   *
+   * A FACTORY returning a promise, not an instance, so every site keeps its
+   * `await` exactly where it was — per REQUEST, inside the handler that needs
+   * it. An instance would hoist the resolution to registration and change when
+   * a Redis outage first surfaces (today: on the first capped action, as a
+   * 500 — never at boot).
+   */
+  readonly redis: () => Promise<OrderActionRouteRedisClient>;
 }
 
 /**
@@ -872,6 +956,7 @@ function defaultOrderActionRouteDeps(
     paymentQueryService: () => createPaymentQueryService(),
     noteOrderCommandService: () =>
       createOrderCommandService(server.log, { auditSink: getAuditSink() }),
+    redis: () => getRedisClient(),
   };
 }
 
@@ -1058,7 +1143,7 @@ export async function orderActionRoutes(
       const customerId = request.customerId!;
 
       // Rate limit: 5 cancel attempts per 10 minutes
-      const redis = await getRedisClient();
+      const redis: OrderActionRateLimitRedis = await deps.redis();
       const cancelRlKey = rk(`rate:cancel:${customerId}`);
       const cancelCount = await redis.incr(cancelRlKey);
       if (cancelCount === 1) await redis.expire(cancelRlKey, 600);
@@ -1446,7 +1531,7 @@ export async function orderActionRoutes(
       const customerId = request.customerId!;
 
       // Rate limit: 5 batch amend attempts per 10 minutes
-      const redis = await getRedisClient();
+      const redis: OrderActionRateLimitRedis = await deps.redis();
       const amendRlKey = rk(`rate:amend:${customerId}`);
       const amendCount = await redis.incr(amendRlKey);
       if (amendCount === 1) await redis.expire(amendRlKey, 600);
@@ -1541,7 +1626,7 @@ export async function orderActionRoutes(
       const customerId = request.customerId!;
 
       // Rate limit: 5 amend attempts per 10 minutes
-      const redis = await getRedisClient();
+      const redis: OrderActionRateLimitRedis = await deps.redis();
       const amendRlKey = rk(`rate:amend:${customerId}`);
       const amendCount = await redis.incr(amendRlKey);
       if (amendCount === 1) await redis.expire(amendRlKey, 600);
@@ -1870,7 +1955,7 @@ export async function orderActionRoutes(
       // (`payment-retry:{customerId}:{YYYY-MM-DD}`); the counter is bumped only
       // after a retry actually executes. The per-order lifetime cap (`RETRY_LIMIT`,
       // 10 attempts) stays the fast-fail above.
-      const redis = await getRedisClient();
+      const redis: PaymentRetryCapRedis = await deps.redis();
       const retryDay = new Date().toISOString().slice(0, 10);
       const retryCountKey = rk(`payment-retry:${customerId}:${retryDay}`);
       const dailyRetryCount = Number((await redis.get(retryCountKey)) ?? 0) || 0;
@@ -1967,7 +2052,7 @@ export async function orderActionRoutes(
       }
 
       // Rate limit: 3 regenerations per hour per customer
-      const redis = await getRedisClient();
+      const redis: OrderActionRateLimitRedis = await deps.redis();
       const rateLimitKey = rk(`pix:regen:rate:${customerId}`);
       const count = await redis.incr(rateLimitKey);
       if (count === 1) await redis.expire(rateLimitKey, 3600);

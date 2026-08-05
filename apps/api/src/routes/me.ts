@@ -215,6 +215,95 @@ function epochHour(): number {
 // inline calls they replace: the audited writes in this file go through
 // `runCustomerIntent` / the customer-intent gateway, not through these.
 
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+// ── R5 rollout, family 4 — this route's Redis client seam ──────────────────
+//
+// The three `getRedisClient()` calls this module used to make directly now
+// resolve through `MeRouteDeps.redis`. Per-consumer types below are the R5-S1
+// NARROWING rule applied one site at a time: each declares the commands ITS
+// site issues, so a client that cannot serve that site is a `tsc` error rather
+// than a runtime `TypeError`.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the R5-S12 / #539 / #543 rule) ───────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream} — read what
+// the module hands its client TO, not just what it calls. MEASURED for this
+// module: the downstream half is EMPTY, and that is a measurement, not an
+// assumption. All three sites bind the client to a handler-local `const redis`
+// and issue every command on it directly; no site passes `redis` to anything.
+//
+// Two callees LOOK like client hand-offs and are NOT — checked by reading the
+// callee, per #543's negative-measurement rule:
+//
+//   • `withLock(resource, fn, ttlSeconds)` (used at the LGPD export + anonymize
+//     paths) takes NO client and invokes `fn()` with **no arguments**. It
+//     resolves its own client per command through `packages/tools`'
+//     `singletonLockClient`. Its release IS a CAD `eval` — but that `eval` is
+//     issued against a client this seam never supplies, so it is NOT downstream
+//     of this Pick and does not make this module Lua-gated.
+//   • `getParkRedisCapabilities()` (the DEFER park path) is a SEPARATE
+//     composition root — F-22's — and resolves its own validated client. Its
+//     `redis` local is a `ParkRedisCapabilities`, not this seam's client.
+//     Collapsing the two would drag `eval`/`evalIncrCheck` into the union below
+//     and make this whole route un-servable by the in-memory adapter, for zero
+//     gain: nothing here needs the park's client.
+//
+// ── Feature detection: MEASURED, none ──────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/middleware` and `packages/tools/src`. Zero live Redis probes;
+// the only hits in those trees are COMMENTS describing the F-22 rule. So the
+// class that made `evalIncrCheck` degrade silently does not occur here.
+//
+// ── Swallowing consumers: TWO, and they are why the seam is born guarded ────
+//
+// Two of the three sites are wrapped in a `catch` that turns a client which
+// cannot serve them into a no-op rather than an error, so a dropped command
+// degrades SILENTLY:
+//
+//   • the profile-cache refresh — `catch { request.log.warn }`, then the
+//     handler returns 200 anyway. A missing `hSet`/`expire` leaves the agent
+//     plane serving STALE preferences with the web save reported successful.
+//   • the `defer:pending` clear — `catch {}` ("best-effort — sweeper will clean
+//     it up"). A missing `del` leaves the parked-deletion marker standing.
+//
+// The seam suite therefore asserts each command landed on the INJECTED
+// keyspace, which a silent degradation cannot fake.
+
+/**
+ * The profile-cache refresh after a preferences save — the `customer:profile:*`
+ * hash write plus its TTL refresh. Wrapped in a swallowing `catch`.
+ */
+type ProfileCacheRefreshRedis = Pick<RedisClient, "hSet" | "expire">;
+
+/**
+ * The profile-update rate-limit marker: the `get` that projects the last-update
+ * epoch into the kernel's `ctx`, and the `set` the executor writes after the
+ * update lands. Both on the same handler-scoped client, as before.
+ */
+type ProfileUpdateRateRedis = Pick<RedisClient, "get" | "set">;
+
+/** The `defer:pending:<customerId>` clear on a cancelled deletion. */
+type PendingDeletionClearRedis = Pick<RedisClient, "del">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route issues — the type
+ * `MeRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived as an intersection of the
+ * per-consumer types above: a derived union can never disagree with its
+ * consumers, so it could not catch a consumer that grew a command nobody
+ * declared (F-14). Widen this only by adding a command this route genuinely
+ * issues — and note that adding `eval` would move this file into the
+ * owner-gated Lua bucket, so a future hand-off to `withLock` or the park
+ * capabilities is a CLASSIFICATION change, not a widening.
+ */
+export type MeRouteRedisClient = Pick<
+  RedisClient,
+  "get" | "set" | "del" | "hSet" | "expire"
+>;
+
 /** The domain services `me.ts` resolves through the seam. */
 export interface MeRouteDeps {
   /**
@@ -226,6 +315,16 @@ export interface MeRouteDeps {
   readonly orderQueryService: () => OrderQueryService;
   /** Builds the LoyaltyService behind the balance read. */
   readonly loyaltyService: () => LoyaltyService;
+  /**
+   * Resolves the Redis client the three sites above issue against.
+   *
+   * A FACTORY returning a promise, not an instance, so every site keeps its
+   * `await` exactly where it was — including the two inside swallowing
+   * `try/catch`es, whose resolution therefore stays INSIDE the catch as it was
+   * before. An instance would hoist the resolution to registration and change
+   * when (and whether) a Redis outage surfaces.
+   */
+  readonly redis: () => Promise<MeRouteRedisClient>;
 }
 
 /**
@@ -244,6 +343,7 @@ function defaultMeRouteDeps(): MeRouteDeps {
     customerService: () => createCustomerService(),
     orderQueryService: () => createOrderQueryService(),
     loyaltyService: () => createLoyaltyService(),
+    redis: () => getRedisClient(),
   };
 }
 
@@ -425,7 +525,7 @@ export async function meRoutes(
         // refresh failure must not fail the request (TTL bounds staleness).
         if (persistedPrefs !== null) {
           try {
-            const redis = await getRedisClient();
+            const redis: ProfileCacheRefreshRedis = await deps.redis();
             const profileKey = rk(`customer:profile:${customerId}`);
             await redis.hSet(profileKey, "preferences", JSON.stringify(persistedPrefs));
             await redis.expire(profileKey, PROFILE_TTL_SECONDS);
@@ -571,7 +671,7 @@ export async function meRoutes(
       );
 
       // Keep the rate-limit guard live: project the last-update epoch from Redis.
-      const redis = await getRedisClient();
+      const redis: ProfileUpdateRateRedis = await deps.redis();
       const lastRaw = await redis.get(profileLastUpdateKey(customerId));
       const lastProfileUpdateAt = lastRaw ? Number(lastRaw) : null;
 
@@ -1561,7 +1661,7 @@ export async function meRoutes(
         // intent (cancel) is honored at the route layer.
         await clearPendingDeletion(customerId);
         try {
-          const redis = await getRedisClient();
+          const redis: PendingDeletionClearRedis = await deps.redis();
           await redis.del(rk(`defer:pending:${customerId}`));
         } catch {
           // Best-effort — sweeper will clean it up eventually.

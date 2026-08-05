@@ -21,6 +21,7 @@ import {
 } from "fastify-type-provider-zod";
 import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 
@@ -42,25 +43,43 @@ const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockAdjudicate = vi.hoisted(() => vi.fn());
 
-const mockRedisIncr = vi.hoisted(() => vi.fn(async () => 1));
-const mockRedisExpire = vi.hoisted(() => vi.fn(async () => 1));
-
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => ({
-    incr: mockRedisIncr,
-    expire: mockRedisExpire,
-    del: vi.fn(),
-    get: vi.fn(async () => null),
-    set: vi.fn(async () => "OK"),
-  })),
-  rk: (k: string) => `ibatexas:${k}`,
-  withLock: vi.fn(async (_r: string, fn: () => Promise<unknown>) => fn()),
-  amendOrder: mockAmendOrder,
-  changeDeliveryAddress: vi.fn(),
-  switchOrderType: vi.fn(),
-  medusaAdmin: mockMedusaAdmin,
-  medusaAdjudicated: vi.fn(),
-}));
+// ── R5 rollout, family 4 — this file's Redis double is RETIRED ──────────────
+//
+// It used to be five bare `vi.fn()`s behind `getRedisClient`, with `incr`
+// answering a constant `1` and recording nothing. Two fictions rode on that:
+//
+//   1. `incr → 1` meant the rate-limit counter never counted. The 429 case had
+//      to PLANT its own answer (`mockRedisIncr.mockResolvedValueOnce(6)`), so
+//      nothing in this file could tell a working cap from a cap whose counter
+//      is write-only — the exact fail-OPEN direction the counter exists to
+//      prevent. It now seeds five real increments and lets the sixth trip.
+//   2. `rk` was faked to `ibatexas:` — a prefix production has never written.
+//      Under apps/api's vitest the real `rk` resolves to `development:`.
+//
+// The route now takes its client through `OrderActionRouteDeps.redis`, so the
+// canonical in-memory adapter is injected and `getRedisClient` is a rejecting
+// TRIPWIRE: if the threading is ever removed, these cases fall back to it and
+// fail loudly rather than silently passing on a double.
+//
+// The real module is spread so `rk` is the real one (Hard Rule #7); only the
+// members this file genuinely needs to fake are replaced.
+vi.mock("@ibatexas/tools", async (orig) => {
+  const real = await orig<typeof import("@ibatexas/tools")>();
+  return {
+    ...real,
+    getRedisClient: vi.fn(async () => {
+      throw new Error(
+        "order-actions notes/amend/payment: getRedisClient is a TRIPWIRE — the route must take its client through deps.redis",
+      );
+    }),
+    withLock: vi.fn(async (_r: string, fn: () => Promise<unknown>) => fn()),
+    amendOrder: mockAmendOrder,
+    changeDeliveryAddress: vi.fn(),
+    switchOrderType: vi.fn(),
+    medusaAdmin: mockMedusaAdmin,
+    medusaAdjudicated: vi.fn(),
+  };
+});
 
 vi.mock("@ibatexas/domain", () => ({
   createOrderCommandService: () => ({
@@ -140,16 +159,29 @@ vi.mock("../../middleware/auth.js", () => ({
 
 // ── Server factory ─────────────────────────────────────────────────────────
 
+/**
+ * The keyspace the route's rate-limit counters land on. Re-created per case in
+ * `beforeEach` so no counter leaks across cases — which the retired constant
+ * double could not express, because it had no keyspace to leak.
+ */
+let redis: InMemoryRedis;
+
 async function buildTestServer() {
   const { orderActionRoutes } = await import("../order-actions.js");
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   await app.register(sensible);
-  await app.register(orderActionRoutes);
+  await app.register(orderActionRoutes, {
+    deps: { redis: async () => redis.client as unknown as never },
+  });
   await app.ready();
   return app;
 }
+
+beforeEach(() => {
+  redis = createInMemoryRedis();
+});
 
 function makeOrder(
   overrides?: Partial<{
@@ -604,7 +636,14 @@ describe("POST /api/orders/:id/amend/batch", () => {
   });
 
   it("returns 429 RATE_LIMIT on the 6th attempt within the window", async () => {
-    mockRedisIncr.mockResolvedValueOnce(6);
+    // Five REAL increments on the injected keyspace, so the sixth — the one
+    // this case drives — is the one that trips. The retired double planted the
+    // answer `6` instead, which passes identically against a counter that never
+    // counts.
+    const { rk } = await import("@ibatexas/tools");
+    for (let i = 0; i < 5; i += 1) {
+      await redis.client.incr(rk("rate:amend:cust_01"));
+    }
     const app = await buildTestServer();
     try {
       const res = await app.inject({
