@@ -32,7 +32,7 @@
 // 401s, the forged-cookie belt, the timing-safe key compare) is the real code.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyBaseLogger, type FastifyInstance } from "fastify";
 import sensible from "@fastify/sensible";
 import {
   serializerCompiler,
@@ -368,7 +368,134 @@ describe("GET /api/admin/dashboard", () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 2. Auth posture — the REAL parent adminRoutes guard (DOM-001 / S1).
+// 2. F-34 — each fail-soft arm must name the source that actually failed.
+//
+// The reservation catch shipped with the Medusa catch's message copy-pasted
+// verbatim, so a reservation outage was reported in the logs as a Medusa
+// outage — misdirecting an on-call reader at exactly the moment they are
+// reading logs under pressure. Every behavioural test above stayed green
+// throughout: the arms are observationally identical in the RESPONSE (each
+// zeroes its own figure), and the only place the mistake was visible is the
+// log line.
+//
+// Pinned by ATTRIBUTION, not by prose: the assertion is that the three arms
+// emit three DISTINCT messages and that only the Medusa arm names Medusa.
+// Rewording any message keeps this green; copy-pasting one arm's message into
+// another — the defect class, which has now happened once here — reds it.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** A pino-shaped sink that keeps the `warn` messages, and nothing else. */
+function capturingLogger() {
+  const warns: string[] = [];
+  const noop = (): void => {};
+  const logger = {
+    level: "warn",
+    silent: noop,
+    fatal: noop,
+    error: noop,
+    info: noop,
+    debug: noop,
+    trace: noop,
+    warn: (objOrMsg: unknown, msg?: string): void => {
+      warns.push(typeof objOrMsg === "string" ? objOrMsg : (msg ?? ""));
+    },
+    child(): unknown {
+      return logger;
+    },
+  };
+  return { logger, warns };
+}
+
+describe("GET /api/admin/dashboard — fail-soft diagnostics (F-34)", () => {
+  let server: FastifyInstance;
+  let warns: string[];
+
+  beforeAll(async () => {
+    const captured = capturingLogger();
+    warns = captured.warns;
+    const { dashboardRoutes } = await import("../dashboard.js");
+    server = Fastify({
+      loggerInstance: captured.logger as unknown as FastifyBaseLogger,
+    });
+    server.setValidatorCompiler(validatorCompiler);
+    server.setSerializerCompiler(serializerCompiler);
+    await server.register(dashboardRoutes);
+    await server.ready();
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    primeHappyPath();
+    warns.length = 0;
+  });
+
+  /** Fails exactly one source and returns the single warning it logged. */
+  async function warnFor(failing: "medusa" | "reservations" | "escalations"): Promise<string> {
+    if (failing === "medusa") mockMedusaAdmin.mockRejectedValue(new Error("medusa 502"));
+    if (failing === "reservations") mockCountActive.mockRejectedValue(new Error("pool exhausted"));
+    if (failing === "escalations") mockListOpen.mockRejectedValue(new Error("redis down"));
+
+    const res = await server.inject({ method: "GET", url: "/api/admin/dashboard" });
+    expect(res.statusCode).toBe(200);
+    // Exactly one arm failed, so exactly one arm may have spoken — otherwise the
+    // message returned below is not attributable to the source we broke.
+    expect(warns).toHaveLength(1);
+    return warns[0] as string;
+  }
+
+  it("CONTROL: a fully healthy request logs no warning at all", async () => {
+    const res = await server.inject({ method: "GET", url: "/api/admin/dashboard" });
+
+    expect(res.statusCode).toBe(200);
+    // Without this, every treatment below is satisfied by a route that warns
+    // unconditionally, and "the arm that spoke" would mean nothing.
+    expect(warns).toEqual([]);
+  });
+
+  it("each fail-soft arm names its OWN source: three failures, three DISTINCT messages", async () => {
+    const medusa = await warnFor("medusa");
+    warns.length = 0;
+    vi.clearAllMocks();
+    primeHappyPath();
+    const reservations = await warnFor("reservations");
+    warns.length = 0;
+    vi.clearAllMocks();
+    primeHappyPath();
+    const escalations = await warnFor("escalations");
+
+    // The defect was two arms sharing one message verbatim. Distinctness is the
+    // property that fails on a copy-paste and survives a rewording.
+    expect(new Set([medusa, reservations, escalations]).size).toBe(3);
+  });
+
+  it("a reservation outage is NOT reported as a Medusa outage — only the Medusa arm names Medusa", async () => {
+    const medusa = await warnFor("medusa");
+    warns.length = 0;
+    vi.clearAllMocks();
+    primeHappyPath();
+    const reservations = await warnFor("reservations");
+    warns.length = 0;
+    vi.clearAllMocks();
+    primeHappyPath();
+    const escalations = await warnFor("escalations");
+
+    // Positive attribution: each message points at the source that broke…
+    expect(medusa).toMatch(/medusa/i);
+    expect(reservations).toMatch(/reservation/i);
+    expect(escalations).toMatch(/escalation/i);
+    // …and the negative arm, which is the actual F-34 defect: the two non-Medusa
+    // sources must never send an on-call reader to Medusa.
+    expect(reservations).not.toMatch(/medusa/i);
+    expect(escalations).not.toMatch(/medusa/i);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 3. Auth posture — the REAL parent adminRoutes guard (DOM-001 / S1).
 // ═════════════════════════════════════════════════════════════════════════════
 const ADMIN_KEY = "f33-dashboard-admin-key-0123456789";
 
