@@ -64,6 +64,7 @@ function buildDeps(): {
   customerFactory: ReturnType<typeof vi.fn>;
   loyaltyFactory: ReturnType<typeof vi.fn>;
   orderFactory: ReturnType<typeof vi.fn>;
+  redisFactory: ReturnType<typeof vi.fn>;
   listAddresses: ReturnType<typeof vi.fn>;
   getBalance: ReturnType<typeof vi.fn>;
   getById: ReturnType<typeof vi.fn>;
@@ -77,11 +78,17 @@ function buildDeps(): {
   const customerFactory = vi.fn(() => ({ listAddresses }) as unknown as CustomerService);
   const loyaltyFactory = vi.fn(() => ({ getBalance }) as unknown as LoyaltyService);
   const orderFactory = vi.fn(() => ({ getById }) as unknown as OrderQueryService);
+  // R5 family 4: a TRIPWIRE, not a double. None of the three routes this file
+  // drives touches Redis, so a resolution here is itself the defect.
+  const redisFactory = vi.fn(() =>
+    Promise.reject(new Error("me deps seam: redis must not resolve here")),
+  );
 
   return {
     customerFactory,
     loyaltyFactory,
     orderFactory,
+    redisFactory,
     listAddresses,
     getBalance,
     getById,
@@ -89,6 +96,7 @@ function buildDeps(): {
       customerService: customerFactory as unknown as () => CustomerService,
       loyaltyService: loyaltyFactory as unknown as () => LoyaltyService,
       orderQueryService: orderFactory as unknown as () => OrderQueryService,
+      redis: redisFactory as unknown as Deps["redis"],
     },
   };
 }

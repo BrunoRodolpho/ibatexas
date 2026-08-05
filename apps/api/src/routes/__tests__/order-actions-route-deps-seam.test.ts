@@ -58,12 +58,20 @@ function buildDeps(): {
   // handler 404s on the injected answer — no happy path to stage.
   const getById = vi.fn().mockResolvedValue({ customerId: "cust_someone_else" });
 
+  // R5 family 4: `redis` is a TRIPWIRE here, not a double. None of the routes
+  // this file drives (the notes read and the registration-time construction
+  // count) touches Redis, so resolving the client at all is itself a defect —
+  // in particular it would mean the resolver had been hoisted out of the
+  // per-request handlers into the plugin body.
   const factories = {
     orderCommandService: vi.fn(() => ({}) as unknown as OrderCommandService),
     orderQueryService: vi.fn(() => ({ getById }) as unknown as OrderQueryService),
     paymentCommandService: vi.fn(() => ({}) as unknown as PaymentCommandService),
     paymentQueryService: vi.fn(() => ({}) as unknown as PaymentQueryService),
     noteOrderCommandService: vi.fn(() => ({}) as unknown as OrderCommandService),
+    redis: vi.fn(() =>
+      Promise.reject(new Error("order-actions deps seam: redis must not resolve here")),
+    ),
   };
 
   return {
@@ -91,6 +99,8 @@ describe("order-actions.ts — R5-S5 registration-level deps seam", () => {
       expect(factories.orderQueryService).toHaveBeenCalledTimes(1);
       expect(factories.paymentCommandService).toHaveBeenCalledTimes(1);
       expect(factories.paymentQueryService).toHaveBeenCalledTimes(1);
+      // The Redis resolver is per-REQUEST, so registration must not call it.
+      expect(factories.redis).not.toHaveBeenCalled();
     } finally {
       await server.close();
     }
