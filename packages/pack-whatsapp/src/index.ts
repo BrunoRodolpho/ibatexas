@@ -2,16 +2,23 @@
  * @ibatexas/pack-whatsapp — first-party Pack for the WhatsApp egress domain.
  *
  * Third first-party Pack after `@ibatexas/pack-orders` and
- * `@ibatexas/pack-reservations`. Adds policy coverage for the
- * channel-level intents that today exit the system as silent egress:
+ * `@ibatexas/pack-reservations`. What this Pack enforces TODAY:
  *
- *   - 24-hour customer-initiated window enforcement
- *     (Meta/Twilio Business API rule; today's free-form
- *     `notification.send` subscriber silently fails outside the window).
- *   - Per-customer staff-handover rate limit
- *     (investigation 08 P1 #4: handoff flood vector).
- *   - Customer-controlled-string sanitization for staff-bound messages
- *     (defence-in-depth against template-injection in staff WhatsApp).
+ *   - Per-customer staff-handover rate limit on
+ *     `whatsapp.session.handover` (investigation 08 P1 #4: handoff flood
+ *     vector).
+ *   - Customer-controlled-string sanitization (F-43): a REWRITE guard
+ *     that cleanses `whatsapp.handoff.request`'s customer-supplied
+ *     `reason` before it is interpolated into a staff-bound WhatsApp
+ *     alert. This is the ENFORCING layer for template-injection on that
+ *     path, not defence-in-depth — nothing downstream sanitizes it.
+ *   - System-only taint gating on the handover / archival-append kinds.
+ *
+ * NOT enforced here (BKL-177): the 24-hour customer-initiated window.
+ * It was removed with the `whatsapp.message.send` / `whatsapp.template.send`
+ * kinds it served; live egress runs through `twilio.message.send`, which
+ * this Pack does not adjudicate. The `WHATSAPP_24H_WINDOW_*` constants
+ * below are still exported but have NO guard reading them.
  *
  * Follows the `pack-reservations` template per CLAUDE.md rule #9 / ADR #13.
  *

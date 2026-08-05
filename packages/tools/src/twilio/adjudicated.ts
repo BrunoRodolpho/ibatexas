@@ -44,12 +44,12 @@
 //
 // Per the W7-P5 precedent for `stripe.*`, the wrapper's intent kind
 // `twilio.message.send` is a wrapper-local egress kind, NOT a Pack
-// intent. The pack-whatsapp's `whatsapp.message.send` is the *channel-
-// level* business intent (24h-window, rate-limit, sanitization); this
-// wrapper's `twilio.message.send` is the *transport-level* HTTP-egress
-// audit. The two are complementary: a future enhancement may
-// supersession-link them when the Pack adjudicates upstream of the
-// wrapper.
+// intent — it is the *transport-level* HTTP-egress audit.
+//
+// (BKL-177: the channel-level counterpart `whatsapp.message.send` was
+// RETIRED as a dead duplicate, so there is no longer a Pack intent
+// paired 1:1 with this one. The surviving pack-whatsapp kinds are
+// business intents that may CAUSE a send, not the send itself.)
 //
 // ── CLAUDE.md rules ────────────────────────────────────────────────────
 //
@@ -109,10 +109,16 @@ export const TWILIO_INTENT_KINDS: ReadonlyArray<TwilioIntentKind> = [
 
 /**
  * Wrapper-local state. Empty by design — same rationale as
- * `MedusaWrapperState` / `StripeWrapperState`: the substantive business
- * policy already runs upstream (`@ibatexas/pack-whatsapp` adjudicates
- * the 24h customer-initiated window, handover rate-limit, sanitization).
- * This is a second envelope per call (HTTP-egress audit).
+ * `MedusaWrapperState` / `StripeWrapperState`: this is a second envelope
+ * per call (HTTP-egress audit), not the business-policy seam.
+ *
+ * CAVEAT (do not read this as "content is already vetted"): the upstream
+ * Packs adjudicate the INTENT that leads to a send, not this transport
+ * envelope's `body`. `@ibatexas/pack-whatsapp` today enforces the
+ * handover rate-limit and sanitizes `whatsapp.handoff.request.reason`
+ * (F-43); the 24h-window guard was retired with BKL-177. Any NEW
+ * proactive producer that composes a body from customer-controlled text
+ * must sanitize at ITS OWN intent seam — no guard here will do it.
  */
 export interface TwilioWrapperState {
   readonly egress: "twilio"
@@ -164,9 +170,12 @@ export interface TwilioMessageSendPayload {
  *     (Twilio rejects empty messages anyway; surfacing the refuse here
  *     keeps the audit trail explicit).
  *
- * Heavy validation (E.164 format, body length caps, pt-BR copy checks)
- * already runs upstream in pack-whatsapp — this guard is the egress
- * chokepoint's last-line sanity check.
+ * This guard is the egress chokepoint's last-line SANITY check only —
+ * emptiness, nothing more. It deliberately does NOT validate E.164
+ * format, cap body length, or inspect content: the `body` is a branded
+ * `RenderedReply`, and content authority belongs to whoever minted it.
+ * Do not add content rules here expecting them to protect a producer
+ * that skipped its own intent-seam guard.
  */
 const refuseInvalidMessagePayload: TwilioGuard = (envelope) => {
   if (envelope.kind !== "twilio.message.send") return null

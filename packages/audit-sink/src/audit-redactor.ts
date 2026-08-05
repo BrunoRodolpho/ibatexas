@@ -735,8 +735,10 @@ export function createAuditRedactor(
       //
       // Threat: when the kernel decides REWRITE, the decision carries a
       // post-rewrite envelope at `decision.rewritten`. Adopters wire
-      // sanitizers like pack-whatsapp's `sanitizeCustomerString` into
-      // the REWRITE path — but those sanitizers do NOT do PII
+      // sanitizers into the REWRITE path — e.g. pack-whatsapp's
+      // `sanitizeHandoffReason` guard, which pipes
+      // `whatsapp.handoff.request.reason` through `sanitizeCustomerString`
+      // — but those sanitizers do NOT do PII
       // detection (see pack-whatsapp/src/sanitize.ts header). The
       // post-rewrite payload therefore still carries CPF/email/phone
       // typed by the customer, and the pre-2026-05-24 redactor's
@@ -882,11 +884,13 @@ export function createAuditRedactor(
 // without modification.
 //
 // Why redact REWRITE's rewritten payload at all? Adopters (pack-whatsapp's
-// REWRITE guard via `sanitizeCustomerString`) sanitize template-injection
-// shapes but DO NOT do PII detection — see the file-level comment in
-// pack-whatsapp/src/sanitize.ts. A customer who types
-// `meu cpf é 123.456.789-00` produces a rewritten payload whose `body` still
-// carries the CPF. Pre-fix, that field reached NATS unredacted.
+// `sanitizeHandoffReason` guard, via `sanitizeCustomerString`) sanitize
+// template-injection shapes but DO NOT do PII detection — see the
+// file-level comment in pack-whatsapp/src/sanitize.ts. A customer who types
+// `meu cpf é 123.456.789-00` produces a rewritten payload whose `reason`
+// still carries the CPF. Pre-fix, that field reached NATS unredacted.
+// (The `whatsapp.handoff.request: ["reason"]` kind rule above is what
+// scrubs it; this walk is what makes that rule reach the REWRITTEN copy.)
 //
 // Returns a fresh Decision object. Non-REWRITE decisions are returned
 // unchanged — they carry no envelope payload at the decision level.

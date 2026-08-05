@@ -92,15 +92,22 @@ export function refuseDefault(reason?: string): Refusal {
 // ── Auth refusals (AUTH) ────────────────────────────────────────────────
 
 /**
- * P1-G — Customer-controlled message addressed to staff WITHOUT a
- * `recipientType` projection in state. The downstream REWRITE
- * (`sanitizeCustomerToStaff`) only fires when `recipientType==="staff"`.
- * If the upstream command service forgets to project that field, the
- * REWRITE silently skips and an unsanitized customer string slips
- * through to a staff phone. Audit 04 §"Finding #3" + Audit 05 §P1-G.
+ * P1-G — RETIRED, kept only as an exported helper for adopters.
  *
- * The auth-phase guard returns this refusal so the pipeline fails-closed
- * rather than fails-open on missing state.
+ * STATUS: NO guard in this Pack emits this refusal. It was the auth-phase
+ * fail-closed for `whatsapp.message.send` when the upstream forgot to
+ * project `state.ctx.recipientType`, because the REWRITE that sanitized
+ * the customer string keyed on `recipientType === "staff"` and would
+ * silently skip without it. BKL-177 retired that kind, its auth guard
+ * (`refuseUnprojectedStaffRouting`) and its REWRITE together.
+ *
+ * The live customer→staff sanitization (F-43, `sanitizeHandoffReason` in
+ * `policies.ts`) has NO such failure mode by construction: it keys on the
+ * envelope KIND and the payload's own `reason` field, never on a
+ * projected state field, so there is nothing an adopter can forget to
+ * project. That is why no replacement fail-closed guard exists.
+ *
+ * Historical context: Audit 04 §"Finding #3" + Audit 05 §P1-G.
  */
 export function refuseUnclassifiedStaffRoute(): Refusal {
   return refuse(

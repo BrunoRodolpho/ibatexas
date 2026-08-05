@@ -3,7 +3,8 @@
  *
  * Composed from `@adjudicate/primitives` factories
  * (`createSystemTaintPolicy`, `createThresholdGuard`) and an inline
- * REWRITE guard that pipes the body through `sanitizeCustomerString`.
+ * REWRITE guard that pipes `whatsapp.handoff.request`'s customer-supplied
+ * `reason` through `sanitizeCustomerString`.
  * The REWRITE is inline rather than via `createRewriteGuard` because
  * that factory is tailored to numeric-cap rewrites (e.g., the PIX
  * refund clamp); the customer-string sanitizer is a categorical
@@ -13,21 +14,39 @@
  * #4 and `governance/04-decision-policy.md` §"Default refuse policy".
  *
  * Guard ordering inside each phase matters. The kernel evaluation order
- * is `state → taint → auth → business` (ADR-104). The state phase here
- * carries the 24h-window guard so an out-of-window outbound is REFUSEd
- * before taint / auth bother. The business phase carries the
- * rate-limit threshold and the customer→staff REWRITE — REWRITE must
- * run before the EXECUTE producer so the executed envelope is the
- * sanitized one.
+ * is `state → taint → auth → business` (ADR-104), and within a phase the
+ * FIRST guard returning a non-null Decision wins and short-circuits
+ * (`@adjudicate/core/kernel/adjudicate.js` — the business loop returns on
+ * the first non-null). The state phase is empty here (BKL-177 retired the
+ * 24h-window guard along with the kinds it served). In the business phase
+ * the ONE load-bearing ordering constraint is that
+ * `sanitizeHandoffReason` (REWRITE) must precede `executeHandoffRequest`
+ * (EXECUTE) — they match the SAME kind, so if the producer ran first it
+ * would win and the unsanitized envelope would be the executed one.
+ *
+ * The rate-limit threshold guards impose NO ordering constraint on the
+ * REWRITE: they match `whatsapp.session.handover` only, a disjoint kind,
+ * so they can never race it. (They do constrain each other — REFUSE
+ * before CONFIRM; see the bundle's own note below.)
  *
  * # Migrated behaviour
  *
- * Today, `notification.send` (subscribers/cart-intelligence.ts:665)
- * accepts free-form `body` with no taint check — investigation 04 P0 #6.
- * Handoff (subscribers/handoff-subscriber.ts:14) template-injects
- * customer-supplied `reason` with no rate limit — investigation 08 P1 #4.
- * This Pack defines the policy envelope around those mutations; the
- * actual subscriber refactor lands in task 16.
+ * `notification.send` (subscribers/cart-intelligence.ts) accepts free-form
+ * `body` with no taint check — investigation 04 P0 #6; that path is not yet
+ * a Pack intent.
+ *
+ * Handoff: `apps/api/src/subscribers/handoff-subscriber.ts` interpolates
+ * the customer-supplied `reason` into a staff-bound WhatsApp message
+ * (`Motivo: ${reason}`, then `sender.sendText(staffPhone, ...)`) —
+ * investigation 08 P1 #4. Nothing downstream sanitizes it: the egress
+ * `RenderedReply` brand (`mintBroadcastReply`) is a provenance marker, not
+ * a content filter, and the `twilio.message.send` wrapper guard only checks
+ * non-emptiness. `sanitizeHandoffReason` below is therefore the enforcing
+ * layer, not defence-in-depth — the kernel REWRITE is what makes the
+ * executed envelope (and so the NATS payload the subscriber reads) safe.
+ * The @claustrum dispatcher honours this: on REWRITE it executes with
+ * `decision.rewritten.payload` (`@claustrum/core` execution/dispatch.ts
+ * `case "REWRITE"`), so the sanitized `reason` is what reaches the executor.
  */
 
 import {
@@ -50,11 +69,13 @@ import {
   refuseDefault,
   refuseHandoffRateLimited,
 } from "./refusals.js"
+import { sanitizeCustomerString } from "./sanitize.js"
 import {
   WHATSAPP_HANDOFF_CONFIRM_COUNT,
   WHATSAPP_HANDOFF_LIMIT_MINUTES,
   WHATSAPP_HANDOFF_REFUSE_COUNT,
   whatsappTaintPolicy,
+  type WhatsAppHandoffRequestPayload,
   type WhatsAppIntentKind,
   type WhatsAppPayload,
   type WhatsAppSessionHandoverPayload,
@@ -154,6 +175,100 @@ const confirmRepeatedHandoff = nameGuard(
   }),
 ) as WhatsAppGuard
 
+/**
+ * Customer-controlled-string REWRITE — the enforcing half of
+ * investigation 08 P1 #4 ("user-controlled `reason` is template-injected
+ * into a staff-bound WhatsApp message").
+ *
+ * `whatsapp.handoff.request` is this Pack's ONE untrusted, customer-
+ * proposable kind: the LLM extracts a free-text `reason` from the
+ * customer's own words (see the `reason` field in
+ * `apps/api/src/claustrum/language-engine/customer-whatsapp-convenience.schema.ts`,
+ * `trustClass: "directive"`). That string is published verbatim on
+ * `support.handoff_requested` and interpolated into the staff alert by
+ * `apps/api/src/subscribers/handoff-subscriber.ts` — BETWEEN two
+ * system-authored lines and directly above the OWNER-approval / deep-link
+ * lines. Unsanitized newlines + WhatsApp markdown therefore let a customer
+ * forge system-looking lines in a message staff are trained to act on.
+ *
+ * This guard closes that at the kernel seam:
+ *
+ *   1. Sanitize `payload.reason` via `sanitizeCustomerString` (strips
+ *      newlines / markdown control chars / zero-width chars, collapses
+ *      whitespace, truncates to `WHATSAPP_SANITIZE_MAX_LENGTH`).
+ *   2. If unchanged, return `null` — a clean reason is NOT rewritten, so
+ *      the ordinary EXECUTE path is byte-for-byte unaffected.
+ *   3. Otherwise emit `decisionRewrite` carrying the sanitized envelope.
+ *
+ * The envelope is rebuilt with `buildEnvelope` (not spread) because the
+ * kernel's `gateRewrite` re-derives the rewritten envelope's `intentHash`
+ * and fail-closes on a mismatch; `buildEnvelope` is what computes it.
+ * `actor` / `taint` / `nonce` / `createdAt` are carried over unchanged —
+ * a rewrite may narrow content but never elevate trust (the kernel also
+ * enforces taint monotonicity here).
+ *
+ * Inline rather than via `createRewriteGuard` because that factory is
+ * tailored to numeric-cap rewrites (e.g., the PIX refund clamp); a
+ * categorical string transform doesn't fit its `value > cap` shape.
+ *
+ * ORDERING: must precede `executeHandoffRequest` — same kind, and the
+ * business phase is first-non-null-wins. `__tests__/whatsapp-pack.test.ts`
+ * pins that relative order.
+ *
+ * # Known, ACCEPTED side effect — compound turns (owner-ruled, F-43)
+ *
+ * Multi-envelope plans are kill-all-or-execute-all: `adjudicatePlan`
+ * (`apps/api/src/claustrum-bootstrap.ts`) returns on the FIRST envelope
+ * whose decision is not EXECUTE. So on a compound turn — a customer who
+ * asks for a human AND requests another mutation in one message — a
+ * REWRITE here ends the loop and the sibling envelopes are not executed.
+ *
+ * This guard does NOT introduce that behaviour; it joins it. Any REFUSE,
+ * REQUEST_CONFIRMATION or DEFER in the same position does the same, and
+ * `pack-orders`' `clampUpdateToStockCap` is an existing production REWRITE
+ * under identical plan semantics. The direction is fail-safe: a dropped
+ * sibling is a turn that does LESS, never a turn that does something
+ * wrong, and the customer can restate the dropped request.
+ *
+ * Bounded: `whatsapp.handoff.request` is not a workflow activity (every
+ * workflow in `packages/catalog/src/workflows/definitions.ts` is `order.*`),
+ * so the workflow-runtime REWRITE gap — where a REWRITE halts the run
+ * instead of executing either payload — does not apply here.
+ *
+ * Per CLAUDE.md rule #4 the REWRITE's user-facing reason string is pt-BR.
+ */
+const sanitizeHandoffReason: WhatsAppGuard = (envelope) => {
+  if (envelope.kind !== "whatsapp.handoff.request") return null
+  const payload = envelope.payload as WhatsAppHandoffRequestPayload
+  if (typeof payload.reason !== "string") return null
+  const sanitized = sanitizeCustomerString(payload.reason)
+  if (sanitized === payload.reason) return null
+  const newPayload: WhatsAppHandoffRequestPayload = {
+    ...payload,
+    reason: sanitized,
+  }
+  const rewritten = buildEnvelope({
+    kind: envelope.kind,
+    payload: newPayload as unknown as WhatsAppPayload,
+    actor: envelope.actor,
+    taint: envelope.taint,
+    nonce: envelope.nonce,
+    createdAt: envelope.createdAt,
+  })
+  return decisionRewrite(
+    rewritten,
+    "Mensagem ajustada para envio à equipe.",
+    [
+      basis("validation", BASIS_CODES.validation.UNICODE_NORMALIZED, {
+        reason: "customer_to_staff_sanitized",
+        field: "reason",
+        originalLength: payload.reason.length,
+        sanitizedLength: sanitized.length,
+      }),
+    ],
+  )
+}
+
 // ── EXECUTE producers (default is REFUSE; positive matches required) ────
 
 /**
@@ -224,11 +339,15 @@ const executeConversationAppend: WhatsAppGuard = (envelope) => {
  * Phase order is fixed by the kernel: `state → taint → auth →
  * business → default`.
  *
- * Guard ordering within business phase matters:
+ * Guard ordering within business phase matters (first non-null wins):
  *   1. `refuseExcessiveHandoff` — REFUSE >= 3rd handover (must run
  *      BEFORE the confirm guard so REFUSE wins over CONFIRM).
  *   2. `confirmRepeatedHandoff` — REQUEST_CONFIRMATION 2nd handover.
- *   3. `executeSessionHandover` / `executeHandoffRequest` /
+ *   3. `sanitizeHandoffReason` — REWRITE the customer-supplied `reason`
+ *      BEFORE `executeHandoffRequest` so the EXECUTED envelope is the
+ *      sanitized one. Same kind as that producer, so this order is
+ *      load-bearing, not cosmetic.
+ *   4. `executeSessionHandover` / `executeHandoffRequest` /
  *      `executeConversationAppend` — happy-path producers.
  */
 export const whatsappPolicyBundle: PolicyBundle<
@@ -242,6 +361,9 @@ export const whatsappPolicyBundle: PolicyBundle<
   business: [
     refuseExcessiveHandoff,
     confirmRepeatedHandoff,
+    // MUST stay ahead of `executeHandoffRequest` — same kind, first-non-null
+    // wins, so a producer placed first would execute the unsanitized envelope.
+    sanitizeHandoffReason,
     executeSessionHandover,
     executeConversationAppend,
     executeHandoffRequest,
