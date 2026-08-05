@@ -803,3 +803,228 @@ describe("in-memory-redis — lRange", () => {
     await expect(redis.client.lRange("str", 0, -1)).rejects.toThrow(WrongTypeError)
   })
 })
+
+// ── (8) LTRIM — the DLQ cap (R5 dedup-family rollout) ────────────────────────
+//
+// Consumer: `apps/api/src/subscribers/dlq.ts`. Its cap is a two-command pair —
+// `lPush` answers the new length, and only if that length exceeds MAX_DLQ does
+// `lTrim(key, 0, MAX_DLQ - 1)` run. The property worth modelling is therefore
+// not "LTRIM was issued" but WHICH ENTRIES SURVIVE: LPUSH writes the newest at
+// the head, so keeping `(0, cap-1)` keeps the NEWEST and discards the oldest
+// from the tail. A double that dropped the other end would leave ops looking at
+// week-old failures with every call assertion still green.
+
+describe("in-memory-redis — lTrim", () => {
+  it("keeps the HEAD range and discards the tail — the DLQ cap's direction", async () => {
+    const redis = createInMemoryRedis()
+    // Written the way pushToDlq writes: LPUSH one at a time, newest first.
+    for (const v of ["old", "mid", "new"]) await redis.client.lPush("dlq", v)
+    expect(await redis.client.lRange("dlq", 0, -1)).toEqual(["new", "mid", "old"])
+
+    await redis.client.lTrim("dlq", 0, 1)
+
+    // The NEWEST two survive. A tail-keeping implementation answers
+    // ["mid","old"] here — the exact inversion the cap's comment warns about.
+    expect(await redis.client.lRange("dlq", 0, -1)).toEqual(["new", "mid"])
+    expect(await redis.client.lLen("dlq")).toBe(2)
+  })
+
+  it("is a no-op OK for an absent key, and for a range that already covers the list", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.lTrim("nope", 0, 9)).toBe("OK")
+    expect(redis.keys()).toEqual([])
+
+    await redis.client.rPush("l", ["a", "b"])
+    expect(await redis.client.lTrim("l", 0, 99)).toBe("OK")
+    expect(await redis.client.lRange("l", 0, -1)).toEqual(["a", "b"])
+  })
+
+  it("DELETES the key when the trim leaves nothing, as real Redis does", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("l", ["a", "b"])
+    await redis.client.expire("l", 60)
+
+    await redis.client.lTrim("l", 5, 9)
+
+    // Leaving an empty list behind would keep EXISTS at 1 and a TTL alive on a
+    // key production has already removed.
+    expect(redis.keys()).toEqual([])
+    expect(await redis.client.exists("l")).toBe(0)
+  })
+
+  it("negatives count back from the tail, and an inverted range empties the list", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.rPush("l", ["a", "b", "c", "d"])
+    await redis.client.lTrim("l", -2, -1)
+    expect(await redis.client.lRange("l", 0, -1)).toEqual(["c", "d"])
+
+    await redis.client.lTrim("l", 2, 1)
+    expect(redis.keys()).toEqual([])
+  })
+
+  it("keeps the list's TTL — LTRIM is not a rewrite", async () => {
+    const redis = createInMemoryRedis({ now: () => 1_700_000_000_000 })
+    await redis.client.rPush("l", ["a", "b", "c"])
+    await redis.client.expire("l", 604_800)
+
+    await redis.client.lTrim("l", 0, 1)
+
+    // dlq.ts EXPIREs after the trim, but a trim that silently reset the TTL
+    // would make that ordering unobservable.
+    expect(redis.ttlMs("l")).toBe(604_800_000)
+  })
+
+  it("validates arguments on an EMPTY store", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    await expect(loose(redis.client).lTrim(5, 0, 1)).rejects.toThrow(/key must be a string/)
+    await expect(loose(redis.client).lTrim("l", "0", 1)).rejects.toThrow(/start must be an integer/)
+    await expect(loose(redis.client).lTrim("l", 0, 1.5)).rejects.toThrow(/stop must be an integer/)
+  })
+
+  it("refuses a WRONGTYPE key instead of silently succeeding", async () => {
+    const redis = createInMemoryRedis({ seed: { str: "plain" } })
+    await expect(redis.client.lTrim("str", 0, 1)).rejects.toThrow(WrongTypeError)
+  })
+})
+
+// ── (9) ZRANGEBYSCORE / ZREM — the follow-up drain (R5 dedup-family rollout) ──
+//
+// Consumers: `apps/api/src/jobs/follow-up-poller.ts` reads the due window and
+// removes what it published; `packages/tools/src/intelligence/schedule-follow-up.ts`
+// writes the same zset with `zAdd`. Both ends of that queue are now modelled, so
+// the poller's due-vs-future boundary is a real SCORE comparison — the retired
+// double answered a per-case `mockResolvedValue`, which is why its "not due"
+// case proved nothing about scores.
+
+describe("in-memory-redis — zRangeByScore", () => {
+  it("is an empty array for an absent zset", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.zRangeByScore("nope", 0, 100)).toEqual([])
+  })
+
+  it("BOTH bounds are inclusive — the boundary the poller's `score <= now` rides on", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.zAdd("z", [
+      { score: 10, value: "a" },
+      { score: 20, value: "b" },
+      { score: 30, value: "c" },
+    ])
+    // An exclusive upper bound would leave the entry that is due EXACTLY now in
+    // the set for another 15 minutes, every tick.
+    expect(await redis.client.zRangeByScore("z", 0, 20)).toEqual(["a", "b"])
+    expect(await redis.client.zRangeByScore("z", 20, 30)).toEqual(["b", "c"])
+    expect(await redis.client.zRangeByScore("z", 20, 20)).toEqual(["b"])
+  })
+
+  it("excludes out-of-range members rather than returning the whole set", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.zAdd("z", [
+      { score: 100, value: "past" },
+      { score: 900, value: "future" },
+    ])
+    expect(await redis.client.zRangeByScore("z", 0, 500)).toEqual(["past"])
+    expect(await redis.client.zRangeByScore("z", 0, 50)).toEqual([])
+  })
+
+  it("orders by score ascending, and by member for equal scores", async () => {
+    const redis = createInMemoryRedis()
+    // Inserted out of order on purpose — insertion order must not leak through.
+    await redis.client.zAdd("z", [
+      { score: 30, value: "c" },
+      { score: 10, value: "b" },
+      { score: 10, value: "a" },
+    ])
+    expect(await redis.client.zRangeByScore("z", 0, 100)).toEqual(["a", "b", "c"])
+  })
+
+  it("REFUSES the -inf/+inf and exclusive spellings instead of coercing them", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.zAdd("z", { score: 5, value: "a" })
+    // `Number("-inf")` is NaN, so a coercing implementation would match nothing
+    // and look like an empty due window.
+    await expect(loose(redis.client).zRangeByScore("z", "-inf", 10)).rejects.toThrow(
+      UnroutedRedisCall,
+    )
+    await expect(loose(redis.client).zRangeByScore("z", 0, "+inf")).rejects.toThrow(
+      /max must be a finite number/,
+    )
+    await expect(loose(redis.client).zRangeByScore("z", "(5", 10)).rejects.toThrow(
+      /min must be a finite number/,
+    )
+  })
+
+  it("REFUSES the LIMIT option rather than answering an unbounded range", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.zAdd("z", [
+      { score: 1, value: "a" },
+      { score: 2, value: "b" },
+    ])
+    // `jobs/review-prompt-poller.ts` issues exactly this shape. Silently
+    // ignoring it would hand back the WHOLE due set while its own test asserted
+    // a capped batch.
+    await expect(
+      loose(redis.client).zRangeByScore("z", 0, 10, { LIMIT: { offset: 0, count: 1 } }),
+    ).rejects.toThrow(/LIMIT/)
+  })
+
+  it("validates arguments on an EMPTY store", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    await expect(loose(redis.client).zRangeByScore(5, 0, 1)).rejects.toThrow(/key must be a string/)
+  })
+
+  it("refuses a WRONGTYPE key instead of answering an empty due window", async () => {
+    const redis = createInMemoryRedis({ seed: { str: "plain" } })
+    await expect(redis.client.zRangeByScore("str", 0, 1)).rejects.toThrow(WrongTypeError)
+  })
+})
+
+describe("in-memory-redis — zRem", () => {
+  it("removes the named member only, and reports how many were actually there", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.zAdd("z", [
+      { score: 1, value: "a" },
+      { score: 2, value: "b" },
+    ])
+
+    expect(await redis.client.zRem("z", "a")).toBe(1)
+    // A constant-1 double cannot tell a real removal from a member the caller
+    // never held — which is what "processed twice" looks like from the drain.
+    expect(await redis.client.zRem("z", "a")).toBe(0)
+    expect(await redis.client.zRangeByScore("z", 0, 10)).toEqual(["b"])
+  })
+
+  it("is 0 for an absent zset, and accepts the array form", async () => {
+    const redis = createInMemoryRedis()
+    expect(await redis.client.zRem("nope", "a")).toBe(0)
+    await redis.client.zAdd("z", [
+      { score: 1, value: "a" },
+      { score: 2, value: "b" },
+      { score: 3, value: "c" },
+    ])
+    expect(await redis.client.zRem("z", ["a", "c", "missing"])).toBe(2)
+    expect(await redis.client.zRangeByScore("z", 0, 10)).toEqual(["b"])
+  })
+
+  it("DELETES the key once the last member is removed", async () => {
+    const redis = createInMemoryRedis()
+    await redis.client.zAdd("z", { score: 1, value: "only" })
+    await redis.client.zRem("z", "only")
+    expect(redis.keys()).toEqual([])
+    expect(await redis.client.exists("z")).toBe(0)
+  })
+
+  it("validates arguments on an EMPTY store", async () => {
+    const redis = createInMemoryRedis()
+    expect(redis.keys()).toEqual([])
+    await expect(loose(redis.client).zRem(5, "a")).rejects.toThrow(/key must be a string/)
+    await expect(loose(redis.client).zRem("z", [])).rejects.toThrow(/at least one member/)
+    await expect(loose(redis.client).zRem("z", { a: 1 })).rejects.toThrow(/value must be a string/)
+  })
+
+  it("refuses a WRONGTYPE key instead of reporting a phantom removal", async () => {
+    const redis = createInMemoryRedis({ seed: { str: "plain" } })
+    await expect(redis.client.zRem("str", "a")).rejects.toThrow(WrongTypeError)
+  })
+})

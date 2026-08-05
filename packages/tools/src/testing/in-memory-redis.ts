@@ -48,8 +48,24 @@
 //     `Pick<…, "lRange">`. That is the fail-closed Pick rule (R5-S12) in its
 //     downstream-consumer form — see the seam comment in the checker.
 //
-// Still deliberately NOT added: `lTrim` `rPop` `lRem` `blPop` `zRangeByScore`
-// `zRem` `hIncrBy` `hKeys` — each has a class-(d) caller enumerated in
+// The R5 dedup-family slice adds the three the class-(d) remainder map named,
+// each with the NAMED consumer that unblocked it:
+//
+//   • `lTrim`  — `apps/api/src/subscribers/dlq.ts`. Its cap is `lPush` → `if
+//     (newLen > MAX_DLQ) lTrim(key, 0, MAX_DLQ - 1)`, so what the command must
+//     model is not "was it called" but WHICH ENTRIES SURVIVE: LPUSH writes the
+//     newest at the head, and the trim keeps the head. A double that dropped the
+//     wrong end would keep the OLDEST failures and discard the ones ops is
+//     paged about, with the call assertion still green.
+//   • `zRangeByScore` + `zRem` — `apps/api/src/jobs/follow-up-poller.ts`, which
+//     drains the `follow-up:scheduled` zset that
+//     `packages/tools/src/intelligence/schedule-follow-up.ts` writes with
+//     `zAdd`. Both ends of that queue are now in this adapter, so the poller's
+//     due-vs-future boundary is a real SCORE comparison rather than a stubbed
+//     array — see the deliberate refusals on `zRangeByScore` below.
+//
+// Still deliberately NOT added: `rPop` `lRem` `blPop` `hIncrBy` `hKeys` — each
+// has a class-(d) caller enumerated in
 // `apps/api/src/__tests__/helpers/redis-double-census.md`, but none is in the
 // family this slice threads, and an unmodelled command is not guesswork this
 // adapter is allowed to invent.
@@ -773,6 +789,51 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       return arr.slice(from, to + 1)
     },
 
+    /**
+     * `lTrim(key, start, stop)` — keep ONLY the inclusive range, discard the
+     * rest. Same index rules as `lRange` (negatives count from the tail,
+     * out-of-range clamps), and the same reason for modelling them rather than
+     * reaching for a JS `slice`.
+     *
+     * The consumer is `apps/api/src/subscribers/dlq.ts`'s cap, and WHICH END
+     * survives is its entire contract: `pushToDlq` LPUSHes so index 0 is the
+     * NEWEST failure, then trims to `(0, MAX_DLQ - 1)`. Keeping the wrong end
+     * would silently retain the oldest entries and drop the ones ops is paged
+     * about — invisible to any assertion that only checks LTRIM was called.
+     *
+     * An empty result DELETES the key, as real Redis does: LTRIM that leaves a
+     * list empty removes it, and a double that left an empty list behind would
+     * keep `exists` at 1 and a TTL alive on a key production has removed.
+     * An absent key is a no-op `"OK"`, not an error.
+     */
+    async lTrim(key: unknown, start: unknown, stop: unknown): Promise<string> {
+      assertKey("lTrim", key)
+      for (const [name, v] of [
+        ["start", start],
+        ["stop", stop],
+      ] as const) {
+        if (typeof v !== "number" || !Number.isInteger(v)) {
+          throw new UnroutedRedisCall("lTrim", `${name} must be an integer, got ${describe(v)}`)
+        }
+      }
+      record("lTrim", [key, start, stop])
+      const entry = typed(key, "list")
+      if (entry === undefined) return "OK"
+      const arr = entry.value as string[]
+      const len = arr.length
+      const from = Math.max(0, (start as number) < 0 ? len + (start as number) : (start as number))
+      const to = Math.min(len - 1, (stop as number) < 0 ? len + (stop as number) : (stop as number))
+      const kept = from > to ? [] : arr.slice(from, to + 1)
+      if (kept.length === 0) {
+        store.delete(key)
+        return "OK"
+      }
+      // Mutate IN PLACE — `lPush`/`rPush` hold a live reference to this array.
+      arr.length = 0
+      arr.push(...kept)
+      return "OK"
+    },
+
     async hGet(key: unknown, field: unknown): Promise<string | undefined> {
       assertKey("hGet", key)
       assertKey("hGet", field)
@@ -989,6 +1050,99 @@ export function createInMemoryRedis(options?: InMemoryRedisOptions): InMemoryRed
       }
       if (entry === undefined) store.set(key, { kind: "zset", value: zset, expiresAtMs: null })
       return added
+    },
+
+    /**
+     * `zRangeByScore(key, min, max)` — the members whose score is in the
+     * INCLUSIVE range `[min, max]`, ordered by score ascending and, for equal
+     * scores, by member lexicographically (real Redis' tie-break).
+     *
+     * The consumer is `apps/api/src/jobs/follow-up-poller.ts`
+     * (`zRangeByScore(rk("follow-up:scheduled"), 0, Date.now())` — "fetch all
+     * entries whose fire time has passed"). Paired with `zAdd`, which
+     * `packages/tools/src/intelligence/schedule-follow-up.ts` uses to schedule
+     * them, that makes the due-vs-future boundary a REAL score comparison. The
+     * retired double answered a per-case `mockResolvedValue`, so the poller's
+     * "future entries are not published" case asserted nothing about scores at
+     * all — the test simply handed back an empty array and called it proof.
+     *
+     * THREE forms are deliberately REFUSED rather than approximated, because
+     * each one silently changes which members a caller sees:
+     *
+     *   • `"-inf"` / `"+inf"` / any string bound. Real Redis takes them; no
+     *     migrated consumer issues one, and coercing `"-inf"` through `Number`
+     *     would quietly become `NaN` and match nothing.
+     *   • The exclusive `"(5"` spelling, for the same reason and worse: it
+     *     LOOKS numeric after a strip, so a wrong answer would be plausible.
+     *   • `LIMIT`. Its only in-repo caller is `jobs/review-prompt-poller.ts`
+     *     (`{ LIMIT: { offset: 0, count: BATCH_CAP } }`), which is owner-gated
+     *     on `multi` and cannot migrate here. Ignoring a batch cap would hand
+     *     the caller the WHOLE due set while its own test asserted a bounded
+     *     one — the benign-answer failure this adapter exists to refuse.
+     */
+    async zRangeByScore(
+      key: unknown,
+      min: unknown,
+      max: unknown,
+      opts?: unknown,
+    ): Promise<string[]> {
+      assertKey("zRangeByScore", key)
+      for (const [name, v] of [
+        ["min", min],
+        ["max", max],
+      ] as const) {
+        if (typeof v !== "number" || !Number.isFinite(v)) {
+          throw new UnroutedRedisCall(
+            "zRangeByScore",
+            `${name} must be a finite number, got ${describe(v)} — the "-inf"/"+inf"` +
+              ` and exclusive "(score" spellings are NOT modelled (no consumer issues them)`,
+          )
+        }
+      }
+      if (opts !== undefined) {
+        throw new UnroutedRedisCall(
+          "zRangeByScore",
+          `options are not modelled (got ${describe(opts)}); LIMIT in particular` +
+            ` would silently return an UNBOUNDED range to a caller that asked for a` +
+            ` bounded one — its only in-repo caller, jobs/review-prompt-poller.ts,` +
+            ` is owner-gated on multi and does not run against this adapter`,
+        )
+      }
+      record("zRangeByScore", [key, min, max])
+      const entry = typed(key, "zset")
+      if (entry === undefined) return []
+      const zset = entry.value as Map<string, number>
+      return [...zset.entries()]
+        .filter(([, score]) => score >= (min as number) && score <= (max as number))
+        .sort(([aMember, aScore], [bMember, bScore]) =>
+          aScore === bScore ? (aMember < bMember ? -1 : aMember > bMember ? 1 : 0) : aScore - bScore,
+        )
+        .map(([member]) => member)
+    },
+
+    /**
+     * `zRem(key, member | member[])` — remove members, answering how many were
+     * actually there. `sRem`'s shape, and it empties the key the same way real
+     * Redis does: a zset with no members no longer exists.
+     *
+     * The count matters to the drain pattern in `jobs/follow-up-poller.ts`: it
+     * `zRem`s a member it has just published, and a double that answered a
+     * constant `1` could not tell a real removal from a member the poller never
+     * held — which is exactly what "processed twice" would look like.
+     */
+    async zRem(key: unknown, members: unknown): Promise<number> {
+      assertKey("zRem", key)
+      const list = Array.isArray(members) ? members : [members]
+      if (list.length === 0) throw new UnroutedRedisCall("zRem", "requires at least one member")
+      for (const m of list) assertValue("zRem", m)
+      record("zRem", [key, members])
+      const entry = typed(key, "zset")
+      if (entry === undefined) return 0
+      const zset = entry.value as Map<string, number>
+      let removed = 0
+      for (const m of list) if (zset.delete(String(m))) removed++
+      if (zset.size === 0) store.delete(key)
+      return removed
     },
 
     // ── Connection lifecycle — no-ops, so a consumer that closes is fine ──────
