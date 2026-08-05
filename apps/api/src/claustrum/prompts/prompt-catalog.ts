@@ -11,6 +11,7 @@
 import { IBATEXAS_CAPABILITY_DESCRIPTIONS } from "../../tools/register-ibatexas-tool-packs.js";
 import {
   CLAIM_PLANNER_PERSONA,
+  OPS_CLAIM_PLANNER_PERSONA,
   OPS_PLANNER_PERSONA,
   OPS_RESPONDER_GROUNDED_PERSONA_PTBR,
   OPS_RESPONDER_PERSONA_PTBR,
@@ -92,6 +93,19 @@ const PERSONAS: PromptCatalogEntry[] = [
     path: "apps/api/src/claustrum/prompts/personas.ts:113 (OPS_PLANNER_PERSONA)",
     wired: true, // ops-conductor.ts system injection wrap
     source: OPS_PLANNER_PERSONA,
+  },
+  {
+    // F-67: wired since LE2-012 (the ops plane got its own claim-framed
+    // persona) but never catalogued — so an operator could neither see nor
+    // edit the prompt that decides which claim TYPE every staff question maps
+    // to, while a prompt_override row for this id WOULD have taken effect.
+    id: "ops/claim-planner.persona",
+    name: "Ops claim planner persona (staff, Track A)",
+    stage: "ops",
+    kind: "persona",
+    path: "apps/api/src/claustrum/prompts/personas.ts:220 (OPS_CLAIM_PLANNER_PERSONA)",
+    wired: true, // ops-conductor.ts:230 claimPlannerSystem
+    source: OPS_CLAIM_PLANNER_PERSONA,
   },
   {
     id: "ops/responder.persona",
