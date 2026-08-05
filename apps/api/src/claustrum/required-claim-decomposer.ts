@@ -1684,13 +1684,16 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
  * score, and `.some()` over the array is character-for-character the `||` disjunction
  * the conjunct would otherwise spell.
  *
- * WHY SEVEN ARMS AND NOT FOUR — MEASURED ON CI, exactly as this file's three earlier
- * splits were. The first shipped form of this net expressed the same language in FOUR
+ * WHY EIGHT ARMS AND NOT FOUR — MEASURED ON CI ACROSS TWO ROUNDS, exactly as this
+ * file's three earlier splits were. The first shipped form of this net expressed the same language in FOUR
  * literals, folding the three novelty HEAD-NOUN shapes into one optional group and the
  * two elided-novelty CONTINUATION shapes into one allowlist lookahead. SonarCloud
  * scored that (PR #560, run 1): the pre-posed arm at **complexity 59** and the elided
  * arm at **55**, against the budget of 20, plus S8786 super-linear BACKTRACKING on the
- * pre-posed arm — `qr\s*-?\s*code` is ambiguous, a single space can be matched by
+ * pre-posed arm. Run 2 cleared both and left ONE residual — the elided arm's
+ * continuation allowlist still at **29** — which is why arm 4b sheds `por favor` into
+ * its own arm 4c and spells its alternation FLAT. Two rounds, because the budget is
+ * only ever knowable from CI — `qr\s*-?\s*code` is ambiguous, a single space can be matched by
  * either `\s*`, so the engine explores both. A local complexity model was NOT
  * consulted; CI is the authority (the F-27 lesson, where a local prediction was wrong
  * by 3).
@@ -1706,9 +1709,10 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
  * `qr\s*-?\s*code` became `qr[\s-]*code` in the same step (one char class, no
  * ambiguity, no backtracking); that is included in the zero-difference measurement.
  *
- * Every arm is INDIVIDUALLY FALSIFIABLE: the seven still PARTITION the rows they move
- * (5+3+1+7+4+4+2 = 26 attested-input rows = the union), so no arm is shadowed by an
- * earlier one and deleting any one arm reds exactly its own probe. The roll call in
+ * Every arm is INDIVIDUALLY FALSIFIABLE: they still PARTITION the rows they move
+ * (5+3+1+7+4+4+2+0 = 26 attested-input rows = the union), so no arm is shadowed by an
+ * earlier one and deleting any one arm reds exactly its own probe. ARM 4c is the one
+ * arm whose count is ZERO — byte-pin-only, labelled as such at the conjunct. The roll call in
  * `__tests__/required-claim-decomposer.test.ts` pins each by name.
  */
 const PIX_REGENERATION_REQUEST: readonly RegExp[] = [
@@ -1716,9 +1720,9 @@ const PIX_REGENERATION_REQUEST: readonly RegExp[] = [
   // ARM 1a — bare: "novo pix", "outro pix".
   /(?<![a-z])(?:nov[oa]|outr[oa])\s+pix/,
   // ARM 1b — with the `código` head: "novo código pix", "outro código do pix".
-  /(?<![a-z])(?:nov[oa]|outr[oa])\s+c[óo]digo\s+(?:de\s+|do\s+)?pix/,
+  /(?<![a-z])(?:nov[oa]|outr[oa])\s+c[óo]digo\s+(?:d[eo]\s+)?pix/,
   // ARM 1c — with the `QR code` head: "novo QR code do pix". Reached by NO other arm.
-  /(?<![a-z])(?:nov[oa]|outr[oa])\s+qr[\s-]*code\s+(?:do\s+|de\s+)?pix/,
+  /(?<![a-z])(?:nov[oa]|outr[oa])\s+qr[\s-]*code\s+(?:d[eo]\s+)?pix/,
   // ── NOVELTY, POST-POSED ──────────────────────────────────────────────────────
   // ARM 2 — "pix novo". pt-BR puts the adjective either side and the corpus uses both.
   /(?<![a-z])pix\s+nov[oa]/,
@@ -1730,11 +1734,17 @@ const PIX_REGENERATION_REQUEST: readonly RegExp[] = [
   // the whole safety property of the pair: it is what keeps "manda outro comprovante"
   // / "manda outro atendente" (payment READS with a non-pix object) out of the net.
   // ARM 4a — the pronoun ends its clause: "manda outro", "gera outro."
-  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:um\s+|uma\s+)?outr[oa]\s*(?:[?!.,;]|$)/,
+  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:uma?\s+)?outr[oa]\s*(?:[?!.,;]|$)/,
   // ARM 4b — followed only by an ATTESTED function word, never a noun: "gera outro
   // pra mim", "manda outro aí". The allowlist is the attested continuations ONLY;
-  // widening it to a general word is the V0 form the ladder refused.
-  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:um\s+|uma\s+)?outr[oa]\s+(?:p(?:ra|ara|ro)|a[íi]|agora|por\s+favor)(?![a-zà-ÿ])/,
+  // widening it to a general word is the V0 form the ladder refused. The alternation
+  // is FLAT (`pra|para|pro`, not `p(?:ra|ara|ro)`) — a nested alternative costs S5843
+  // by its depth, and this arm is the one CI scored at 29 in run 2.
+  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:uma?\s+)?outr[oa]\s+(?:pra|para|pro|agora|a[íi])(?![a-zà-ÿ])/,
+  // ARM 4c — the one MULTI-WORD continuation, split out of 4b for the same S5843
+  // reason. Needs no trailing guard: `favor` already ends the match at a word it
+  // spells in full.
+  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:uma?\s+)?outr[oa]\s+por\s+favor/,
 ];
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -2395,14 +2405,19 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   //   ARM 3  pix de novo                4       4
   //   ARM 4a elided, clause-FINAL       4       4
   //   ARM 4b elided + function word     2       2
+  //   ARM 4c elided + "por favor"       0       0   (byte-pin-only — see below)
   //   UNION                            26       —
   //
   // (Whole-net blast radius over the payment-bearing harvest: 76. The 1a/1b/1c and
   // 4a/4b groups are the S5843 SPLIT of what began as two arms — see the net's own
   // header; the split moved ZERO rows, so these counts describe both forms.)
   //
-  // NO ARM IS SHADOWED — 5+3+1+7+4+4+2 = 26 = the union, i.e. the seven arms PARTITION
-  // the rows they move. That is the byte-pin-shadowing hazard closed by measurement
+  // NO ARM IS SHADOWED — 5+3+1+7+4+4+2+0 = 26 = the union, i.e. the arms PARTITION the
+  // rows they move. ARM 4c is the one BYTE-PIN-ONLY arm and is LABELLED so rather than
+  // folded into a count (the R2-S5 rule): it moves ZERO rows today because no attested
+  // "gera outro por favor" exists, and it is kept only because splitting it out of 4b
+  // is what bought 4b's S5843 headroom — deleting it would silently narrow 4b's
+  // language. It is pinned by an AUTHORED probe in the roll call, not a rescued row. That is the byte-pin-shadowing hazard closed by measurement
   // rather than by assertion: deleting any one arm reds exactly its own rows, which is
   // what makes the roll call in the test file falsifiable arm by arm.
   //

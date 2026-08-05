@@ -3608,25 +3608,32 @@ describe("classifyRequestSpans — F-46 the pix-regeneration conjunct", () => {
    * attested-input rows they move, 5+3+1+7+4+4+2 = 26), so deleting that arm reds
    * exactly its own rows and nothing else. No arm is shadowed by an earlier one.
    *
-   * SEVEN, not four: the pre-posed novelty arm split by HEAD NOUN and the elided arm
+   * EIGHT, not four: the pre-posed novelty arm split by HEAD NOUN and the elided arm
    * split by CONTINUATION under Sonar S5843 (complexity 59 and 55 against a budget of
-   * 20, measured on CI — see the net's header). The split moved ZERO rows, so this
-   * roll call gained rows without any of them being a new behaviour.
+   * 20 in run 1; a residual 29 on the continuation allowlist in run 2 — measured on CI
+   * across two rounds, see the net's header). Both splits moved ZERO rows, so this roll
+   * call gained rows without any of them being a new behaviour.
+   *
+   * ONE arm is AUTHORED rather than corpus-rescued, and that is stated rather than
+   * dressed up — the `chave` / `corrig(?!id)` precedent. ARM 4c ("por favor") moves
+   * ZERO rows today; it exists because splitting it out of 4b is what bought 4b's
+   * S5843 headroom, and dropping it would silently narrow 4b's language.
    */
-  const FRAME_ARMS: ReadonlyArray<readonly [string, string]> = [
-    ["ARM 1a novelty + bare pix", "outro pix"],
-    ["ARM 1b novelty + código pix", "gera um novo código pix pra mim, o antigo expirou"],
-    ["ARM 1c novelty + QR code pix", "preciso de um novo QR code do pix"],
-    ["ARM 2 novelty-POSTPOSED", "bota um pix novo aí pra mim"],
-    ["ARM 3 novelty-DE NOVO", "manda o pix de novo"],
-    ["ARM 4a elided, clause-FINAL", "o pix expirou porque demorei pra pagar, manda outro"],
-    ["ARM 4b elided + function word", "o código pix expirou, gera outro pra mim"],
+  const FRAME_ARMS: ReadonlyArray<readonly [string, string, "corpus" | "authored"]> = [
+    ["ARM 1a novelty + bare pix", "outro pix", "corpus"],
+    ["ARM 1b novelty + código pix", "gera um novo código pix pra mim, o antigo expirou", "corpus"],
+    ["ARM 1c novelty + QR code pix", "preciso de um novo QR code do pix", "corpus"],
+    ["ARM 2 novelty-POSTPOSED", "bota um pix novo aí pra mim", "corpus"],
+    ["ARM 3 novelty-DE NOVO", "manda o pix de novo", "corpus"],
+    ["ARM 4a elided, clause-FINAL", "o pix expirou porque demorei pra pagar, manda outro", "corpus"],
+    ["ARM 4b elided + function word", "o código pix expirou, gera outro pra mim", "corpus"],
+    ["ARM 4c elided + por favor", "meu pix expirou, gera outro por favor", "authored"],
   ];
 
   it("the FRAME-ARM ROLL CALL — every arm suppresses a regeneration, by name", () => {
-    expect(FRAME_ARMS).toHaveLength(7);
-    for (const [arm, probe] of FRAME_ARMS) {
-      const label = `${arm}: ${probe}`;
+    expect(FRAME_ARMS).toHaveLength(8);
+    for (const [arm, probe, provenance] of FRAME_ARMS) {
+      const label = `${arm} (${provenance}): ${probe}`;
       // Each probe fires the payment net, so it WOULD ride the read without the arm.
       expect(/pix|pagamento/.test(probe.toLowerCase()), label).toBe(true);
       expect(classifyRequestSpans(probe), label).not.toContain("PAYMENT_STATUS_Q");
