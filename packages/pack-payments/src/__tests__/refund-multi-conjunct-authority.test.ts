@@ -153,15 +153,30 @@ function noAuthState(opts: {
 
 describe("D1 — refund multi-conjunct authority (SDD Inv 11 strengthen)", () => {
   // (a) ownership conjunct — cross-customer refund REFUSES below the EXECUTE band.
-  it("(a) cross-customer refund < R$500 REFUSES via the OWNERSHIP authGuard", () => {
+  it("(a) cross-customer refund < R$500 REFUSES via the OWNERSHIP authGuard's BINDING conjunct", () => {
     // Authority binds ORDER to CUST, but the refund targets a NON-owned order.
+    //
+    // F-26 — `enforcePaymentOwnership` has TWO conjuncts refusing with the SAME code
+    // (`payment.ownership_denied`): the BINDING (declared owner does not own the
+    // resource) and the IDOR gate (authenticated session ≠ declared owner). This case
+    // is the BINDING one — the session here IS the authenticated owner. A code-only
+    // pin would also pass if the binding branch were neutered, because an unbound
+    // resource resolves principal to null and then trips the IDOR branch instead.
+    // Measured: with the two branches' reasons swapped, all 135 tests in this package
+    // stayed green. The auth basis `reason` is the discriminator; the basis row is
+    // keyed `category` (never `kind`).
     const d = adjudicate(
       refundEnv({ amount: 1_000, resource: "ord-OTHER" }),
       authState(),
       paymentsPolicyBundle,
     )
     expect(d.kind).toBe("REFUSE")
-    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("payment.ownership_denied")
+    if (d.kind !== "REFUSE") return
+    expect(d.refusal.code).toBe("payment.ownership_denied")
+    const reason = (
+      d as unknown as { basis?: readonly { category?: string; detail?: { reason?: string } }[] }
+    ).basis?.find((b) => b.category === "auth")?.detail?.reason
+    expect(reason).toBe("resource_not_owned")
   })
   it("(a non-vacuous) the SAME small cross-customer refund reaches a POSITIVE terminal with NO injected authority — so the ownership guard, not the band, REFUSED", () => {
     // Absent authority, the ownership REFUSE cannot fire; the refund reaches a
