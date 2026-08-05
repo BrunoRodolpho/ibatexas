@@ -16,6 +16,11 @@ export {
   // the `@ibatexas/tools/testing` subpath.
   type DeliveryCacheClient,
   type DeliveryCacheOptions,
+  // F-42 — the invalidation path's OWN honest Pick (`{scan, del}`), split out
+  // of the union above so the admin route that threads it declares only the
+  // commands that path actually issues.
+  type DeliveryCacheInvalidationClient,
+  type DeliveryCacheInvalidationOptions,
 } from "./catalog/estimate-delivery.js"
 export { reverseGeocode } from "./catalog/reverse-geocode.js"
 export type { ReverseGeocodeResult } from "./catalog/reverse-geocode.js"

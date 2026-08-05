@@ -12,7 +12,7 @@ import { reverseGeocode } from "./reverse-geocode.js";
 // ── The Redis client seam (R5-S6) ────────────────────────────────────────────
 
 /**
- * The Redis-shaped client this module reads and writes through.
+ * The Redis-shaped client the per-CEP READ-THROUGH cache runs on.
  *
  * The command set is EXHAUSTIVE and deliberately narrow: `get` + `set` are the
  * per-CEP read-through cache, `scan` + `del` are {@link invalidateDeliveryCache}.
@@ -26,8 +26,44 @@ import { reverseGeocode } from "./reverse-geocode.js";
  * fails `tsc`. A test double casts to this type at its own boundary (see
  * `src/testing/in-memory-redis.ts`) rather than this module loosening its types
  * to accommodate one.
+ *
+ * NOTE (F-42): this is the union across BOTH entry points, and `estimateDelivery`
+ * — its only remaining consumer — issues only `get` + `set`. It therefore
+ * OVER-demands by two commands. That direction is fail-CLOSED: over-demanding
+ * can only reject a usable client at compile time, never silently drop a command
+ * at runtime. Narrowing it to `{get, set}` is a separate change and is NOT part
+ * of F-42, which is about the opposite (fail-OPEN) direction below.
  */
 export type DeliveryCacheClient = Pick<RedisClientType, "get" | "set" | "scan" | "del">;
+
+/**
+ * The Redis-shaped client {@link invalidateDeliveryCache} — and ONLY it — runs on.
+ *
+ * ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule), re-derived by
+ * reading every line of `invalidateDeliveryCache` ────────────────────────────
+ *
+ *   • ISSUED: `scan` (the manual cursor loop, NOT `scanIterator`) and `del`.
+ *     Those two, nothing else. `set` belongs to `cacheDeliveryResult` and `get`
+ *     to `getCachedDeliveryResult` — both on the `estimateDelivery` path, which
+ *     this function never enters.
+ *   • HANDED TO downstream: nothing. The client is bound to a function-local
+ *     `const` and both commands are issued on it directly, so no callee can
+ *     issue a command this Pick does not name. `rk` is a pure key builder and
+ *     takes no client.
+ *   • FEATURE DETECTION: none — no `typeof client.X === "function"` probe, which
+ *     is what makes a throw-on-access Proxy client safe here (F-22).
+ *   • LUA: none. No `eval` / `evalSha` / `multi` in the body or through a
+ *     hand-off, so the in-memory adapter can serve this function whole.
+ *
+ * So {issued} ∪ {handed-to} = `{"scan", "del"}`.
+ *
+ * Split out of {@link DeliveryCacheClient} by F-42 for one reason: this function
+ * is the one a mutating ADMIN route calls, so its Pick is what that route's own
+ * Pick must absorb. Making the route declare `get` + `set` — commands nothing on
+ * the invalidation path issues — would falsify the route's "EXHAUSTIVE union of
+ * commands this route issues" contract to buy nothing.
+ */
+export type DeliveryCacheInvalidationClient = Pick<RedisClientType, "scan" | "del">;
 
 /**
  * Options accepted by this module's two exported entry points.
@@ -53,6 +89,29 @@ export interface DeliveryCacheOptions {
 }
 
 /**
+ * Options accepted by {@link invalidateDeliveryCache}.
+ *
+ * A SEPARATE bag from {@link DeliveryCacheOptions}, carrying the honest
+ * {@link DeliveryCacheInvalidationClient} rather than the union across both
+ * entry points. This is the whole point of F-42: `invalidateDeliveryCache`'s
+ * body is a bare try/catch with an empty, best-effort handler, so a client
+ * missing `scan` does not fail — the `TypeError` is absorbed and the cache is
+ * simply never invalidated, with every suite green while a zone edit silently
+ * stops showing up in chat. The defence has to be the TYPE, because there is no
+ * runtime signal at all. Demanding exactly `{scan, del}` is what makes a
+ * caller-derived client that cannot serve this function a COMPILE error.
+ */
+export interface DeliveryCacheInvalidationOptions {
+  /**
+   * Redis-shaped client the invalidation SCAN + DEL run on. Defaults to the
+   * package singleton (`getRedisClient()`), resolved lazily inside the same
+   * try/catch it always was — so any caller that has no client to thread stays
+   * a bare `invalidateDeliveryCache()` and degrades exactly as before.
+   */
+  readonly client?: DeliveryCacheInvalidationClient;
+}
+
+/**
  * Resolve the client for one Redis touch: the injected one, or the singleton.
  *
  * Deliberately NOT hoisted to the entry points. Resolving eagerly would call
@@ -63,6 +122,18 @@ export interface DeliveryCacheOptions {
 async function resolveCacheClient(
   options?: DeliveryCacheOptions,
 ): Promise<DeliveryCacheClient> {
+  return options?.client ?? (await getRedisClient());
+}
+
+/**
+ * The {@link resolveCacheClient} twin for the invalidation path, returning the
+ * narrower {@link DeliveryCacheInvalidationClient}. Written out rather than
+ * generalised so each path's return type states its own honest Pick — a shared
+ * generic would let either path widen without the other noticing.
+ */
+async function resolveInvalidationClient(
+  options?: DeliveryCacheInvalidationOptions,
+): Promise<DeliveryCacheInvalidationClient> {
   return options?.client ?? (await getRedisClient());
 }
 
@@ -115,10 +186,18 @@ async function cacheDeliveryResult(
   }
 }
 
-/** Invalidate all delivery zone caches (call from admin zone update). */
-export async function invalidateDeliveryCache(options?: DeliveryCacheOptions): Promise<void> {
+/**
+ * Invalidate all delivery zone caches (call from admin zone update).
+ *
+ * Takes {@link DeliveryCacheInvalidationOptions} — the honest `{scan, del}`
+ * Pick — NOT the wider {@link DeliveryCacheOptions}. See that type's docblock
+ * for why the narrower bag is the safety property and not a tidying-up.
+ */
+export async function invalidateDeliveryCache(
+  options?: DeliveryCacheInvalidationOptions,
+): Promise<void> {
   try {
-    const redis = await resolveCacheClient(options);
+    const redis = await resolveInvalidationClient(options);
     // Scan for delivery:cep:* keys and delete them
     const pattern = rk("delivery:cep:*");
     let cursor = 0;
@@ -130,7 +209,16 @@ export async function invalidateDeliveryCache(options?: DeliveryCacheOptions): P
       }
     } while (cursor !== 0);
   } catch {
-    // Best-effort cache invalidation
+    // Best-effort cache invalidation.
+    //
+    // F-42 read this handler and left it SILENT deliberately. Every fail-soft
+    // Redis path in this file (`getCachedDeliveryResult`, `cacheDeliveryResult`)
+    // swallows the same way, and the module imports no logger at all — so a
+    // loud log here would not be following the file's pattern, it would be
+    // introducing one. Recorded rather than expanded: the shape that made this
+    // handler dangerous (a caller-derived client silently missing `scan`) is
+    // now a COMPILE error via `DeliveryCacheInvalidationOptions`, which is a
+    // stronger defence than a log nobody reads.
   }
 }
 
