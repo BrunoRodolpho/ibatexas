@@ -1680,28 +1680,61 @@ export const __SPAN_NET_SOURCES_FOR_TEST = {
  * measurement that chose each one and for the arm REJECTED on its own sweep.
  *
  * WHY IT IS A NET AND NOT A SINGLE LITERAL, the F-27/F-31 forcing move: Sonar S5843
- * scores each literal, and arms 1 and 4 each carry their own nested groups plus a
- * lookaround. Kept apart, an edit to one arm cannot move another arm's score, and
- * `.some()` over the array is character-for-character the `||` disjunction the
- * conjunct would otherwise spell.
+ * scores each literal, so kept apart an edit to one arm cannot move another arm's
+ * score, and `.some()` over the array is character-for-character the `||` disjunction
+ * the conjunct would otherwise spell.
  *
- * Every arm is INDIVIDUALLY FALSIFIABLE: each is reached by at least one probe that
- * NO other arm reaches (the roll call in `__tests__/required-claim-decomposer.test.ts`
- * pins them by name), so deleting any one arm reds exactly its own row.
+ * WHY SEVEN ARMS AND NOT FOUR — MEASURED ON CI, exactly as this file's three earlier
+ * splits were. The first shipped form of this net expressed the same language in FOUR
+ * literals, folding the three novelty HEAD-NOUN shapes into one optional group and the
+ * two elided-novelty CONTINUATION shapes into one allowlist lookahead. SonarCloud
+ * scored that (PR #560, run 1): the pre-posed arm at **complexity 59** and the elided
+ * arm at **55**, against the budget of 20, plus S8786 super-linear BACKTRACKING on the
+ * pre-posed arm — `qr\s*-?\s*code` is ambiguous, a single space can be matched by
+ * either `\s*`, so the engine explores both. A local complexity model was NOT
+ * consulted; CI is the authority (the F-27 lesson, where a local prediction was wrong
+ * by 3).
+ *
+ * THE SPLIT IS BEHAVIOUR-PRESERVING, and that is measured rather than argued. For a
+ * boolean `.test()`, `X(?:A|B)?Y` matches iff `XY` or `XAY` or `XBY` — the optional
+ * group is the only thing being partitioned, and the `(?<![a-z])` left guard is a
+ * zero-width assertion at the SAME position in every resulting literal. Likewise a
+ * trailing `(?=\s*(?:$|[?!.,;]|…))` lookahead is equivalent to CONSUMING that
+ * continuation, because existence is all `.test()` reports. Re-classifying the frozen
+ * harvest across the split measured **ZERO predicate differences over 114,735 rows** —
+ * the four-arm and seven-arm nets are the same function, not merely similar ones.
+ * `qr\s*-?\s*code` became `qr[\s-]*code` in the same step (one char class, no
+ * ambiguity, no backtracking); that is included in the zero-difference measurement.
+ *
+ * Every arm is INDIVIDUALLY FALSIFIABLE: the seven still PARTITION the rows they move
+ * (5+3+1+7+4+4+2 = 26 attested-input rows = the union), so no arm is shadowed by an
+ * earlier one and deleting any one arm reds exactly its own probe. The roll call in
+ * `__tests__/required-claim-decomposer.test.ts` pins each by name.
  */
 const PIX_REGENERATION_REQUEST: readonly RegExp[] = [
-  // ARM 1 — NOVELTY, pre-posed: "novo/outro [código|QR code] pix". The workhorse.
-  /(?<![a-z])(?:nov[oa]|outr[oa])\s+(?:c[óo]digo\s+(?:de\s+|do\s+)?|qr\s*-?\s*code\s+(?:do\s+|de\s+)?)?pix/,
-  // ARM 2 — NOVELTY, post-posed: "pix novo". pt-BR puts the adjective either side.
+  // ── NOVELTY, PRE-POSED (arms 1a-1c) — split by HEAD NOUN, not by meaning ──────
+  // ARM 1a — bare: "novo pix", "outro pix".
+  /(?<![a-z])(?:nov[oa]|outr[oa])\s+pix/,
+  // ARM 1b — with the `código` head: "novo código pix", "outro código do pix".
+  /(?<![a-z])(?:nov[oa]|outr[oa])\s+c[óo]digo\s+(?:de\s+|do\s+)?pix/,
+  // ARM 1c — with the `QR code` head: "novo QR code do pix". Reached by NO other arm.
+  /(?<![a-z])(?:nov[oa]|outr[oa])\s+qr[\s-]*code\s+(?:do\s+|de\s+)?pix/,
+  // ── NOVELTY, POST-POSED ──────────────────────────────────────────────────────
+  // ARM 2 — "pix novo". pt-BR puts the adjective either side and the corpus uses both.
   /(?<![a-z])pix\s+nov[oa]/,
-  // ARM 3 — NOVELTY as a REPETITION adverbial: "manda o pix de novo".
+  // ── NOVELTY as a REPETITION ADVERBIAL ────────────────────────────────────────
+  // ARM 3 — "manda o pix de novo". A third syntactic frame, not a spelling of 1-2.
   /(?<![a-z])pix\s+de\s+novo/,
-  // ARM 4 — NOVELTY with the noun ELIDED: "gera outro pra mim", "manda outro".
-  // CLAUSE-FINAL by construction — see the conjunct header's V0/V1/V2 ladder. The
-  // lookahead is the whole safety property: it is what keeps "manda outro
-  // comprovante" / "manda outro atendente" (payment READS with a non-pix object)
-  // out of the net.
-  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:um\s+|uma\s+)?outr[oa](?![a-zà-ÿ])(?=\s*(?:$|[?!.,;]|pra(?![a-zà-ÿ])|para(?![a-zà-ÿ])|pro(?![a-zà-ÿ])|a[íi](?![a-zà-ÿ])|agora(?![a-zà-ÿ])|por\s+favor))/,
+  // ── NOVELTY with the NOUN ELIDED (arms 4a-4b) ────────────────────────────────
+  // CLAUSE-FINAL by construction — see the conjunct header's V0/V1/V2 ladder. This is
+  // the whole safety property of the pair: it is what keeps "manda outro comprovante"
+  // / "manda outro atendente" (payment READS with a non-pix object) out of the net.
+  // ARM 4a — the pronoun ends its clause: "manda outro", "gera outro."
+  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:um\s+|uma\s+)?outr[oa]\s*(?:[?!.,;]|$)/,
+  // ARM 4b — followed only by an ATTESTED function word, never a noun: "gera outro
+  // pra mim", "manda outro aí". The allowlist is the attested continuations ONLY;
+  // widening it to a general word is the V0 form the ladder refused.
+  /(?<![a-z])(?:ger|mand|envi|bot)\w*\s+(?:um\s+|uma\s+)?outr[oa]\s+(?:p(?:ra|ara|ro)|a[íi]|agora|por\s+favor)(?![a-zà-ÿ])/,
 ];
 
 export function classifyRequestSpans(text: string): SpanClass[] {
@@ -2354,37 +2387,46 @@ export function classifyRequestSpans(text: string): SpanClass[] {
   // is OUTPUT copy (reply text, tool descriptions, error strings) that no code path
   // ever hands to this function. "uniq" is the rows reached by THIS arm and no other:
   //
-  //   arm                        blast   input   uniq
-  //   ARM 1 novelty-PREPOSED       40       9       9
-  //   ARM 2 novelty-POSTPOSED      16       7       7
-  //   ARM 3 novelty-DE NOVO         8       4       4
-  //   ARM 4 novelty-ELIDED         14       6       6
-  //   UNION                        76      26      —
+  //   arm                            input   uniq
+  //   ARM 1a novelty + bare pix         5       5
+  //   ARM 1b novelty + `código` pix     3       3
+  //   ARM 1c novelty + `QR code` pix    1       1
+  //   ARM 2  pix + novelty postposed    7       7
+  //   ARM 3  pix de novo                4       4
+  //   ARM 4a elided, clause-FINAL       4       4
+  //   ARM 4b elided + function word     2       2
+  //   UNION                            26       —
   //
-  // NO ARM IS SHADOWED — 9+7+4+6 = 26 = the union, i.e. the four arms PARTITION the
-  // rows they move. That is the byte-pin-shadowing hazard closed by measurement rather
-  // than by assertion: deleting any one arm reds exactly its own rows, which is what
-  // makes the roll call in the test file falsifiable arm by arm.
+  // (Whole-net blast radius over the payment-bearing harvest: 76. The 1a/1b/1c and
+  // 4a/4b groups are the S5843 SPLIT of what began as two arms — see the net's own
+  // header; the split moved ZERO rows, so these counts describe both forms.)
   //
-  //   · ARM 1 carries the canonical phrasing ("gera um novo código pix pra mim, o
-  //     antigo expirou") and 2 conversationTriggers. Its optional `código`/`QR code`
-  //     head is load-bearing: `noun-form-qr-code` ("preciso de um novo QR code do pix")
-  //     is reachable by NO other arm.
+  // NO ARM IS SHADOWED — 5+3+1+7+4+4+2 = 26 = the union, i.e. the seven arms PARTITION
+  // the rows they move. That is the byte-pin-shadowing hazard closed by measurement
+  // rather than by assertion: deleting any one arm reds exactly its own rows, which is
+  // what makes the roll call in the test file falsifiable arm by arm.
+  //
+  //   · ARMS 1a-1c carry the canonical phrasing ("gera um novo código pix pra mim, o
+  //     antigo expirou") and 2 conversationTriggers. The `QR code` head (1c) is
+  //     load-bearing on its own: `noun-form-qr-code` ("preciso de um novo QR code do
+  //     pix") is reachable by NO other arm.
   //   · ARM 2 exists because pt-BR permits either adjective position and the corpus
   //     uses BOTH; dropping it loses seven rows including "quero um pix novo pra
   //     pagar", a conversationTrigger.
   //   · ARM 3 is a THIRD syntactic frame (a repetition adverbial), not a spelling of
   //     arms 1-2.
-  //   · ARM 4 was chosen from a measured V0/V1/V2 ladder, and the ladder is the point.
+  //   · ARMS 4a-4b were chosen from a measured V0/V1/V2 ladder, and the ladder is the
+  //     point.
   //     The LOOSE form (`(ger|mand|envi|bot)\w*\s+(um\s+)?outr[oa]`, blast 17) leaked
   //     all FIVE authored must-not-fire probes — "meu pagamento não caiu, manda outro
   //     comprovante", "o pagamento falhou, manda outro método pra eu tentar", "meu pix
   //     não caiu, manda outro atendente falar comigo" and two more, every one a genuine
-  //     payment READ whose object simply is not a pix. The CLAUSE-FINAL lookahead
+  //     payment READ whose object simply is not a pix. The CLAUSE-FINAL restriction
   //     closes all five and still fires on 6 of 7 must-fire probes; the 7th ("manda
-  //     outro pix") is covered by ARM 1, which is why the union loses nothing. A
-  //     STRICTER form (V2, no continuation permitted at all) drops to 4 of 7 and was
-  //     refused. The allowlisted continuations are the attested ones only.
+  //     outro pix") is covered by ARM 1a, which is why the union loses nothing. A
+  //     STRICTER form (V2, arm 4a alone — no continuation permitted at all) drops to
+  //     4 of 7 and was refused, which is exactly why 4b exists as its own arm. The
+  //     allowlisted continuations are the attested ones only.
   //
   // WHAT THE MEASUREMENT SAYS ABOUT THE FALSE-POSITIVE DIRECTION: over the 783
   // attested-input rows the change moves 26, and every single one is a

@@ -3602,21 +3602,29 @@ describe("classifyRequestSpans — F-46 the pix-regeneration conjunct", () => {
   });
 
   /**
-   * ONE ARM PER FRAME, hand-written and by NAME — the F-31/F-36 arm-roll-call shape.
+   * ONE PROBE PER ARM, hand-written and by NAME — the F-31/F-36 arm-roll-call shape.
    * Each probe is reached by EXACTLY ONE arm (verified by ablation over the frozen
-   * 164,963-row / 114,684-distinct harvest: the four arms PARTITION the 26
-   * attested-input rows they move, 9+7+4+6 = 26), so deleting that arm reds exactly
-   * its own rows and nothing else. No arm is shadowed by an earlier one.
+   * 164,963-row / 114,684-distinct harvest: the seven arms PARTITION the 26
+   * attested-input rows they move, 5+3+1+7+4+4+2 = 26), so deleting that arm reds
+   * exactly its own rows and nothing else. No arm is shadowed by an earlier one.
+   *
+   * SEVEN, not four: the pre-posed novelty arm split by HEAD NOUN and the elided arm
+   * split by CONTINUATION under Sonar S5843 (complexity 59 and 55 against a budget of
+   * 20, measured on CI — see the net's header). The split moved ZERO rows, so this
+   * roll call gained rows without any of them being a new behaviour.
    */
   const FRAME_ARMS: ReadonlyArray<readonly [string, string]> = [
-    ["ARM 1 novelty-PREPOSED", "preciso de um novo QR code do pix"],
+    ["ARM 1a novelty + bare pix", "outro pix"],
+    ["ARM 1b novelty + código pix", "gera um novo código pix pra mim, o antigo expirou"],
+    ["ARM 1c novelty + QR code pix", "preciso de um novo QR code do pix"],
     ["ARM 2 novelty-POSTPOSED", "bota um pix novo aí pra mim"],
     ["ARM 3 novelty-DE NOVO", "manda o pix de novo"],
-    ["ARM 4 novelty-ELIDED", "o pix expirou porque demorei pra pagar, manda outro"],
+    ["ARM 4a elided, clause-FINAL", "o pix expirou porque demorei pra pagar, manda outro"],
+    ["ARM 4b elided + function word", "o código pix expirou, gera outro pra mim"],
   ];
 
   it("the FRAME-ARM ROLL CALL — every arm suppresses a regeneration, by name", () => {
-    expect(FRAME_ARMS).toHaveLength(4);
+    expect(FRAME_ARMS).toHaveLength(7);
     for (const [arm, probe] of FRAME_ARMS) {
       const label = `${arm}: ${probe}`;
       // Each probe fires the payment net, so it WOULD ride the read without the arm.
