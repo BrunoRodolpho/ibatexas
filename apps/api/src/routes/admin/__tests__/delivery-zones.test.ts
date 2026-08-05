@@ -11,6 +11,27 @@
 //
 // Every mutation path also asserts the cache invalidation side-effect fires
 // only on success, and never when a guard short-circuits the request.
+//
+// ── R5 rollout, family 5 — the Redis double is RETIRED ──────────────────────
+//
+// This file used to build `{ set: vi.fn().mockResolvedValue("OK" | null) }` and
+// hand it over through a mocked `getRedisClient`. Two fictions rode on that,
+// and the dedup arms below are exactly where they mattered:
+//
+//   1. **The verdict was PLANTED.** `createMockRedis(null)` made SET NX answer
+//      "already exists" without anything ever having existed. A gate whose SET
+//      records nothing passes that arm identically — including a WRITE-ONLY
+//      gate that would let every double-submit through in production. The
+//      arms now seed the reservation through the SAME command the route
+//      issues and let real NX semantics produce the null.
+//   2. **`rk` was faked to `ibatexas:`** — a prefix production has never
+//      written (under apps/api's vitest the real `rk` resolves to
+//      `development:`). Hard Rule #7 keys are now the real ones.
+//
+// The client arrives through `deps.redis` (the R5 seam) and `getRedisClient` is
+// a rejecting TRIPWIRE: if the route ever stops honouring the injected client,
+// these cases fail loudly instead of silently passing against the singleton.
+// The case list is unchanged — 14 before, 14 after.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Fastify, {
@@ -19,6 +40,11 @@ import Fastify, {
   type FastifyReply,
 } from "fastify";
 import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
+// Below the `vi.mock` blocks in intent, above them in text: vitest hoists
+// `vi.mock` above every import regardless of position, and the sibling suite
+// (`products-routes.test.ts`) already imports its SUT here.
+import { deliveryZoneRoutes } from "../delivery-zones.js";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 
@@ -29,7 +55,6 @@ const mockRemove = vi.hoisted(() => vi.fn());
 
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockInvalidateDeliveryCache = vi.hoisted(() => vi.fn());
-const mockRk = vi.hoisted(() => vi.fn((k: string) => `ibatexas:${k}`));
 
 vi.mock("@ibatexas/domain", () => ({
   createDeliveryZoneService: () => ({
@@ -40,11 +65,18 @@ vi.mock("@ibatexas/domain", () => ({
   }),
 }));
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: mockGetRedisClient,
-  invalidateDeliveryCache: mockInvalidateDeliveryCache,
-  rk: mockRk,
-}));
+// Spread the REAL module and replace only what must not run: the client
+// resolver (a tripwire) and the fire-and-forget cache invalidation (whose real
+// implementation resolves its OWN singleton — which is precisely why it is not
+// downstream of this route's Pick). `rk` stays REAL.
+vi.mock("@ibatexas/tools", async (orig) => {
+  const real = await orig<typeof import("@ibatexas/tools")>();
+  return {
+    ...real,
+    getRedisClient: mockGetRedisClient,
+    invalidateDeliveryCache: mockInvalidateDeliveryCache,
+  };
+});
 
 // requireManagerRole is exercised by escalations-authz.test.ts; here we let it
 // pass through so we can focus on the handler logic of THIS file.
@@ -56,22 +88,23 @@ vi.mock("../../../middleware/staff-auth.js", () => ({
   ) => done(),
 }));
 
-import { deliveryZoneRoutes } from "../delivery-zones.js";
-
 // ── Server factory ─────────────────────────────────────────────────────────
+
+/** A frozen instant, so the dedup TTL below is an exact equality. */
+const FROZEN = 1_700_000_000_000;
+
+/** The canonical in-memory adapter, injected through the R5 seam. */
+let redis: InMemoryRedis;
 
 async function buildTestServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
-  await app.register(deliveryZoneRoutes);
+  await app.register(deliveryZoneRoutes, {
+    deps: { redis: async () => redis.client as unknown as never },
+  });
   await app.ready();
   return app;
-}
-
-// Redis stub: SET NX returns "OK" for a fresh request, null for a duplicate.
-function createMockRedis(setResult: "OK" | null = "OK") {
-  return { set: vi.fn().mockResolvedValue(setResult) };
 }
 
 const VALID_BODY = {
@@ -83,7 +116,12 @@ const VALID_BODY = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockRk.mockImplementation((k: string) => `ibatexas:${k}`);
+  redis = createInMemoryRedis({ now: () => FROZEN });
+  // A rejecting TRIPWIRE, not a client. Nothing in this file may resolve the
+  // singleton: every command must land on the injected adapter above.
+  mockGetRedisClient.mockRejectedValue(
+    new Error("getRedisClient() resolved — the deps.redis seam was bypassed"),
+  );
   // Default: no existing zones → no CEP conflict.
   mockListAll.mockResolvedValue([]);
 });
@@ -130,7 +168,10 @@ describe("POST /api/admin/delivery-zones — create", () => {
   });
 
   it("rejects a duplicate x-request-id with 409 and never writes", async () => {
-    mockGetRedisClient.mockResolvedValue(createMockRedis(null)); // NX failed → duplicate
+    const { rk } = await import("@ibatexas/tools");
+    // The reservation is made through the SAME command the route issues, so
+    // the 409 comes from real NX semantics rather than from a planted answer.
+    await redis.client.set(rk("dz:create:dedup:req-dup-1"), "1", { EX: 300, NX: true });
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -148,8 +189,7 @@ describe("POST /api/admin/delivery-zones — create", () => {
   });
 
   it("passes the dedup guard on a fresh x-request-id (SET NX/EX with the rk'd key) → 201", async () => {
-    const redis = createMockRedis("OK");
-    mockGetRedisClient.mockResolvedValue(redis);
+    const { rk } = await import("@ibatexas/tools");
     mockCreate.mockResolvedValue({ id: "z_new", ...VALID_BODY, active: true });
 
     const app = await buildTestServer();
@@ -161,12 +201,13 @@ describe("POST /api/admin/delivery-zones — create", () => {
     });
 
     expect(res.statusCode).toBe(201);
-    expect(mockRk).toHaveBeenCalledWith("dz:create:dedup:req-fresh-1");
-    expect(redis.set).toHaveBeenCalledWith(
-      "ibatexas:dz:create:dedup:req-fresh-1",
-      "1",
-      { EX: 300, NX: true },
-    );
+    // The reservation as a KEYSPACE property against the REAL `rk` key, not a
+    // `toHaveBeenCalledWith` against a fake `ibatexas:` prefix.
+    const key = rk("dz:create:dedup:req-fresh-1");
+    expect(redis.peek(key)).toBe("1");
+    // EXACT, on a frozen clock: `EX: 300`. `toBeGreaterThan(0)` cannot tell a
+    // 5-minute replay window from a 5-second one.
+    expect(redis.ttlMs(key)).toBe(300_000);
     expect(mockCreate).toHaveBeenCalledTimes(1);
     await app.close();
   });
@@ -292,7 +333,8 @@ describe("PUT /api/admin/delivery-zones/:id — update", () => {
   });
 
   it("rejects a duplicate x-request-id with 409 and never updates", async () => {
-    mockGetRedisClient.mockResolvedValue(createMockRedis(null));
+    const { rk } = await import("@ibatexas/tools");
+    await redis.client.set(rk("dz:update:dedup:req-dup-put"), "1", { EX: 300, NX: true });
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -303,7 +345,9 @@ describe("PUT /api/admin/delivery-zones/:id — update", () => {
     });
 
     expect(res.statusCode).toBe(409);
-    expect(mockRk).toHaveBeenCalledWith("dz:update:dedup:req-dup-put");
+    // The UPDATE action's own key is what was consulted — the reservation was
+    // seeded under `dz:update:…` and nothing else was written.
+    expect(redis.keys()).toEqual([rk("dz:update:dedup:req-dup-put")]);
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockInvalidateDeliveryCache).not.toHaveBeenCalled();
     await app.close();
@@ -327,7 +371,8 @@ describe("DELETE /api/admin/delivery-zones/:id — remove", () => {
   });
 
   it("rejects a duplicate x-request-id with 409 and never removes", async () => {
-    mockGetRedisClient.mockResolvedValue(createMockRedis(null));
+    const { rk } = await import("@ibatexas/tools");
+    await redis.client.set(rk("dz:delete:dedup:req-dup-del"), "1", { EX: 300, NX: true });
 
     const app = await buildTestServer();
     const res = await app.inject({
@@ -337,7 +382,7 @@ describe("DELETE /api/admin/delivery-zones/:id — remove", () => {
     });
 
     expect(res.statusCode).toBe(409);
-    expect(mockRk).toHaveBeenCalledWith("dz:delete:dedup:req-dup-del");
+    expect(redis.keys()).toEqual([rk("dz:delete:dedup:req-dup-del")]);
     expect(mockRemove).not.toHaveBeenCalled();
     expect(mockInvalidateDeliveryCache).not.toHaveBeenCalled();
     await app.close();
