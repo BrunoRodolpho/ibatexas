@@ -167,12 +167,17 @@ const refuseKilled = (detail: string) =>
  * through (null). The decision carries a `kill.ACTIVE` basis — the kernel's own
  * kill-switch basis — so audit/replay treat it identically to a global kill.
  *
- * `isKilled` is injected (late-bound at bootstrap to the live manager) so the
- * guard composes the same way for the conductor AND the pure policy-manifest
- * exporter / CLI, where it defaults to "never killed" (a kill switch is a
- * RUNTIME control, not static policy). Pure: an in-memory map lookup, no I/O at
- * decision time — exactly the kernel's own `RuntimeContext.killSwitch.isKilled()`
- * posture.
+ * `isKilled` is injected — late-bound to the live manager by
+ * `startManagedAgentPlane`, the plane's own start path — so the guard composes
+ * the same way for the conductor AND the pure policy-manifest exporter / CLI,
+ * where it defaults to "never killed" (a kill switch is a RUNTIME control, not
+ * static policy). Pure: an in-memory map lookup, no I/O at decision time —
+ * exactly the kernel's own `RuntimeContext.killSwitch.isKilled()` posture.
+ *
+ * The read happens at DECISION time, not at composition time, which is what
+ * lets this guard reach a turn already past `openCapsule`: the capsule captured
+ * its PolicyBundle when it opened, but the bundle only holds this closure, so a
+ * switch flipped mid-turn still refuses that turn's mutation.
  */
 export function createAgentKillSwitchGuard(
   isKilled: (agentNamespace: string) => boolean,

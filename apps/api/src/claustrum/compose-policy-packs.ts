@@ -340,15 +340,29 @@ export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
 // at import — before the manager exists — and is ALSO consumed by the pure
 // policy-manifest exporter / CLI (no manager). So the kill state is read
 // through a late-bound holder: `setAgentKillStateReader()` points it at the
-// live manager at bootstrap; everywhere else it defaults to "never killed" (a
-// kill switch is a runtime control, not static policy — the exported manifest
-// must not depend on it).
+// live manager when the managed-agent plane starts; everywhere else it defaults
+// to "never killed" (a kill switch is a runtime control, not static policy — the
+// exported manifest must not depend on it).
 let agentKillStateReader: (agentNamespace: string) => boolean = () => false;
 
 /**
  * Point the AUTH-phase kill guard at the live per-agent kill state (the
- * AgentKillSwitchManager). Called once from claustrum-bootstrap after the
- * manager boots. Idempotent; safe to leave unset (guard then never fires).
+ * AgentKillSwitchManager). Idempotent.
+ *
+ * ONE production caller: `startManagedAgentPlane` (managed-agent-plane.ts),
+ * beside the host-side leg and over the SAME manager binding, so both legs
+ * answer from one store. `bootstrapClaustrum` reaches it only through that call,
+ * and only when `IBX_AGENTS_ENABLED=true` — a boot with the plane off leaves the
+ * default in place, which is correct there because no `agent:`-namespaced
+ * envelope exists to kill.
+ *
+ * "Safe to leave unset" is true only in that narrow sense; unset is NOT a benign
+ * default for a process that DOES run agents. It makes `agentKillSwitchGuard` —
+ * authGuards[0] of every composed pack — constant-false, which is exactly the
+ * state F-51 found and fixed. A test that calls this setter itself therefore
+ * proves the guard BODY and nothing about the wiring; the production wiring is
+ * covered by `agent-kill-switch-production-wiring.test.ts`, which never names
+ * this function.
  */
 export function setAgentKillStateReader(
   reader: (agentNamespace: string) => boolean,

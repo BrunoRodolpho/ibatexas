@@ -343,6 +343,16 @@ Engineering decisions / assumptions adopted (most-logical, per the goal directiv
   FIRST in the AUTH phase, reading a late-bound holder (`setAgentKillStateReader`) that defaults to
   never-killed (inert for the pure CLI/manifest exporter; pointed at the live manager in the live wiring).
   Host-side pre-openCapsule check consults `manager.isKilled` in the runner (live wiring).
+  **F-51 (2026-08-05)**: the "pointed at the live manager in the live wiring" half was aspirational for the
+  whole life of T3-5 — the holder had ZERO production callers, so the kernel leg read constant-false in
+  every running process while its only test stayed green by calling the setter itself. The wiring now lives
+  in `startManagedAgentPlane` (managed-agent-plane.ts), beside the host-side leg and over the SAME manager
+  binding. Scope, stated exactly: the host leg stops the NEXT trigger; the kernel leg stops the MUTATION of
+  a turn already past openCapsule AND the agent-approvals resume (a killed agent's parked money envelope
+  now REFUSEs on a manager's accept instead of executing). Neither leg cancels an in-flight turn — its
+  model calls, read tools and reply still run. Proven end-to-end through the production wiring by
+  `apps/api/src/__tests__/agent-kill-switch-production-wiring.test.ts`, which deliberately never names the
+  setter; `agent-kill-switch.test.ts` remains the guard-body unit test.
 
 - **T3-6 (Stage-0 shadow)**: REDACTOR CHANGE (D-017) landed — `audit-redactor.ts` keeps a strict
   `agent:<kebab>@<x.y.z>:entity:<id>` sessionId UNHASHED (operational id, not PII; a forged shape is
