@@ -69,15 +69,28 @@
  * prefix list and `OWNER_SCOPED_BASE_TO_RESOURCE_KIND`
  * (`ibatexas-claims-kernel-deps.ts`), the P2 pair table and the planner personas.
  *
- * KNOWN PRE-EXISTING RESIDUAL, deliberately NOT changed here (a standing observation,
- * not a facet this slice moves): unlike the cart / reservation / order-status spans, the
- * history spans carry NO `!mutationImperative` guard, and ORDER_HISTORY is
- * classify-only-eligible. Measured at HEAD and after this adoption alike,
- * `classifyRequestSpans("cancela meus pedidos")` fires `ORDER_HISTORY_Q` — the BKL-201 /
+ * THE R2-S5 RESIDUAL — CLOSED by F-8. This header used to record a standing observation:
+ * unlike the cart / reservation / order-status spans, the history spans carried NO
+ * `!mutationImperative` guard while ORDER_HISTORY is classify-only-eligible, so
+ * `classifyRequestSpans("cancela meus pedidos")` fired `ORDER_HISTORY_Q` — the BKL-201 /
  * BKL-206 / BKL-217 read-vs-mutation shape recurring on a span those tickets did not
- * cover. Adding the guard would be a BEHAVIOUR change outside an adoption slice's remit
- * (and the classifier is where it would go, not this source, since a guard is not a
- * facet). Recorded for the backlog.
+ * cover. It was left open because adding a guard is a BEHAVIOUR change outside an
+ * adoption slice's remit.
+ *
+ * F-8 closed it at the CLASSIFIER, which is where the residual said it belonged and not
+ * in this source, because a suppression context is not a facet a def can project. The
+ * span now reads `if (orderHistoryRef && !mutationImperative)` — the same conjunct off
+ * the same local gate every other classify-only-eligible read span uses. The MARKERS
+ * below are untouched, and nothing about this def's contribution (`spanClass`,
+ * `requires`, `markers`) changed: measured, the fix moves exactly two utterances out of
+ * this span across a 6857-utterance harvest of every pt-BR string in the repo —
+ * "cancela meus pedidos" (this header's own example) and its payment twin — while all 47
+ * other history-firing utterances are byte-identical. What made it worth fixing rather
+ * than merely over-inclusive: ORDER_HISTORY being classify-only-eligible meant the
+ * unguarded span handed the whole turn to the deterministic route with zero model call,
+ * so the read was answered and the order.cancel SILENTLY DROPPED
+ * (`classifyOnlyRequiredTypes("cancela meus pedidos")` → `{ORDER_HISTORY}` before the
+ * fix, `undefined` after — the singular sibling "cancela meu pedido" already declined).
  *
  * pt-BR markers + literals live HERE as DATA, never in the interpreter as code.
  */

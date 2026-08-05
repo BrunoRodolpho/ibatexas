@@ -120,6 +120,29 @@ describe("classifyOnlyRequiredTypes — the eligibility gate", () => {
     ).toBeUndefined();
   });
 
+  // F-8 — THE DEFECT'S REAL SURFACE. The classify-only ROUTE is what makes the missing
+  // span guard harmful rather than merely over-inclusive: a turn this gate accepts is
+  // answered deterministically with ZERO model call, so an accepted "cancela meus
+  // pedidos" answered the history READ and the order.cancel was never seen. Measured at
+  // fd589e10 this returned {ORDER_HISTORY} / {PAYMENT_HISTORY}; the span guard is what
+  // makes it decline. The SINGULAR sibling is the standing reference: it has always
+  // declined, because ORDER_STATUS_Q carries the guard (BKL-206).
+  it("F-8 — a mutation imperative on a history ask DECLINES the classify-only route", () => {
+    // TREATMENT — declines, so the turn reaches the model/mutation path.
+    expect(classifyOnlyRequiredTypes("cancela meus pedidos")).toBeUndefined();
+    expect(classifyOnlyRequiredTypes("cancela meus pagamentos")).toBeUndefined();
+    // CONTROL — the same asks without the imperative still take the route. Without these
+    // the treatment is satisfiable by a gate that declines everything.
+    expect(classifyOnlyRequiredTypes("quais meus últimos pedidos?")).toEqual(
+      new Set(["ORDER_HISTORY"]),
+    );
+    expect(classifyOnlyRequiredTypes("quais meus últimos pagamentos?")).toEqual(
+      new Set(["PAYMENT_HISTORY"]),
+    );
+    // The SINGULAR reference point the histories were out of step with (BKL-206).
+    expect(classifyOnlyRequiredTypes("cancela meu pedido")).toBeUndefined();
+  });
+
   it("a bare 'status' (no discriminator) → BOTH order+payment (still fully eligible)", () => {
     expect(classifyOnlyRequiredTypes("qual o status?")).toEqual(
       new Set(["ORDER_FULFILLMENT_STAGE", "PAYMENT_STATUS"]),
