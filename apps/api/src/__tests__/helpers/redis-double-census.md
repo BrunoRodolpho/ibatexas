@@ -889,7 +889,7 @@ population, in 34% of its files.
 | 3 | `jobs/defer-timeout-sweeper.ts` | 2 | scanIterator get ttl del; reaches CAD via `lib/defer-resuming-lock` | no | (ii) owner-gated — Lua |
 | 4 | `jobs/dlq-depth-checker.ts` | 1 | scanIterator lLen | YES | already threaded (inline bag) |
 | 5 | `jobs/escalation-park-expiry-sweeper.ts` | 1 | scanIterator get exists | YES | already threaded (`SweeperRedis`) |
-| 6 | `jobs/follow-up-poller.ts` | 1 | zRangeByScore zRem | no | (i) migratable — **deferred**, needs 2 adapter commands |
+| 6 | `jobs/follow-up-poller.ts` | 1 | zRangeByScore zRem | no → **YES** | **(i) THREADED (family 3)** |
 | 7 | `jobs/hesitation-nudge.ts` | 2 | get del / set | no → **YES** | **(i) THREADED** |
 | 8 | `jobs/observability-liveness-checker.ts` | 1 | incr expire del | YES | already threaded (inline bag) |
 | 9 | `jobs/outbox-retry.ts` | 1 | set **eval** (CAD) lRange lRem | no | (ii) owner-gated — Lua |
@@ -900,14 +900,20 @@ population, in 34% of its files.
 | 14 | `jobs/review-prompt.ts` | 1 | **multi** | no | (ii) owner-gated — `multi` |
 | 15 | `jobs/weather-helper.ts` | 1 | get set | no → **YES** | **(i) THREADED** |
 | 16 | `subscribers/cart-intelligence.ts` | 14 | get set del expire hGet hSet hDel hIncrBy hKeys scan zRem **multi** | no | (ii) owner-gated — `multi` |
-| 17 | `subscribers/dedup.ts` | 4 | set del | no | (i) migratable — **deferred** |
+| 17 | `subscribers/dedup.ts` | 4 | set del | no → **YES** | **(i) THREADED (family 3)** |
 | 18 | `subscribers/defer-resolver.ts` | 3 | get set del incr decr scanIterator | YES | already threaded (R5-S12) |
-| 19 | `subscribers/dlq.ts` | 1 | lPush lTrim expire | no | (i) migratable — **deferred**, needs `lTrim` |
+| 19 | `subscribers/dlq.ts` | 1 | lPush lTrim expire | no → **YES** | **(i) THREADED (family 3)** |
 | 20 | `subscribers/incident-notification-subscriber.ts` | 1 | set **(+ eval downstream via `atomicIncr`)** | no | (ii) owner-gated — Lua |
 | 21 | `lib/defer-resuming-lock.ts` | 2 | set del **eval** (CAD) | YES | already threaded (R5-S12) |
 
 **Arithmetic, files: 21 = 6 threaded + 3 deferred-migratable + 7 owner-gated +
 5 already threaded.**
+
+> **Superseded by family 3** (this file's last section): the three
+> deferred-migratable rows — items 6, 17 and 19 — are all threaded, so the
+> current arithmetic is `21 = 5 already + 6 (family 2) + 3 (family 3) + 7
+> owner-gated` and class (d) has ZERO migratable rows left. The table above is
+> kept as #539's dated record; read the family-3 remainder map for the live one.
 Rows: threaded 1,7,10,11,12,15 · deferred 6,17,19 · owner-gated 2,3,9,13,14,16,20 ·
 already threaded 4,5,8,18,21.
 
@@ -1033,9 +1039,9 @@ which production has ever written (apps/api's vitest resolves `rk` to
 
 | Bucket | n | Files |
 |---|---|---|
-| Migratable now, adapter-complete | 1 | `subscribers/dedup.ts` (4 sites) — **lead with this** |
-| Migratable, needs `lTrim` | 1 | `subscribers/dlq.ts` |
-| Migratable, needs `zRangeByScore`+`zRem` | 1 | `jobs/follow-up-poller.ts` |
+| Migratable now, adapter-complete | 1 | `subscribers/dedup.ts` (4 sites) — **lead with this** — DONE in family 3 |
+| Migratable, needs `lTrim` | 1 | `subscribers/dlq.ts` — DONE in family 3 |
+| Migratable, needs `zRangeByScore`+`zRem` | 1 | `jobs/follow-up-poller.ts` — DONE in family 3 |
 | Owner-gated — Lua (`eval`) | 4 | items 2, 3, 9, 20 |
 | Owner-gated — `multi` | 3 | items 13, 14, 16 (item 13 also needs the zset pair) |
 | Already threaded | 5 | items 4, 5, 8, 18, 21 |
@@ -1169,3 +1175,363 @@ guard exists, the control measures production clears it.
 guard, because only they have a second positional slot. Any future R5 slice that
 threads a BullMQ processor inherits the same collision — `jobs/queue.ts` is
 where to look.
+
+---
+
+## R5 rollout, family 3 — the DEDUP family (class (d)'s three migratable rows)
+
+Measured on branch `refactor/r5-rollout-dedup-family`, off `dev @ bc250411`.
+This slice executes the remainder map R5 family 2 (PR #539) left: **all three**
+"migratable" rows, in that map's own priority order.
+
+### What was shipped, and why all three
+
+| # | File | Sites | Blocked on (per #539) | Shipped |
+|---|---|---|---|---|
+| 17 | `subscribers/dedup.ts` | 4 | nothing — excluded by the size bound | YES, and it LED |
+| 19 | `subscribers/dlq.ts` | 1 | adapter lacked `lTrim` | YES |
+| 6 | `jobs/follow-up-poller.ts` | 1 | adapter lacked `zRangeByScore` + `zRem` | YES |
+
+The bound offered was "ship 1 and 2 and enumerate 3". All three shipped
+because the zset pair turned out to be **less** fiddly than the map feared, and
+for a reason worth recording: the only migrating caller
+(`processFollowUps`) issues the plain 3-argument form `zRangeByScore(key, 0,
+now)`. Every fiddly part of ZRANGEBYSCORE — `-inf`/`+inf`, the exclusive
+`"(score"` spelling, and `LIMIT` — belongs to the OTHER caller
+(`jobs/review-prompt-poller.ts`), which is owner-gated on `multi` and does not
+run against this adapter at all. So the honest modelling job was small, and the
+fiddly forms are **refused rather than approximated** (see below). Had they been
+approximated, this slice would have shipped two rows.
+
+### The seams, and the Pick decision each one records
+
+Named types throughout, following `SweeperRedis` / the outreach family.
+
+| Module | Type(s) | Pick = issued ∪ downstream |
+|---|---|---|
+| `subscribers/dedup.ts` | `DedupClaimRedis`, `DedupReleaseRedis`, `WithDedupRedis` | {set} / {del} / **{set} ∪ {set, del}** |
+| `subscribers/dlq.ts` | `DlqRedis` | {lPush, lTrim, expire} ∪ ∅ |
+| `jobs/follow-up-poller.ts` | `FollowUpPollerRedis` | {zRangeByScore, zRem} ∪ ∅ |
+
+**One of the three carries a command its own body never issues**, and it was
+found the way #539's rule says to find it — by reading what the function hands
+its client TO, not by reading the function:
+
+- `withDedup` issues exactly one command, `set`. A Pick of `{set}` compiles,
+  typechecks, and passes. But `withDedup` HANDS its client to `releaseClaim`
+  (`del`) on the handler-throw path and to `markProcessed` (`set`) on the
+  success path. The honest Pick is therefore `{set} ∪ {set, del} = {set, del}`,
+  and the `del` is the one a naive reading drops. The consequence of dropping
+  it is not a crash: `releaseClaim`'s body is wrapped in its own `try {} catch
+  {}` ("best-effort — the in-flight TTL guarantees the claim eventually
+  expires"), so a missing `del` is **swallowed**, the claim stands, and the
+  event that just FAILED is suppressed for the full 5-minute in-flight window
+  with the suite green. Same shape as #539's `lRange` finding, in a
+  fail-closed module.
+
+The other two hand their client to nothing: `pushToDlq`'s only non-Redis edge is
+Sentry, and the poller's only hand-off is the PARSED member, to
+`publishNatsEvent`. Both verified by reading the callees.
+
+**A hand-off that is NOT a client hand-off, recorded because it looks like one.**
+`withDedup(eventKey, handler)` invokes `handler()` with **no arguments**. The
+handler is the caller's closure and resolves its own client; nothing of
+`withDedup`'s client reaches it. So the subscriber layer's Redis usage — which
+is large — is NOT downstream of this Pick. Checked at the call sites (11
+`withDedup` / `isNewEvent` sites across `cart-intelligence`, `fiscal-emitter`,
+`incident-subscriber`, `ingredient-depletion`, `payment-lifecycle`,
+`handoff-subscriber`, `audit-consumer`, `incident-notification-subscriber`),
+not inferred from the signature.
+
+**Feature detection: MEASURED, none.** `typeof … === "function"` was swept over
+`apps/api/src/{subscribers,jobs,lib}` and `packages/tools/src`: the only hit in
+those trees is a COMMENT in `jobs/weather-helper.ts` describing the F-22 rule.
+Zero live probes in this family's graph.
+
+### Adapter extension — three commands, each with a named consumer
+
+| Command | Named consumer | What the modelling has to get right |
+|---|---|---|
+| `lTrim` | `subscribers/dlq.ts`'s cap | WHICH END survives. LPUSH puts the newest at the head, so `lTrim(key, 0, cap-1)` keeps the NEWEST. A tail-keeping implementation satisfies `expect(lTrim).toHaveBeenCalledWith(key, 0, 999)` exactly and leaves ops paging on week-old failures. |
+| `zRangeByScore` | `jobs/follow-up-poller.ts`'s due window | The upper bound is INCLUSIVE. An exclusive one leaves the entry that is due exactly now in the set on every tick, forever. |
+| `zRem` | the same poller's drain | The COUNT. A constant `1` cannot tell a real removal from a member the poller never held — which is what "published twice" looks like from the drain side. |
+
+`lTrim` also DELETES the key when the trim leaves nothing, and preserves the
+list's TTL (both real-Redis behaviours, both pinned); `zRem` deletes the key when
+the last member goes.
+
+**Three forms are REFUSED rather than approximated**, all on `zRangeByScore`,
+and the refusal is the reason this row was shippable at all:
+
+- `"-inf"` / `"+inf"` — `Number("-inf")` is `NaN`, so a coercing implementation
+  matches nothing and reads exactly like an empty due window.
+- the exclusive `"(score"` spelling — worse, because it LOOKS numeric after a
+  strip, so a wrong answer would be plausible.
+- `LIMIT` — its only in-repo caller is `jobs/review-prompt-poller.ts`
+  (`{ LIMIT: { offset: 0, count: BATCH_CAP } }`), owner-gated on `multi`.
+  Ignoring a batch cap would hand a caller the WHOLE due set while its own test
+  asserted a bounded one.
+
+Still NOT added, each with a class-(d) caller but none in this family:
+`rPop` `lRem` `blPop` `hIncrBy` `hKeys`.
+
+### The metric, and what it does NOT cover
+
+**Doubles in the family that SUPPLY a Redis client: 3 → 0.**
+
+| File | Before | After |
+|---|---|---|
+| `__tests__/subscribers/dedup.test.ts` | 2 constant `vi.fn()`s (`set → "OK"`, `del → 1`) + faked `rk` (`test:`) | adapter, spy-delegated + injected; `getRedisClient` is a rejecting TRIPWIRE; real `rk` |
+| `__tests__/subscribers/dlq.test.ts` | 3 constant `vi.fn()`s, with `lPush` PLANTING the length the cap branches on + faked `rk` (`test:`) | adapter, spy-delegated + injected; the list really grows past the cap; TRIPWIRE; real `rk` |
+| `__tests__/jobs/follow-up-poller.test.ts` | 2 constant `vi.fn()`s (`zRangeByScore` per-case, `zRem → 1`) + faked `rk` (`development:` — a coincidence, not a fact) | adapter, spy-delegated + injected; entries SEEDED with `zAdd`; TRIPWIRE; real `rk` |
+
+Two more wrong-prefix `rk` fictions died (`test:` ×2). The third file's fake
+happened to AGREE with the real `rk`, which is the more dangerous shape — a
+coincidence recorded as a fact, the same class R5-S8 found in `audit-consumer`.
+
+**The spy-delegate is what kept the diff small.** Each command is a `vi.fn()`
+that FORWARDS to the adapter, so every existing `toHaveBeenCalledWith` /
+`toHaveBeenNthCalledWith` survives unedited while the keyspace becomes real. (A
+plain object of spies, not a wrapped Proxy: the adapter's client is a Proxy and
+has no spyable own properties.) All three files kept their case counts exactly:
+10 → 10, 5 → 5, 5 → 5.
+
+**Three fictions killed, named:**
+
+1. `dlq.test.ts` PLANTED `lPush → 1003` so the list never grew. Nothing in that
+   file could distinguish a cap that keeps the newest from one that keeps the
+   oldest. The over-cap case now seeds 1002 real entries and lets the 1003rd
+   push trip the cap, then reads the survivors back.
+2. `follow-up-poller.test.ts`'s "does not publish entries that are not due" was
+   `zRangeByScore → []`. That is indistinguishable from a poller that reads
+   nothing at all. The case now seeds a genuinely FUTURE entry and asserts it is
+   still scheduled afterwards.
+3. `dedup.test.ts`'s duplicate case relied on `set → null` as a constant, so NX
+   never ran against a keyspace. It now writes a REAL prior claim first.
+
+**What this does NOT cover, stated as the bound:**
+
+- **Zero new Lua coverage.** Nothing in this family reaches an `eval`. The 7
+  owner-gated class-(d) files are untouched.
+- **The producer of the follow-up zset is NOT driven.**
+  `packages/tools/src/intelligence/schedule-follow-up.ts` resolves its client
+  through a RELATIVE import inside the built package (`../redis/client.js`), so
+  a `vi.mock("@ibatexas/tools")` — a mock of the package SPECIFIER — cannot
+  reach it. The seam suite therefore seeds the zset by hand in the producer's
+  shape, and the producer/consumer agreement rides on two independent
+  assertions of the same key literal (`schedule-follow-up.test.ts` pins
+  `development:follow-up:scheduled`; the seam suite reads the real `rk`), NOT on
+  a driven path. This is the "parity contracts need BOTH real paths" class and
+  it is OPEN here; a `deps` bag on `scheduleFollowUp` would close it and is the
+  cheapest next step.
+- **`__tests__/sentry-background-jobs.test.ts` still mocks `getRedisClient`**
+  and was NOT migrated: it drives `processFollowUps` through the DEFAULT path,
+  which the threading preserves exactly, so it passes unedited. It is a
+  constant-answering `vi.fn()` stub (the `mockRedis` class), not a behavioural
+  double.
+- **The `mockRedis` metric (27) is unchanged**, for the fifth slice running.
+- The `redisFake` cluster (12) and the class (i) seven are untouched.
+
+### F-32 — this family's one BullMQ processor, and why the collision is NOT live
+
+`jobs/follow-up-poller.ts` is a BullMQ job, so #539's cross-reference applies.
+The measurement: **the collision is not live, and the guard is what keeps that
+true.** What `startFollowUpPoller` registers is a ONE-ARGUMENT wrapper
+(`(_job: Job) => processFollowUps()`), so BullMQ's `(job, token)` call puts the
+token nowhere. `processFollowUps(log, deps)` is the function with a deps bag in
+its second slot, and it is not what is registered.
+
+`assertDepsBag("follow-up-poller", deps)` was added anyway, because "not
+registered directly" is a property of one line that a future edit can silently
+undo — and the failure would be silent in exactly #539's way (`("tok").redis` is
+`undefined`, every tick falls back to the singleton, nothing observable
+changes). It is pinned as the same control/treatment pair:
+
+| Arm | Asserts | Reds when |
+|---|---|---|
+| treatment | `processFollowUps` REFUSES a token in its deps slot | `assertDepsBag`'s body is neutered |
+| control | what `startFollowUpPoller()` REGISTERS survives a token | the wrapper is replaced by the bare `processFollowUps` |
+
+The two recorded dead ends still hold and were not re-attempted:
+`processor.length === 1` is VACUOUS (a defaulted parameter does not count toward
+`Function.length`), and "drive it with a token and assert the singleton was
+used" is vacuous because both spellings do that today.
+
+`jobs/queue.ts` gained NO new code — `assertDepsBag` already existed. Three of
+the repo's BullMQ processors now carry it.
+
+### The fail-CLOSED contract, stated and pinned directionally
+
+`dedup.ts`'s contract is the reason it led this slice, so the pin says what the
+contract IS before proving it:
+
+> **Fail closed here means: if the CLAIM cannot be taken (Redis unreachable),
+> the handler does NOT run and a typed `DedupUnavailableError` propagates.** The
+> alternative — fail OPEN — is every replica running the side effect unguarded.
+> It is scoped to phase 1 only: a PROMOTE failure (phase 3) is deliberately
+> swallowed, because the handler has already succeeded.
+
+Three arms, because the load-bearing assertion is a NEGATIVE one:
+
+1. the guarded direction — under a client whose `set` rejects, the handler is
+   never called and the rejection is a `DedupUnavailableError`;
+2. its control, **in the same test** — the SAME handler, under a working client,
+   DOES run. Without it "handler not called" is satisfied by a `withDedup` that
+   never calls handlers at all;
+3. the scope — a promote failure resolves `true` with the handler having run,
+   and leaves the marker at the SHORT TTL. So "fail closed" stays a scoped claim
+   rather than a slogan about the module.
+
+A fourth arm pins the contrast that makes the typed error meaningful:
+`isNewEvent` PROPAGATES the raw Redis error and is asserted NOT to be a
+`DedupUnavailableError` — wrapping it would silently change every staff-alert
+call site's error handling.
+
+### Clock discipline
+
+Every TTL assertion in this slice is an EXACT equality on a FROZEN clock
+(`createInMemoryRedis({ now: () => FROZEN })`), never `toBeGreaterThan(0)` —
+which is the fiction R5-S9 found in the audit spill and cannot tell a 7-day
+dedup window from a 7-second one. Non-vacuity is proved by MUTATION rather than
+asserted: see the mutation rows in the revert-to-red table.
+
+### Revert-to-red, per seam, with per-assertion attribution
+
+Each seam's `deps.redis ?? (await getRedisClient())` was neutered to
+`await getRedisClient()` one at a time, plus the two client HAND-OFFS
+(`releaseClaim(eventKey, deps)` and `markProcessed(eventKey, deps)`).
+Copy-then-restore throughout — never `git checkout HEAD --` (which errors on an
+untracked file and leaves the neutering in place) and never `git stash` (shared
+across worktrees). Every restore was verified BY CONTENT against the pre-mutation
+bytes; `jobs/queue.ts` came back byte-identical and does not appear in the
+slice's diff.
+
+The population is the 43 cases this slice owns: 23 in the new seam suite + 10 +
+5 + 5 in the three migrated files.
+
+| Neutered | RED | of 43 |
+|---|---|---|
+| `dedup.isNewEvent` | 6 | |
+| `dedup.markProcessed` | 10 | |
+| `dedup.releaseClaim` | 2 | |
+| `dedup.withDedup` | 11 | |
+| hand-off `withDedup → markProcessed` | 8 | |
+| hand-off `withDedup → releaseClaim` | 2 | |
+| `dlq.pushToDlq` | 8 | |
+| `follow-up-poller.processFollowUps` | 9 | |
+| **total (client seams + hand-offs)** | **56** | |
+| F-32 treatment — `assertDepsBag`'s body neutered | 1 | |
+| F-32 control — bare registration replaces the wrapper | 1 | |
+
+**The 4 cases that no seam-neutering can flip are exactly the four
+*"resolves the singleton when NO client is threaded"* arms.** They assert the
+FALLBACK, so a neutered module — which always falls back — keeps them green by
+construction. They are what makes the other 56 non-vacuous; counting them as
+seam evidence would be the recurring error, so they are EXCLUDED above. Verified,
+not assumed: none of the four appears in any of the eight red lists.
+
+Control run before and after the whole sweep: **43/43 green, 0 red.**
+
+The F-32 arms are disjoint by construction, and measured so: neutering
+`assertDepsBag` reds ONLY the treatment; registering `processFollowUps` bare reds
+ONLY the control. Neither arm can be green for the other's reason.
+
+### Non-vacuity of the EXACT equalities — proved by MUTATION
+
+The exact-TTL and cap-property assertions are only worth their comments if a
+one-unit change reds them. Measured, each mutation applied and reverted alone:
+
+| Mutation | RED | What it proves |
+|---|---|---|
+| `NATS_DEDUP_TTL` 604_800 → 604_801 | 6 | the 7-day dedup window is pinned to the second, in both the two-phase promote and the single-phase claim |
+| `NATS_INFLIGHT_TTL` 300 → 301 | 5 | the 5-minute claim is pinned separately — the two TTLs cannot cover for each other |
+| `DLQ_TTL` 604_800 → 604_801 | 3 | the DLQ's 7 days is pinned, including after a trim |
+| adapter `lTrim` keeps the TAIL instead of the head | 3 | the cap keeps the NEWEST entries |
+| adapter `zRangeByScore` upper bound made EXCLUSIVE | 1 | an entry due exactly now is drained |
+
+The `lTrim` row is the one worth reading twice, because it is the property the
+#539 remainder map asked for rather than a call assertion. A tail-keeping LTRIM
+preserves the list's LENGTH exactly, so every count assertion is invariant under
+it — which is why the survivors are read back BY IDENTITY (`["e5","e4","e3"]`,
+and `ids[0] === "newest"` at the default cap) rather than by `lLen`. The
+`expect(lTrim).toHaveBeenCalledWith(key, 0, 999)` assertion the pre-slice file
+carried is likewise invariant under it: the call is identical, only the surviving
+elements differ.
+
+### Suite arithmetic
+
+Branch-local `apps/api`, run FROM `apps/api` (the root config has no
+`setupFiles` and false-reds the audit sink — a recorded trap):
+
+| | Files | Tests |
+|---|---|---|
+| baseline (`dev @ bc250411`) | 488 | 7659 passed, 3 skipped |
+| after | 489 | 7682 passed, 3 skipped |
+| **delta** | **+1** | **+23** |
+
+Closes exactly, per file:
+
+| File | Before | After | Δ |
+|---|---|---|---|
+| `subscribers/__tests__/dedup-family-client-seam.test.ts` (NEW) | — | 23 | +23 |
+| `__tests__/subscribers/dedup.test.ts` | 10 | 10 | 0 |
+| `__tests__/subscribers/dlq.test.ts` | 5 | 5 | 0 |
+| `__tests__/jobs/follow-up-poller.test.ts` | 5 | 5 | 0 |
+| **sum** | | | **+23** |
+
+The three zeroes are the point: the spy-delegate let every migrated file keep
+its exact case list while its double became real, so the +23 is entirely NEW
+coverage rather than a reshuffle.
+
+`packages/tools` moves separately: the adapter's own suite
+`src/catalog/__tests__/delivery-cache-seam.test.ts` goes **64 → 84 (+20)** for
+`lTrim` (7), `zRangeByScore` (8) and `zRem` (5). Package totals 74 files,
+1099 → 1119 tests.
+
+### Remainder map after this slice — class (d) has NO migratable rows left
+
+| Bucket | n | Files |
+|---|---|---|
+| Migratable now | **0** | — |
+| Owner-gated — Lua (`eval`) | 4 | items 2, 3, 9, 20 |
+| Owner-gated — `multi` | 3 | items 13, 14, 16 (item 13 also issues the zset pair, which the adapter now HAS — `multi` is its only remaining blocker) |
+| Already threaded (pre-R5-rollout) | 5 | items 4, 5, 8, 18, 21 |
+| Threaded by family 2 (#539) | 6 | items 1, 7, 10, 11, 12, 15 |
+| Threaded by family 3 (this slice) | 3 | items 6, 17, 19 |
+| **Total** | **21** | |
+
+**Arithmetic, files: 21 = 0 + 4 + 3 + 5 + 6 + 3.**
+**Arithmetic, call sites: 44 = 8 + 9 + 6 + 21**, in the order
+already-threaded / #539 / this slice / owner-gated —
+(1+1+1+3+2) + (1+2+3+1+1+1) + (1+4+1) + (1+2+1+1+1+14+1).
+
+One row changed CLASS, not just status: **item 13,
+`jobs/review-prompt-poller.ts`, is now blocked on `multi` ALONE.** Its
+`zRangeByScore` + `zRem` are in the adapter as of this slice — but it issues
+`zRangeByScore(key, 0, now, { LIMIT: { offset: 0, count: BATCH_CAP } })`, and
+the adapter REFUSES the `LIMIT` option deliberately. So if the owner's `multi`
+decision ever unblocks it, modelling `LIMIT` is the follow-on adapter work, and
+it must model the cap rather than ignore it.
+
+**The class-(d) migration line ends here.** Every remaining row is gated on the
+same two owner decisions — real Redis (testcontainers) for the Lua paths, and a
+design answer for `multi` — not on adapter coverage. No further adapter command
+unblocks any of the seven.
+
+### What is still open, and where the next slice should look
+
+Class (d) is exhausted, so the R5 rollout's next population is elsewhere. In
+priority order, with what each is blocked on:
+
+1. **`scheduleFollowUp` has no seam** (`packages/tools/src/intelligence/schedule-follow-up.ts`).
+   This is the open half of THIS slice's one un-closed bound: the follow-up
+   zset's producer cannot be driven from an apps/api test because it resolves
+   its client through a relative import inside the built package. A deps bag on
+   it turns the producer/consumer agreement from two independent assertions of
+   the same literal into one driven path. Cheapest available win, and it closes
+   a "parity contracts need BOTH real paths" gap rather than opening a new one.
+2. **The `redisFake` cluster (12 files)** — unchanged, class (i), owner-gated on
+   `multi`/`eval` for the same reason as items 13/14/16.
+3. **The `mockRedis` metric (27)** — unchanged for the fifth slice running, and
+   still exhausted per R5-S7: it names constant-answering `vi.fn()` stubs, not
+   behavioural doubles.
