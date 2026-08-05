@@ -2156,12 +2156,76 @@ describe("R2-S9 — DELIVERY: the generated net fires, the HAND-WRITTEN guard su
   // NOT part of the generated contribution. Delete it and every one of these becomes a
   // store-policy coverage question while the ten-arm byte pin stays green: the customer's
   // own in-flight delivery would be answered with the delivery ZONE.
+  //
+  // ── F-56 — WHY THIS BLOCK GREW A SECOND, IN-BAND HALF ────────────────────────
+  //
+  // The four rows in the OUT-OF-BAND case below are what this block used to hold on its
+  // own, and as guard coverage they were WHOLLY VACUOUS. Measured, not argued: with
+  // `if (isSelfResourceReference(t)) return false;` DELETED from `isDeliveryCoverageAsk`,
+  // all 21 test files that can observe the predicate stayed green (1141/1141), and so did
+  // the whole apps/api suite. The reason is structural — not one of those four matches ANY
+  // of the ten arms, so the NET is what declines them and the guard never runs. They can
+  // no more witness its deletion than a test for a function nobody calls.
+  //
+  // A probe for a NARROWING guard must sit in the BAND the guard removes. So every row
+  // below is a text the generated net DOES admit, paired with the arm INDEX that admits
+  // it — and the index is asserted, not annotated, so a future net edit that drifts a
+  // probe out of band reds HERE instead of going quiet. Ten rows, one per arm, because a
+  // guard that runs on only some of the band is a guard only some of the band is covered
+  // for. Each row was verified to FLIP under the deletion before being written down.
+  const SELF_REFERENCE_IN_BAND: ReadonlyArray<readonly [string, number]> = [
+    ["vocês entregam meu pedido hoje?", 0], //             voc[êe]s entregam
+    ["vocês fazem entrega do meu pedido até em casa?", 1], // (faz|fazem) entrega
+    ["entregam até o endereço do pedido #1234?", 2], //     entregam <prep>
+    ["onde entregam o pedido #1234?", 3], //                onde … entregam
+    ["qual a zona de entrega do meu pedido?", 4], //        área|região|zona de entrega
+    ["atendem no endereço do meu pedido?", 5], //           atende(m) <prep>
+    ["qual a taxa de entrega do meu pedido?", 6], //        taxa de (entrega|frete)
+    ["qual o valor da entrega do meu pedido?", 7], //       (valor|preço) d[oa] (entrega|frete)
+    ["quanto custa a entrega do meu pedido?", 8], //        quanto custa a entrega
+    ["quanto tempo demora a entrega do meu pedido?", 9], // quanto tempo demora a entrega
+  ];
+
+  it.each(SELF_REFERENCE_IN_BAND)(
+    "MUST-NOT-FIRE (self-reference, IN BAND): %j — admitted by arm %d",
+    (text, arm) => {
+      const t = text.toLowerCase();
+      // (1) IN BAND, and via EXACTLY the named arm. This is the assertion the four
+      //     out-of-band rows could never make, and it is what makes (3) mean something.
+      const admitting = DELIVERY_COVERAGE_CLOSURE.markers
+        .map((m, i) => (m.test(t) ? i : -1))
+        .filter((i) => i >= 0);
+      expect(admitting, `${text}: arms that admit it`).toEqual([arm]);
+      // (2) The span's OTHER conjunct is not what suppresses this row, so the absence in
+      //     (4) is attributable to the self-reference guard ALONE and not to
+      //     `!mutationImperative` standing in front of it.
+      expect(hasMutationImperative(text), text).toBe(false);
+      // (3) THE GUARD. Delete the `isSelfResourceReference` line and this reds.
+      expect(isDeliveryCoverageAsk(text), text).toBe(false);
+      // (4) …and at the span, where the customer's OWN order keeps its owner-scoped read
+      //     rather than being answered with the store's delivery ZONE.
+      const spans = classifyRequestSpans(text);
+      expect(spans, text).not.toContain("DELIVERY_COVERAGE_Q");
+      expect(spans, text).toContain("ORDER_STATUS_Q");
+    },
+  );
+
+  // The original four rows, KEPT and relabelled to say what they actually prove. They are
+  // right about the outcome and silent about the guard: the net declines them, which is
+  // why they survive its deletion untouched. The first assertion is the honest one — and
+  // it is a real pin, since a future widening that pulled one of these into the band would
+  // red here and demand it be moved up into the in-band table.
   it.each([
     "cadê minha entrega?",
     "meu pedido saiu para entrega?",
     "minha entrega está atrasada",
     "o pedido nº 1234 já saiu para entrega?",
-  ])("MUST-NOT-FIRE (self-reference): %s", (text) => {
+  ])("MUST-NOT-FIRE (OUT of band — the NET declines it, not the guard): %s", (text) => {
+    const t = text.toLowerCase();
+    expect(
+      DELIVERY_COVERAGE_CLOSURE.markers.some((m) => m.test(t)),
+      `${text}: no arm may admit it`,
+    ).toBe(false);
     expect(isDeliveryCoverageAsk(text)).toBe(false);
     expect(classifyRequestSpans(text)).not.toContain("DELIVERY_COVERAGE_Q");
   });
@@ -2731,9 +2795,17 @@ describe("classifyRequestSpans — BKL-238 checkout imperatives don't ride the s
   });
 
   it("the `fech*` STORE-CLOSED family is untouched (STORE_OPEN_NOW still fires)", () => {
-    // fechado(s) / fechamento / fecham / fechou are the hours-and-open-state READ
-    // vocabulary — the `fech(?!ad|ament|ou|am)` lookahead keeps every one of them out
-    // of the mutation net, and the schedule spans they DO fire are unchanged.
+    // fechado(s) / fechamento / fecham are the hours-and-open-state READ vocabulary, and
+    // the schedule span they fire is unchanged.
+    //
+    // F-56 — READ WHAT THIS ASSERTS. STORE_OPEN_NOW_Q is the ONE span in
+    // `classifyRequestSpans` pushed WITHOUT the `!mutationImperative` conjunct (it goes
+    // through `hasIndependentStoreOpenNowMarker`, F-13(b)), so it fires whether or not
+    // these texts are classified as mutations. This test therefore says NOTHING about the
+    // `fech(?!ad|ament|ou|am)` lookahead, and for a long time it was the only test that
+    // named it: replacing the lookahead with a bare `fech` left the entire apps/api suite
+    // green (504 files / 7897 passed, bit-identical). The lookahead's pins are the block
+    // directly below this one.
     for (const text of [
       "vocês estão fechados?",
       "o restaurante tá fechado agora?",
@@ -2742,6 +2814,59 @@ describe("classifyRequestSpans — BKL-238 checkout imperatives don't ride the s
     ]) {
       expect(classifyRequestSpans(text), text).toContain("STORE_OPEN_NOW_Q");
     }
+  });
+
+  // ── F-56 — the `fech(?!ad|ament|ou|am)` LOOKAHEAD, arm by arm ────────────────
+  //
+  // What the lookahead protects is not STORE_OPEN_NOW_Q (see above) but every OTHER read
+  // span, all of which ARE `!mutationImperative`-gated. So the pin belongs on the shared
+  // predicate itself, and each row carries its own IN-BAND control: the bare `fech` root
+  // must be present in the text, or the row would pass for the trivial reason that the
+  // lookahead was never reached.
+  //
+  // ARM ATTRIBUTION IS MEASURED, by deleting one arm at a time and re-testing — and it
+  // turns up a SHADOWED arm, recorded here rather than quietly papered over:
+  //
+  //     ad     → "fechado" / "fechados"      (3 rows below)
+  //     am     → "fecham"
+  //     ou     → "fechou"
+  //     ament  → NOTHING. `am` is a prefix of `ament`, so `fechamento` is already
+  //              excluded by the `am` arm and deleting `ament` alone moves no behaviour.
+  //
+  // The fechamento row is therefore attributed to `{ament, am}` JOINTLY. It is honest
+  // about that instead of claiming a per-arm witness no probe can have — a single-arm
+  // deletion of `ament` is a change this suite cannot see, and saying so is the point.
+  const FECH_READ_FORMS: ReadonlyArray<readonly [string, string]> = [
+    ["meu pedido foi fechado?", "ad"],
+    ["vocês estão fechados?", "ad"],
+    ["o restaurante tá fechado agora?", "ad"],
+    ["qual o horário de fechamento?", "ament+am"],
+    ["que horas vocês fecham?", "am"],
+    ["o restaurante já fechou?", "ou"],
+  ];
+
+  it.each(FECH_READ_FORMS)(
+    "the `fech` lookahead keeps %j a READ (arm %s)",
+    (text, arm) => {
+      // IN BAND: the bare root IS in this text, so the lookahead is what decides it.
+      expect(/(?<![a-z])fech/.test(text.toLowerCase()), `${text} [${arm}]`).toBe(true);
+      // THE PIN: replace the lookahead with a bare `fech` and this line reds.
+      expect(hasMutationImperative(text), `${text} [${arm}]`).toBe(false);
+    },
+  );
+
+  it("`fechado` on the customer's OWN order keeps ORDER_STATUS_Q (the wrong-family regression)", () => {
+    // The latent defect the vacuity hid, and the `finalizad*` sibling above is its exact
+    // twin. With a bare `fech`, "meu pedido foi fechado?" becomes a mutation imperative,
+    // ORDER_STATUS_Q is suppressed (it is gated on `!mutationImperative`), and the only
+    // span left standing is the STORE_OPEN_NOW_Q that the `fechado` marker pushes on its
+    // own — so a question about the customer's order is answered, confidently, with the
+    // restaurant's OPENING HOURS. A wrong-FAMILY render is the one direction the
+    // demote-only argument does not cover, which is why this is pinned at the span and at
+    // the closure, not only on the predicate.
+    const spans = classifyRequestSpans("meu pedido foi fechado?");
+    expect(spans).toContain("ORDER_STATUS_Q");
+    expect(decomposeRequiredClaims(spans).has("ORDER_FULFILLMENT_STAGE")).toBe(true);
   });
 
   it("a store-hours read that shares the bare verb form still classifies correctly", () => {
