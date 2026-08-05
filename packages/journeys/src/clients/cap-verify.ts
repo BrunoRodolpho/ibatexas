@@ -22,6 +22,19 @@ const PHONE = "+5519900000002"
 const CAP_CENTAVOS = 1_000_000 // CONFIRM_LARGE_TICKET_THRESHOLD (100_000) × 10 = R$10.000,00
 
 const need = (e: Record<string, string>, k: string) => { const v = e[k]; if (!v) { throw new Error(`.env.test missing ${k}`) } return v }
+// The slice of the cart/checkout API's JSON body this vector actually reads.
+// Every field is optional because the driver hits the LIVE api and must stay
+// standing on an error body (it asserts on `status` + the stringified blob).
+interface ApiCart {
+  id?: string
+  total?: number
+  items?: Array<{ quantity?: number; unit_price?: number; total?: number }>
+}
+/** A cart response is either `{ cart }` or the cart object itself. */
+interface ApiBody extends ApiCart {
+  cart?: ApiCart
+}
+
 const say = (s: string) => console.log(s)
 const oneLine = (s: unknown): string => String(s).replace(/[\r\n]+/g, " ")
 
@@ -37,9 +50,9 @@ async function main(): Promise<void> {
   if (!customer) throw new Error(`customer ${PHONE} not seeded`)
   const cookie = cookieHeader(mintCustomerToken({ customerId: customer.id, jwtSecret }))
 
-  const http = async (m: string, p: string, body?: unknown): Promise<{ status: number; json: any }> => {
+  const http = async (m: string, p: string, body?: unknown): Promise<{ status: number; json: ApiBody | null }> => {
     const r = await fetch(`${API_BASE}${p}`, { method: m, headers: { "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
-    let json: any = null; try { json = await r.json() } catch { /* */ }
+    let json: ApiBody | null = null; try { json = (await r.json()) as ApiBody } catch { /* */ }
     return { status: r.status, json }
   }
 
@@ -53,10 +66,10 @@ async function main(): Promise<void> {
   if (!cartId) throw new Error("could not create cart")
   say(`cart=${oneLine(cartId)}; filling toward >= R$${(CAP_CENTAVOS / 100).toFixed(0)} (cap=${CAP_CENTAVOS} centavos)`)
 
-  const cartTotal = (j: any): number => {
+  const cartTotal = (j: ApiBody | null): number => {
     const c = j?.cart ?? j
     if (typeof c?.total === "number") return c.total
-    const items = (c?.items ?? []) as Array<{ quantity?: number; unit_price?: number; total?: number }>
+    const items = c?.items ?? []
     return items.reduce((s, it) => s + (typeof it.total === "number" ? it.total : (it.quantity ?? 0) * (it.unit_price ?? 0)), 0)
   }
 

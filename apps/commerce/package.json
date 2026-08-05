@@ -18,7 +18,7 @@
     "db:seed:promotions": "medusa exec src/seed-promotions.ts",
     "db:setup": "medusa db:setup",
     "test": "vitest run",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && eslint \"src/**/*.ts\""
   },
   "dependencies": {
     "@ibatexas/nats-client": "workspace:*",
@@ -37,6 +37,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@ibatexas/eslint-config": "workspace:*",
     "@medusajs/cli": "^2.13.5",
     "ts-node": "^10.9.0",
     "typescript": "^5.9.0"

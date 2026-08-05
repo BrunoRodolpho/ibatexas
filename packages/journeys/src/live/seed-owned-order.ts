@@ -179,7 +179,7 @@ export async function seedOwnedOrder(opts: SeedOwnedOrderOptions): Promise<SeedO
   // and readable in the returned seedKey.
   const effectiveLabel =
     opts.freshWindow === true
-      ? `${opts.label ?? "fresh"}-w${new Date().toISOString().replace(/[:.\-]/g, "").slice(0, 18)}`
+      ? `${opts.label ?? "fresh"}-w${new Date().toISOString().replace(/[:.-]/g, "").slice(0, 18)}`
       : opts.label
   // Thread the effective label through EVERY derivation (lookup, dry-run plan,
   // draft metadata) so the stamped metadata.seedKey and the returned seedKey

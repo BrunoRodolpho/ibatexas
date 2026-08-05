@@ -3,6 +3,7 @@
  */
 
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import type { Logger, MedusaContainer } from "@medusajs/framework/types"
 import { indexProduct } from "@ibatexas/tools"
 
 const PRODUCT_FIELDS = [
@@ -18,10 +19,6 @@ const PRODUCT_FIELDS = [
 // Max retry attempts for Typesense indexing failures
 const TYPESENSE_MAX_RETRIES = 2
 
-interface MedusaContainer {
-  resolve(key: string): any
-}
-
 /**
  * Retry wrapper with exponential backoff for Typesense operations.
  * Max 2 retries (3 total attempts) with 500ms base delay.
@@ -29,7 +26,7 @@ interface MedusaContainer {
 async function withTypesenseRetry<T>(
   fn: () => Promise<T>,
   label: string,
-  logger: { warn: (...args: any[]) => void },
+  logger: Pick<Logger, "warn">,
 ): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt <= TYPESENSE_MAX_RETRIES; attempt++) {

@@ -157,7 +157,7 @@ async function main(): Promise<void> {
   console.log("══════════════════════════════════════════════════════════════════════")
 
   const transcript: unknown[] = []
-  let seenHashes = new Set<string>()
+  const seenHashes = new Set<string>()
 
   for (const [i, step] of CONVERSATION.entries()) {
     console.log(`\n[Turn ${i + 1}] ${step.intent}`)

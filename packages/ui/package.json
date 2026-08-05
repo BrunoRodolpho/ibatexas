@@ -17,7 +17,7 @@
     "./layouts": "./src/layouts/index.ts"
   },
   "scripts": {
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && eslint \"src/**/*.{ts,tsx}\""
   },
   "peerDependencies": {
     "react": "^19.2.0",
@@ -31,7 +31,9 @@
     "lucide-react": "^0.577.0"
   },
   "devDependencies": {
+    "@ibatexas/eslint-config": "workspace:*",
     "@types/react": "^19.2.0",
+    "eslint-plugin-react-hooks": "^7.0.0",
     "typescript": "^5.9.0"
   }
 }

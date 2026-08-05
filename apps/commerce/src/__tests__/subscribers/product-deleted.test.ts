@@ -28,10 +28,17 @@ vi.mock("../../subscribers/_product-indexing", () => ({
 // ── Import after mocks ────────────────────────────────────────────────────────
 
 import productDeletedHandler from "../../subscribers/product-deleted";
+import type { SubscriberArgs } from "@medusajs/framework";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildArgs(productId: string) {
+// The handler reads exactly two things off its argument: `event.data.id` and
+// `container.resolve("logger")`. The stub implements that surface and nothing
+// else, so it stands in for a real `SubscriberArgs` — whose `container` is a
+// full Awilix container that cannot be built in a unit test. The widening hop
+// through `unknown` is what the partial stub costs; naming the destination type
+// is what keeps the seam honest (a bare `as any` named nothing).
+function buildArgs(productId: string): SubscriberArgs<{ id: string }> {
   return {
     event: { data: { id: productId } },
     container: {
@@ -41,7 +48,7 @@ function buildArgs(productId: string) {
         error: vi.fn(),
       }),
     },
-  };
+  } as unknown as SubscriberArgs<{ id: string }>;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -52,7 +59,7 @@ describe("product.deleted subscriber", () => {
   });
 
   it("publishes product.intelligence.purge with correct productId", async () => {
-    await productDeletedHandler(buildArgs("prod_123") as any);
+    await productDeletedHandler(buildArgs("prod_123"));
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith("product.intelligence.purge", {
       productId: "prod_123",
@@ -74,7 +81,7 @@ describe("product.deleted subscriber", () => {
       callOrder.push("nats");
     });
 
-    await productDeletedHandler(buildArgs("prod_456") as any);
+    await productDeletedHandler(buildArgs("prod_456"));
 
     expect(callOrder).toEqual(["typesense", "cache", "nats"]);
   });
@@ -82,7 +89,7 @@ describe("product.deleted subscriber", () => {
   it("does not publish the event when Typesense deletion throws", async () => {
     mockWithTypesenseRetry.mockRejectedValueOnce(new Error("Typesense unavailable"));
 
-    await productDeletedHandler(buildArgs("prod_789") as any);
+    await productDeletedHandler(buildArgs("prod_789"));
 
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
   });

@@ -83,6 +83,7 @@ const SLOT = "conversationTriggers"
  */
 function malformation(phrasing: string): string | undefined {
   if (phrasing !== phrasing.trim()) return "it has leading or trailing whitespace"
+  // eslint-disable-next-line no-control-regex -- the C0/DEL range IS the subject: this class REJECTS control characters in an authored phrasing.
   if (/[\u0000-\u001f\u007f]/.test(phrasing)) return "it contains a control character"
   if (/\s{2,}/.test(phrasing)) return "it contains a run of consecutive whitespace"
   if (normalizeTriggerPhrasing(phrasing) === "") {

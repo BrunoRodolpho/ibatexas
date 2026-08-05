@@ -13,7 +13,6 @@
 // leg 6/7); the shape read here is a small, duplicated, structurally-typed
 // mirror of its documented contract, not a compile-time dependency on it.
 
-import type { AuditRecord } from "@adjudicate/core"
 import type { PayloadPredicate } from "../oracle/audit-trail-matcher.js"
 import type { ExpectPayload, FieldTrust, IrExpectation } from "./schema.js"
 
