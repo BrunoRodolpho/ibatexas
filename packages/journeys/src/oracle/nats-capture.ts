@@ -267,6 +267,7 @@ function awaitSubjectExpectations(args: {
 
   return new Promise<ExpectSubjectsResult>((resolve, reject) => {
     let settled = false
+    // eslint-disable-next-line prefer-const -- assigned exactly once, but the BINDING must precede `settleGuard` below, which closes over it; `const timer = setTimeout(...)` would move the declaration after its own reader (and start the window early).
     let timer: ReturnType<typeof setTimeout> | undefined
 
     // Idempotent settle guard: claims the single resolution, clears the timer,

@@ -28,7 +28,6 @@ import type {
 // (IBX_DRIVER_BASE_URL / LLM_BASE_URL) below.
 const DEFAULT_SCHEME = process.env.IBX_OLLAMA_SCHEME ?? "http"
 const DEFAULT_BASE_URL = `${DEFAULT_SCHEME}://192.168.1.80:11434/v1`
-const DEFAULT_MODEL = "nemotron-3-nano:4b"
 
 type OpenAIMessage =
   | { role: "system"; content: string }

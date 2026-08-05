@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "tsc --outDir dist && tsx scripts/check-catalog.ts",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint \"src/**/*.ts\"",
     "test": "vitest run",
     "check": "tsx scripts/check-catalog.ts",
     "check:claim-refs": "tsx scripts/check-claim-references.ts",

@@ -76,15 +76,6 @@ function formatTime(iso: string | null): string {
   } catch { return '—' }
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '—'
-  try {
-    const d = new Date(iso)
-    if (Number.isNaN(d.getTime())) return '—'
-    return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })
-  } catch { return '—' }
-}
-
 function formatReservationId(displayId?: number) {
   if (!displayId) return '—'
   return `#${String(displayId).padStart(3, '0')}`

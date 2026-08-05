@@ -130,7 +130,7 @@ export function normalizeReference(reference: string): string {
   // normalizer (LE2-033) — see `../text-normalization.ts` for why only the
   // HEAD is shared and the separator tail below stays local to this caller.
   return normalizeDiacritics(reference.replace(/([a-z0-9])([A-Z])/g, "$1_$2")).replace(
-    /[\s./\-]+/g,
+    /[\s./-]+/g,
     "_",
   )
 }

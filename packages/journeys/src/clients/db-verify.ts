@@ -32,8 +32,40 @@ function check(name: string, ok: boolean, detail: string) { checks.push({ name, 
 type DomainReader = ReturnType<typeof createDomainReader>
 type Customer = NonNullable<Awaited<ReturnType<DomainReader["customerByPhone"]>>>
 type Variant = NonNullable<Awaited<ReturnType<DomainReader["variantByHandle"]>>>
-type QueryFn = (sql: string, params?: unknown[]) => Promise<any[]>
-type HttpFn = (m: string, p: string, body?: unknown) => Promise<{ status: number; json: any }>
+// ── Row shapes, one per SELECT list below ────────────────────────────────────
+// These are the REAL column sets this driver reads back; each `q<Row>(...)`
+// names the shape its own SELECT projects, so a column dropped from a query
+// and still read in an assertion is a tsc error rather than a runtime NaN.
+interface SchemaRow { schema_name: string }
+interface AuditSchemaRow { table_schema: string }
+interface ColumnRow { column_name: string }
+interface CountRow { n: number }
+/** The 5 columns BOTH order assertions project. */
+interface OrderProjectionCore {
+  id: string
+  display_id: number
+  fulfillment_status: string
+  payment_status: string
+  payment_method: string
+}
+/** Order#1 additionally projects the delivery/-total triple. */
+interface OrderProjectionFull extends OrderProjectionCore {
+  delivery_type: string
+  item_count: number
+  total_in_centavos: number
+}
+interface MedusaOrderRow { id: string; status: string; canceled_at: string }
+/** Order#2 projects only method+status; order#1 also takes the amount. */
+interface PaymentCore { method: string; status: string }
+interface PaymentRow extends PaymentCore { amount_in_centavos: number }
+interface StatusHistoryRow { from_status: string | null; to_status: string }
+interface AuditCensusRow { kind: string; decision_kind: string; n: number }
+
+/** The slice of the cart/checkout API body this driver reads. */
+interface ApiBody { cart?: { id?: string } }
+
+type QueryFn = <Row = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<Row[]>
+type HttpFn = (m: string, p: string, body?: unknown) => Promise<{ status: number; json: ApiBody | null }>
 interface Ctx { q: QueryFn; domain: DomainReader; http: HttpFn; customer: Customer; variant: Variant }
 
 // strip CR/LF so externally-sourced data can't forge log lines (S5145)
@@ -41,7 +73,7 @@ const oneLine = (x: unknown): string => String(x).replace(/[\r\n]+/g, " ")
 const KERNEL_VERBS = new Set(["EXECUTE", "REFUSE", "REQUEST_CONFIRMATION", "ESCALATE", "DEFER", "REWRITE"])
 const BASE_ORIGIN = new URL(API_BASE).origin
 
-async function http(m: string, p: string, cookie: string, body?: unknown): Promise<{ status: number; json: any }> {
+async function http(m: string, p: string, cookie: string, body?: unknown): Promise<{ status: number; json: ApiBody | null }> {
   // Pin the request to the configured API origin — the path is built from
   // run-time ids, so reject anything that would escape the base (S7044/S8476).
   const url = new URL(p, API_BASE)
@@ -49,7 +81,7 @@ async function http(m: string, p: string, cookie: string, body?: unknown): Promi
     throw new Error("request URL escaped the expected API origin")
   }
   const r = await fetch(url, { method: m, headers: { "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
-  let json: any = null; try { json = await r.json() } catch { /* */ }
+  let json: ApiBody | null = null; try { json = (await r.json()) as ApiBody } catch { /* */ }
   return { status: r.status, json }
 }
 
@@ -93,10 +125,10 @@ async function censusSection(ctx: Ctx): Promise<string | undefined> {
   const { q } = ctx
   // ── Schema census ───────────────────────────────────────────────────────
   say("\n[census] schemas & key table row counts:")
-  const schemas = await q(`SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('pg_catalog','pg_toast','information_schema') AND schema_name NOT LIKE 'pg_%' ORDER BY 1`)
+  const schemas = await q<SchemaRow>(`SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('pg_catalog','pg_toast','information_schema') AND schema_name NOT LIKE 'pg_%' ORDER BY 1`)
   say(`  schemas: ${schemas.map((r) => r.schema_name).join(", ")}`)
-  const auditSchemaRow = await q(`SELECT table_schema FROM information_schema.tables WHERE table_name='intent_audit' LIMIT 1`)
-  const auditSchema = auditSchemaRow[0]?.table_schema as string | undefined
+  const auditSchemaRow = await q<AuditSchemaRow>(`SELECT table_schema FROM information_schema.tables WHERE table_name='intent_audit' LIMIT 1`)
+  const auditSchema = auditSchemaRow[0]?.table_schema
   const censusTables: Array<[string, string]> = [
     ["public", "product"], ["public", "product_variant"], ["public", "cart"], ["public", "order"],
     ["ibx_domain", "customers"], ["ibx_domain", "order_projections"], ["ibx_domain", "payments"],
@@ -105,7 +137,7 @@ async function censusSection(ctx: Ctx): Promise<string | undefined> {
   if (auditSchema) censusTables.push([auditSchema, "intent_audit"])
   for (const [s, t] of censusTables) {
     const label = `${s}.${t}`
-    try { const n = (await q(`SELECT count(*)::int AS n FROM "${s}"."${t}"`))[0]?.n; say(`    ${label.padEnd(34)} ${n}`) }
+    try { const n = (await q<CountRow>(`SELECT count(*)::int AS n FROM "${s}"."${t}"`))[0]?.n; say(`    ${label.padEnd(34)} ${n}`) }
     catch (e) { say(`    ${label.padEnd(34)} (n/a: ${(e as Error).message.split("\n")[0]})`) }
   }
   return auditSchema
@@ -115,10 +147,10 @@ async function seededEntities(ctx: Ctx): Promise<void> {
   const { q } = ctx
   // ── Seeded-entity sanity ────────────────────────────────────────────────
   say("\n[seeded entities]")
-  const custN = (await q(`SELECT count(*)::int n FROM ibx_domain.customers`))[0].n
+  const custN = (await q<CountRow>(`SELECT count(*)::int n FROM ibx_domain.customers`))[0].n
   check("seeded customers present", custN >= 5, `${custN} customers`)
-  const prodN = (await q(`SELECT count(*)::int n FROM public.product WHERE deleted_at IS NULL`))[0].n
-  const varN = (await q(`SELECT count(*)::int n FROM public.product_variant WHERE deleted_at IS NULL`))[0].n
+  const prodN = (await q<CountRow>(`SELECT count(*)::int n FROM public.product WHERE deleted_at IS NULL`))[0].n
+  const varN = (await q<CountRow>(`SELECT count(*)::int n FROM public.product_variant WHERE deleted_at IS NULL`))[0].n
   check("seeded catalog present", prodN > 0 && varN > 0, `${prodN} products, ${varN} variants`)
 }
 
@@ -127,20 +159,20 @@ async function verifyOrderPending(ctx: Ctx, pendingId: string | null): Promise<v
   // ── Order#1 PENDING verification (ibx_domain + Medusa cross-link) ────────
   say("\n[order#1 — expected PENDING]")
   if (!pendingId) { check("order#1 placed", false, "placement failed"); return }
-  const op = (await q(`SELECT id, display_id, fulfillment_status, payment_status, payment_method, delivery_type, item_count, total_in_centavos FROM ibx_domain.order_projections WHERE id=$1`, [pendingId]))[0]
+  const op = (await q<OrderProjectionFull>(`SELECT id, display_id, fulfillment_status, payment_status, payment_method, delivery_type, item_count, total_in_centavos FROM ibx_domain.order_projections WHERE id=$1`, [pendingId]))[0]
   check("order#1 projection exists", !!op, op ? `display=IBX-${op.display_id} fulfillment=${op.fulfillment_status} pay=${op.payment_method}/${op.payment_status}` : "MISSING")
   if (op) {
     check("order#1 fulfillment=pending", op.fulfillment_status === "pending", `got ${op.fulfillment_status}`)
     check("order#1 method/delivery correct", op.payment_method === "cash" && op.delivery_type === "pickup", `${op.payment_method}/${op.delivery_type}`)
   }
-  const mo = await q(`SELECT id, status, COALESCE(canceled_at::text,'') canceled_at FROM "public"."order" WHERE id=$1`, [pendingId]).catch(() => [])
+  const mo = await q<MedusaOrderRow>(`SELECT id, status, COALESCE(canceled_at::text,'') canceled_at FROM "public"."order" WHERE id=$1`, [pendingId]).catch((): MedusaOrderRow[] => [])
   check("order#1 Medusa row cross-links (id match)", mo.length === 1, mo[0] ? `medusa status=${mo[0].status} canceled_at=${mo[0].canceled_at || "—"}` : "no medusa order row")
   if (mo[0]) check("order#1 Medusa NOT canceled", !mo[0].canceled_at, mo[0].canceled_at ? `unexpectedly canceled_at=${mo[0].canceled_at}` : "active")
-  const pay = (await q(`SELECT method, status, amount_in_centavos FROM ibx_domain.payments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [pendingId]))[0]
+  const pay = (await q<PaymentRow>(`SELECT method, status, amount_in_centavos FROM ibx_domain.payments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [pendingId]))[0]
   check("order#1 payment projection exists", !!pay, pay ? `method=${pay.method} status=${pay.status} amount=${pay.amount_in_centavos}` : "MISSING")
 }
 
-function sayMedusaCancelObservation(mo0: any): void {
+function sayMedusaCancelObservation(mo0: MedusaOrderRow): void {
   const medusaCanceled = !!mo0.canceled_at || mo0.status === "canceled"
   say(`     ↳ OBSERVATION: domain projection=canceled + payment=canceled; Medusa-native order.status=${mo0.status} canceled_at=${mo0.canceled_at || "—"}`)
   say(`       ${medusaCanceled ? "Medusa order also transitioned to canceled." : "Medusa order NOT transitioned — the domain projection is the AUTHORITATIVE fulfillment state (JOURNEY-001 asserts the canceled goal against the projection; no medusa.order.cancel gateway envelope is emitted). By design, NOT a fail-open."}`)
@@ -151,16 +183,16 @@ async function verifyOrderCanceled(ctx: Ctx, canceledId: string | null): Promise
   // ── Order#2 CANCELED verification ───────────────────────────────────────
   say("\n[order#2 — expected CANCELED]")
   if (!canceledId) { check("order#2 placed", false, "placement failed"); return }
-  const op = (await q(`SELECT id, display_id, fulfillment_status, payment_status, payment_method FROM ibx_domain.order_projections WHERE id=$1`, [canceledId]))[0]
+  const op = (await q<OrderProjectionCore>(`SELECT id, display_id, fulfillment_status, payment_status, payment_method FROM ibx_domain.order_projections WHERE id=$1`, [canceledId]))[0]
   check("order#2 projection exists", !!op, op ? `display=IBX-${op.display_id} fulfillment=${op.fulfillment_status}` : "MISSING")
   if (op) check("order#2 fulfillment=canceled", op.fulfillment_status === "canceled", `got ${op.fulfillment_status}`)
-  const mo = await q(`SELECT id, status, COALESCE(canceled_at::text,'') canceled_at FROM "public"."order" WHERE id=$1`, [canceledId]).catch(() => [])
+  const mo = await q<MedusaOrderRow>(`SELECT id, status, COALESCE(canceled_at::text,'') canceled_at FROM "public"."order" WHERE id=$1`, [canceledId]).catch((): MedusaOrderRow[] => [])
   check("order#2 cross-schema link (same id Medusa↔domain)", mo.length === 1, mo[0] ? `medusa order row present` : "no medusa order row")
   if (mo[0]) sayMedusaCancelObservation(mo[0])
-  const pay2 = (await q(`SELECT method, status FROM ibx_domain.payments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [canceledId]))[0]
+  const pay2 = (await q<PaymentCore>(`SELECT method, status FROM ibx_domain.payments WHERE order_id=$1 ORDER BY created_at DESC LIMIT 1`, [canceledId]))[0]
   check("order#2 payment reflects cancellation", !!pay2 && /cancel|void|refund/i.test(String(pay2.status)), pay2 ? `payment status=${pay2.status}` : "MISSING")
-  const hist = await q(`SELECT from_status, to_status FROM ibx_domain.order_status_history WHERE order_id=$1 ORDER BY created_at`, [canceledId]).catch(() => [])
-  check("order#2 status-history records the transition", hist.some((h: any) => h.to_status === "canceled"), hist.map((h: any) => `${h.from_status ?? "∅"}→${h.to_status}`).join(", ") || "(none)")
+  const hist = await q<StatusHistoryRow>(`SELECT from_status, to_status FROM ibx_domain.order_status_history WHERE order_id=$1 ORDER BY created_at`, [canceledId]).catch((): StatusHistoryRow[] => [])
+  check("order#2 status-history records the transition", hist.some((h) => h.to_status === "canceled"), hist.map((h) => `${h.from_status ?? "∅"}→${h.to_status}`).join(", ") || "(none)")
 }
 
 async function checkHashChain(q: QueryFn, auditSchema: string, cols: string[]): Promise<void> {
@@ -168,7 +200,7 @@ async function checkHashChain(q: QueryFn, auditSchema: string, cols: string[]): 
   const hashCol = cols.find((c) => /(?:audit_hash|record_hash|hash)$/.test(c) && !/prev/.test(c))
   const prevCol = cols.find((c) => /prev.*hash|previous_hash/.test(c))
   if (hashCol && prevCol) {
-    const broken = (await q(`SELECT count(*)::int n FROM "${auditSchema}".intent_audit a WHERE "${prevCol}" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "${auditSchema}".intent_audit b WHERE b."${hashCol}" = a."${prevCol}")`))[0].n
+    const broken = (await q<CountRow>(`SELECT count(*)::int n FROM "${auditSchema}".intent_audit a WHERE "${prevCol}" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "${auditSchema}".intent_audit b WHERE b."${hashCol}" = a."${prevCol}")`))[0].n
     check("audit hash-chain intact (tamper-evident)", broken === 0, broken === 0 ? `every prev_hash links to a real record (${hashCol}/${prevCol})` : `${broken} dangling links`)
     return
   }
@@ -180,17 +212,17 @@ async function auditTrail(ctx: Ctx, auditSchema: string | undefined): Promise<vo
   // ── Kernel audit trail (intent_audit) ───────────────────────────────────
   say("\n[kernel audit — intent_audit]")
   if (!auditSchema) { check("intent_audit table found", false, "no intent_audit in any schema"); return }
-  const cols = (await q(`SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name='intent_audit'`, [auditSchema])).map((r) => r.column_name)
-  const byKind = await q(`SELECT kind, decision_kind, count(*)::int n FROM "${auditSchema}".intent_audit GROUP BY 1,2 ORDER BY 1,2`)
+  const cols = (await q<ColumnRow>(`SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name='intent_audit'`, [auditSchema])).map((r) => r.column_name)
+  const byKind = await q<AuditCensusRow>(`SELECT kind, decision_kind, count(*)::int n FROM "${auditSchema}".intent_audit GROUP BY 1,2 ORDER BY 1,2`)
   say(`  decision census (kind → decision : count):`)
   for (const r of byKind) say(`    ${String(r.kind).padEnd(28)} ${String(r.decision_kind).padEnd(22)} ${r.n}`)
-  const total = (await q(`SELECT count(*)::int n FROM "${auditSchema}".intent_audit`))[0].n
+  const total = (await q<CountRow>(`SELECT count(*)::int n FROM "${auditSchema}".intent_audit`))[0].n
   check("audit rows present", total > 0, `${total} adjudicated envelopes recorded`)
-  const checkoutExec = byKind.find((r: any) => r.kind === "order.checkout.create" && r.decision_kind === "EXECUTE")
+  const checkoutExec = byKind.find((r) => r.kind === "order.checkout.create" && r.decision_kind === "EXECUTE")
   check("checkout adjudicated EXECUTE in audit", !!checkoutExec && checkoutExec.n >= 2, `order.checkout.create EXECUTE ×${checkoutExec?.n ?? 0}`)
-  const cancelExec = byKind.find((r: any) => r.kind === "order.cancel" && r.decision_kind === "EXECUTE")
+  const cancelExec = byKind.find((r) => r.kind === "order.cancel" && r.decision_kind === "EXECUTE")
   check("cancel adjudicated EXECUTE in audit", !!cancelExec && cancelExec.n >= 1, `order.cancel EXECUTE ×${cancelExec?.n ?? 0}`)
-  const noFailOpen = !byKind.some((r: any) => !KERNEL_VERBS.has(r.decision_kind))
+  const noFailOpen = !byKind.some((r) => !KERNEL_VERBS.has(r.decision_kind))
   check("all decisions are defined kernel verbs", noFailOpen, "no undefined/blank decision_kind")
   await checkHashChain(q, auditSchema, cols)
 }
@@ -218,7 +250,8 @@ async function main(): Promise<void> {
   const jwtSecret = need(env, "JWT_SECRET")
 
   const pool = new pg.Pool({ connectionString: need(env, "DATABASE_URL"), max: 4 })
-  const q: QueryFn = async (sql: string, params: unknown[] = []): Promise<any[]> => (await pool.query(sql, params)).rows
+  const q: QueryFn = async <Row,>(sql: string, params: unknown[] = []): Promise<Row[]> =>
+    (await pool.query(sql, params)).rows as Row[]
   const domain = createDomainReader({ env })
 
   const customer = await domain.customerByPhone(PHONE)

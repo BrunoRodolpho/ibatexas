@@ -61,6 +61,7 @@ type TimeSlotRow = {
 // T-RESERVATIONDTO: compiler-checked relation shape via Prisma.ReservationGetPayload,
 // replacing the hand-maintained ReservationWithRelations type that was drift-prone
 // and required `as unknown as` escape hatches at every call site.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- value-unused BY DESIGN: this const exists solely as the `typeof` source for ReservationWithRelations below.
 const reservationWithRelationsArgs = {
   include: {
     timeSlot: true,

@@ -82,7 +82,6 @@ import { CATALOG_VERSION } from "../version.js"
 import { WORKFLOW_DEFINITIONS } from "../workflows/definitions.js"
 import type { WorkflowDefinition } from "../workflows/types.js"
 import {
-  CATALOG_PASS_IDS,
   formatDiagnostic,
   sortDiagnostics,
   type CatalogDiagnostic,

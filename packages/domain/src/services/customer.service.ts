@@ -957,8 +957,6 @@ const SCRUB_AUDIT_KINDS = [
   "customer.anonymize.reservation_special_requests.scrubbed",
 ] as const
 
-type ScrubAuditKind = (typeof SCRUB_AUDIT_KINDS)[number]
-
 /**
  * Optional context for `anonymizeCustomer`. Adopters supply an `auditSink`
  * to emit the per-surface scrub records (H3 wave-a1). `predecessor` chains

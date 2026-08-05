@@ -340,13 +340,9 @@ describe("createFromEnvelope", () => {
       .mockResolvedValueOnce(makeRow({ id: "staff_x", active: false, role: "ATTENDANT" }))
       .mockResolvedValueOnce(makeRow({ id: "staff_x", active: true, role: "OWNER" }))
     mockTxUpdate.mockRejectedValueOnce(prismaError("P2034"))
-    mockTransaction.mockImplementation(async (fn: TxFn) => {
-      try {
-        return await fn(TX_CLIENT)
-      } catch (err) {
-        throw err
-      }
-    })
+    // The tx mock propagates the body's rejection unchanged — that is what lets
+    // the service observe P2034 and take its single retry.
+    mockTransaction.mockImplementation(async (fn: TxFn) => await fn(TX_CLIENT))
     const svc = createStaffCommandService()
     await expect(
       svc.createFromEnvelope(adminEnv("staff.create", createPayload({ role: "ATTENDANT" })), state),
