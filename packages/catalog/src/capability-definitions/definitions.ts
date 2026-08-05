@@ -213,8 +213,13 @@ const WHATSAPP_GUARD_REFS: readonly CapabilityGuardRef[] = [
   // twilio.message.send). The surviving guards below serve the handover /
   // append / handoff-request kinds.
   // authGuards[0] `requireTenantBindingGuard` omitted — see guard-resolution.ts.
+  // Order mirrors the live `whatsappPolicyBundle.business` array.
   { phase: "business", name: "refuseExcessiveHandoff" },
   { phase: "business", name: "confirmRepeatedHandoff" },
+  // F-43: REWRITE that sanitizes the customer-supplied handoff `reason`
+  // before it reaches the staff-bound alert. MUST precede
+  // `executeHandoffRequest` in the bundle (same kind, first-non-null wins).
+  { phase: "business", name: "sanitizeHandoffReason" },
   { phase: "business", name: "executeSessionHandover" },
   { phase: "business", name: "executeConversationAppend" },
   { phase: "business", name: "executeHandoffRequest" },

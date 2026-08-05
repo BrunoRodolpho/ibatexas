@@ -7,12 +7,19 @@
  *    staff-bound WhatsApp message."
  *
  * The sanitizer is the input-cleanse half of that fix (the rate-limit
- * is the volume half; both apply). When the LLM proposes a
- * `whatsapp.message.send` where `senderRole = "customer"` and the
- * recipient is staff (i.e., echoing a customer-supplied string into a
- * staff-bound WhatsApp message), the REWRITE guard in `policies.ts`
- * passes the body through this function and emits the rewritten
- * envelope.
+ * is the volume half). Its consumer is `sanitizeHandoffReason`, the
+ * REWRITE guard in `policies.ts`: when the LLM proposes a
+ * `whatsapp.handoff.request` carrying a customer-supplied `reason`, that
+ * guard passes the `reason` through this function and emits the
+ * rewritten envelope. `handoff-subscriber.ts` then interpolates the
+ * sanitized string into the staff-bound WhatsApp alert.
+ *
+ * (History — BKL-177: this function was originally written for a REWRITE
+ * on `whatsapp.message.send`, whose `body` carried the customer string.
+ * That kind and its guard were retired as dead duplicates with no
+ * emitter, which left this sanitizer with NO caller for a while even
+ * though the threat it names — the handoff `reason` — was live the whole
+ * time on a DIFFERENT kind. F-43 rewired it to that live carrier.)
  *
  * The sanitizer is intentionally narrow:
  *
@@ -52,11 +59,20 @@
  *   - leading/trailing whitespace
  *   - template-injection bomb (combined attack)
  *
- * # Determinism
+ * # Determinism + idempotence
  *
  * Pure function. Identical input always produces identical output. The
  * REWRITE guard pipes the result through `buildEnvelope` so the
  * rewritten envelope's hash is deterministic too.
+ *
+ * IDEMPOTENCE IS LOAD-BEARING, not merely a nice property: the kernel
+ * re-adjudicates a REWRITE's rewritten envelope and keeps the REWRITE
+ * only if that SECOND pass reaches EXECUTE (`@adjudicate/core`
+ * kernel/adjudicate-and-audit.ts). A non-idempotent sanitizer would
+ * rewrite again on the second pass and the handoff would fail CLOSED —
+ * i.e. never execute. `__tests__/sanitize.test.ts` pins
+ * `sanitize(sanitize(x)) === sanitize(x)`, and the policy-level
+ * consequence is pinned in `__tests__/whatsapp-pack.test.ts`.
  */
 
 import { WHATSAPP_SANITIZE_MAX_LENGTH } from "./types.js"
