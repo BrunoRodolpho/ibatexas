@@ -915,6 +915,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.2.6
         version: 3.2.7(vitest@3.2.7(@types/node@26.1.0)(happy-dom@20.10.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))
+      redis:
+        specifier: ^4.7.1
+        version: 4.7.1
       stripe:
         specifier: ^20.4.1
         version: 20.4.1(@types/node@26.1.0)

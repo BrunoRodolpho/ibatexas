@@ -21,13 +21,35 @@
 //
 // `consume` runs a Lua script. Per W4 RULE 3 the canonical adapter REFUSES
 // `eval` outright (`LuaAtomicityNotEmulated`) rather than deciding a
-// server-side atomic GET+DEL inside this process. What this file exercises is
-// the store's SHAPE — receipt id, TTL, single-use drain, malformed-input gate —
-// against a double that admits it is emulating; the SEMANTICS of the atomic
-// consume are a real-Redis property and are not claimed here.
+// server-side atomic GET+DEL inside this process.
+//
+// ── M2: the Lua emulation is GONE (census class (i), item 4) ──────────────
+//
+// Ruling: docs/architecture/redis-lua-testing-decision.md (Q2). Census:
+// `apps/api/src/__tests__/helpers/redis-double-census.md`.
+//
+// The header above used to end "...against a double that admits it is
+// emulating". Admitting it was never a defence: the emulation still DECIDED
+// the single-use drain, and a case named for that property was proving a
+// property of four lines of test-local JavaScript.
+//
+// Where the invariant went: `lua-shape-consume-contract.test.ts` reads THIS
+// site's `CONSUME_RECEIPT_SCRIPT` text and runs it against a real Redis — 20
+// concurrent redemptions, exactly one winner, with a non-atomic control
+// (client-side GET-then-DEL, i.e. precisely what the retired double did) that
+// shows the same setup handing one receipt to several callers.
+//
+// What stays here is the store's SHAPE: receipt id, TTL, which script goes to
+// which key, the malformed-input gate, and the client seam.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { rk } from "@ibatexas/tools";
+import {
+  createLuaCallObserver,
+  expectLuaCall,
+  expectLuaCallCount,
+  type LuaSiteRef,
+} from "./helpers/lua-call-observer.js";
 import {
   createCheckoutConfirmationStore,
   CHECKOUT_CONFIRMATION_TTL_SECONDS,
@@ -35,26 +57,26 @@ import {
   type PendingCheckout,
 } from "../routes/checkout-confirmation-store.js";
 
-// Map-backed Redis: `set` stores, `get` reads, `eval` emulates the store's
-// atomic GET+DEL consume script (the only script it runs).
+/** The production CONSUME site this store runs — the shape suite's anchor. */
+const CONSUME_SITE: LuaSiteRef = {
+  file: "apps/api/src/routes/checkout-confirmation-store.ts",
+  anchor: "const CONSUME_RECEIPT_SCRIPT =",
+};
+
+// Map-backed Redis for the non-atomic commands; `eval` is OBSERVED, not
+// emulated — it records the call and returns a reply each case declares.
 function makeStatefulRedis() {
   const store = new Map<string, string>();
+  const lua = createLuaCallObserver(null); // default nil = "no such receipt"
   return {
     store,
+    lua,
     set: vi.fn(async (key: string, val: string) => {
       store.set(key, val);
       return "OK";
     }),
     get: vi.fn(async (key: string) => store.get(key) ?? null),
-    eval: vi.fn(async (_script: string, opts: { keys: string[] }) => {
-      const key = opts.keys[0];
-      const val = store.get(key);
-      if (val !== undefined) {
-        store.delete(key);
-        return val;
-      }
-      return null;
-    }),
+    eval: lua.eval,
   };
 }
 
@@ -107,16 +129,32 @@ describe("checkout-confirmation-store", () => {
     );
   });
 
-  it("consume() returns the pending exactly once (single-use)", async () => {
+  // RENAMED from "consume() returns the pending exactly once (single-use)".
+  // Single-use belongs to the script, and to `lua-shape-consume-contract.test.ts`.
+  it("consume() issues THIS site's CONSUME script against the receipt key, and parses what it returns", async () => {
     const store = makeStore();
     const { confirmationId } = await store.create(PENDING);
 
+    // Declared postcondition: the receipt is present, so CONSUME returns the
+    // stored JSON.
+    redis.lua.replyOnce(redis.store.get(receiptKey(confirmationId))!);
     const first = await store.consume(confirmationId);
     expect(first).toEqual(PENDING);
 
-    // Second consume of the same receipt → null (atomic GET+DEL drained it).
+    // The bytes matter, not just the round trip. A store that started eval'ing
+    // some other script — a CAD, whose contract is the INVERSE — would red
+    // here, while the shape suite (still reading this anchor) would not.
+    expectLuaCall(redis.lua, 0, {
+      site: CONSUME_SITE,
+      keys: [receiptKey(confirmationId)],
+      arguments: [],
+    });
+
+    // Declared postcondition: redeemed, so the next CONSUME returns nil and
+    // the store must answer null rather than re-serving the pending.
     const second = await store.consume(confirmationId);
     expect(second).toBeNull();
+    expectLuaCallCount(redis.lua, 2);
   });
 
   it("consume() of an unknown / expired receipt → null", async () => {
@@ -133,7 +171,7 @@ describe("checkout-confirmation-store", () => {
     expect(await store.consume("")).toBeNull();
     expect(await store.consume("x".repeat(65))).toBeNull();
     // The UUID-shape gate short-circuits before any Redis round trip.
-    expect(redis.eval).not.toHaveBeenCalled();
+    expectLuaCallCount(redis.lua, 0);
     // …and before the CLIENT RESOLUTION too. This is the "no hoisting" property
     // stated in CheckoutConfirmationStoreOptions, made observable: resolving
     // eagerly at construction (or at the top of `consume`) would make a
@@ -143,7 +181,9 @@ describe("checkout-confirmation-store", () => {
 
   it("consume() tolerates malformed stored JSON → null", async () => {
     const store = makeStore();
-    redis.store.set(receiptKey("bad"), "{not json");
+    // Declared postcondition: the script found a receipt and handed back bytes
+    // that are not JSON. The store must degrade to null, never throw.
+    redis.lua.replyOnce("{not json");
 
     const result = await store.consume("bad");
     expect(result).toBeNull();
@@ -168,7 +208,7 @@ describe("checkout-confirmation-store", () => {
 
     // …and the commands landed on the object that resolver returned.
     expect(redis.set).toHaveBeenCalledTimes(1);
-    expect(redis.eval).toHaveBeenCalledTimes(1);
+    expectLuaCallCount(redis.lua, 1);
   });
 
   // The default arm is a real branch and needs its own control, or "the option

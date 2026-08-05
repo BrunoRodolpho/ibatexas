@@ -1640,10 +1640,15 @@ describe("AdminConfirmationStore — concurrent consume Lua atomicity (W6-5)", (
     // says exactly one returns the pending payload and the other returns
     // null.
     //
-    // The mocked redis.eval (defined at the top of the file) emulates the
-    // Lua script: it reads from the in-memory map then deletes the key
-    // in the same JS turn — equivalent to Redis's single-threaded EVAL
-    // semantics. We pin the contract under that emulation.
+    // CORRECTED (M2 — this comment was filed as stale by M1). There is no
+    // emulation here and there never was in this file: `mockRedisEval` (:128)
+    // is a SPY that FORWARDS the script verbatim to the real testcontainer
+    // client, so the two consumes race inside Redis's single-threaded EVAL,
+    // not inside a JS map. The comment used to claim the opposite, which would
+    // have made this case exactly the W4 RULE 3 theater the multi()/eval ruling
+    // retires — and would have made it worthless as the concurrency proof it is
+    // cited for. The shape-level version of this contract, over all four
+    // CONSUME sites, is `__tests__/lua-shape-consume-contract.test.ts` (M1).
     const { createAdminConfirmationStore } = await import(
       "../admin-confirmation-store.js"
     );

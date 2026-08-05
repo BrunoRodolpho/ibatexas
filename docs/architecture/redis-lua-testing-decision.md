@@ -105,7 +105,7 @@ measured cost of that blind spot. Rejected.
 |---|---|---|
 | M0 | Q1: CI Redis service + loud-skip gate — **DONE** | 1 |
 | M1 | The 8 script-shape contract suites — **DONE (8/8)** | 2–3 |
-| M2 | Class (i): the 7 eval-emulating doubles retired onto shape suites + unit observation | 2 |
+| M2 | Class (i): the 7 eval-emulating doubles retired onto shape suites + unit observation — **DONE (7/7)** | 2 |
 | M3 | Class (i-b) bound cases + the two F-22-deferred migrations (after the F-22 ruling lands) | 1–2 |
 | M4 | The 12 `multi()` redisFake files, per-file disposition | 2–3 |
 
@@ -182,6 +182,78 @@ census omits `apps/api/src/claustrum/trigger-dedup-redis.ts:59`
 not 20, once the CAD correction and the park-quota script
 (`EVAL_INCR_CHECK_SCRIPT`, covered by `park-nx-release-failure-mode.test.ts`) are
 counted. The census records this.
+
+### M2 status — all 7 class-(i) doubles retired
+
+**Zero eval emulations remain in census class (i).** Six files kept their
+in-memory doubles for the non-atomic commands and replaced `eval` with unit
+observation; the seventh moved to real Redis. No case was deleted; three were
+renamed to what they now check.
+
+| # | File | Disposition | Where the emulated invariant now lives |
+|---|---|---|---|
+| 1 | `subscribers/__tests__/defer-resolver.test.ts` | **(b)** unit observation | CAD suite; the release is observed at 3 sites via `expectResumingLockReleased()` |
+| 2 | `jobs/__tests__/defer-timeout-sweeper.test.ts` | **(b)** unit observation | CAD suite; `expectSweeperMutexReleased()` |
+| 3 | `escalation/__tests__/escalation-park-store.test.ts` | **(b)** unit observation | CONSUME suite |
+| 4 | `__tests__/checkout-confirmation-store.test.ts` | **(b)** unit observation | CONSUME suite |
+| 5 | `__tests__/order-cancel-confirm.test.ts` | **(b)** unit observation + declared postconditions | CONSUME suite |
+| 6 | `__tests__/cart-routes.test.ts` | **(b)** unit observation + declared postconditions | CONSUME suite |
+| 7 | `packages/journeys/.../journey-lock.test.ts` | **(c)** real Redis | its own cases, now container-backed; CAD + CAE suites hold the script shapes |
+
+Disposition **(a)** (delete and let the call fail loudly) was considered and
+REJECTED everywhere, for a measured reason: `releaseDeferResumingLock` swallows
+release errors by design, so a throwing `eval` is absorbed and the case passes
+having observed nothing. That is F-37's mechanism, and (a) would have
+manufactured it at two more sites. **(d)** was never needed — Docker was
+available for the one file that required real Redis.
+
+**The seam: `__tests__/helpers/lua-call-observer.ts`.** Unit observation is only
+worth anything if it names WHICH script the site issued. `expectLuaCall`
+requires the observed script to be byte-identical to the production text at a
+named site anchor — the SAME anchor the shape suite reads. The two halves are
+complementary and neither is sufficient:
+
+- the shape suite proves the bytes at the anchor obey the contract on real Redis;
+- the observation proves the site actually hands the client the bytes at that
+  anchor, with the right key and ARGV.
+
+A consistent edit to a script constant moves both sides of the observation's
+comparison and stays green there — deliberately, because that is exactly what
+the shape suite catches (M1 measured it by corrupting production source).
+
+**This closes the census's script-blindness hazard structurally.** Six of the
+seven doubles ignored the `script` argument, which was safe only while each SUT
+reached one script family. That was never a property anyone was checking, and
+the population is larger than the census implies: **four production modules run
+two or more distinct scripts through one client** —
+`streaming/execution-queue.ts` (CAD + CAE), `adapters/park-redis-capabilities.ts`
+(CAD + quota INCR), `journeys/journey-lock.ts` (CAD + CAE), and
+`whatsapp/session.ts`, which runs **three** (rollover + CAD + CAE). journey-lock
+was not an oddity for dispatching on script text; it was the one file whose SUT
+forced the issue into the open.
+
+**Revert-to-red — two of the five are control/treatment pairs against the
+retired doubles, and both show the retirement STRENGTHENED coverage:**
+
+| # | Production defect injected | Retired (M1) double | M2 observation |
+|---|---|---|---|
+| 1 | `defer-resuming-lock.ts` lock value → the constant `holder` (F-21's exact defect) | **35/35 GREEN** | **4 RED** |
+| 2 | `escalation-park-store.ts` consume EVALs a CAD instead of its CONSUME (the census's script-blindness hazard) | **5/5 GREEN** | **1 RED** |
+| 3 | `journey-lock.ts` CAD → `if true then` | — (file moved to real Redis) | 2 RED |
+| 4 | `journey-lock.ts` CAE → `if false then` | — | 1 RED |
+| 5 | `checkout-confirmation-store.ts` consume key drops `rk()` | — | 3 RED (both consuming files) |
+
+Row 2 is the load-bearing one: that defect is invisible to the retired double
+AND to the shape suite (which reads the anchor's constant, still correct, and
+runs bytes nothing dispatches). The unit observation is the only thing in the
+repo that catches it.
+
+**Roll call.** `scripts/check-real-redis-suites.mjs` now walks a LIST OF
+PACKAGES, not just `apps/api`. M2's move of `journey-lock.test.ts` put a
+real-Redis suite in `packages/journeys`, and a suite that can skip in a
+directory the gate never scans is the M0 hole reopened one package over. The
+gate is 21 suites / ≥156 executing cases (146 container-backed) across two
+packages.
 
 Estimated total: **8–11 slices** at the program's measured per-slice pace.
 F-21's competing-clients regression tests do not wait on any of this — they

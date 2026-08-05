@@ -14,9 +14,39 @@
 //   - @ibatexas/llm-provider (orderPolicyBundle, getAuditSink, OrderContext type)
 //   - @sentry/node (DLQ side-effect)
 
+//
+// ── M2: the Lua emulation is GONE (census class (i), item 1) ────────────────
+//
+// Ruling: docs/architecture/redis-lua-testing-decision.md (Q2). Census:
+// `apps/api/src/__tests__/helpers/redis-double-census.md`.
+//
+// The stub's `eval` used to re-implement `releaseDeferResumingLock`'s
+// compare-and-delete in JS (`delete the key iff its value === arguments[0]`),
+// script-blind. Three cases then asserted "the defer:resuming:* marker is
+// gone" — a fact four lines of test-local JavaScript decided.
+//
+// Where the invariant went: "the CAD deletes only on a full-value match" is
+// `apps/api/src/__tests__/lua-shape-cad-contract.test.ts`, which EVALs THIS
+// site's own script text (read from `lib/defer-resuming-lock.ts`) against a
+// real Redis, with a conjunct-removal control at that site's row.
+//
+// What replaces the marker-cleanup assertion here is `expectResumingLockReleased()`
+// — the resolver ISSUED the production compare-and-delete, against the marker
+// key it owns, passing ITS OWN acquisition token as ARGV[1]. That is strictly
+// stronger than the retired assertion in the direction that matters: the old
+// emulation could not distinguish a per-acquisition UUID from a CONSTANT lock
+// value (stored and passed would agree either way), which is exactly the F-21
+// defect. This one pins the token's shape.
+
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import type { PaymentStatusChangedEvent } from "@ibatexas/types"
+import {
+  createLuaCallObserver,
+  expectLuaCall,
+  type LuaCallObserver,
+  type LuaSiteRef,
+} from "../../__tests__/helpers/lua-call-observer.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 
@@ -36,7 +66,27 @@ interface StubEntry {
 }
 const store = new Map<string, StubEntry>()
 
+/** The one production Lua site this SUT reaches. */
+const CAD_SITE: LuaSiteRef = {
+  file: "apps/api/src/lib/defer-resuming-lock.ts",
+  anchor: "const RELEASE_LOCK_SCRIPT =",
+}
+
+/**
+ * Records every Lua call the resolver issues; NEVER emulates one. The default
+ * reply is `1` — the CAD's answer to the owner, which is what every release on
+ * these paths is. `releaseDeferResumingLock` ignores the value either way.
+ *
+ * Note there is no throwing mode: `releaseDeferResumingLock` swallows by design
+ * ("best-effort cleanup — lock will expire via TTL"), so a throw here would be
+ * absorbed and the case would pass having observed nothing. That swallow IS the
+ * class-(i-b) hole (F-37); the positive assertion on `lua.calls` is what
+ * survives it.
+ */
+let lua: LuaCallObserver
+
 function makeRedisStub() {
+  lua = createLuaCallObserver(1)
   return {
     async get(key: string): Promise<string | null> {
       const e = store.get(key)
@@ -99,28 +149,9 @@ function makeRedisStub() {
       store.set(key, { value: next, ttl: e?.ttl ?? -1 })
       return 1
     },
-    // WS5: implement the Lua compare-and-delete used by
-    // `releaseDeferResumingLock` (audit-2026-05-25 I7) and the NX
-    // placeholder release in `park-nx.ts` (I8). The only scripts passed are
-    // GET-equals-then-DEL; we emulate that semantics generically (release the
-    // key iff its stored value equals arguments[0]). Pre-WS5 this stub lacked
-    // `eval`, so the Lua release threw (swallowed) and the
-    // `defer:resuming:*` marker was never cleared — the marker-cleanup
-    // assertions only surfaced once the audit-sink mock was repointed so the
-    // tests could run past the earlier audit assertion.
-    async eval(
-      _script: string,
-      opts: { keys: string[]; arguments: string[] },
-    ): Promise<number> {
-      const key = opts.keys[0]!
-      const expected = opts.arguments[0]
-      const e = store.get(key)
-      if (e && e.value === expected) {
-        store.delete(key)
-        return 1
-      }
-      return 0
-    },
+    // M2: the Lua compare-and-delete is OBSERVED, never emulated. See the
+    // `lua` observer above and `expectResumingLockReleased()` below.
+    eval: lua.eval,
   }
 }
 
@@ -247,6 +278,51 @@ async function getRegisteredCallback(
   ]
   expect(call[0]).toBe("payment.status_changed")
   return call[1]
+}
+
+/** Every `defer:resuming:*` marker the resolver SETNX'd, with its token. */
+function resumingMarkers(): { key: string; token: string }[] {
+  return [...store.entries()]
+    .filter(([k]) => k.startsWith("test:defer:resuming:"))
+    .map(([key, entry]) => ({ key, token: entry.value }))
+}
+
+/**
+ * The M2 replacement for `expect(resumingKeys).toHaveLength(0)`.
+ *
+ * The retired form asserted the marker was GONE — a deletion the JS emulation
+ * performed. This asserts what the resolver actually did, which is the part
+ * this file can honestly own: it issued `lib/defer-resuming-lock.ts`'s
+ * compare-and-delete, against the marker key it holds, with its own
+ * acquisition token as ARGV[1]. Whether that script then deletes the key is
+ * the CAD shape suite's claim, proven against a real Redis over these same
+ * bytes.
+ *
+ * The token check is not decoration. `acquireDeferResumingLock` builds
+ * `${holder}:${randomUUID()}`, and an ownership test is worthless if ARGV[1]
+ * is a constant — the F-21 defect exactly. The old emulation was blind to it
+ * (a constant stored and a constant passed compare equal); this is not.
+ */
+function expectResumingLockReleased(): void {
+  const markers = resumingMarkers()
+  expect(markers).toHaveLength(1)
+  const marker = markers[0]!
+  expect(marker.token).toMatch(
+    /^resolver:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  )
+
+  const index = lua.calls.findIndex((c) => c.keys[0] === marker.key)
+  expect(
+    index,
+    `the resolver issued no compare-and-delete against ${marker.key} — ` +
+      `it issued ${lua.calls.length} Lua call(s): ` +
+      `${JSON.stringify(lua.calls.map((c) => c.keys))}`,
+  ).toBeGreaterThanOrEqual(0)
+  expectLuaCall(lua, index, {
+    site: CAD_SITE,
+    keys: [marker.key],
+    arguments: [marker.token],
+  })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -577,11 +653,10 @@ describe("defer-resolver subscriber", () => {
     await callback(paymentConfirmedEvent())
 
     expect(dispatcher).toHaveBeenCalledOnce()
-    // After commit: resuming marker cleared, resumed ledger written.
-    const resumingKeysPost = [...store.keys()].filter((k) =>
-      k.startsWith("test:defer:resuming:"),
-    )
-    expect(resumingKeysPost).toHaveLength(0)
+    // After commit: the resuming mutex is RELEASED — the resolver issued its
+    // ownership-checked compare-and-delete (M2; the deletion itself is the CAD
+    // shape suite's claim) — and the resumed ledger is written.
+    expectResumingLockReleased()
     const resumedKeysPost = [...store.keys()].filter((k) =>
       k.startsWith("test:defer:resumed:"),
     )
@@ -617,11 +692,9 @@ describe("defer-resolver subscriber", () => {
     expect(dispatcher).toHaveBeenCalledOnce()
     // CRITICAL: parked key MUST remain so retry can re-enter the flow.
     expect(store.get(`test:defer:pending:${sessionId}`)).toBeDefined()
-    // Resuming marker cleared so next attempt isn't blocked.
-    const resumingKeys = [...store.keys()].filter((k) =>
-      k.startsWith("test:defer:resuming:"),
-    )
-    expect(resumingKeys).toHaveLength(0)
+    // Resuming mutex released on the ROLLBACK path too, so the next attempt
+    // isn't blocked (M2: the release was issued; the CAD suite owns the rest).
+    expectResumingLockReleased()
     // Long-term dedup ledger NOT written — dispatch failed, this resume
     // never durably committed.
     const resumedKeys = [...store.keys()].filter((k) =>
@@ -925,11 +998,10 @@ describe("defer-resolver subscriber", () => {
       )
       expect(auditRecord.supersedes!.predecessorAt).toBe(parkedAt)
       expect(auditRecord.supersedes!.reason).toBe("defer_resumed")
-      // (c) Mutex was released — no defer:resuming:* key left behind.
-      const resumingKeys = [...store.keys()].filter((k) =>
-        k.startsWith("test:defer:resuming:"),
-      )
-      expect(resumingKeys).toHaveLength(0)
+      // (c) Mutex was released — the loser path issues the ownership-checked
+      // compare-and-delete before it returns (M2; the CAD suite owns the
+      // deletion semantics).
+      expectResumingLockReleased()
       // The cycle counter must NOT have been incremented — we short-circuited
       // before the INCR. (A counter increment on the loser path would be a
       // subtle cycle-cap drift bug.)
