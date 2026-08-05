@@ -2679,3 +2679,376 @@ Three notes for whoever takes the next slice:
    one. It accepts a client, swallows every error in a bare catch, and its
    honest Pick is `{set, scan, del}` — see the boundary note above before
    threading it from `admin/delivery-zones.ts`.
+
+## R5 rollout, family 6 — the WEBHOOK / CHAT family, and the END of class (c)'s migratable remainder
+
+Four files, seven `getRedisClient()` call sites, four Picks, and the last
+adapter-extension request class (c) had outstanding:
+
+| file | sites | Pick | seam shape |
+|---|---|---|---|
+| `routes/stripe-webhook.ts` | 2 | `{hDel, set, expire}` | joined the EXISTING `StripeWebhookRouteDeps` (R5-S5) |
+| `routes/chat.ts` | 2 | `{get, set}` | new `ChatRouteDeps` + a REQUIRED resolver param on `denyStreamAccess` |
+| `routes/admin/analytics.ts` | 1 | `{get}` | new `AdminAnalyticsRouteDeps` |
+| `routes/health.ts` | 2 | `{ping, lLen}` | new `HealthRouteDeps` + REQUIRED resolver params on both checks |
+
+**A COUNTING CORRECTION, stated so the arithmetic stays closed.** The brief that
+opened this slice listed the four files as 3 / 5 / 2 / 3 sites. Re-measured:
+`grep -c 'getRedisClient()'` returns **2 / 2 / 1 / 2 = 7**, which is what the
+#548/#550 remainder map has always carried and what the 67-site total closes on.
+The brief's larger numbers count Redis COMMANDS, not resolution sites, and the
+two units are not interchangeable — `chat.ts` alone issues seven commands across
+two sites. This document's unit is and remains the **`getRedisClient()` call
+site**.
+
+### The hand-it-to read — four measured negatives and three latent hand-offs
+
+The rule that caught the governor in #548 was applied to every collaborator on
+every path these four files reach. Nothing in this family hands a client to
+anything; the interesting part is WHY, because the negatives are not all the
+same negative.
+
+**Three are Lua-bearing callees deliberately left SELF-RESOLVING** — the
+`order-actions.ts` boundary, and the reason the host files stay migratable:
+
+- `withLock(resource, fn, ttlSeconds)` — re-derived rather than inherited from
+  #548. It takes NO client and invokes `fn()` with NO arguments; it resolves
+  through `acquireLock` → `acquireLockAtKey` →
+  `acquireLockAtKeyOn(singletonLockClient, …)`, and `singletonLockClient` calls
+  `getRedisClient()` **per command**. It genuinely DOES reach
+  `redis.eval(RELEASE_LOCK_SCRIPT)` (Hard Rule #10) — through its own singleton,
+  never through anything `stripe-webhook.ts` hands it. All four `withLock` sites
+  are outside the Pick. **#548's negative measurement STANDS.**
+- `acquireWebAgentLock(sessionId)` — the same shape from a different module.
+  One string argument, self-resolves at `streaming/execution-queue.ts:59`, and
+  reaches `redis.eval(EXTEND_LOCK_SCRIPT)` on its heartbeat. `chat.ts` is not
+  gated by it.
+- `getOrCreateCart(_input, ctx)` — the third of the same shape and the one the
+  brief flagged: input + `AgentContext`, self-resolves at
+  `get-or-create-cart.ts:158`, reaches Lua through `acquireCartCreationLock`.
+
+**One is a plain negative:** `enqueueStripeWebhookEvent(event, receivedAtMs)` —
+two arguments, no client, no Redis command of its own.
+
+**THREE are F-42's LATENT hand-off shape** — they ACCEPT a client and are called
+with ZERO arguments at every site in this family, so they resolve their own
+singleton and are not downstream of any Pick here. All three are SCOPE
+decisions, and they are not equivalent:
+
+| callee | declared Pick | if threaded later |
+|---|---|---|
+| `markPixPaid(pi, deps = {})` | `PixPaidWriteRedis = Pick<…,"set">` | Lua-free, adapter-complete |
+| `loadSession(id, options?)` | `SessionHistoryReadClient = Pick<…,"lRange">` | Lua-free, adapter-complete |
+| `appendMessages(…, options?)` | `SessionHistoryAppendClient = Pick<…,"multi">` | **OWNER-GATED** — `multi` is refused by the adapter |
+
+That last row is the finding worth carrying forward: `appendMessages` looks like
+an ordinary scope call and is not one.
+
+**Cross-referenced against M4 (#551), and the two populations must not be
+conflated.** M4 is sometimes summarised as *"`multi()` is invoked exactly 3×
+repo-wide from ONE production site"*. That merges two different numbers, both
+of them M4's own:
+
+- **3 = INVOCATIONS OBSERVED**, within the 13-file behavioural-double cluster
+  M4 probed (165 cases). All three came from
+  `packages/tools/src/intelligence/update-preferences.ts:92`, all inside
+  `tool-dispatch-self-readjudication.test.ts`. It is a reachability
+  measurement over that cluster, not a census of production.
+- **18 = PRODUCTION `multi()` SITES**, M4's own count in the same commit
+  ("all 18 production multi() sites are batching pipelines"). Re-derived
+  independently here by `grep -rn '\.multi(' --include='*.ts'` over
+  `apps/api/src` + `packages/*/src` excluding `__tests__`: **18**. The two
+  counts agree.
+
+So, precisely: **`appendMessages` (`session/store.ts:105`) is one of the 18
+production sites — NOT a fourth site M4 missed, and NOT one of the 3
+invocations.** Its `multi()` was simply never reached by M4's cluster; it sits
+behind that commit's *"twelve files never reach a production `multi()` at all"*
+finding.
+
+**The owner-gate STANDS, and M4 strengthened it:** that commit ruled explicitly
+that *"the ADAPTER DID NOT GROW multi"* and closed with *"adapter still refuses
+multi"*. This slice's refusal to thread `appendMessages` is therefore backed by
+a merged ruling, not merely by a reading of the adapter.
+
+**But M4 also sharpens what the gate IS, and that changes the advice.** M4's
+stated reason for not growing `multi` is that *no site claims an all-or-nothing
+property* — all 18 are batching pipelines, and there is no `WATCH` anywhere in
+production. `appendMessages` is exactly that shape: `rPush` × N, then `lTrim`,
+then `expire`, then `exec`, with no `WATCH` and no read-modify-write. So the
+thing blocking a future thread of `appendMessages` is the adapter's **modelling
+policy**, not a genuine atomicity requirement at that call site. Whoever picks
+it up needs an **owner ruling on whether a batching pipeline may be modelled**
+— NOT a real-Redis testcontainer build, which is what an earlier draft of this
+section implied and which would be the more expensive wrong turn.
+
+**All three are the BENIGN variant of F-42, and the distinction matters.**
+`invalidateDeliveryCache` — F-42's filed instance — declares no honest Pick and
+swallows every error in a bare catch, so a caller-derived Pick fails SILENTLY.
+These three each declare a Pick matching exactly what they issue and fall back
+with `?? await getRedisClient()` rather than assuming a member is present.
+Whoever threads them inherits a declared contract, not a trap.
+
+### `admin/analytics.ts` — the hand-it-to read the brief left UNREAD
+
+Carried in with an explicit instruction to assume neither that it matched its
+sibling nor that it differed. **It differs, structurally.**
+
+`routes/analytics.ts` is owner-gated because it hands its CLIENT to `atomicIncr`
+(an `eval`). `admin/analytics.ts` hands `composeSalesAnalytics` **no client at
+all** — it hands a narrowed capability PORT, `redisGet: (key) => Promise<string
+| null>`, the composer's only Redis-shaped member. The downstream half of the
+Pick is therefore bounded by the PORT'S TYPE rather than by a promise about what
+the callee calls today: the composer holds a one-key read function and cannot
+issue `eval`, or anything else, even in principle.
+
+Measured while there: the `get` in this Pick serves **only** the `whatsapp`
+signal. `activeCarts`, `orders` and `newCustomers30d` come from Medusa and
+Prisma. A first draft of the seam suite asserted `activeCarts` off the keyspace
+and was wrong; the case was replaced rather than weakened.
+
+#### A TYPED PORT IS A STRONGER BOUNDARY THAN A PICK — reach for it deliberately
+
+This is worth stating as a pattern rather than filed as a one-off observation,
+because the two constructs are not the same strength and the rollout has been
+treating them as if they were.
+
+|  | what it constrains | how it fails |
+|---|---|---|
+| `Pick<Client, "get" \| "set">` | what the HOLDER may call | holder gains a command ⇒ the Pick must be widened by hand, and the fail-closed rule exists because nobody notices |
+| `redisGet: (key) => Promise<string \| null>` | what can be called THROUGH it, at all | callee cannot reach any other command — there is nothing to widen and nothing to notice |
+
+**A Pick narrows what you may call. A typed port narrows what can be called
+*through* it.** A Pick still hands over a CLIENT, so the honest-Pick discipline
+({issued} ∪ {optionally consumed downstream}) is load-bearing forever: every
+future edit to a downstream callee can silently require a command the Pick does
+not carry, which is the entire #539 / #543 / R5-S12 family. A port hands over a
+FUNCTION, so the downstream half of the analysis is closed by the type system
+and stays closed — `composeSalesAnalytics` could not issue `eval` if it wanted
+to, today or after any future edit, because it holds no client to issue it on.
+
+That is why `admin/analytics.ts` shipped in this slice while its sibling
+`routes/analytics.ts` is owner-gated: same domain, same team, same-looking
+route, and the one that hands a narrowed port is structurally cheaper to
+migrate than the one that hands a client to `atomicIncr`.
+
+**The actionable form:** when a collaborator needs ONE Redis capability, prefer
+handing it that capability as a typed function over handing it a `Pick`ed
+client. It converts a standing fail-closed obligation into a compile-time
+impossibility, and it is what makes the hand-it-to read terminate instead of
+recurring. Where a callee genuinely needs several commands or the client's own
+sequencing, a `Pick` remains correct — the point is that the choice should be
+made, not defaulted into.
+
+### The adapter gains `ping` — the last class-(c) extension request
+
+`packages/tools/src/testing/in-memory-redis.ts` now models `ping`, with
+`routes/health.ts`'s `checkRedis` as its named production consumer (the standing
+rule since R5-S7: a command arrives with a caller or not at all). `lLen` was
+already modelled, so this closes the "needs an adapter command first" bucket.
+
+Four decisions inside it:
+
+- It answers `"PONG"` rather than `undefined`. The caller DISCARDS the value, so
+  the return can only ever be wrong — but real node-redis answers `"PONG"`, and
+  a consumer that starts comparing must not be silently told otherwise.
+- It `record`s the call. This is the ONE check in the health route that writes
+  nothing, so the call log is the only available evidence it ran; a keyspace
+  assertion is structurally unavailable.
+- **A FAILING ping is deliberately NOT modelled.** This adapter cannot lose a
+  connection, and a `failNextPing()` knob would be invented surface no
+  production caller can trigger — validated by nothing. The honest way to drive
+  the 503 half is a client whose `ping` rejects, which is what a real outage
+  hands `checkRedis`; the seam suite does exactly that with a spy-delegate Proxy
+  that WRAPS the adapter, so every other command keeps real semantics.
+- The `PING <message>` echo form is REFUSED with a naming `UnroutedRedisCall`
+  rather than guessed.
+
+### Tests — 25 new cases across 4 born-guarded suites
+
+| suite | cases | evidence | default arms (EXCLUDED) |
+|---|---|---|---|
+| `routes/__tests__/stripe-webhook-client-seam.test.ts` | 6 | 4 | 2 |
+| `routes/__tests__/chat-client-seam.test.ts` | 10 | 7 | 3 |
+| `routes/__tests__/health-client-seam.test.ts` | 6 | 4 | 2 |
+| `routes/admin/__tests__/admin-analytics-client-seam.test.ts` | 3 | 2 | 1 |
+| **total** | **25** | **17** | **8** |
+
+Plus one member added to the pre-existing
+`routes/__tests__/stripe-webhook-route-deps-seam.test.ts`: `redis` joined that
+dep set as a **rejecting TRIPWIRE**, pinning that the payment_failed reconcile
+leg stayed Redis-free (case count unchanged, 2 → 2).
+
+**The directional pins, and what each refuses:**
+
+- **MONEY (stripe-webhook).** The same Stripe event id twice must enqueue the
+  work exactly ONCE, with a fresh id in the SAME test getting through — a 200
+  alone is satisfied by a route that refuses everything. And the DOWNGRADE: a
+  FAILED enqueue must cut the 7-day claim to exactly 300s and answer 500. That
+  is `expire`'s only reason to exist; without it a queue outage strands a PAID
+  event behind a claim that suppresses Stripe's redelivery for a week.
+- **LIVENESS (health).** The FAILING ping is pinned FIRST, with the passing one
+  as its control. `checkRedis` discards `ping`'s return value, so its entire
+  contract is throw/don't-throw → `"fail"` → HTTP 503. A suite pinning only a
+  passing ping stays green against a route that can no longer report an outage
+  at all — the exact failure a health check exists to prevent.
+- **OWNERSHIP + SECRET (chat).** Each guard is pinned by the REFUSAL it exists
+  to produce, paired with a control in the SAME test that must get through.
+- **DEGRADATION (admin/analytics).** The composer falls back to ZEROS per signal
+  and reports it in `degraded`, so a route whose Redis reads ALL fail still
+  answers 200 with a well-formed body. `degraded` is the only field that can
+  tell the two apart, and the case pairs real injected counters against the
+  unseeded all-zeros shape in the same test.
+
+TTLs are EXACT equalities on a FROZEN clock throughout: 604_800_000 / 300_000 /
+86_400_000 / 3_600_000 ms. One assertion was deliberately NOT made an equality —
+`session:lastActivity`'s VALUE is `new Date().toISOString()` off the WALL clock
+(the adapter's injected `now` drives TTLs, not the route's own timestamps), so
+the case asserts its shape and lets the TTL beside it carry the exact equality.
+Asserting the value against the frozen instant would have been asserting a clock
+the production line never reads.
+
+### Revert-to-red, per seam, with per-assertion attribution
+
+Each site's `await deps.redis()` / `await resolveRedis()` was neutered to
+`await getRedisClient()` **one at a time**. Copy-then-restore throughout — never
+`git checkout HEAD --` and never `git stash` (shared across worktrees). The
+harness PROVES each neutering landed before running (an unmatched pattern would
+produce a false GREEN that reads exactly like "this seam is untested") and
+proves the restore afterwards; all four production files verified byte-identical
+by `git diff --stat` against the pre-sweep snapshot.
+
+| Neutered seam | RED | Attribution |
+|---|---|---|
+| `stripe-webhook.ts` `WebhookPendingOrderCleanupRedis` (`hDel`) | 1 | the HDEL case |
+| `stripe-webhook.ts` `WebhookIdempotencyRedis` (`set`+`expire`) | 3 | claim+TTL, replay-suppression, the downgrade |
+| `chat.ts` `ChatPostSessionRedis` (`get`+`set`) | 5 | ownership-refused, owner-key slide, activity heartbeat, secret mint, wrong-credential |
+| `chat.ts` `ChatStreamAccessRedis` (`get`) | 2 | stream-denied, guest-stream-denied |
+| `admin/analytics.ts` (`get`) | 2 | the degraded-vs-real directional, the injected-over-singleton case |
+| `health.ts` `HealthLivenessRedis` (`ping`) | 2 | the failing-ping directional, the PING call-log case |
+| `health.ts` `HealthQueueDepthRedis` (`lLen`) | 2 | the DLQ-backlog directional, the outbox namespace case |
+| **total** | **17** | |
+
+**17 RED = exactly the 17 non-excluded cases (25 − 8).** Every case this slice
+owns that is not a default arm is pinned by exactly one seam, and none is pinned
+by two.
+
+#### STANDING RULE — a shared-double call log defeats per-assertion attribution whenever two seams live in ONE request
+
+Per-assertion attribution is a standing requirement for every slice in this
+rollout. **This is the mechanism that silently defeats it, and it was hit here
+before it was fixed.**
+
+The first health sweep reported **4 RED for `checkRedis` and 3 for
+`checkQueues`** — seven reds across two experiments over a six-case file, with
+the same cases appearing in both columns. The cause: `checkRedis` and
+`checkQueues` run inside the SAME `/health` request, and the queue cases
+asserted a bare `expect(decoy.calls).toHaveLength(0)`. Breaking EITHER seam put
+a call on the shared decoy, so EITHER experiment reddened cases belonging to
+BOTH seams. The attribution column was unreadable, and — this is the dangerous
+part — **nothing was failing**. Both experiments were "correctly" red. The
+damage was invisible: an over-broad red list reads exactly like thorough
+coverage.
+
+The fix is to make every seam-ownership assertion name **the command of the
+seam it belongs to**:
+
+```ts
+// DEFEATS attribution — reds when EITHER seam breaks
+expect(decoy.calls).toHaveLength(0);
+// RESTORES it — reds only when THIS seam breaks
+expect(decoy.calls.filter((c) => c.command === "ping")).toHaveLength(0);
+```
+
+That produced the clean **17 = 25 − 8** closure above, with every case pinned by
+exactly one seam and none by two.
+
+**The generalisation:** a keyspace assertion is naturally seam-scoped (different
+seams touch different keys), but a CALL-LOG assertion is not — the log is one
+shared object per double. So the hazard fires precisely where a keyspace
+assertion is unavailable and a call log had to stand in, which is exactly where
+this slice needed one (`ping` writes nothing). **Whenever two seams share a
+request, scope every call-log assertion to its own command, and treat an
+experiment that reds cases outside its own seam as a defect in the TEST, not as
+strong coverage.**
+
+**Eight cases no seam-neutering can flip, EXCLUDED rather than counted:** all
+eight are `[default arm] with no deps.redis … the SINGLETON` arms — two per
+suite except chat's three (one per site, plus one for the guest path). They
+assert the FALLBACK, so a neutered route keeps them green by construction. They
+are what makes the other 17 non-vacuous. Verified, not assumed: no red list
+above contains a `[default arm` title. **Unlike family 5, this slice excludes
+NOTHING else** — there is no guard-shape case in this family, so the exclusion
+list is homogeneous and needs no second category.
+
+### Two things the tests caught in this slice's own draft
+
+- **A partial dep set fails SILENTLY at the cleanup site.** The first
+  dispatch-side default arm handed `dispatchStripeWebhookEvent` a deps object
+  with no `redis` member. `await deps.redis()` threw a TypeError, the cleanup's
+  bare `catch` — it is best-effort bookkeeping — swallowed it, and the case
+  failed on the missing HDEL rather than on an error. That is the #539 shape
+  reproduced live. The arm was rewritten to omit the parameter ENTIRELY, which
+  is the only call form that reaches `defaultStripeWebhookRouteDeps()`.
+- **`handlePaymentSucceeded` returns BEFORE the cleanup on a falsy capture.**
+  Both cleanup arms need a truthy `capturePayment` result; a draft that mocked
+  `createOrderService` to a bare `vi.fn()` reached the "already processed"
+  branch and never touched the site under test.
+
+### The counterfeit-signal trap, carried forward not re-paid
+
+All four suites carry NO `vi.resetModules()` and say so in their own
+`afterEach`. #548 recorded this at ~10 red cases of diagnosis cost: resetting
+modules drops the audit-sink singleton `apps/api`'s `setupFiles` initialises
+ONCE, which reds exactly the injected cases and leaves every fallback arm green
+— a perfect counterfeit of a broken seam. Not re-encountered here, because the
+warning was read first.
+
+### Feature detection (F-22) — swept, none on any path this family reaches
+
+`typeof client.X === "function"` swept over `apps/api/src/routes`,
+`apps/api/src/jobs`, `apps/api/src/streaming`, `apps/api/src/session`,
+`apps/api/src/middleware`, `apps/api/src/ops` and `packages/tools/src`. The only
+LIVE Redis probe in the repo remains `adapters/park-redis-capabilities.ts`'s
+`evalIncrCheck` detect, which is not on any path these four files reach. Every
+other hit is prose in a seam comment.
+
+### Remainder map — `routes/*` class (c), all 19 files / 67 call sites
+
+| Bucket | n | Files (sites) |
+|---|---|---|
+| Threaded — family 1 (#524) | 2 | `cart.ts` (6), `checkout-confirmation-store.ts` (2) |
+| Threaded — family 4 (#548) | 2 | `me.ts` (3), `order-actions.ts` (5) |
+| Threaded — family 5 (#550) | 3 | `admin/delivery-zones.ts` (1), `admin/orders.ts` (1), `admin/products.ts` (1) |
+| **Threaded — family 6 (this slice)** | **4** | **`stripe-webhook.ts` (2), `chat.ts` (2), `admin/analytics.ts` (1), `health.ts` (2)** |
+| Owner-gated — Lua via the `atomicIncr` HAND-OFF | 3 | `auth.ts` (10), `analytics.ts` (1), `whatsapp-webhook.ts` (4) |
+| Owner-gated — Lua in the module's own text | 5 | `me/anonymize-otp-gate.ts` (16), `me/anonymize-active-lock.ts` (2), `order-cancel-confirmation-store.ts` (2), `admin/admin-confirmation-store.ts` (4), `admin/payments.ts` (2) |
+| Migratable, pending the hand-off read | **0** | — |
+| Needs an adapter command first | **0** | — |
+| **Total** | **19** | **67 sites** |
+
+**Arithmetic, files: 19 = 2 + 2 + 3 + 4 + 3 + 5.**
+**Arithmetic, call sites: 67 = 8 + 8 + 3 + 7 + 15 + 26**, in the same order —
+(6+2) + (3+5) + (1+1+1) + (2+2+1+2) + (10+1+4) + (16+2+2+4+2).
+
+**Class (c) `routes/*` is now 11 of 19 files threaded (19 of 67 sites), and BOTH
+migratable buckets are EMPTY.** Every remaining class-(c) `routes/*` file is
+owner-gated on Lua — 8 files, 41 sites, each needing either the real-Redis
+testcontainer harness or an owner ruling on atomicity. There is no next slice of
+this shape in `routes/*`.
+
+Three notes for whoever takes the owner-gated remainder:
+
+1. **`analytics.ts` and `admin/analytics.ts` are NOT the same problem.** The
+   admin one shipped here because it hands a narrowed PORT; the sibling hands a
+   CLIENT to `atomicIncr`. Do not generalise either way — read what is handed.
+2. **`appendMessages` is owner-gated, not merely out of scope** (`Pick<…,
+   "multi">`). It is reachable from `chat.ts` and `whatsapp-webhook.ts` and
+   looks like an ordinary scope call. **The gate is an OWNER RULING on whether
+   a batching pipeline may be modelled — not a testcontainer build.** Its site
+   is one of M4's 18 production `multi()` sites, all of which M4 measured as
+   batching pipelines with no `WATCH` and no all-or-nothing claim; see the M4
+   cross-reference above before costing this one.
+3. **`invalidateDeliveryCache` remains a filed #539-class hazard**, unchanged by
+   this slice — it accepts a client, swallows every error in a bare catch, and
+   its honest Pick is `{set, scan, del}`.

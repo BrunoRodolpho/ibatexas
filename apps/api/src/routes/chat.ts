@@ -194,7 +194,12 @@ function sendForbidden(reply: FastifyReply, message: string): void {
  * window this key was just written, so the fast path answers the request.
  */
 async function rejectOnOwnershipFailure(
-  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  /**
+   * Narrowed to what this function ACTUALLY issues — the `get` of the owner
+   * key and the sliding `set` that re-asserts it. Both are load-bearing: see
+   * the note above on why the `set` is not bookkeeping.
+   */
+  redis: Pick<Awaited<ReturnType<typeof getRedisClient>>, "get" | "set">,
   sessionId: string,
   customerId: string,
   tokenHeader: string | undefined,
@@ -253,7 +258,8 @@ async function rejectOnOwnershipFailure(
  * it verifies the provided secret, rejecting (403) on mismatch.
  */
 async function resolveGuestSecret(
-  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  /** Narrowed to what this function issues: `get` (verify) + `set` (mint). */
+  redis: Pick<Awaited<ReturnType<typeof getRedisClient>>, "get" | "set">,
   sessionId: string,
   providedSecret: string | undefined,
   reply: FastifyReply,
@@ -785,9 +791,16 @@ async function denyStreamAccess(
   customerId: string | undefined,
   providedSecret: string | undefined,
   reply: FastifyReply,
+  /**
+   * The seam. REQUIRED rather than defaulted: this guard fails CLOSED by
+   * catching everything and answering 503, so a silent fallback to the
+   * singleton would be indistinguishable from a working injection at every
+   * assertion that only reads the response.
+   */
+  resolveRedis: () => Promise<ChatStreamAccessRedis>,
 ): Promise<boolean> {
   try {
-    const redis = await getRedisClient();
+    const redis: ChatStreamAccessRedis = await resolveRedis();
     if (customerId) {
       // Authenticated stream: must own the session.
       const owner = await redis.get(rk(`session:owner:${sessionId}`));
@@ -937,8 +950,146 @@ async function serveFromRedis(
   });
 }
 
-export async function chatRoutes(server: FastifyInstance): Promise<void> {
+// ── R5 rollout, webhook/chat family — this route's Redis client seam ────────
+//
+// The two `getRedisClient()` calls this module made inline now resolve through
+// `ChatRouteDeps.redis`. This file had no composition root before; the one
+// below is `redis`-only by design — the conductor, the session store and the
+// streaming emitter are separate seam questions and are untouched here.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule) ─────────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream}, and THIS
+// file is the one in the family where the two halves differ. The POST handler
+// issues exactly ONE command on the client it resolves (`set`, the
+// lastActivity write) and then HANDS THAT CLIENT to two module-local helpers:
+//
+//   `rejectOnOwnershipFailure(redis, …)`  →  `get` (owner key) + `set` (the
+//                                            sliding 24h re-assert)
+//   `resolveGuestSecret(redis, …)`        →  `get` (secret) + `set` (mint)
+//
+// So a Pick derived from the HANDLER'S OWN TEXT is `{set}` — and `get` would
+// be ABSENT. That is #539 exactly: on the throw-on-access adapter the first
+// helper dies on `redis.get`, and what it guards is session OWNERSHIP. The
+// honest Pick is `{get, set}`, and the seam suite drives both helpers rather
+// than only the line the handler itself writes.
+//
+// ── The HAND-IT-TO read, and its measured negatives ────────────────────────
+//
+// Two collaborators on the POST path DO reach Lua, and neither is downstream
+// of this Pick, because neither accepts a client:
+//
+//   • `getOrCreateCart(_input, ctx)` — takes an input and an AgentContext,
+//     resolves its own client at `get-or-create-cart.ts:158`, and reaches
+//     `redis.eval(RELEASE_LOCK_SCRIPT)` through `acquireCartCreationLock` →
+//     `acquireLockAtKey`. It is the "looks like a hand-off, isn't" shape.
+//   • `acquireWebAgentLock(sessionId)` — the same shape from a different
+//     module: one string argument, self-resolves at
+//     `streaming/execution-queue.ts:59`, and reaches
+//     `redis.eval(EXTEND_LOCK_SCRIPT)` on its heartbeat.
+//
+// This is the `order-actions.ts` boundary and it is deliberate: a Pick that
+// deliberately leaves a Lua-bearing callee SELF-RESOLVING is precisely what
+// keeps the host file migratable. Neither is in `ChatRouteRedisClient`.
+//
+// ── Two LATENT hand-offs (F-42's shape), left alone ON PURPOSE ─────────────
+//
+// `loadSession` and `appendMessages` (`../session/store.js`) each ACCEPT an
+// `options.client`, and every call site in this file passes ZERO — so today
+// they resolve their own singleton and are NOT downstream of this Pick. They
+// are a SCOPE decision, not an oversight, and the two are NOT equivalent:
+//
+//   • `loadSession`  — declared `SessionHistoryReadClient = Pick<…,"lRange">`.
+//     Threadable whenever someone wants it; `lRange` is modelled.
+//   • `appendMessages` — declared `SessionHistoryAppendClient =
+//     Pick<…,"multi">`. `multi` is a command the canonical adapter REFUSES on
+//     purpose (W4 RULE 3 — a JS Map cannot provide server-side atomicity), so
+//     threading this one is OWNER-GATED, not merely out of scope. Whoever
+//     picks it up needs the real-Redis testcontainer harness, not this seam.
+//
+// Both already declare honest Picks and both fall back with `?? await
+// getRedisClient()`, so neither is the silent-failure variant F-42 filed.
+//
+// ── Feature detection: MEASURED, none ─────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/streaming`, `apps/api/src/session`, `apps/api/src/middleware`
+// and `packages/tools/src`: no live Redis probe on any path this file reaches.
+
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+/**
+ * The POST /api/chat/messages client: the `set` this handler issues directly
+ * (the sliding `session:lastActivity` write) UNION the `get`+`set` its two
+ * ownership/secret helpers issue on the SAME client it hands them.
+ *
+ * The union is the point — see the fail-closed note above. Narrowing this to
+ * the handler's own `set` compiles, typechecks and passes every test that only
+ * drives the guest-less path, while making authenticated session-ownership and
+ * guest-secret verification throw on their first `get`.
+ */
+type ChatPostSessionRedis = Pick<RedisClient, "get" | "set">;
+
+/**
+ * The SSE stream-access guard: two `get`s (owner key, guest secret) and no
+ * write. It fails CLOSED — any throw here is caught and answered 503 — which
+ * is exactly why the command must be present rather than merely optional: an
+ * absent `get` degrades a working access check into a permanent 503.
+ */
+type ChatStreamAccessRedis = Pick<RedisClient, "get">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route issues — the type
+ * `ChatRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived from the two per-consumer types
+ * above: a derived union can never disagree with its consumers, so it could
+ * not catch a consumer that grew a command nobody declared (F-14).
+ */
+export type ChatRouteRedisClient = Pick<RedisClient, "get" | "set">;
+
+/** The collaborators `chat.ts` resolves through the seam. */
+export interface ChatRouteDeps {
+  /**
+   * Resolves the Redis client behind session ownership, the guest secret, the
+   * activity heartbeat and the SSE access guard.
+   *
+   * A FACTORY returning a promise, not an instance, so the `await` stays
+   * exactly where it was — per REQUEST, inside the handler. An instance would
+   * hoist resolution to registration and change when a Redis outage first
+   * surfaces (today: on the first chat message — never at boot).
+   */
+  readonly redis: () => Promise<ChatRouteRedisClient>;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface ChatRoutesOptions {
+  readonly deps?: Partial<ChatRouteDeps>;
+}
+
+/** The production set — byte-for-byte the resolution this file did inline. */
+function defaultChatRouteDeps(): ChatRouteDeps {
+  return { redis: () => getRedisClient() };
+}
+
+function resolveChatRouteDeps(options?: ChatRoutesOptions): ChatRouteDeps {
+  return { ...defaultChatRouteDeps(), ...(options?.deps ?? {}) };
+}
+
+export async function chatRoutes(
+  server: FastifyInstance,
+  options?: ChatRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The member is a factory, so NOTHING is
+  // resolved here — the client is still awaited per request, inside the
+  // handler.
+  const deps = resolveChatRouteDeps(options);
 
   // ── POST /api/chat/messages ────────────────────────────────────────────────
 
@@ -956,7 +1107,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { sessionId, message } = request.body;
 
-      const redis = await getRedisClient();
+      const redis: ChatPostSessionRedis = await deps.redis();
 
       // ── Session ownership verification (zero-trust) ──────────────────────
       if (request.customerId) {
@@ -1079,7 +1230,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       // Verify session ownership / guest-secret before allowing the connection.
       const providedSecret = request.headers["x-session-secret"] as string | undefined;
-      if (await denyStreamAccess(server, sessionId, request.customerId, providedSecret, reply)) {
+      if (
+        await denyStreamAccess(
+          server,
+          sessionId,
+          request.customerId,
+          providedSecret,
+          reply,
+          deps.redis,
+        )
+      ) {
         return;
       }
 

@@ -52,9 +52,115 @@ async function withTimeout(fn: () => Promise<void>): Promise<CheckResult> {
   }
 }
 
-async function checkRedis(): Promise<CheckResult> {
+// ── R5 rollout, webhook/chat family — this route's Redis client seam ────────
+//
+// The two `getRedisClient()` calls this module made inline now resolve through
+// `HealthRouteDeps.redis`. This file had no composition root before; the one
+// below is `redis`-only by design — Postgres, NATS and Typesense are separate
+// seam questions and are untouched here.
+//
+// This is the file that needed an ADAPTER EXTENSION, and the only one left in
+// class (c) that did: `ping` is now modelled by
+// `@ibatexas/tools/testing`'s canonical in-memory client, with THIS route as
+// its named production consumer (the standing rule since R5-S7 — a command
+// arrives with a caller or not at all). `lLen` was already modelled.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule) ─────────────
+//
+// {issued} = `ping` (the liveness probe) ∪ `lLen` (the DLQ/outbox depth
+// sweep). {optionally consumed downstream} = {} — neither `checkRedis` nor
+// `checkQueues` passes its client anywhere; both bind it to a function-local
+// `const` and issue on it directly. No `eval` / `multi` / `evalSha` appears in
+// this module's own text, and none of the other three checks touches Redis.
+//
+// The two commands are in ONE type on purpose even though they serve different
+// endpoints of the response, because they share a client and a failure in
+// either is a failure of the same dependency.
+//
+// ── Why both checks take the resolver rather than a resolved client ────────
+//
+// `checkRedis` and `checkQueues` run CONCURRENTLY under `Promise.all`, and
+// each is individually failure-isolated — `checkRedis` by `withTimeout`,
+// `checkQueues` by its own swallowing `catch`. Passing the FACTORY keeps the
+// resolution inside each check's isolation boundary, which is where it was: a
+// client resolved once in the handler and shared would make a resolution
+// failure fail BOTH, turning a queue-depth outage into a liveness verdict.
+//
+// ── Feature detection: MEASURED, none ─────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/middleware` and `packages/tools/src`: no live Redis probe on
+// any path this file reaches.
+
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+/**
+ * `checkRedis` — the liveness probe. `ping` only, and its RESULT is discarded:
+ * the entire contract is throw / don't-throw, mapped by `withTimeout` to
+ * `"fail"` / `"ok"`. Redis is a CRITICAL dependency, so that one bit is the
+ * difference between HTTP 200 and HTTP 503.
+ */
+type HealthLivenessRedis = Pick<RedisClient, "ping">;
+
+/**
+ * `checkQueues` — the DLQ + outbox depth sweep. `lLen` only, over 12 known
+ * keys. Best-effort: its `catch` swallows, so an absent command here would be
+ * INVISIBLE (a clean bill of health over a real backlog) rather than loud.
+ * That is the #539 shape, and it is why this Pick is declared from what the
+ * function issues rather than from what a caller happens to observe.
+ */
+type HealthQueueDepthRedis = Pick<RedisClient, "lLen">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route issues — the type
+ * `HealthRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived from the two per-consumer types
+ * above: a derived union can never disagree with its consumers, so it could
+ * not catch a consumer that grew a command nobody declared (F-14).
+ */
+export type HealthRouteRedisClient = Pick<RedisClient, "ping" | "lLen">;
+
+/** The collaborators `health.ts` resolves through the seam. */
+export interface HealthRouteDeps {
+  /**
+   * Resolves the Redis client behind the liveness probe and the queue-depth
+   * sweep.
+   *
+   * A FACTORY returning a promise, not an instance, so the `await` stays
+   * exactly where it was — per CHECK, inside each check's own failure
+   * isolation. See the note above on why that placement is load-bearing.
+   */
+  readonly redis: () => Promise<HealthRouteRedisClient>;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface HealthRoutesOptions {
+  readonly deps?: Partial<HealthRouteDeps>;
+}
+
+/** The production set — byte-for-byte the resolution this file did inline. */
+function defaultHealthRouteDeps(): HealthRouteDeps {
+  return { redis: () => getRedisClient() };
+}
+
+function resolveHealthRouteDeps(options?: HealthRoutesOptions): HealthRouteDeps {
+  return { ...defaultHealthRouteDeps(), ...(options?.deps ?? {}) };
+}
+
+async function checkRedis(
+  /** The seam. REQUIRED — `withTimeout` maps any throw to `"fail"`, so a
+   *  silent fallback to the singleton would be indistinguishable from a
+   *  working injection at every assertion that only reads the response. */
+  resolveRedis: () => Promise<HealthLivenessRedis>,
+): Promise<CheckResult> {
   return withTimeout(async () => {
-    const redis = await getRedisClient();
+    const redis: HealthLivenessRedis = await resolveRedis();
     await redis.ping();
   });
 }
@@ -103,13 +209,17 @@ const OUTBOX_EVENTS = [
 ];
 
 /** Check DLQ and outbox queue sizes. Best-effort — never fails the health check. */
-async function checkQueues(): Promise<{ dlq: Record<string, number>; outbox: Record<string, number>; hasDlqEntries: boolean; hasOutboxBacklog: boolean }> {
+async function checkQueues(
+  /** The seam. REQUIRED — this function's `catch` swallows everything, so a
+   *  silent fallback would be invisible at every assertion. */
+  resolveRedis: () => Promise<HealthQueueDepthRedis>,
+): Promise<{ dlq: Record<string, number>; outbox: Record<string, number>; hasDlqEntries: boolean; hasOutboxBacklog: boolean }> {
   const dlq: Record<string, number> = {};
   const outbox: Record<string, number> = {};
   let hasDlqEntries = false;
   let hasOutboxBacklog = false;
   try {
-    const redis = await getRedisClient();
+    const redis: HealthQueueDepthRedis = await resolveRedis();
     for (const event of DLQ_EVENTS) {
       const len = await redis.lLen(rk(`dlq:${event}`));
       if (len > 0) { dlq[event] = len; hasDlqEntries = true; }
@@ -132,14 +242,21 @@ async function checkQueues(): Promise<{ dlq: Record<string, number>; outbox: Rec
   return { dlq, outbox, hasDlqEntries, hasOutboxBacklog };
 }
 
-export async function healthRoutes(server: FastifyInstance): Promise<void> {
+export async function healthRoutes(
+  server: FastifyInstance,
+  options?: HealthRoutesOptions,
+): Promise<void> {
+  // Resolved ONCE per registration. The member is a factory, so NOTHING is
+  // resolved here — each check still awaits the client itself.
+  const deps = resolveHealthRouteDeps(options);
+
   server.get("/health", { config: { rateLimit: false }, logLevel: "silent" as const, schema: { tags: ["health"], summary: "Deep health check" } }, async (request, reply) => {
     const [redis, postgres, nats, typesense, queues] = await Promise.all([
-      checkRedis(),
+      checkRedis(deps.redis),
       checkPostgres(),
       checkNats(),
       checkTypesense(),
-      checkQueues(),
+      checkQueues(deps.redis),
     ]);
 
     const checks = { redis, postgres, nats, typesense };

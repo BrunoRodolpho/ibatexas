@@ -76,6 +76,15 @@ function buildDeps(): {
     paymentCommandFactory,
     getByStripePaymentIntentId,
     deps: {
+      // R5 webhook/chat family — `redis` joined this dep set. It is a
+      // rejecting TRIPWIRE here rather than a working client: the
+      // payment_failed reconcile path issues NO Redis command (the cleanup
+      // `hDel` lives on the SUCCEEDED path), so a resolution on this path
+      // would mean a site moved. Its own seam evidence lives in
+      // `stripe-webhook-client-seam.test.ts`.
+      redis: (): never => {
+        throw new Error("stripe-webhook reconcile path reached for deps.redis()");
+      },
       paymentQueryService: paymentQueryFactory as unknown as () => PaymentQueryService,
       paymentCommandService:
         paymentCommandFactory as unknown as (logger: unknown) => PaymentCommandService,
@@ -107,6 +116,10 @@ describe("stripe-webhook.ts — R5-S5 dispatch-level deps seam", () => {
     // reason this member takes an argument at all.
     expect(paymentCommandFactory).toHaveBeenCalledTimes(1);
     expect(paymentCommandFactory).toHaveBeenCalledWith(logger);
+    // The `redis` tripwire above never fired: reaching it would have thrown
+    // out of the dispatch, so this call completing at all is the assertion.
+    // It pins that the reconcile leg stayed Redis-free when the client joined
+    // this dep set.
   });
 
   it("keeps the 3-argument contract callable — the default is a real fallback", async () => {

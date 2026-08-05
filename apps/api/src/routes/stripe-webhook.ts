@@ -129,8 +129,110 @@ type WebhookLogger = {
 // that stamps `buildWebhookOrderService`'s audit `sourceSubject`). They are
 // still factories — nothing is constructed until a handler calls one.
 
+// ── R5 rollout, webhook/chat family — the Redis client joins that seam ──────
+//
+// The two `getRedisClient()` calls this module made inline now resolve through
+// `StripeWebhookRouteDeps.redis`. They sit on OPPOSITE sides of the queue —
+// one in a dispatch handler on the job worker, one in the plugin's POST
+// handler — and the composition root above already spans both, which is why
+// this file needs no second seam: `stripeWebhookRoutes` resolves the set once
+// and closes over it for the processor, and `dispatchStripeWebhookEvent` takes
+// it as a parameter.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule) ─────────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream}. MEASURED for
+// this module: the downstream half is EMPTY. Every `redis` occurrence in the
+// file was read, not just the call sites — the client is bound to a
+// function-local `const` at each of the two sites and its commands are issued
+// on it directly. NO site passes `redis` to anything.
+//
+// ── The HAND-IT-TO read, and its three measured negatives ──────────────────
+//
+// Three collaborators on these paths could plausibly carry a client. None
+// does, and the reasons differ:
+//
+//   • `withLock(resource, fn, ttlSeconds)` — takes NO client and invokes
+//     `fn()` with NO arguments. Re-derived here rather than inherited: it
+//     resolves through `acquireLock` → `acquireLockAtKey` →
+//     `acquireLockAtKeyOn(singletonLockClient, …)`, and `singletonLockClient`
+//     calls `getRedisClient()` PER COMMAND. It genuinely DOES reach Lua
+//     (`redis.eval(RELEASE_LOCK_SCRIPT)`, Hard Rule #10) — but through its own
+//     singleton, never through anything this file hands it. That is the
+//     `order-actions.ts` boundary: a Lua-bearing callee left deliberately
+//     self-resolving is exactly what keeps the HOST file migratable. All four
+//     `withLock` sites here are therefore outside this Pick.
+//   • `enqueueStripeWebhookEvent(event, receivedAtMs)` — a two-argument
+//     signature with no client and no Redis command of its own (it adds to a
+//     BullMQ queue).
+//   • `markPixPaid(paymentIntentId, deps = {})` — the LATENT hand-off (F-42's
+//     shape). It ACCEPTS `deps.redis`, and this file's one call site passes
+//     ZERO arguments, so it resolves its own singleton and is NOT downstream
+//     of this Pick. Threading it later would stay Lua-free — its declared
+//     `PixPaidWriteRedis` is `Pick<…, "set">` — so the boundary is a SCOPE
+//     decision, taken deliberately here and left where it is.
+//
+//     It is the BENIGN variant of that shape, and the difference is worth
+//     recording: `invalidateDeliveryCache` (F-42's filed instance) declares no
+//     honest Pick and swallows every error in a bare catch, so a caller-derived
+//     Pick fails SILENTLY. `markPixPaid` declares a Pick that matches exactly
+//     the one command it issues, falls back with `deps.redis ?? await
+//     getRedisClient()` rather than assuming a member is present, and its call
+//     site here logs any rejection loudly via `.catch`. Whoever threads it
+//     inherits a declared contract, not a trap.
+//
+// No `eval` / `evalSha` / `multi` appears in this module's own text.
+//
+// ── Feature detection: MEASURED, none ─────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/jobs`, `apps/api/src/middleware` and `packages/tools/src`: the
+// only live probe in the repo is `adapters/park-redis-capabilities.ts`'s
+// `evalIncrCheck` detect, which is not on any path this file reaches.
+
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+/**
+ * The pending-orders cleanup in `handlePaymentSucceeded` — one `HDEL` of the
+ * settled PaymentIntent's field, inside a swallowing `try/catch` because the
+ * entry is bookkeeping the customer no longer needs.
+ */
+type WebhookPendingOrderCleanupRedis = Pick<RedisClient, "hDel">;
+
+/**
+ * The route's 7-day idempotency gate: `SET key "1" EX 604800 NX` claims the
+ * event, and `EXPIRE key 300` DOWNGRADES that claim when the enqueue fails so
+ * Stripe re-delivers instead of the event being lost forever.
+ *
+ * Both commands are load-bearing and they fail in OPPOSITE directions, which
+ * is why they are one type: without `set` every Stripe retry re-processes a
+ * paid order; without `expire` a queue outage strands the event behind a claim
+ * that suppresses redelivery for seven days.
+ */
+type WebhookIdempotencyRedis = Pick<RedisClient, "set" | "expire">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this module issues — the type
+ * `StripeWebhookRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived from the two per-consumer types
+ * above: a derived union can never disagree with its consumers, so it could
+ * not catch a consumer that grew a command nobody declared (F-14).
+ */
+export type StripeWebhookRedisClient = Pick<RedisClient, "hDel" | "set" | "expire">;
+
 /** The domain services `stripe-webhook.ts`'s handlers resolve through the seam. */
 export interface StripeWebhookRouteDeps {
+  /**
+   * Resolves the Redis client behind the idempotency gate and the
+   * pending-orders cleanup.
+   *
+   * A FACTORY returning a promise, not an instance, so the `await` stays
+   * exactly where it was — per EVENT, inside the handler. An instance would
+   * hoist resolution to registration and change when a Redis outage first
+   * surfaces (today: on the first webhook delivery — never at boot).
+   */
+  readonly redis: () => Promise<StripeWebhookRedisClient>;
   /** Builds the PaymentQueryService behind the PI/order payment lookups. */
   readonly paymentQueryService: () => PaymentQueryService;
   /** Builds the audit-wired PaymentCommandService bound to the job's logger. */
@@ -157,6 +259,7 @@ export interface StripeWebhookRoutesOptions {
 /** The production set — byte-for-byte the construction this file did inline. */
 function defaultStripeWebhookRouteDeps(): StripeWebhookRouteDeps {
   return {
+    redis: () => getRedisClient(),
     paymentQueryService: () => createPaymentQueryService(),
     paymentCommandService: (logger) =>
       createPaymentCommandService(logger, { auditSink: getAuditSink() }),
@@ -717,7 +820,7 @@ async function handlePaymentSucceeded(
   const domainCustomerId = paymentIntent.metadata?.["customerId"];
   if (domainCustomerId) {
     try {
-      const redis = await getRedisClient();
+      const redis: WebhookPendingOrderCleanupRedis = await deps.redis();
       await redis.hDel(rk(`customer:pending-orders:${domainCustomerId}`), paymentIntent.id);
     } catch {
       // Non-critical cleanup
@@ -1107,7 +1210,7 @@ export async function stripeWebhookRoutes(
       }
 
       // Idempotency — 7 days covers Stripe's 3-day retry window with margin
-      const redis = await getRedisClient();
+      const redis: WebhookIdempotencyRedis = await deps.redis();
       const idempotencyKey = rk(`webhook:processed:${event.id}`);
       const wasSet = await redis.set(idempotencyKey, "1", { EX: 604800, NX: true });
       if (!wasSet) {
