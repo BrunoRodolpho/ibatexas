@@ -163,7 +163,13 @@ describe("POST /api/admin/delivery-zones — create", () => {
     expect(res.json()).toEqual({ zone: created });
     // active defaulted to true by the zod schema before the service sees it.
     expect(mockCreate).toHaveBeenCalledWith({ ...VALID_BODY, active: true });
-    expect(mockInvalidateDeliveryCache).toHaveBeenCalledTimes(1);
+    // F-42: the invalidation is fire-and-forget through a promise chain
+    // (`deps.redis()` then the call), so it lands a microtask AFTER the
+    // reply. Waiting is required for the assertion to be deterministic; it
+    // still fails, by timeout, if the call never happens.
+    await vi.waitFor(() => {
+      expect(mockInvalidateDeliveryCache).toHaveBeenCalledTimes(1);
+    });
     await app.close();
   });
 
@@ -184,6 +190,10 @@ describe("POST /api/admin/delivery-zones — create", () => {
     expect(res.statusCode).toBe(409);
     expect(res.json()).toEqual({ error: "Requisicao duplicada." });
     expect(mockCreate).not.toHaveBeenCalled();
+    // F-42: the positive arms now resolve a microtask after the reply, so an
+    // absence checked immediately could pass on a race we merely won. Flush
+    // first, then assert the invalidation genuinely never fired.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(mockInvalidateDeliveryCache).not.toHaveBeenCalled();
     await app.close();
   });
@@ -229,6 +239,10 @@ describe("POST /api/admin/delivery-zones — create", () => {
     expect(body.error).toBe("CEPs já atribuídos");
     expect(body.message).toBe("CEPs já usados em outras zonas: 12345 (Zona Sul)");
     expect(mockCreate).not.toHaveBeenCalled();
+    // F-42: the positive arms now resolve a microtask after the reply, so an
+    // absence checked immediately could pass on a race we merely won. Flush
+    // first, then assert the invalidation genuinely never fired.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(mockInvalidateDeliveryCache).not.toHaveBeenCalled();
     await app.close();
   });
@@ -290,7 +304,13 @@ describe("PUT /api/admin/delivery-zones/:id — update", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ zone: updated });
     expect(mockUpdate).toHaveBeenCalledWith("z1", { ...VALID_BODY, active: true });
-    expect(mockInvalidateDeliveryCache).toHaveBeenCalledTimes(1);
+    // F-42: the invalidation is fire-and-forget through a promise chain
+    // (`deps.redis()` then the call), so it lands a microtask AFTER the
+    // reply. Waiting is required for the assertion to be deterministic; it
+    // still fails, by timeout, if the call never happens.
+    await vi.waitFor(() => {
+      expect(mockInvalidateDeliveryCache).toHaveBeenCalledTimes(1);
+    });
     await app.close();
   });
 
@@ -349,6 +369,10 @@ describe("PUT /api/admin/delivery-zones/:id — update", () => {
     // seeded under `dz:update:…` and nothing else was written.
     expect(redis.keys()).toEqual([rk("dz:update:dedup:req-dup-put")]);
     expect(mockUpdate).not.toHaveBeenCalled();
+    // F-42: the positive arms now resolve a microtask after the reply, so an
+    // absence checked immediately could pass on a race we merely won. Flush
+    // first, then assert the invalidation genuinely never fired.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(mockInvalidateDeliveryCache).not.toHaveBeenCalled();
     await app.close();
   });
@@ -366,7 +390,13 @@ describe("DELETE /api/admin/delivery-zones/:id — remove", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ ok: true });
     expect(mockRemove).toHaveBeenCalledWith("z9");
-    expect(mockInvalidateDeliveryCache).toHaveBeenCalledTimes(1);
+    // F-42: the invalidation is fire-and-forget through a promise chain
+    // (`deps.redis()` then the call), so it lands a microtask AFTER the
+    // reply. Waiting is required for the assertion to be deterministic; it
+    // still fails, by timeout, if the call never happens.
+    await vi.waitFor(() => {
+      expect(mockInvalidateDeliveryCache).toHaveBeenCalledTimes(1);
+    });
     await app.close();
   });
 
@@ -384,6 +414,10 @@ describe("DELETE /api/admin/delivery-zones/:id — remove", () => {
     expect(res.statusCode).toBe(409);
     expect(redis.keys()).toEqual([rk("dz:delete:dedup:req-dup-del")]);
     expect(mockRemove).not.toHaveBeenCalled();
+    // F-42: the positive arms now resolve a microtask after the reply, so an
+    // absence checked immediately could pass on a race we merely won. Flush
+    // first, then assert the invalidation genuinely never fired.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(mockInvalidateDeliveryCache).not.toHaveBeenCalled();
     await app.close();
   });
