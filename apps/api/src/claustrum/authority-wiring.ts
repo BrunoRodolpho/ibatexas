@@ -67,7 +67,17 @@ import { createAuthorityGraphStore } from "@adjudicate/core";
  *  policies.ts) gates on its OWN `OWNERSHIP_GATED_ORDER_KINDS` set, so a kind
  *  added only here gets a `resourceRefs` stamp and an injected authority graph
  *  that NOTHING reads — a change that looks wired and enforces nothing. Both
- *  sets, and a control/treatment pair at the kernel seam, or neither. */
+ *  sets, and a control/treatment pair at the kernel seam, or neither.
+ *
+ *  ── F-24: THREE sets, one agreement test ────────────────────────────────────
+ *  The third is `OWNERSHIP_GATED_PAYMENT_KINDS` (packages/pack-payments
+ *  policies.ts) — the payment half's own gate. All three are checked against a
+ *  hand-written roll call, and each half against its pack's MEASURED enforcement,
+ *  by `claustrum/__tests__/ownership-set-agreement.test.ts`. Edit this set there
+ *  too, or that test reds by name. It also records the reverse direction: a kind
+ *  in a PACK set but not here is SILENT, because this same set decides whether
+ *  `state.authority` is injected at all — the pack guard then returns null on its
+ *  `authority === undefined` line and the pack-side membership buys nothing. */
 export const OWNERSHIP_GATED_KINDS: ReadonlySet<string> = new Set([
   "order.cancel",
   "order.amend.request",
