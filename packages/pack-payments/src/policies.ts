@@ -79,6 +79,21 @@ type PaymentGuard = Guard<PaymentIntentKind, PaymentPayload, PaymentState>
  * `state.ctx.tenantId` is not the configured tenant; lenient (no-op) when absent
  * (the gateway/legacy path that does not yet supply it). Reads (actor, state) →
  * Decision — no principal/hashed-byte change. Env-driven tenant (Hard Rule #3).
+ *
+ * F-29 — NAME COLLISION. This guard REFUSEs with the CODE
+ * `tenant_binding_violation` (authored upstream, in `@adjudicate/primitives`).
+ * The SAME string is also a basis REASON, stamped by `enforcePaymentOwnership`'s
+ * IDOR conjunct below on a `payment.ownership_denied` refusal — a different
+ * guard, a different field, a different mechanism. Both decisions carry
+ * `refusal.kind: "SECURITY"` and basis `auth.scope_insufficient`, so the FIELD
+ * is the only discriminator, and this guard is `authGuards[0]` — it
+ * short-circuits before the ownership guard on all eight ownership-gated kinds.
+ * A cross-tenant fixture therefore produces this refusal even with the ownership
+ * guard removed entirely. Assert BOTH the code and the auth-basis reason; a
+ * code-only assertion proves nothing about ownership. Pinned in apps/api
+ * `claustrum/__tests__/ownership-set-agreement.test.ts` §4, which also records
+ * why a rename was declined (the code is authored in an external package, so a
+ * local rename cannot close the concept).
  */
 const requireTenantBindingGuard: PaymentGuard = requireTenantBinding<
   PaymentIntentKind,
@@ -161,6 +176,14 @@ const enforcePaymentOwnership: PaymentGuard = (envelope, state) => {
   // forged / cross-session / unbound-agent actor resolves to null and is REFUSEd.
   const authed = authority.principalOf?.(envelope.actor.sessionId) ?? null
   if (authed === null || authed !== fact.principal) {
+    // F-29 — this REASON is the same string as `requireTenantBindingGuard`'s
+    // refusal CODE (see that guard above), but a different mechanism: here it
+    // rides a `payment.ownership_denied` refusal, there it IS the code. The two
+    // decisions agree on refusal.kind and on this very basis code, so only the
+    // FIELD tells them apart. Pinned in apps/api
+    // `claustrum/__tests__/ownership-set-agreement.test.ts` §4; renaming this
+    // reason was considered and declined there (the colliding code is authored
+    // in `@adjudicate/primitives`, and this string is in audit records).
     return decisionRefuse(refusePaymentOwnershipDenied(), [
       basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "tenant_binding_violation" }),
     ])

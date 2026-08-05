@@ -119,6 +119,13 @@ function rowFor(kind: string): Row {
 const ORDER_ANCHOR = "order.cancel";
 const PAYMENT_ANCHOR = "payment.refund.issue";
 
+/** The tenant every pack's `requireTenantBindingGuard` accepts (its predicate
+ *  reads `KERNEL_TENANT_ID ?? "ibatexas"`). Every drive below uses it unless a
+ *  test is deliberately reaching for the cross-tenant path (see §4, F-29). */
+const HOST_TENANT = "ibatexas";
+/** Any other tenant — trips `requireTenantBindingGuard`, the FIRST authGuard. */
+const OTHER_TENANT = "another-tenant";
+
 // ── The drive: the REAL published bundles, the REAL host wiring ──────────────
 
 /** The host's own authority graph — `cust-A` owns `order-A` and nothing else. */
@@ -126,9 +133,9 @@ function hostAuthority() {
   return buildCustomerAuthority(OWNER, [OWNED], customerPrincipalForSession(SESSION, OWNER));
 }
 
-function orderState(orderId: string, withAuthority: boolean) {
+function orderState(orderId: string, withAuthority: boolean, tenantId = HOST_TENANT) {
   const ctx = {
-    tenantId: "ibatexas",
+    tenantId,
     channel: "whatsapp",
     customerId: OWNER,
     isAuthenticated: true,
@@ -141,10 +148,10 @@ function orderState(orderId: string, withAuthority: boolean) {
   return withAuthority ? { ctx, authority: hostAuthority() } : { ctx };
 }
 
-function paymentState(orderId: string, withAuthority: boolean) {
+function paymentState(orderId: string, withAuthority: boolean, tenantId = HOST_TENANT) {
   const ctx = {
     actor: { principal: "user" },
-    tenantId: "ibatexas",
+    tenantId,
     exists: true,
     currentStatus: "paid",
     currentMethod: "pix",
@@ -170,6 +177,73 @@ interface DriveOptions {
   /** `false` reproduces a host that does not inject `state.authority`. */
   readonly authority: boolean;
   readonly sessionId?: string;
+  /** Defaults to `HOST_TENANT`, which every pack's `requireTenantBindingGuard`
+   *  accepts. Only §4 (F-29) overrides it, to reach the cross-tenant path. */
+  readonly tenantId?: string;
+}
+
+/** The four decision fields F-29 needs to keep apart. `reason` is `undefined`
+ *  — not a sentinel — when the auth basis row carries no `detail.reason` AT
+ *  ALL, because "which field is the string in" is the whole discriminator. */
+interface DecisionFields {
+  readonly kind: string;
+  readonly refusalKind: string | undefined;
+  readonly code: string | undefined;
+  /** The refusal's free-text `detail` — §4 uses it to identify the PRODUCER. */
+  readonly refusalDetail: string | undefined;
+  readonly basisCode: string | undefined;
+  readonly reason: string | undefined;
+}
+
+/** The measurement `drive` flattens. Split out so §4 can read the fields the
+ *  flat string deliberately fuses (a missing reason and a literal
+ *  `"no-auth-basis"` are indistinguishable once stringified). */
+function driveFields({
+  row,
+  orderId,
+  stamped,
+  authority,
+  sessionId = SESSION,
+  tenantId = HOST_TENANT,
+}: DriveOptions): DecisionFields {
+  const refs = stamped ? resourceRefsForIntent(row.kind, { orderId }, OWNER) : undefined;
+  const envelope = buildEnvelope({
+    kind: row.kind,
+    payload: {
+      orderId,
+      itemId: "li-1",
+      item: "coca",
+      quantity: 1,
+      refundAmountCentavos: 1_000,
+    },
+    actor: { principal: "user", sessionId },
+    taint: row.taint,
+    // The tenant segment is appended only when it is NOT the default, so every
+    // pre-F-29 row keeps the nonce it had — the refactor stays byte-neutral.
+    nonce:
+      `n-${row.kind}-${orderId}-${String(stamped)}-${String(authority)}-${sessionId}` +
+      (tenantId === HOST_TENANT ? "" : `-${tenantId}`),
+    ...(refs === undefined ? {} : { resourceRefs: refs }),
+  });
+  const isPayments = row.pack === "payments";
+  const state = isPayments
+    ? paymentState(orderId, authority, tenantId)
+    : orderState(orderId, authority, tenantId);
+  const bundle = isPayments ? paymentsPolicyBundle : ordersPolicyBundle;
+  const decision = adjudicate(envelope as never, state as never, bundle as never) as {
+    kind: string;
+    refusal?: { kind?: string; code?: string; detail?: string };
+    basis?: readonly { category?: string; code?: string; detail?: { reason?: string } }[];
+  };
+  const authBasis = decision.basis?.find((b) => b.category === "auth");
+  return {
+    kind: decision.kind,
+    refusalKind: decision.refusal?.kind,
+    code: decision.refusal?.code,
+    refusalDetail: decision.refusal?.detail,
+    basisCode: authBasis?.code,
+    reason: authBasis?.detail?.reason,
+  };
 }
 
 /**
@@ -188,36 +262,10 @@ interface DriveOptions {
  * The stamp comes from the HOST's own `resourceRefsForIntent` — so the stamping
  * side of every row is production code, not a fixture guess.
  */
-function drive({ row, orderId, stamped, authority, sessionId = SESSION }: DriveOptions): string {
-  const refs = stamped ? resourceRefsForIntent(row.kind, { orderId }, OWNER) : undefined;
-  const envelope = buildEnvelope({
-    kind: row.kind,
-    payload: {
-      orderId,
-      itemId: "li-1",
-      item: "coca",
-      quantity: 1,
-      refundAmountCentavos: 1_000,
-    },
-    actor: { principal: "user", sessionId },
-    taint: row.taint,
-    nonce: `n-${row.kind}-${orderId}-${String(stamped)}-${String(authority)}-${sessionId}`,
-    ...(refs === undefined ? {} : { resourceRefs: refs }),
-  });
-  const isPayments = row.pack === "payments";
-  const state = isPayments
-    ? paymentState(orderId, authority)
-    : orderState(orderId, authority);
-  const bundle = isPayments ? paymentsPolicyBundle : ordersPolicyBundle;
-  const decision = adjudicate(envelope as never, state as never, bundle as never) as {
-    kind: string;
-    refusal?: { code?: string };
-    basis?: readonly { category?: string; detail?: { reason?: string } }[];
-  };
-  if (decision.kind !== "REFUSE") return decision.kind;
-  const reason =
-    decision.basis?.find((b) => b.category === "auth")?.detail?.reason ?? "no-auth-basis";
-  return `REFUSE:${decision.refusal?.code}:${reason}`;
+function drive(options: DriveOptions): string {
+  const f = driveFields(options);
+  if (f.kind !== "REFUSE") return f.kind;
+  return `REFUSE:${f.code}:${f.reason ?? "no-auth-basis"}`;
 }
 
 /** The conjunct labels the guards stamp on their auth basis row. */
@@ -361,5 +409,260 @@ describe("F-24 — reverse drift (pack-gated, host-unstamped) is SILENT, not fai
       owner: OWNER,
       resource: OWNED,
     });
+  });
+});
+
+// ── 4. F-29 — one string, TWO guards ─────────────────────────────────────────
+//
+// `tenant_binding_violation` names two different mechanisms, and a grep for
+// either one finds the other:
+//
+//   • a refusal CODE — emitted by `requireTenantBindingGuard`, which is
+//     `requireTenantBinding` from the EXTERNAL `@adjudicate/primitives`. It is
+//     `authGuards[0]` in five packs (orders, payments, reservations,
+//     customer-onboarding, whatsapp).
+//   • a basis REASON — stamped by the ownership guards' SECOND conjunct, the
+//     session→principal IDOR gate (pack-orders policies.ts, pack-payments
+//     policies.ts), on a refusal whose code is `<pack>.ownership_denied`.
+//
+// This is F-26's shadowing one level UP: F-26 was two conjuncts of ONE guard
+// sharing a code; this is two independent GUARDS sharing a string across a
+// package boundary. The decisions agree on refusal.kind AND on the auth basis
+// code — every field an ownership test habitually asserts — so the FIELD the
+// string lands in is the only thing that tells them apart, and `tenantId` (the
+// input that selects which guard speaks) is exactly the field an author writing
+// an ownership fixture is not thinking about.
+//
+// ── Why a pin and not a rename (recorded so it is not re-derived) ────────────
+// Renaming was CONSIDERED AND DECLINED, on three grounds:
+//   1. The colliding refusal code originates in `@adjudicate/primitives`, a
+//      package this repo cannot change. Renaming our basis reason breaks the
+//      exact-string collision but leaves the confusable CONCEPT live upstream —
+//      a half-close.
+//   2. A rename prevents grep confusion; it does not stop an author asserting
+//      the wrong FIELD, which is the reachable mistake. Detection at the point
+//      of failure beats renaming around it.
+//   3. The basis reason is written to audit records; changing it is
+//      operator-visible and splits historical grouping across the boundary.
+// Out of scope for this slice, NOT permanently settled — escalated to the owner
+// queue with the Q1/Q4 measurement below as its evidence.
+
+/** The one string that means two things. */
+const TENANT_STRING = "tenant_binding_violation";
+/** Absence of a basis reason, made visible — the flat `drive` string fuses a
+ *  missing reason with a literal one, and here that difference IS the finding. */
+const ABSENT = "«absent»";
+
+/** Which field of a decision carries `tenant_binding_violation`. */
+function whereIsTheString(f: DecisionFields): string {
+  const inCode = f.code === TENANT_STRING;
+  const inReason = f.reason === TENANT_STRING;
+  if (inCode && inReason) return "BOTH — CONFLATED";
+  if (inCode) return "refusal.code";
+  if (inReason) return "auth-basis detail.reason";
+  return "neither";
+}
+
+function fieldRow(f: DecisionFields): Record<string, string> {
+  return {
+    refusalKind: f.refusalKind ?? ABSENT,
+    authBasisCode: f.basisCode ?? ABSENT,
+    code: f.code ?? ABSENT,
+    reason: f.reason ?? ABSENT,
+    where: whereIsTheString(f),
+  };
+}
+
+/**
+ * The fully-wired ownership fixture, cross-tenant AND with an intruder session —
+ * so BOTH guards are armed to refuse and only the authGuards ORDER decides which
+ * one speaks. The intruder session is load-bearing: measured, with the authentic
+ * session the ownership guard passes, and moving `requireTenantBindingGuard` to
+ * LAST produces the identical outcome — i.e. the fixture would be blind to the
+ * short-circuit it exists to demonstrate.
+ */
+function tenantGuardOptions(row: Row): DriveOptions {
+  return {
+    row,
+    orderId: OWNED,
+    stamped: true,
+    authority: true,
+    sessionId: "sess-INTRUDER",
+    tenantId: OTHER_TENANT,
+  };
+}
+/** Cross-tenant: `requireTenantBindingGuard` (authGuards[0]) speaks. */
+function tenantGuardDrive(row: Row) {
+  return driveFields(tenantGuardOptions(row));
+}
+/** Host tenant + an intruder session on an OWNED resource: the IDOR conjunct. */
+function idorDrive(row: Row) {
+  return driveFields({
+    row,
+    orderId: OWNED,
+    stamped: true,
+    authority: true,
+    sessionId: "sess-INTRUDER",
+  });
+}
+
+describe("F-29 — `tenant_binding_violation` is a refusal CODE and a basis REASON, from two different guards", () => {
+  it("the two mechanisms AGREE on refusal.kind and on the auth basis code — the FIELD the string lands in is the only discriminator, in BOTH packs", () => {
+    const measured = {
+      "orders / requireTenantBindingGuard": fieldRow(tenantGuardDrive(rowFor(ORDER_ANCHOR))),
+      "orders / ownership IDOR conjunct": fieldRow(idorDrive(rowFor(ORDER_ANCHOR))),
+      "payments / requireTenantBindingGuard": fieldRow(tenantGuardDrive(rowFor(PAYMENT_ANCHOR))),
+      "payments / ownership IDOR conjunct": fieldRow(idorDrive(rowFor(PAYMENT_ANCHOR))),
+    };
+
+    // Hand-written, one literal row per mechanism — NOT derived from the drives.
+    // Read the columns: `refusalKind` and `authBasisCode` are the SAME on every
+    // row. Only `code`/`reason` move, and they move in opposite directions.
+    expect(measured).toEqual({
+      "orders / requireTenantBindingGuard": {
+        refusalKind: "SECURITY",
+        authBasisCode: "scope_insufficient",
+        code: TENANT_STRING,
+        reason: ABSENT,
+        where: "refusal.code",
+      },
+      "orders / ownership IDOR conjunct": {
+        refusalKind: "SECURITY",
+        authBasisCode: "scope_insufficient",
+        code: "order.ownership_denied",
+        reason: TENANT_STRING,
+        where: "auth-basis detail.reason",
+      },
+      "payments / requireTenantBindingGuard": {
+        refusalKind: "SECURITY",
+        authBasisCode: "scope_insufficient",
+        code: TENANT_STRING,
+        reason: ABSENT,
+        where: "refusal.code",
+      },
+      "payments / ownership IDOR conjunct": {
+        refusalKind: "SECURITY",
+        authBasisCode: "scope_insufficient",
+        code: "payment.ownership_denied",
+        reason: TENANT_STRING,
+        where: "auth-basis detail.reason",
+      },
+    });
+
+    // The claim the table is FOR, stated so it cannot be read past: the string
+    // occupies exactly ONE field per mechanism and they are DIFFERENT fields.
+    // `BOTH — CONFLATED` is the value that appears the moment anyone merges the
+    // two meanings onto one decision — which is precisely what this reds on.
+    expect(Object.values(measured).map((r) => r.where)).toEqual([
+      "refusal.code",
+      "auth-basis detail.reason",
+      "refusal.code",
+      "auth-basis detail.reason",
+    ]);
+  });
+
+  it("ALL EIGHT ownership-gated kinds reach BOTH guards, and the tenant guard runs FIRST — so a cross-tenant fixture never reaches the ownership guard at all", () => {
+    // The reachability half of the finding, and the ORDER that makes it bite.
+    // Every row arms BOTH guards (cross-tenant AND intruder session on an owned,
+    // stamped resource with authority injected), so each row's outcome is
+    // decided purely by which guard the bundle consults first. All eight say the
+    // TENANT guard — that is `authGuards[0]`. Move that guard behind the
+    // ownership guard and every row flips to `<pack>.ownership_denied`.
+    // Iterated over the hand-written ROLL_CALL, asserted as a hand-written
+    // literal map, so a dropped row reds by NAME.
+    const measured = Object.fromEntries(
+      ROLL_CALL.map((row) => [row.kind, drive(tenantGuardOptions(row))]),
+    );
+    const TENANT_REFUSAL = `REFUSE:${TENANT_STRING}:no-auth-basis`;
+    expect(measured).toEqual({
+      "order.cancel": TENANT_REFUSAL,
+      "order.amend.request": TENANT_REFUSAL,
+      "order.amend.add_item": TENANT_REFUSAL,
+      "order.amend.update_qty": TENANT_REFUSAL,
+      "order.amend.remove_item": TENANT_REFUSAL,
+      "payment.refund.issue": TENANT_REFUSAL,
+      "payment.refund.confirm": TENANT_REFUSAL,
+      "payment.pix.regenerate": TENANT_REFUSAL,
+    });
+
+    // CONTROL — the SAME eight kinds, the SAME fixture, host tenant: none of
+    // them refuses with the tenant code. Without this the row above is
+    // satisfied by a bundle that refuses everything for some unrelated reason.
+    const control = ROLL_CALL.map((row) =>
+      drive({ ...tenantGuardOptions(row), tenantId: HOST_TENANT }),
+    );
+    expect(control.filter((o) => o.startsWith(`REFUSE:${TENANT_STRING}:`))).toEqual([]);
+  });
+
+  it("a `refusal.code` of `tenant_binding_violation` is EVIDENCE-FREE about the ownership guard: the SAME decision arrives with `state.authority` withheld, i.e. with the ownership guard inert", () => {
+    // The reachable author mistake, reproduced. The fixture is a TEXTBOOK IDOR
+    // setup — intruder session, OWNED resource, host stamp, authority graph
+    // injected — and its only defect is a cross-tenant `tenantId`. A test that
+    // asserted `refusal.code === "tenant_binding_violation"` here, believing it
+    // had proved the IDOR conjunct, would be green with the ownership guard
+    // DELETED: the two rows below are identical.
+    const idorFixtureButCrossTenant = (row: Row, authority: boolean) =>
+      drive({
+        row,
+        orderId: OWNED,
+        stamped: true,
+        authority,
+        sessionId: "sess-INTRUDER",
+        tenantId: OTHER_TENANT,
+      });
+
+    const measured = [rowFor(ORDER_ANCHOR), rowFor(PAYMENT_ANCHOR)].map((row) => [
+      row.kind,
+      idorFixtureButCrossTenant(row, true), // ownership guard LIVE
+      idorFixtureButCrossTenant(row, false), // ownership guard INERT
+    ]);
+    const TENANT_REFUSAL = `REFUSE:${TENANT_STRING}:no-auth-basis`;
+    expect(measured).toEqual([
+      ["order.cancel", TENANT_REFUSAL, TENANT_REFUSAL],
+      ["payment.refund.issue", TENANT_REFUSAL, TENANT_REFUSAL],
+    ]);
+
+    // CONTROL — the identical pair on the HOST tenant. Live-vs-inert must
+    // DIFFER here, or "identical" above is a property of a drive that cannot
+    // see the ownership guard rather than a property of the short-circuit.
+    const control = [rowFor(ORDER_ANCHOR), rowFor(PAYMENT_ANCHOR)].map((row) => {
+      const opts = {
+        row,
+        orderId: OWNED,
+        stamped: true,
+        sessionId: "sess-INTRUDER",
+        tenantId: HOST_TENANT,
+      };
+      return [row.kind, drive({ ...opts, authority: true }), drive({ ...opts, authority: false })];
+    });
+    expect(control).toEqual([
+      ["order.cancel", `REFUSE:order.ownership_denied:${IDOR_CONJUNCT}`, "EXECUTE"],
+      [
+        "payment.refund.issue",
+        `REFUSE:payment.ownership_denied:${IDOR_CONJUNCT}`,
+        "REQUEST_CONFIRMATION",
+      ],
+    ]);
+  });
+
+  it("the stand-in producer is EXTERNAL: the `tenant_binding_violation` refusal is authored by `@adjudicate/primitives`, not by any first-party guard", () => {
+    // Why this matters, and why it is a pin rather than a comment: the shadowing
+    // cannot be closed by renaming anything in this repo, because the producer
+    // is upstream. These two literals exist ONLY in
+    // @adjudicate/primitives/src/guards.ts (`requireTenantBinding`) — verified
+    // by grep: neither appears anywhere in this repo's sources. If the external
+    // guard's wording or behaviour ever changes, this test says so rather than
+    // letting the shadowing quietly stop (or quietly start) mattering.
+    const f = tenantGuardDrive(rowFor(ORDER_ANCHOR));
+    expect(f.refusalDetail).toBe("actor is not bound to the tenant in state");
+    expect(f.code).toBe(TENANT_STRING);
+
+    // …and the first-party ownership guard authors a DIFFERENT refusal on the
+    // same string, with its own pt-BR user-facing text. Two producers, one
+    // string — which is the finding.
+    const idor = idorDrive(rowFor(ORDER_ANCHOR));
+    expect(idor.refusalDetail).not.toBe("actor is not bound to the tenant in state");
+    expect(idor.reason).toBe(TENANT_STRING);
+    expect(idor.code).not.toBe(TENANT_STRING);
   });
 });
