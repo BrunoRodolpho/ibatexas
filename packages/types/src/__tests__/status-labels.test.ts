@@ -11,6 +11,8 @@ import { describe, expect, it } from "vitest";
 import {
   ADMIN_ORDER_STATUS_EXTRA,
   ADMIN_PAYMENT_STATUS_EXTRA,
+  FiscalStatus,
+  FISCAL_STATUS_LABELS_PT,
   OrderFulfillmentStatus,
   ORDER_STATUS_LABELS_PT,
   ORDER_STATUS_LABELS_PT_CUSTOMER,
@@ -21,6 +23,12 @@ import {
   RESERVATION_STATUS_LABELS_PT,
   RESERVATION_STATUS_LABELS_PT_CUSTOMER,
 } from "../index.js";
+
+/**
+ * `false` once `T` has widened to `string`, `true` while the literal survives.
+ * Names no pt-BR text, so it detects WIDENING without pinning any copy.
+ */
+type IsLiteral<T extends string> = string extends T ? false : true;
 
 const sortedKeys = (m: Record<string, string>): string[] => Object.keys(m).sort();
 const allNonEmpty = (m: Record<string, string>): boolean =>
@@ -89,18 +97,42 @@ describe("BKL-016 status-labels — two-register single-source exhaustiveness", 
   // whose tsconfig includes `src`, and therefore this file) is what enforces it
   // — vitest transpiles without typechecking, so the runtime `expect` below is
   // a companion, not the guard.
-  it("F-70: STAFF/CUSTOMER register values keep their LITERAL types", () => {
-    const staffPin: "Pendente" =
-      ORDER_STATUS_LABELS_PT[OrderFulfillmentStatus.PENDING];
-    const customerPin: "em preparo" =
-      ORDER_STATUS_LABELS_PT_CUSTOMER[OrderFulfillmentStatus.PREPARING];
-    const reservationPin: "No Show" =
-      RESERVATION_STATUS_LABELS_PT[ReservationStatus.NO_SHOW];
-    const paymentPin: "Pago" = PAYMENT_STATUS_LABELS_PT[PaymentStatus.PAID];
+  // COPY-AGNOSTIC BY CONSTRUCTION, deliberately. `IsLiteral` names no pt-BR
+  // string, so re-wording any label leaves this pin untouched — only WIDENING
+  // trips it. The property under test is "the literal type survived", not "the
+  // value is currently 'Pendente'"; pinning the latter would red CI on a
+  // legitimate copy edit, which is a landmine rather than a guard.
+  it("F-70: every register keeps LITERAL value types (widening is the only failure)", () => {
+    const orderStaff: IsLiteral<
+      (typeof ORDER_STATUS_LABELS_PT)[OrderFulfillmentStatus]
+    > = true;
+    const paymentStaff: IsLiteral<
+      (typeof PAYMENT_STATUS_LABELS_PT)[PaymentStatus]
+    > = true;
+    const reservationStaff: IsLiteral<
+      (typeof RESERVATION_STATUS_LABELS_PT)[ReservationStatus]
+    > = true;
+    const fiscalStaff: IsLiteral<
+      (typeof FISCAL_STATUS_LABELS_PT)[FiscalStatus]
+    > = true;
+    const orderCustomer: IsLiteral<
+      (typeof ORDER_STATUS_LABELS_PT_CUSTOMER)[OrderFulfillmentStatus]
+    > = true;
+    const paymentCustomer: IsLiteral<
+      (typeof PAYMENT_STATUS_LABELS_PT_CUSTOMER)[PaymentStatus]
+    > = true;
+    const reservationCustomer: IsLiteral<
+      (typeof RESERVATION_STATUS_LABELS_PT_CUSTOMER)[ReservationStatus]
+    > = true;
 
-    expect(staffPin).toBe("Pendente");
-    expect(customerPin).toBe("em preparo");
-    expect(reservationPin).toBe("No Show");
-    expect(paymentPin).toBe("Pago");
+    expect([
+      orderStaff,
+      paymentStaff,
+      reservationStaff,
+      fiscalStaff,
+      orderCustomer,
+      paymentCustomer,
+      reservationCustomer,
+    ]).toEqual([true, true, true, true, true, true, true]);
   });
 });
