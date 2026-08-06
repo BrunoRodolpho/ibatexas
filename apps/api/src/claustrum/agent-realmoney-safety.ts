@@ -1,18 +1,32 @@
 // Real-money safety rails for the live agent plane (P1 blast-radius callout).
 //
 // With the staging sandbox deleted, an agent trigger really executes. The
-// load-bearing safety for money-moving kinds (pix.charge.refund) is no longer a
-// sandbox no-op but THREE composed guards:
+// load-bearing safety for money-moving kinds (pix.charge.refund) was DESIGNED as
+// THREE composed guards. Two of the three do not currently do what this header
+// used to claim; both corrections are measurements, not opinions (F-52 Phase 1,
+// queued for the owner as F-71).
 //   1. the B1 refund-confirm policy rule (in @adjudicate/pack-payments-pix) —
-//      an agent-session refund adjudicates to REQUEST_CONFIRMATION, never
-//      EXECUTE, so money never moves without an operator resolving an approval;
-//   2. the B2 park-seam (live-agent-conductor.ts) that actually queues that
-//      approval;
+//      an agent-session refund was to adjudicate to REQUEST_CONFIRMATION, never
+//      EXECUTE, so money never moves without an operator resolving an approval.
+//      MEASURED FALSE ON THE LIVE PATH: the pix pack is installed into the
+//      kernel registry (claustrum-bootstrap.ts installFirstPartyPacks) but is
+//      ABSENT from the composed policy router the agent plane adjudicates
+//      through, so the kind is unowned and the envelope REFUSEs at the TAINT
+//      phase (`taint_level_insufficient`, the unknown-kind SYSTEM floor) before
+//      this rule can run. Money is safe — the kind cannot reach EXECUTE — but
+//      this rule is not what makes it safe. Whether to wire the pack into the
+//      deciding roster is an OPEN OWNER DECISION; infer no direction from here.
+//   2. the B2 park-seam (live-agent-conductor.ts) that queues that approval. It
+//      fires only on a REQUEST_CONFIRMATION decision, so for as long as (1)
+//      holds nothing parks: no approval record, no proposal, no operator ever
+//      sees the refund the agent proposed.
 //   3. this module — a PROACTIVE per-agent / per-window circuit breaker (bounds
 //      the FIRST N money attempts, which the kill switch — a reactive tail
-//      bound — cannot) + a boot-time fail-closed assertion (sibling to the old
-//      assertNoRealExecutors) that crashes the boot if an agent declares a
-//      real-money kind without the confirm guard composed.
+//      bound — cannot) + a boot-time assertion that THROWS but does NOT crash
+//      the boot: startManagedAgentPlane's caller catches it and continues
+//      (claustrum-bootstrap.ts), so the real failure mode is a SILENTLY
+//      DISABLED agent plane. That is an availability failure wearing a safety
+//      guarantee's clothes, and nothing pages on it.
 
 import type { AgentDefinition } from "@ibatexas/agents";
 import { rk } from "@ibatexas/tools";
@@ -29,11 +43,22 @@ export function isRealMoneyKind(kind: string): boolean {
 }
 
 /**
- * Boot-time fail-closed assertion: every real-money kind any agent declares
- * MUST appear in `composedConfirmKinds` (the set the composed kernel policy
- * confirm-gates — supplied by the bootstrap from the B1 rule). Throws (crashes
- * the boot) otherwise — a real-money kind without a confirm guard is the exact
- * "money moves with no gate" failure the blast-radius callout warns about.
+ * Boot-time assertion: every real-money kind any agent declares MUST appear in
+ * `composedConfirmKinds` (the set the composed kernel policy confirm-gates —
+ * supplied by the bootstrap from the B1 rule). Throws otherwise — a real-money
+ * kind without a confirm guard is the exact "money moves with no gate" failure
+ * the blast-radius callout warns about.
+ *
+ * THE THROW DOES NOT CRASH THE BOOT. Its only caller (startManagedAgentPlane,
+ * via claustrum-bootstrap.ts) catches it, logs, and continues — so violating
+ * this assertion silently disables the managed agent plane rather than
+ * refusing to boot. Read the failure that way when it fires.
+ *
+ * CALLER BEWARE: `composedConfirmKinds` is today a hand-maintained literal in
+ * claustrum-bootstrap.ts, not a projection of the composed policy. It is
+ * checked against REAL_MONEY_KINDS — one hand-written list against another
+ * naming the same thing — so this assertion cannot observe policy drift. See
+ * F-52 / F-71; rewiring it waits on the owner's roster ruling.
  */
 export function assertRealMoneyConfirmGuards(
   registry: ReadonlyArray<AgentDefinition>,
@@ -51,9 +76,11 @@ export function assertRealMoneyConfirmGuards(
     const detail = unguarded.map((u) => `${u.agentId}:${u.kind}`).join(", ");
     throw new Error(
       `real-money safety conformance failed: ${unguarded.length} declared real-money ` +
-        `kind(s) without a composed sessionId-confirm guard [${detail}] — refuse to boot ` +
-        `the live agent plane (money would move with no gate). Compose the refund-confirm ` +
-        `rule (B1) for these kinds before enabling the plane.`,
+        `kind(s) without a composed sessionId-confirm guard [${detail}] — refuse to start ` +
+        `the live agent plane (money would move with no gate). NOTE: the API process keeps ` +
+        `serving; only the agent plane is off, so triggers are silently dropped until this ` +
+        `is fixed. Compose the refund-confirm rule (B1) for these kinds before enabling ` +
+        `the plane.`,
     );
   }
 }

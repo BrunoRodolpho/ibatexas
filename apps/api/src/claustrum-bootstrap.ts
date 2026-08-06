@@ -206,8 +206,20 @@ import {
  * The intent kinds the composed kernel policy confirm-gates for agent sessions
  * (the B1 rule in pixPolicyBundle.business). Hand-maintained to mirror the
  * composed policy: if a new real-money kind is added to REAL_MONEY_KINDS without
- * a B1 confirm rule added here, startManagedAgentPlane's fail-closed assertion
- * crashes the boot rather than letting money move ungated.
+ * a B1 confirm rule added here, startManagedAgentPlane's assertion throws.
+ *
+ * TWO THINGS THAT SENTENCE USED TO CLAIM AND SHOULD NOT (F-52 / F-71):
+ *   - The throw does NOT crash the boot. It is caught below (see the
+ *     startManagedAgentPlane call site), logged, and the process continues with
+ *     the agent plane OFF. The consequence is silent unavailability, not a
+ *     refused boot.
+ *   - "Mirror the composed policy" is aspirational, not enforced. This literal
+ *     is compared against REAL_MONEY_KINDS — another hand-written literal with
+ *     the same content — so the pair cannot detect composition drift. It is
+ *     also currently WRONG about production: the composed router does not
+ *     confirm-gate `pix.charge.refund` at all, because the pack that owns the
+ *     kind is absent from IBATEXAS_POLICY_PACKS. Deriving this set honestly
+ *     from the router would make the assertion throw today.
  */
 const AGENT_CONFIRM_GATED_KINDS: ReadonlySet<string> = new Set<string>([
   "pix.charge.refund",
@@ -4396,7 +4408,8 @@ export async function bootstrapClaustrum(
         refundBreaker: createRefundCircuitBreaker({ redis }),
         // The kinds the composed kernel policy confirm-gates via the B1
         // agent-session refund rule. Must cover every REAL_MONEY_KINDS entry or
-        // startManagedAgentPlane refuses to boot (fail-closed).
+        // startManagedAgentPlane throws — which the catch below swallows, so
+        // the plane goes silently OFF rather than the boot being refused.
         realMoneyConfirmKinds: AGENT_CONFIRM_GATED_KINDS,
         resolveCustomer: async (orderId) => {
           const order = await createOrderQueryService().getById(orderId);
@@ -4405,6 +4418,13 @@ export async function bootstrapClaustrum(
         now: () => new Date().toISOString(),
       });
     } catch (err) {
+      // NOTE (F-52 / F-71): this catch is what makes the real-money boot
+      // assertion NOT fail-closed. A conformance violation that the assertion
+      // reports as "refuse to boot the live agent plane" arrives here, is
+      // logged once, and the process continues serving with the agent plane
+      // OFF. Nothing pages on it. Making this loud/alertable is deliberately
+      // NOT done in this prose-only change — it is a behaviour change pending
+      // the owner's ruling.
       logger.error(
         { component: "managed-agent-plane", err: (err as Error).message },
         "managed-agent plane failed to start — continuing without it (boot not blocked)",
