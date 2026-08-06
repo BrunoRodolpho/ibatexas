@@ -72,4 +72,35 @@ describe("BKL-016 status-labels — two-register single-source exhaustiveness", 
     }
     expect(allNonEmpty(ADMIN_PAYMENT_STATUS_EXTRA)).toBe(true);
   });
+
+  // F-70 — the registers must keep LITERAL value types.
+  //
+  // These maps are declared `as const satisfies Record<Status, string>`. The
+  // `satisfies` carries the exhaustiveness the old `: Record<Status, string>`
+  // annotation gave; the `as const` is what keeps each value's LITERAL type.
+  // That is not cosmetic: `packages/ui`'s admin filter chips derive their label
+  // from these maps and type each chip as the exact (id, label) pair, which is
+  // the only thing making a hand-written or MIS-PAIRED chip a compile error.
+  //
+  // Re-annotating these maps `: Record<Status, string>` would widen every value
+  // back to `string` — and the UI would still COMPILE, silently losing that
+  // guard. Nothing else would fail. Hence this pin, at the source of the
+  // constraint. It is a TYPE assertion: `tsc --noEmit` (this package's `lint`,
+  // whose tsconfig includes `src`, and therefore this file) is what enforces it
+  // — vitest transpiles without typechecking, so the runtime `expect` below is
+  // a companion, not the guard.
+  it("F-70: STAFF/CUSTOMER register values keep their LITERAL types", () => {
+    const staffPin: "Pendente" =
+      ORDER_STATUS_LABELS_PT[OrderFulfillmentStatus.PENDING];
+    const customerPin: "em preparo" =
+      ORDER_STATUS_LABELS_PT_CUSTOMER[OrderFulfillmentStatus.PREPARING];
+    const reservationPin: "No Show" =
+      RESERVATION_STATUS_LABELS_PT[ReservationStatus.NO_SHOW];
+    const paymentPin: "Pago" = PAYMENT_STATUS_LABELS_PT[PaymentStatus.PAID];
+
+    expect(staffPin).toBe("Pendente");
+    expect(customerPin).toBe("em preparo");
+    expect(reservationPin).toBe("No Show");
+    expect(paymentPin).toBe("Pago");
+  });
 });

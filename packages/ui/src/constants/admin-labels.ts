@@ -8,8 +8,20 @@
  * `@ibatexas/types` (status-labels.ts): the STAFF (Title Case) registers plus the
  * admin-only non-core extensions. This normalizes admin's previously
  * internally-inconsistent badges (lowercase order labels next to Title-Case
- * reservations — already a bug) onto the one Title-Case staff voice, and makes
- * drift-by-divergence structurally impossible (the types exhaustiveness test).
+ * reservations — already a bug) onto the one Title-Case staff voice.
+ *
+ * BKL-016 also claimed this made "drift-by-divergence structurally impossible
+ * (the types exhaustiveness test)". F-58 measured that claim and it was FALSE
+ * of this file: the exhaustiveness test pins the key-sets of the maps
+ * `status-labels.ts` OWNS, and cannot see a label copied into this file at all
+ * — which is exactly how the filter chips below drifted ("Em Entrega" vs the
+ * SSOT's "Em entrega") while every gate stayed green. The claim is true of the
+ * maps above, which spread the SSOT rather than restate it.
+ *
+ * It is now true of the chips too, but by a DIFFERENT mechanism than the one
+ * BKL-016 named: F-58 removed the second copy, and F-70 made the surviving
+ * derivation type-exact. See the chip note below for what that does and does
+ * not enforce.
  */
 
 import {
@@ -93,58 +105,82 @@ export const STOCK_LABELS = {
  * that could diverge.
  *
  * WHAT IS AND IS NOT ENFORCED — `packages/ui` has no test files, so tsc is the
- * ONLY gate here and it is worth being exact about its reach. All three of
- * these were measured, not assumed:
+ * ONLY gate here and it is worth being exact about its reach. Every line below
+ * was measured by planting the case and reading the compiler, not assumed:
  *
- *   ENFORCED — a typo'd or retired id in the `*_FILTER_IDS` arrays is a compile
- *   error (planting `'redy'` for `READY` fails the build, exit 2).
+ *   ENFORCED — a hand-written `{ id, label }` literal (F-70). Planting
+ *   `{ id: 'ready', label: 'ZZZ_HANDWRITTEN' }` fails with exit 2:
+ *   `Type '"ZZZ_HANDWRITTEN"' is not assignable to type '"Pendente" | ... |
+ *   "Todos"'`. Under F-58 this compiled clean and the request not to do it was
+ *   only a convention.
  *
- *   NOT ENFORCED, and this `satisfies` is the reason — it is a SUBSET check,
- *   so it never asserts the list is COMPLETE. Adding a status to the enum
- *   without adding it here compiles clean and silently ships a missing chip.
- *   That is a missing-chip gap rather than a label drift, and closing it needs
- *   a real exhaustiveness pin, not a `satisfies`.
+ *   ENFORCED — MIS-PAIRING, which no earlier shape could catch.
+ *   `{ id: 'ready', label: 'Pendente' }` is two REAL values in the wrong
+ *   combination; it now fails with `Type '"Pendente"' is not assignable to
+ *   type '"Pronto"'`.
  *
- *   NOT ENFORCED — nothing stops a future author appending a hand-written
- *   `{ id, label }` literal beside the spread; it compiles clean (measured).
- *   The sentence above asking you not to is a convention, not a guard. Making
- *   it a compile error requires the label's LITERAL type, which is erased at
- *   the source: `status-labels.ts` annotates its maps `Record<Status, string>`,
- *   so every value is `string`. Re-declaring those maps `as const satisfies
- *   Record<Status, string>` would preserve the literals and let this file
- *   demand `label: (typeof ORDER_STATUS_LABELS_PT)[S]` — a change to
- *   `@ibatexas/types`, deliberately not made under F-58's cosmetic scope.
+ *   ENFORCED — an id that is not a member of the register. Planting
+ *   `chipFor(ORDER_STATUS_LABELS_PT, 'redy')` still fails (exit 2), though
+ *   note the message DEGRADED versus F-58's shape: because `'redy'` is not a
+ *   `keyof M`, `K` widens to the whole union and the error reads as a
+ *   cross-product mismatch rather than F-58's direct
+ *   `Did you mean '"ready"'?`. Still caught; just less legible.
  *
- * The ids are listed explicitly rather than read from `Object.keys(...)` so the
- * chip ORDER stays a deliberate, reviewable fact here instead of silently
- * inheriting the SSOT record's declaration order.
+ *   NOT ENFORCED — COMPLETENESS. Nothing requires a `chipFor(...)` line to
+ *   exist for every status, so adding a member to the enum and its register
+ *   compiles clean here and silently ships a missing chip. This is unchanged
+ *   from F-58; only the reason moved (it was the SUBSET-check `satisfies`
+ *   then, it is the hand-listed call set now). A missing-chip gap is not a
+ *   label drift, and closing it still needs a real exhaustiveness pin.
+ *
+ * F-70 is what made that possible: `status-labels.ts` used to annotate its
+ * maps `Record<Status, string>`, which WIDENED every value to `string` and
+ * erased the literals at the source. They are now declared
+ * `as const satisfies Record<Status, string>` — the `satisfies` keeps the
+ * exhaustiveness guarantee the annotation gave, while `as const` keeps the
+ * literal types this file needs. The emitted JS is byte-identical.
+ *
+ * Chips are built with one `chipFor(...)` call per status rather than a
+ * `.map()` over an id list. That is deliberate and load-bearing, not style:
+ * `.map()` hands the callback the UNION of ids, so its result type is the
+ * CROSS PRODUCT of every id with every label — which cannot be checked
+ * against the paired union, and is precisely why F-58's shape could not
+ * enforce pairing. One call per status instantiates the generic per id and
+ * keeps each pair exact. It also keeps chip ORDER a deliberate, reviewable
+ * fact here instead of silently inheriting the SSOT's declaration order.
  */
-type StatusFilterChip<S extends string> = {
-  readonly id: '' | S
-  readonly label: string
-}
+
+/** The union of exact (id, label) pairs a status register admits. */
+type StatusChipOf<M extends Record<string, string>> = {
+  readonly [K in keyof M]: { readonly id: K; readonly label: M[K] }
+}[keyof M]
+
+type StatusFilterChip<M extends Record<string, string>> =
+  | typeof ALL_FILTER_CHIP
+  | StatusChipOf<M>
 
 /** The chip meaning "no filter" — not a status, so it owns its label. */
 const ALL_FILTER_CHIP = { id: '', label: 'Todos' } as const
 
-const ORDER_STATUS_FILTER_IDS = [
-  OrderFulfillmentStatus.PENDING,
-  OrderFulfillmentStatus.CONFIRMED,
-  OrderFulfillmentStatus.PREPARING,
-  OrderFulfillmentStatus.READY,
-  OrderFulfillmentStatus.IN_DELIVERY,
-  OrderFulfillmentStatus.DELIVERED,
-  OrderFulfillmentStatus.CANCELED,
-] as const satisfies readonly OrderFulfillmentStatus[]
+/** Pair a status id with its SSOT label. Generic per-id so the pair stays exact. */
+function chipFor<M extends Record<string, string>, K extends keyof M>(
+  labels: M,
+  id: K,
+): { readonly id: K; readonly label: M[K] } {
+  return { id, label: labels[id] }
+}
 
 export const ORDER_STATUS_FILTERS: ReadonlyArray<
-  StatusFilterChip<OrderFulfillmentStatus>
+  StatusFilterChip<typeof ORDER_STATUS_LABELS_PT>
 > = [
   ALL_FILTER_CHIP,
-  ...ORDER_STATUS_FILTER_IDS.map((id) => ({
-    id,
-    label: ORDER_STATUS_LABELS_PT[id],
-  })),
+  chipFor(ORDER_STATUS_LABELS_PT, OrderFulfillmentStatus.PENDING),
+  chipFor(ORDER_STATUS_LABELS_PT, OrderFulfillmentStatus.CONFIRMED),
+  chipFor(ORDER_STATUS_LABELS_PT, OrderFulfillmentStatus.PREPARING),
+  chipFor(ORDER_STATUS_LABELS_PT, OrderFulfillmentStatus.READY),
+  chipFor(ORDER_STATUS_LABELS_PT, OrderFulfillmentStatus.IN_DELIVERY),
+  chipFor(ORDER_STATUS_LABELS_PT, OrderFulfillmentStatus.DELIVERED),
+  chipFor(ORDER_STATUS_LABELS_PT, OrderFulfillmentStatus.CANCELED),
 ]
 
 export const ORDER_DATE_FILTERS = [
@@ -161,23 +197,16 @@ export const ORDER_DATE_FILTERS = [
  * array currently has zero consumers; it is converted anyway so the file holds
  * one rule rather than one rule and one exception for the next author to copy.
  */
-const RESERVATION_STATUS_FILTER_IDS = [
-  ReservationStatus.PENDING,
-  ReservationStatus.CONFIRMED,
-  ReservationStatus.SEATED,
-  ReservationStatus.COMPLETED,
-  ReservationStatus.CANCELLED,
-  ReservationStatus.NO_SHOW,
-] as const satisfies readonly ReservationStatus[]
-
 export const RESERVATION_STATUS_FILTERS: ReadonlyArray<
-  StatusFilterChip<ReservationStatus>
+  StatusFilterChip<typeof RESERVATION_STATUS_LABELS_PT>
 > = [
   ALL_FILTER_CHIP,
-  ...RESERVATION_STATUS_FILTER_IDS.map((id) => ({
-    id,
-    label: RESERVATION_STATUS_LABELS_PT[id],
-  })),
+  chipFor(RESERVATION_STATUS_LABELS_PT, ReservationStatus.PENDING),
+  chipFor(RESERVATION_STATUS_LABELS_PT, ReservationStatus.CONFIRMED),
+  chipFor(RESERVATION_STATUS_LABELS_PT, ReservationStatus.SEATED),
+  chipFor(RESERVATION_STATUS_LABELS_PT, ReservationStatus.COMPLETED),
+  chipFor(RESERVATION_STATUS_LABELS_PT, ReservationStatus.CANCELLED),
+  chipFor(RESERVATION_STATUS_LABELS_PT, ReservationStatus.NO_SHOW),
 ]
 
 export const RATING_FILTERS = [
