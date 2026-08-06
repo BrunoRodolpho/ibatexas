@@ -36,7 +36,7 @@ import { ReservationStatus } from "./reservation.types.js"
 // ── STAFF register (Title Case — the badge/label voice) ─────────────────────────
 
 /** pt-BR STAFF (Title Case) display labels for each order fulfillment status. */
-export const ORDER_STATUS_LABELS_PT: Record<OrderFulfillmentStatus, string> = {
+export const ORDER_STATUS_LABELS_PT = {
   [OrderFulfillmentStatus.PENDING]: "Pendente",
   [OrderFulfillmentStatus.CONFIRMED]: "Confirmado",
   [OrderFulfillmentStatus.PREPARING]: "Preparando",
@@ -44,10 +44,10 @@ export const ORDER_STATUS_LABELS_PT: Record<OrderFulfillmentStatus, string> = {
   [OrderFulfillmentStatus.IN_DELIVERY]: "Em entrega",
   [OrderFulfillmentStatus.DELIVERED]: "Entregue",
   [OrderFulfillmentStatus.CANCELED]: "Cancelado",
-}
+} as const satisfies Record<OrderFulfillmentStatus, string>
 
 /** pt-BR STAFF (Title Case) display labels for each payment status. */
-export const PAYMENT_STATUS_LABELS_PT: Record<PaymentStatus, string> = {
+export const PAYMENT_STATUS_LABELS_PT = {
   [PaymentStatus.AWAITING_PAYMENT]: "Aguardando pagamento",
   [PaymentStatus.PAYMENT_PENDING]: "Pagamento pendente",
   [PaymentStatus.PAYMENT_EXPIRED]: "Pagamento expirado",
@@ -60,35 +60,35 @@ export const PAYMENT_STATUS_LABELS_PT: Record<PaymentStatus, string> = {
   [PaymentStatus.DISPUTED]: "Em disputa",
   [PaymentStatus.CANCELED]: "Cancelado",
   [PaymentStatus.WAIVED]: "Isento",
-}
+} as const satisfies Record<PaymentStatus, string>
 
 /** pt-BR STAFF (Title Case) display labels for each reservation status. Was the
  *  admin-labels.ts copy; the ops/admin badge voice for a reservation. */
-export const RESERVATION_STATUS_LABELS_PT: Record<ReservationStatus, string> = {
+export const RESERVATION_STATUS_LABELS_PT = {
   [ReservationStatus.PENDING]: "Pendente",
   [ReservationStatus.CONFIRMED]: "Confirmada",
   [ReservationStatus.SEATED]: "Sentada",
   [ReservationStatus.COMPLETED]: "Completa",
   [ReservationStatus.CANCELLED]: "Cancelada",
   [ReservationStatus.NO_SHOW]: "No Show",
-}
+} as const satisfies Record<ReservationStatus, string>
 
 /** pt-BR STAFF (Title Case) display labels for each fiscal (NFC-e) status —
  *  NEW-014; admin-only surface today (no customer register yet). */
-export const FISCAL_STATUS_LABELS_PT: Record<FiscalStatus, string> = {
+export const FISCAL_STATUS_LABELS_PT = {
   [FiscalStatus.PENDING]: "Pendente",
   [FiscalStatus.APPROVED]: "Autorizada",
   [FiscalStatus.REJECTED]: "Rejeitada",
   [FiscalStatus.TIMEOUT]: "Processando",
   [FiscalStatus.ERROR]: "Erro",
-}
+} as const satisfies Record<FiscalStatus, string>
 
 // ── CUSTOMER register (sentence-voice — the claims renderer's voice) ─────────────
 // Live-calibrated against the model — NEVER churn these strings. `claims-labels.ts`
 // re-derives its per-(claimType, field) display map from these maps.
 
 /** pt-BR CUSTOMER (sentence-voice) display labels for each order fulfillment status. */
-export const ORDER_STATUS_LABELS_PT_CUSTOMER: Record<OrderFulfillmentStatus, string> = {
+export const ORDER_STATUS_LABELS_PT_CUSTOMER = {
   [OrderFulfillmentStatus.PENDING]: "pendente",
   [OrderFulfillmentStatus.CONFIRMED]: "confirmado",
   [OrderFulfillmentStatus.PREPARING]: "em preparo",
@@ -96,10 +96,10 @@ export const ORDER_STATUS_LABELS_PT_CUSTOMER: Record<OrderFulfillmentStatus, str
   [OrderFulfillmentStatus.IN_DELIVERY]: "saiu para entrega",
   [OrderFulfillmentStatus.DELIVERED]: "entregue",
   [OrderFulfillmentStatus.CANCELED]: "cancelado",
-}
+} as const satisfies Record<OrderFulfillmentStatus, string>
 
 /** pt-BR CUSTOMER (sentence-voice) display labels for each payment status. */
-export const PAYMENT_STATUS_LABELS_PT_CUSTOMER: Record<PaymentStatus, string> = {
+export const PAYMENT_STATUS_LABELS_PT_CUSTOMER = {
   [PaymentStatus.AWAITING_PAYMENT]: "aguardando pagamento",
   [PaymentStatus.PAYMENT_PENDING]: "pagamento pendente",
   [PaymentStatus.PAYMENT_EXPIRED]: "pagamento expirado",
@@ -112,17 +112,17 @@ export const PAYMENT_STATUS_LABELS_PT_CUSTOMER: Record<PaymentStatus, string> = 
   [PaymentStatus.DISPUTED]: "em disputa",
   [PaymentStatus.CANCELED]: "cancelado",
   [PaymentStatus.WAIVED]: "isento",
-}
+} as const satisfies Record<PaymentStatus, string>
 
 /** pt-BR CUSTOMER (sentence-voice) display labels for each reservation status. */
-export const RESERVATION_STATUS_LABELS_PT_CUSTOMER: Record<ReservationStatus, string> = {
+export const RESERVATION_STATUS_LABELS_PT_CUSTOMER = {
   [ReservationStatus.PENDING]: "pendente",
   [ReservationStatus.CONFIRMED]: "confirmada",
   [ReservationStatus.SEATED]: "sentados",
   [ReservationStatus.COMPLETED]: "concluída",
   [ReservationStatus.CANCELLED]: "cancelada",
   [ReservationStatus.NO_SHOW]: "não compareceu",
-}
+} as const satisfies Record<ReservationStatus, string>
 
 // ── ADMIN extension (non-core keys the admin UI additionally renders) ───────────
 // Legacy Medusa statuses + order aggregate states that are NOT members of the core
