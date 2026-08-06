@@ -36,9 +36,19 @@ describe("prompt-surfaces helper contract", () => {
     expect(promptTextExports().map((e) => e.name)).toContain("EXPRESS_INTENT_TOOL");
   });
 
-  it("personaExports covers the persona PROMPT_CATALOG omits", () => {
-    // The reason this walk exists at all: a catalog-only enumeration is blind
-    // here, and this is the live persona F-67 is about.
+  it("personaExports covers personas a catalog-only walk would miss", () => {
+    // The reason this walk exists at all: the catalog is hand-maintained, so a
+    // catalog-only enumeration is blind to whatever it happens to be missing
+    // that day. OPS_CLAIM_PLANNER_PERSONA was exactly that case when this file
+    // was written — live via `ops-conductor.ts`, absent from PROMPT_CATALOG.
+    //
+    // The name of this case used to say "the persona PROMPT_CATALOG omits",
+    // which stopped being true when #570 catalogued it. The assertion below was
+    // always the durable one (the walk reaches the persona, regardless of
+    // catalog membership), so only the name and this comment needed correcting
+    // — but a name that states an expired fact sends the next reader hunting a
+    // defect that no longer exists. Same rot class as the assertion #573
+    // removed, one altitude down.
     expect(personaExports().map((e) => e.name)).toContain("OPS_CLAIM_PLANNER_PERSONA");
   });
 
