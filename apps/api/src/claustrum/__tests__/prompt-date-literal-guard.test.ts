@@ -39,22 +39,27 @@
 // ── WHY THE INPUT IS NOT `PROMPT_CATALOG` ALONE ─────────────────────────────
 //
 // `prompt-catalog.ts` calls itself "the single enumeration of every LLM-facing
-// prompt", but it omits OPS_CLAIM_PLANNER_PERSONA — which is live
-// (`ops-conductor.ts` composes it) and carries one of the dates below. A guard
-// walking only the catalog would be blind at one of the three live sites. The
-// input is therefore the UNION of a module-namespace walk of `personas.ts`, the
+// prompt", and when this guard was written it omitted OPS_CLAIM_PLANNER_PERSONA
+// — live (`ops-conductor.ts` composes it) and carrying one of the dates below —
+// so a catalog-only walk was blind at one of the three live sites. #570 has
+// since catalogued that persona, and a completeness guard now enforces the
+// catalog's claim; do not read this paragraph as a standing assertion that the
+// catalog is incomplete.
+//
+// The union input stands on its own terms regardless: the catalog is a
+// hand-maintained list, so anything walking only it inherits whatever it
+// happens to be missing THAT DAY. A module-namespace walk cannot be behind.
+// The input is therefore the UNION of a namespace walk of `personas.ts`, the
 // catalog, the capability descriptions, and both wire rosters. Inputs should be
 // as complete as possible and should grow on their own; only the ALLOWLIST is
 // hand-written.
 
 import { describe, expect, it } from "vitest";
-import * as personas from "../prompts/personas.js";
-import { PROMPT_CATALOG } from "../prompts/prompt-catalog.js";
 // The walkers live in a helper module, not here, so F-67's catalog-completeness
 // axis can consume the SAME enumeration instead of growing a second one that
 // drifts. See helpers/prompt-surfaces.ts for the two-shapes hazard and for the
 // precise scope this covers (static surface only — no runtime-composed text).
-import { asText, collectSurfaces } from "./helpers/prompt-surfaces.js";
+import { collectSurfaces } from "./helpers/prompt-surfaces.js";
 
 /** `YYYY-MM-DD` anywhere in the text. */
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
@@ -148,13 +153,21 @@ describe("F-65b — no unexpected date literal reaches a model-facing surface", 
     }
   });
 
-  it("covers the site the prompt catalog omits", () => {
+  it("covers persona sites regardless of catalog membership", () => {
     // Regression pin for the blind spot that motivated the union input: the
-    // catalog does not list OPS_CLAIM_PLANNER_PERSONA, so a catalog-only walk
-    // would miss a live date site entirely.
+    // namespace walk reaches every persona whether or not the catalog lists
+    // it, so a persona can never fall out of this guard's reach by being
+    // absent from — or later added to — PROMPT_CATALOG.
+    //
+    // This assertion used to ALSO require that the catalog omit
+    // OPS_CLAIM_PLANNER_PERSONA, which was true when this file was written and
+    // false once #570 catalogued it — reddening dev. The property worth
+    // pinning was always "the walk covers this site", never "the catalog lacks
+    // it": a pin on a defect expires the moment the defect is fixed, and takes
+    // the build with it. Catalog membership is asserted by the completeness
+    // guard that owns it (prompts/__tests__/prompt-catalog-completeness.test.ts);
+    // re-asserting it here would be a second mirror of the same claim.
     const sites = new Set(collectSurfaces().map(([site]) => site));
     expect(sites.has("persona:OPS_CLAIM_PLANNER_PERSONA")).toBe(true);
-    const omitted = asText(personas.OPS_CLAIM_PLANNER_PERSONA);
-    expect(PROMPT_CATALOG.some((e) => e.source === omitted)).toBe(false);
   });
 });
