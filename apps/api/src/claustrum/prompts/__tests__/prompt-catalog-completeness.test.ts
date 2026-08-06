@@ -39,6 +39,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { personaExports } from "../../__tests__/helpers/prompt-surfaces.js";
 import { ibatexasPromptFragments } from "../ibatexas-prompts.js";
 import { PROMPT_CATALOG } from "../prompt-catalog.js";
 
@@ -128,6 +129,48 @@ describe("prompt catalog completeness (F-67)", () => {
     // operator edits to no effect.
     expect(entry!.source).toContain("propose_claim");
     expect(literalResolvePromptSites().has("ops/claim-planner.persona")).toBe(true);
+  });
+
+  // ── The persona-namespace axis (F-21) ───────────────────────────────────
+  //
+  // The two carriers above are both reachability-based: they enumerate what
+  // the runtime WIRES. That leaves a class structurally invisible to both — a
+  // persona that exists as an export but is neither wired nor catalogued. An
+  // unwired persona reaches no `resolvePrompt` call and joins no fragment, so
+  // neither carrier can see it, and it would sit in `personas.ts` looking
+  // authoritative while the operator surface has never heard of it.
+  //
+  // The namespace walk comes from `__tests__/helpers/prompt-surfaces.ts`
+  // (extracted in #572 precisely so this is a thin caller): two walkers
+  // answering "which prompts exist?" drift, and drift silently, each staying
+  // green while disagreeing with the other. `personaExports()` — not
+  // `promptTextExports()` — because the former applies that module's
+  // hand-written non-prompt exclusion, which is where `EXPRESS_INTENT_TOOL`
+  // (the tool NAME, not prompt text) is filtered. That exclusion is proven
+  // live there by its own empty-the-list experiment; this file deliberately
+  // carries NO second exemption list, because a duplicate is a second place to
+  // drift from a list that is already proven.
+  //
+  // Join on TEXT, not on the export's name: the catalog stores `source:` (the
+  // text), so text equality also catches a row that points at the WRONG
+  // constant — a prompt the operator could edit to no effect.
+  it("every persona export appears in the catalog", () => {
+    const personas = personaExports();
+    // Guard the guard: an empty namespace walk would satisfy this vacuously.
+    expect(personas.length).toBeGreaterThan(0);
+
+    const catalogued = new Set(PROMPT_CATALOG.map((e) => e.source));
+    const missing = personas
+      .filter((p) => !catalogued.has(p.text))
+      .map((p) => p.name)
+      .sort();
+    expect(
+      missing,
+      `Persona exports absent from PROMPT_CATALOG:\n` +
+        missing.map((n) => `  - ${n}`).join("\n") +
+        `\nA persona can be missing here while being invisible to both carriers ` +
+        `above — an unwired persona reaches no resolvePrompt call at all.`,
+    ).toEqual([]);
   });
 
   it("no catalog entry claims to be wired without a resolvePrompt carrier", () => {
