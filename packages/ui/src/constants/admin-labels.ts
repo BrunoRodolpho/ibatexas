@@ -17,8 +17,10 @@ import {
   ADMIN_PAYMENT_STATUS_EXTRA,
   FISCAL_STATUS_LABELS_PT,
   ORDER_STATUS_LABELS_PT,
+  OrderFulfillmentStatus,
   PAYMENT_STATUS_LABELS_PT,
   RESERVATION_STATUS_LABELS_PT,
+  ReservationStatus,
 } from '@ibatexas/types'
 
 // ---------------------------------------------------------------------------
@@ -74,16 +76,76 @@ export const STOCK_LABELS = {
 // Filter chips (id === '' means "all")
 // ---------------------------------------------------------------------------
 
-export const ORDER_STATUS_FILTERS = [
-  { id: '', label: 'Todos' },
-  { id: 'pending', label: 'Pendente' },
-  { id: 'confirmed', label: 'Confirmado' },
-  { id: 'preparing', label: 'Preparando' },
-  { id: 'ready', label: 'Pronto' },
-  { id: 'in_delivery', label: 'Em Entrega' },
-  { id: 'delivered', label: 'Entregue' },
-  { id: 'canceled', label: 'Cancelado' },
-] as const
+/**
+ * F-58 — the STATUS chips DERIVE their label from the BKL-016 SSOT instead of
+ * re-declaring it. Do not re-introduce a literal `label:` on a status chip.
+ *
+ * These arrays used to spell the label text out a second time, a few lines
+ * below the SSOT-backed `ORDER_STATUS_LABELS` in this very file, and they had
+ * already drifted: `in_delivery` rendered its badge as "Em entrega" (SSOT) and
+ * its chip as "Em Entrega" on the SAME admin page. The drift was invisible —
+ * `packages/ui` has NO test files, and the chip text is not reachable from the
+ * `@ibatexas/types` exhaustiveness test, so a corrupted chip label passed the
+ * whole `pnpm lint` gate byte-identically (measured: 0 errors both ways).
+ *
+ * Reading the label out of the record removes the second copy entirely, so
+ * label divergence is not merely detected — there is no longer a second string
+ * that could diverge.
+ *
+ * WHAT IS AND IS NOT ENFORCED — `packages/ui` has no test files, so tsc is the
+ * ONLY gate here and it is worth being exact about its reach. All three of
+ * these were measured, not assumed:
+ *
+ *   ENFORCED — a typo'd or retired id in the `*_FILTER_IDS` arrays is a compile
+ *   error (planting `'redy'` for `READY` fails the build, exit 2).
+ *
+ *   NOT ENFORCED, and this `satisfies` is the reason — it is a SUBSET check,
+ *   so it never asserts the list is COMPLETE. Adding a status to the enum
+ *   without adding it here compiles clean and silently ships a missing chip.
+ *   That is a missing-chip gap rather than a label drift, and closing it needs
+ *   a real exhaustiveness pin, not a `satisfies`.
+ *
+ *   NOT ENFORCED — nothing stops a future author appending a hand-written
+ *   `{ id, label }` literal beside the spread; it compiles clean (measured).
+ *   The sentence above asking you not to is a convention, not a guard. Making
+ *   it a compile error requires the label's LITERAL type, which is erased at
+ *   the source: `status-labels.ts` annotates its maps `Record<Status, string>`,
+ *   so every value is `string`. Re-declaring those maps `as const satisfies
+ *   Record<Status, string>` would preserve the literals and let this file
+ *   demand `label: (typeof ORDER_STATUS_LABELS_PT)[S]` — a change to
+ *   `@ibatexas/types`, deliberately not made under F-58's cosmetic scope.
+ *
+ * The ids are listed explicitly rather than read from `Object.keys(...)` so the
+ * chip ORDER stays a deliberate, reviewable fact here instead of silently
+ * inheriting the SSOT record's declaration order.
+ */
+type StatusFilterChip<S extends string> = {
+  readonly id: '' | S
+  readonly label: string
+}
+
+/** The chip meaning "no filter" — not a status, so it owns its label. */
+const ALL_FILTER_CHIP = { id: '', label: 'Todos' } as const
+
+const ORDER_STATUS_FILTER_IDS = [
+  OrderFulfillmentStatus.PENDING,
+  OrderFulfillmentStatus.CONFIRMED,
+  OrderFulfillmentStatus.PREPARING,
+  OrderFulfillmentStatus.READY,
+  OrderFulfillmentStatus.IN_DELIVERY,
+  OrderFulfillmentStatus.DELIVERED,
+  OrderFulfillmentStatus.CANCELED,
+] as const satisfies readonly OrderFulfillmentStatus[]
+
+export const ORDER_STATUS_FILTERS: ReadonlyArray<
+  StatusFilterChip<OrderFulfillmentStatus>
+> = [
+  ALL_FILTER_CHIP,
+  ...ORDER_STATUS_FILTER_IDS.map((id) => ({
+    id,
+    label: ORDER_STATUS_LABELS_PT[id],
+  })),
+]
 
 export const ORDER_DATE_FILTERS = [
   { id: '', label: 'Todas' },
@@ -93,15 +155,30 @@ export const ORDER_DATE_FILTERS = [
   { id: 'mes', label: 'Este Mes' },
 ] as const
 
-export const RESERVATION_STATUS_FILTERS = [
-  { id: '', label: 'Todos' },
-  { id: 'pending', label: 'Pendente' },
-  { id: 'confirmed', label: 'Confirmada' },
-  { id: 'seated', label: 'Sentada' },
-  { id: 'completed', label: 'Completa' },
-  { id: 'cancelled', label: 'Cancelada' },
-  { id: 'no_show', label: 'No Show' },
-] as const
+/**
+ * Same derivation as `ORDER_STATUS_FILTERS` above — see that note. These chips
+ * had NOT drifted (all six matched the SSOT when F-58 measured them), and this
+ * array currently has zero consumers; it is converted anyway so the file holds
+ * one rule rather than one rule and one exception for the next author to copy.
+ */
+const RESERVATION_STATUS_FILTER_IDS = [
+  ReservationStatus.PENDING,
+  ReservationStatus.CONFIRMED,
+  ReservationStatus.SEATED,
+  ReservationStatus.COMPLETED,
+  ReservationStatus.CANCELLED,
+  ReservationStatus.NO_SHOW,
+] as const satisfies readonly ReservationStatus[]
+
+export const RESERVATION_STATUS_FILTERS: ReadonlyArray<
+  StatusFilterChip<ReservationStatus>
+> = [
+  ALL_FILTER_CHIP,
+  ...RESERVATION_STATUS_FILTER_IDS.map((id) => ({
+    id,
+    label: RESERVATION_STATUS_LABELS_PT[id],
+  })),
+]
 
 export const RATING_FILTERS = [
   { id: '', label: 'Todos' },
