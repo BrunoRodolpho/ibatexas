@@ -160,10 +160,14 @@ export interface ManagedAgentPlaneDeps {
 /**
  * Compose + start the managed-agent plane IF `IBX_AGENTS_ENABLED=true`; else a
  * no-op returning null. Asserts roster integrity AND real-money confirm-guard
- * conformance fail-closed (crashes the boot if an agent declares a money kind
- * without the B1 confirm guard composed), then wires the bridge over a
+ * conformance before composing anything, then wires the bridge over a
  * kill-guarded LIVE trigger runner and boots the kill-switch pollers + bridge.
  * Returns the started {@link AgentPlane} (call `.stop()` on shutdown / reset).
+ *
+ * SCOPE OF "FAIL-CLOSED" (F-52 / F-71): a failed assertion stops THIS PLANE, not
+ * the process. The throw propagates to claustrum-bootstrap.ts, which catches it,
+ * logs, and continues serving with the agent plane off. This doc used to say it
+ * "crashes the boot" — it does not, and never did.
  */
 export async function startManagedAgentPlane(
   deps: ManagedAgentPlaneDeps,
@@ -173,8 +177,9 @@ export async function startManagedAgentPlane(
 
   // Fail-closed before composing anything that opens an agent capsule.
   assertAgentRosterIntegrity(deps.registry);
-  // Fail-closed: refuse to boot a live plane where a declared real-money kind
-  // lacks a composed sessionId-confirm guard (the blast-radius callout).
+  // Refuse to start a live PLANE where a declared real-money kind lacks a
+  // composed sessionId-confirm guard (the blast-radius callout). Closed for the
+  // plane, not for the process — the caller swallows this throw.
   assertRealMoneyConfirmGuards(deps.registry, deps.realMoneyConfirmKinds);
 
   const killSwitch: AgentKillSwitchManager = createAgentKillSwitchManager({

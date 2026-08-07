@@ -50,7 +50,10 @@ describe("assertRealMoneyConfirmGuards (fail-closed boot assertion)", () => {
     ).not.toThrow();
   });
 
-  it("THROWS (crashes the boot) when a declared real-money kind has no confirm guard", () => {
+  // NOT "crashes the boot", which this test's name used to assert: the only
+  // caller catches the throw and continues with the agent plane off (F-52 /
+  // F-71). The throw is real; the crash never was.
+  it("THROWS (silently disabling the agent plane) when a declared real-money kind has no confirm guard", () => {
     expect(() => assertRealMoneyConfirmGuards(registry, new Set())).toThrow(
       /real-money safety conformance failed/,
     );
