@@ -59,7 +59,7 @@ import { describe, expect, it } from "vitest";
 // axis can consume the SAME enumeration instead of growing a second one that
 // drifts. See helpers/prompt-surfaces.ts for the two-shapes hazard and for the
 // precise scope this covers (static surface only — no runtime-composed text).
-import { collectSurfaces } from "./helpers/prompt-surfaces.js";
+import { collectSurfaces, personaExports } from "./helpers/prompt-surfaces.js";
 
 /** `YYYY-MM-DD` anywhere in the text. */
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
@@ -153,21 +153,43 @@ describe("F-65b — no unexpected date literal reaches a model-facing surface", 
     }
   });
 
-  it("covers persona sites regardless of catalog membership", () => {
-    // Regression pin for the blind spot that motivated the union input: the
-    // namespace walk reaches every persona whether or not the catalog lists
-    // it, so a persona can never fall out of this guard's reach by being
-    // absent from — or later added to — PROMPT_CATALOG.
+  it("reaches every persona export, independent of catalog membership", () => {
+    // The union input exists because a catalog-only walk can be blind to a live
+    // persona: when this file was written OPS_CLAIM_PLANNER_PERSONA was absent
+    // from PROMPT_CATALOG while `ops-conductor.ts` composed it. F-67 (#570)
+    // has since catalogued it.
     //
-    // This assertion used to ALSO require that the catalog omit
-    // OPS_CLAIM_PLANNER_PERSONA, which was true when this file was written and
-    // false once #570 catalogued it — reddening dev. The property worth
-    // pinning was always "the walk covers this site", never "the catalog lacks
-    // it": a pin on a defect expires the moment the defect is fixed, and takes
-    // the build with it. Catalog membership is asserted by the completeness
-    // guard that owns it (prompts/__tests__/prompt-catalog-completeness.test.ts);
-    // re-asserting it here would be a second mirror of the same claim.
+    // This case deliberately does NOT assert catalog membership either way.
+    // The original version pinned the DEFECT (that the catalog omitted it), and
+    // that assertion inverted the moment the defect was fixed — it red dev.
+    // What the guard actually needs is the PROPERTY: the namespace walk reaches
+    // persona sites whether or not the catalog lists them, which is what keeps
+    // date coverage intact if a persona is ever added, retired, or
+    // de-catalogued. Membership is #570's assertion to make; a second copy here
+    // would be exactly the drift this pair of slices set out to remove.
+    //
+    // Quantified over EVERY persona export rather than the one that happened to
+    // be missing — a single-name check survives none of add/retire/de-catalogue,
+    // and would silently stop covering a persona introduced tomorrow.
+    //
+    // WHAT THIS CAN AND CANNOT CATCH — `collectSurfaces()` builds its
+    // `persona:` entries BY ITERATING `personaExports()`, so both sides of the
+    // comparison descend from one walk. That makes this a structural pin on
+    // the COMPOSITION of `collectSurfaces` — it reds if the persona walk is
+    // ever dropped from the union (MEASURED: deleting that loop reds this case
+    // and the allowlist case) — and NOT independent evidence that the walk
+    // finds every persona in the file. Nothing here could detect
+    // `personaExports()` itself under-reporting; that property is owned by the
+    // helper's own suite (helpers/__tests__/prompt-surfaces.test.ts). Do not
+    // cite this case as proof of the walk's completeness.
     const sites = new Set(collectSurfaces().map(([site]) => site));
-    expect(sites.has("persona:OPS_CLAIM_PLANNER_PERSONA")).toBe(true);
+    const personas = personaExports();
+    // Guard the guard: an empty walk would make the loop below vacuous. Asserted
+    // as non-emptiness rather than by naming a persona, so that retiring any
+    // individual persona cannot expire this check the way a name pin would.
+    expect(personas.length).toBeGreaterThan(0);
+    for (const { name } of personas) {
+      expect(sites.has(`persona:${name}`), name).toBe(true);
+    }
   });
 });
