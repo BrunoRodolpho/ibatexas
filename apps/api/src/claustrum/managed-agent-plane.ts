@@ -52,6 +52,7 @@ import {
   createAgentKillSwitchManager,
   type AgentKillSwitchManager,
 } from "./agent-kill-switch.js";
+import { setAgentKillStateReader } from "./compose-policy-packs.js";
 import type { AgentApprovalEngine } from "./agent-approvals.js";
 
 /** Env flag that opts a boot into running the managed-agent plane (default off). */
@@ -119,8 +120,25 @@ export interface ManagedAgentPlaneDeps {
   readonly liveConductor: LiveAgentConductorDeps;
   /** Durable agent_runs journal (Postgres in prod; logging ring in tests). */
   readonly journal: AgentRunJournal;
-  /** Read/write Redis (dedup claims + kill-switch state). The ledger client satisfies this. */
+  /** Read/write Redis (kill-switch state). The ledger client satisfies this. */
   readonly redis: RedisLedgerClient;
+  /**
+   * The trigger-dedup claim surface — F-21.
+   *
+   * A SEPARATE member from `redis` above, and not a widening of it, because the
+   * two need different things. The kill switch reads and writes ordinary
+   * strings, which `RedisLedgerClient` covers. The dedup path additionally
+   * RELEASES claims, and after F-21 it releases them with an ownership-checked
+   * Lua compare-and-delete — a command `RedisLedgerClient` does not have.
+   *
+   * Until F-21 that gap was papered over here with
+   * `deps.redis as unknown as TriggerDedupRedis`. The cast type-checked and was
+   * false: `buildLedgerClient()` returns an object literal carrying only
+   * `set`/`get`/`del`, so any Lua issued through it would have thrown at
+   * runtime. Composed via `createTriggerDedupRedis()` from a client that really
+   * can `eval`, the cast is gone and the requirement is checked by `tsc`.
+   */
+  readonly dedupRedis: TriggerDedupRedis;
   /** Pub/sub Redis (a separate subscriber connection) for kill-switch propagation. */
   readonly pubsub: RedisPubSubClient;
   /** Stage-1 approval engine (the confirm-gated resolution surface; B2 target). */
@@ -179,12 +197,30 @@ export async function startManagedAgentPlane(
   // T3-5 host-side pre-openCapsule kill check wrapping the live runner.
   const runner = killGuardedRunner(liveRunner, (ns) => killSwitch.isKilled(ns));
 
+  // T3-5 KERNEL-side leg (F-51). Point the AUTH-phase kill guard's late-bound
+  // holder at THIS manager — the same instance the host-side leg above reads, so
+  // both legs answer from one store rather than two that can disagree. Until
+  // this call landed the holder kept its never-killed default in every process:
+  // `agentKillSwitchGuard` is authGuards[0] of every composed pack and it read
+  // constant-false, so the in-pipeline backstop the host-side leg is documented
+  // to complement did not exist. What that leaves uncovered without this line is
+  // exactly what the host-side check cannot reach: a turn already past
+  // openCapsule when the switch flips, and the agent-approvals RESUME
+  // re-adjudication (a killed agent's parked envelope, re-adjudicated on a
+  // manager's accept, never passes through the runner at all).
+  //
+  // Late binding is what makes the placement safe: `agentKillSwitchGuard` is a
+  // module-level const built at import — before any manager exists — over a
+  // closure that reads the holder at DECISION time, so packs composed before
+  // this call still see the live state. Composition order is not load-bearing.
+  setAgentKillStateReader((ns) => killSwitch.isKilled(ns));
+
   const plane = composeAgentPlane({
     registry: deps.registry,
     runner,
     killSwitch,
     approvals: deps.approvals,
-    redis: deps.redis as unknown as TriggerDedupRedis,
+    redis: deps.dedupRedis,
     mapEvent: createPixTriggerMapper(deps.resolveCustomer),
   });
 

@@ -33,6 +33,7 @@ import { parse as parseQuerystring } from "node:querystring";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import twilio from "twilio";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import { runTurnWithContexts } from "../claustrum/turn-context.js";
 import {
   mintBroadcastReply,
   mintFallbackReply,
@@ -41,6 +42,11 @@ import {
 } from "@adjudicate/core";
 import { getRedisClient, rk, atomicIncr, getLoyaltyBalance, getOrCreateCart } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
+import {
+  customerParkTriagePolicy,
+  triageParkReply,
+  unparkParks,
+} from "../claustrum/park-reply-triage.js";
 import { getConductor } from "../claustrum-bootstrap.js";
 import { loadSession, appendMessages } from "../session/store.js";
 import {
@@ -57,7 +63,7 @@ import {
   storeLastLocation,
   getLastLocation,
 } from "../whatsapp/session.js";
-import { sendText, sendMedia } from "../whatsapp/client.js";
+import { sendText, sendMedia, type SendCorrelation } from "../whatsapp/client.js";
 import {
   classifyTurnDelivery,
   classifyCatchError,
@@ -87,6 +93,10 @@ import {
 const MAX_RATE_PER_MINUTE = 20;
 const DEBOUNCE_MS = 2000;
 const MAX_HISTORY_MESSAGES = 20;
+
+/** The structured-event namespace this SURFACE stamps on a park-triage verdict
+ *  (siblings: `chat` at routes/chat.ts, `ops_wa`/`ops` on the ops plane). */
+const WA_TRIAGE_EVENT_PREFIX = "whatsapp";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -120,6 +130,16 @@ interface WhatsAppTurn {
     pixCopyPaste?: string;
     pixQrCode?: string;
     pixExpiresAt?: string;
+    /**
+     * BKL-241 — the Stripe PaymentIntent id (`pi_…`) of this PIX attempt: the
+     * canonical key for the expiry monitor / `pix:paid:` marker pair.
+     */
+    paymentIntentId?: string;
+    /**
+     * `create_checkout`'s tracking id. For PIX this is the SAME `pi_…` id (the
+     * web order-read path resolves `pi_`-prefixed ids explicitly) — it is read
+     * only as a fallback for producers that do not surface `paymentIntentId`.
+     */
     orderId?: string;
   };
 }
@@ -152,9 +172,10 @@ function extractPixData(acted: unknown): WhatsAppTurn["pixData"] | undefined {
     const pixCopyPaste = typeof r.pixCopyPaste === "string" ? r.pixCopyPaste : undefined;
     const pixQrCode = typeof r.pixQrCode === "string" ? r.pixQrCode : undefined;
     const pixExpiresAt = typeof r.pixExpiresAt === "string" ? r.pixExpiresAt : undefined;
+    const paymentIntentId = typeof r.paymentIntentId === "string" ? r.paymentIntentId : undefined;
     const orderId = typeof r.orderId === "string" ? r.orderId : undefined;
     if (!pixCopyPaste && !pixQrCode) return undefined;
-    return { pixCopyPaste, pixQrCode, pixExpiresAt, orderId };
+    return { pixCopyPaste, pixQrCode, pixExpiresAt, paymentIntentId, orderId };
   };
 
   if (acted === null || typeof acted !== "object") return undefined;
@@ -183,6 +204,19 @@ function extractPixData(acted: unknown): WhatsAppTurn["pixData"] | undefined {
  */
 async function runConductorTurn(args: {
   input: string;
+  /**
+   * The customer's OWN words for the park-reply triage, UNDECORATED by the system
+   * hints `buildAgentInput` appends to `input` (`[localização do cliente: …]`,
+   * `[hint: lgpd_just_sent]`). They must be separated because the triage lexicons
+   * read the reply as a WHOLE: the soft-affirmative admission is `soft-only`
+   * (every word token must itself be a soft affirmative), so a bare "ok" carrying
+   * a location suffix would stop being soft-ONLY and the restate branch would
+   * silently disable. That is not a rare edge — `getLastLocation` reads a STICKY
+   * pin from the phone hash, so once a customer shares a location EVERY later
+   * message carries the suffix. Defaults to `input` for callers whose input is
+   * already undecorated (the post-lock retry).
+   */
+  replyText?: string;
   customerId: string;
   sessionKey: string;
   log: LogFn;
@@ -250,7 +284,147 @@ async function runConductorTurn(args: {
     inbound,
   });
   try {
-    const turn = await handleTurn(capsule, inbound);
+    // ── PARK-REPLY TRIAGE (R4-S1 seam; the OPT-OUT CLOSED, 2026-08-04) ────────
+    // This surface used to carry a recorded opt-out: the other three ingresses
+    // (ops-whatsapp-ingress.ts, routes/admin/ops-chat.ts, routes/chat.ts) triaged a
+    // park-bearing reply BEFORE handleTurn and this one did not, because wiring it
+    // changes BEHAVIOUR on the highest-traffic plane and so needed an owner ruling
+    // rather than a refactor. The owner MANDATED the wiring, so the decision this
+    // ingress now consumes is the same one they consume, owned by
+    // ../claustrum/park-reply-triage.ts, and this surface declares the CUSTOMER
+    // plane policy (identical to routes/chat.ts, distinguished only by its
+    // structured-event prefix).
+    //
+    // WHAT CHANGED HERE — both of the opt-out's named behaviours:
+    //   - a PURE negative ("não") on a parked confirmation now DECLINES it at the
+    //     ingress (unpark + a deterministic acknowledgment) instead of reaching the
+    //     planner, where claustrum's deny path unparked and THEN re-planned the "no"
+    //     as a fresh command (the BKL-191 re-prompt class, now closed on all four);
+    //   - a BARE soft affirmative ("ok"/"pode"/"beleza") no longer EXECUTES the
+    //     park. `@claustrum/channel-whatsapp`'s matchToParked treats "ok" as an
+    //     executing affirmative by design, and intercepting that is the substance of
+    //     the ruling (FE-D32 money-safety): the ingress restates the parked prompt
+    //     and asks for an explicit "sim", which the driver then resumes through the
+    //     UNCHANGED adjudicated path.
+    // Everything else is untouched: an explicit "sim"/`#hash`, a defer, a mixed
+    // reply ("não, pode deixar" — ambiguous, money-safe, the park survives), a soft
+    // yes carrying new content ("ok mas manda às 19h"), any ordinary utterance, and
+    // every park-free turn all fall through to the loop below byte-identically.
+    //
+    // NO stale-resume branch and NO prune block, by construction rather than by
+    // omission: the customer policy declares `freshness: none` because a customer
+    // park carries no `expiresAt` at all, so `triage.prune` is provably empty and a
+    // prune here could never run. PARK LIFETIME IS UNCHANGED by this wiring — the
+    // only park this ingress removes is the one a negative explicitly declines,
+    // which the deny path removed anyway.
+    const parked = capsule.loadedSession?.pendingConfirmations;
+    const triage = triageParkReply({
+      text: args.replyText ?? args.input,
+      pendingConfirmations: parked,
+      nowIso: inbound.receivedAt,
+      policy: customerParkTriagePolicy({ eventPrefix: WA_TRIAGE_EVENT_PREFIX }),
+    });
+    if (triage.kind === "skip-with-reply") {
+      // The verdict's `unpark` is LOAD-BEARING: the decline acknowledgment asserts
+      // the pending action was cancelled, so it may only be sent once the unpark
+      // STUCK. Fail-honest — a failure (or no loaded session) falls through to the
+      // normal loop, where claustrum's own deny path still unparks, rather than
+      // claiming a cancellation that did not stick. Unparking BEFORE handleTurn is
+      // the ops + web precedent.
+      let deliverNotice = true;
+      if (triage.unpark.length > 0) {
+        deliverNotice = false;
+        if (capsule.loadedSession) {
+          try {
+            await unparkParks({
+              session: capsule.session,
+              sessionId: capsule.loadedSession.id,
+              parks: triage.unpark,
+            });
+            deliverNotice = true;
+          } catch (err) {
+            args.log.warn(
+              err,
+              "[whatsapp] negative-decline unpark failed — falling through to the normal loop (BKL-191)",
+            );
+          }
+        }
+      }
+      if (deliverNotice) {
+        // The turn is SKIPPED, so no turn_trace/intent_audit row is written —
+        // this ingress emits the verdict's structured event so the skip is still
+        // findable in forensics.
+        switch (triage.branch) {
+          case "soft-affirmative-restate":
+            args.log.warn(
+              {
+                event: triage.event,
+                session_id: args.sessionKey,
+                turnId: capsule.turnId,
+                pending: parked?.length ?? 0,
+              },
+              "[whatsapp] soft affirmative on a parked confirmation — restating, awaiting an explicit confirm, skipping the turn",
+            );
+            break;
+          case "negative-decline":
+            args.log.warn(
+              {
+                event: triage.event,
+                session_id: args.sessionKey,
+                turnId: capsule.turnId,
+                kind: String(triage.unpark[0]!.envelope.kind),
+              },
+              "[whatsapp] negative reply on a parked confirmation — declined + unparked, skipping the turn (BKL-191)",
+            );
+            break;
+          default:
+            // Unreachable under the customer policy (no TTL ⇒ no stale-resume
+            // branch). Still reported with the verdict's own event tag, so a
+            // future policy change can never skip a turn silently.
+            args.log.warn(
+              { event: triage.event, session_id: args.sessionKey, turnId: capsule.turnId },
+              "[whatsapp] park-reply triage skipped the turn",
+            );
+            break;
+        }
+        // A deterministic pt-BR notice IS a delivered reply: the caller sends it,
+        // appends it to the session thread, and auto-closes an open incident on
+        // it exactly as it would a conductor reply. `decisionKind` is deliberately
+        // absent — no decision was adjudicated on a skipped turn.
+        return {
+          text: triage.notice,
+          disposition: "deliverable",
+          turnId: capsule.turnId,
+        };
+      }
+    }
+
+    // ── THE TURN, inside this ingress's per-turn CONTEXT SUBSET (R4-S2) ────────
+    // `customer-full` — the same declared subset as routes/chat.ts (wire truth +
+    // the workflow turn binding + the funnel context), owned by
+    // ../claustrum/turn-context.ts.
+    //
+    // This plane needs the confirm-window gate MORE than web does, not less: its
+    // channel driver confirms on "ok" by design (see web-confirm-channel.ts's
+    // header), so courtesy tokens during a park are load-bearing here. The triage
+    // above narrows that to the tokens it does NOT admit — a BARE "ok" is now
+    // restated, but an "ok" carrying new content still reaches this loop and the
+    // driver still treats it as a confirm — so the gate stays load-bearing. Absent the
+    // publish the tier is fail-closed (no L0), never fail-open. It also makes the
+    // workflow binding's concurrency argument concrete: webhook deliveries for
+    // different customers are handled in parallel in one process, so a module-scope
+    // binding would cross-bind their confirms.
+    //
+    // `pendingConfirmations` is the SAME `parked` reading the triage above just
+    // used (the chat.ts invariant): it is passed HERE, after every branch that
+    // `return`s, so what L0 reads is exactly the park set that just failed to match.
+    const turn = await runTurnWithContexts({
+      subset: "customer-full",
+      turnId: capsule.turnId,
+      channel: "whatsapp",
+      pendingConfirmations: parked,
+      thunk: () => handleTurn(capsule, inbound),
+    });
     const pixData = extractPixData(turn.acted);
     // Classify the delivery outcome at the source (the only place that can tell
     // an empty completion from a whitespace-only one). The pause early-return
@@ -288,6 +462,8 @@ async function runConductorTurn(args: {
       ...(pixData ? { pixData } : {}),
     };
   } finally {
+    // The funnel state was dropped when the turn settled (turn-context.ts's one
+    // `finally`); the capsule stays this ingress's to close.
     await conductor.closeCapsule(capsule);
   }
 }
@@ -331,7 +507,11 @@ async function retryForMissedMessages(
     // NOT a delivered reply: it must not be sent and must not auto-resolve the
     // OPEN incident; instead it falls through to the whitespace_only branch below.
     if (retryResponse.text && retryResponse.text.trim().length > 0) {
-      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(retryResponse.text));
+      // LE2-030 — correlate the captured Twilio SID to this (retry) turn.
+      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(retryResponse.text), {
+        turnId: retryResponse.turnId ?? null,
+        conversationId: session.sessionId,
+      });
       await appendMessages(session.sessionId, [
         { role: "assistant", content: retryResponse.text },
       ], true, { customerId: session.customerId, channel: "whatsapp" });
@@ -391,15 +571,31 @@ interface TwilioWebhookBody {
 
 // ── Webhook validation helpers ───────────────────────────────────────────────
 
-interface SignatureError {
+export interface SignatureError {
   code: number;
   error: string;
   logMessage: string;
 }
 
-function verifyTwilioSignature(
+/**
+ * Verify Twilio's `X-Twilio-Signature` over the posted form params.
+ *
+ * LE2-030 — EXPORTED and URL-parameterized so the delivery-status callback
+ * route (`whatsapp-status-callback.ts`) validates its callbacks through THIS
+ * function rather than a second copy of the rule. `opts.webhookUrl` defaults to
+ * `TWILIO_WEBHOOK_URL` so the inbound call site is unchanged; the callback route
+ * passes its own URL (Twilio signs the exact URL it posted to, and the two
+ * endpoints have different paths). `opts.logTag` namespaces the log line and
+ * `opts.urlEnvVar` names the missing var in the misconfiguration message.
+ */
+export function verifyTwilioSignature(
   request: FastifyRequest,
-  body: TwilioWebhookBody,
+  body: Record<string, unknown>,
+  opts?: {
+    readonly webhookUrl?: string | undefined;
+    readonly logTag?: string;
+    readonly urlEnvVar?: string;
+  },
 ): SignatureError | null {
   const authToken = process.env.TWILIO_AUTH_TOKEN;
   // D-AUTHURL: webhookUrl MUST be the exact public URL Twilio posted to — it is
@@ -408,20 +604,22 @@ function verifyTwilioSignature(
   // verifyTwilioSignature below rejects every request. The shape (no query, https
   // in prod) is asserted at startup in ../config.ts; see .env.example for the full
   // contract.
-  const webhookUrl = process.env.TWILIO_WEBHOOK_URL;
+  const webhookUrl = opts?.webhookUrl ?? process.env.TWILIO_WEBHOOK_URL;
+  const tag = opts?.logTag ?? "whatsapp.incoming";
+  const urlEnvVar = opts?.urlEnvVar ?? "TWILIO_WEBHOOK_URL";
 
   if (!authToken || !webhookUrl) {
-    return { code: 500, error: "Webhook not configured", logMessage: "[whatsapp.config] TWILIO_AUTH_TOKEN or TWILIO_WEBHOOK_URL not set" };
+    return { code: 500, error: "Webhook not configured", logMessage: `[whatsapp.config] TWILIO_AUTH_TOKEN or ${urlEnvVar} not set` };
   }
 
   const signature = request.headers["x-twilio-signature"];
   if (typeof signature !== "string") {
-    return { code: 400, error: "Missing signature", logMessage: "[whatsapp.incoming] Missing X-Twilio-Signature" };
+    return { code: 400, error: "Missing signature", logMessage: `[${tag}] Missing X-Twilio-Signature` };
   }
 
   const isValid = twilio.validateRequest(authToken, signature, webhookUrl, body as Record<string, string>);
   if (!isValid) {
-    return { code: 403, error: "Invalid signature", logMessage: "[whatsapp.incoming] Invalid Twilio signature" };
+    return { code: 403, error: "Invalid signature", logMessage: `[${tag}] Invalid Twilio signature` };
   }
 
   return null;
@@ -614,7 +812,7 @@ export async function whatsappWebhookRoutes(server: FastifyInstance): Promise<vo
       const startMs = Date.now();
 
       // ── 1. Verify Twilio signature ──────────────────────────────────────────
-      const signatureError = verifyTwilioSignature(request, body);
+      const signatureError = verifyTwilioSignature(request, body as Record<string, unknown>);
       if (signatureError) {
         server.log.warn({ ip: request.ip }, signatureError.logMessage);
         return reply.code(signatureError.code).send({ error: signatureError.error });
@@ -855,6 +1053,9 @@ async function sendPixFollowUp(
   session: WaSession,
   log: LogFn,
   track?: { readonly onEnter: () => void; readonly onComplete: () => void },
+  // LE2-030 — the turn this PIX artifact belongs to, so the copia-e-cola part
+  // and the QR media send land in the delivery store under the same turn_id.
+  correlation?: SendCorrelation,
 ): Promise<boolean> {
   const { pixCopyPaste, pixQrCode } = pixData;
   const textHasPixCode = pixCopyPaste && agentText.includes(pixCopyPaste);
@@ -868,6 +1069,7 @@ async function sendPixFollowUp(
       mintReceiptReply(
         `*Código PIX (copia e cola):*\n\n${pixCopyPaste}\n\n☝️ Copie e cole no app do seu banco.\nNÃO clique — cole no app.`,
       ),
+      correlation,
     );
     track?.onComplete();
     pixDelivered = true;
@@ -876,7 +1078,7 @@ async function sendPixFollowUp(
   if (pixQrCode) {
     // EGRESS BRAND (Plan 1 / F4): mint the customer-facing caption at the
     // producer; sendMedia no longer mints prose internally.
-    await sendMedia(`whatsapp:${phone}`, pixQrCode, mintReceiptReply("QR Code PIX"))
+    await sendMedia(`whatsapp:${phone}`, pixQrCode, mintReceiptReply("QR Code PIX"), correlation)
       .then(() => {
         pixDelivered = true;
       })
@@ -885,16 +1087,28 @@ async function sendPixFollowUp(
       });
   }
 
-  // Schedule PIX expiry reminders (25min reminder + 30min expired)
-  const pixOrderId = pixData.orderId;
-  if (pixCopyPaste && (pixOrderId || session.customerId)) {
+  // Schedule PIX expiry reminders (25min reminder + 30min expired).
+  //
+  // BKL-241: keyed by the PaymentIntent id — the same id the Stripe webhook
+  // writes the `pix:paid:` marker under, so payment actually silences these
+  // jobs. The previous `|| session.customerId` fallback is GONE: a monitor
+  // keyed on a customer id can never match that marker, so it was guaranteed
+  // to tell a paying customer "O PIX expirou". With no id the paid-check is
+  // unanswerable, so we schedule nothing rather than schedule a false claim.
+  const pixPaymentIntentId = pixData.paymentIntentId ?? pixData.orderId;
+  if (pixCopyPaste && pixPaymentIntentId) {
     void schedulePixExpiryMonitor({
       phone,
       phoneHash: hash,
-      orderId: pixOrderId || session.customerId!,
+      paymentIntentId: pixPaymentIntentId,
     }).catch((err) => {
       log.warn({ error: String(err) }, "[whatsapp.pix.expiry_schedule_failed]");
     });
+  } else if (pixCopyPaste) {
+    log.warn(
+      { session: session.sessionId },
+      "[whatsapp.pix.expiry_schedule_skipped] PIX artifact carries no payment intent id",
+    );
   }
 
   return pixDelivered;
@@ -953,6 +1167,9 @@ async function runConductorAgentTurn(args: {
   // no external signal, so the race + the aborted-gate on the send is the bound.
   const turnPromise = runConductorTurn({
     input: agentInput,
+    // The park-reply triage reads the customer's own words, not the system hints
+    // `buildAgentInput` appends to them (see `runConductorTurn`'s `replyText`).
+    replyText: baseInput,
     customerId: conductorCustomerId,
     sessionKey: session.sessionId,
     log,
@@ -1198,7 +1415,13 @@ async function handleMessageAsync(
     let textSent = false;
     if (agentResponse.text && agentResponse.text.trim().length > 0 && !turnAbort.signal.aborted) {
       sendEntered = true;
-      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(agentResponse.text));
+      // LE2-030 — the turn correlation the delivery store joins on. Purely
+      // additive: `sendText` records the returned SID against this turn_id and
+      // part index, and changes nothing about the send itself.
+      await sendText(`whatsapp:${phone}`, wrapLegacyResponderText(agentResponse.text), {
+        turnId: agentResponse.turnId ?? null,
+        conversationId: session.sessionId,
+      });
       sendCompleted = true;
       textSent = true;
 
@@ -1233,6 +1456,8 @@ async function handleMessageAsync(
             sendCompleted = true;
           },
         },
+        // LE2-030 — same turn correlation as the text reply above.
+        { turnId: agentResponse.turnId ?? null, conversationId: session.sessionId },
       );
     }
 

@@ -37,7 +37,7 @@
 
 import type { ChannelMessage, ParkedMatch, Session } from "@claustrum/core";
 import { WebChannel } from "@claustrum/channel-web";
-import { matchOpsReplyToParked } from "../ops/ops-system-channel.js";
+import { matchOpsReplyToParked } from "./park-reply-triage.js";
 
 /**
  * `WebChannel` + a real customer-plane `matchToParked`. One driver per channel
@@ -58,3 +58,39 @@ export class WebConfirmChannel extends WebChannel {
     return matchOpsReplyToParked(channelEvent.text, parked);
   }
 }
+
+// ── BKL-212: the customer-web ingress niceties ───────────────────────────────
+// `matchToParked` above resolves a bare soft "ok" and (via the conductor's deny
+// path) a "não" to OUTCOMES the customer never sees crisply: the soft affirmative
+// falls through to a full model turn, and claustrum's deny unparks but then
+// re-plans the "no" text as a fresh command (the BKL-191 re-prompt). The OPS
+// ingresses already close both at the ingress — a pure-negative unparks +
+// acknowledges BEFORE handleTurn, and a bare soft affirmative restates the park —
+// and these are the WEB-plane mirrors of those two surfaces.
+//
+// R4-S1 — both selectors, their pt-BR copy, and the whole triage sequence they
+// belong to now live in ./park-reply-triage.ts as the CUSTOMER plane policy
+// (`customerParkTriagePolicy`, declared by BOTH customer surfaces since the
+// 2026-08-04 mandate wired routes/whatsapp-webhook.ts): no freshness partition,
+// the narrower soft-affirmative-ONLY admission, customer-register copy. The two
+// names below are
+// re-exported unchanged so routes/chat.ts and this driver's suite keep importing
+// from here; routes/chat.ts consumes the VERDICT (`triageParkReply`) directly.
+//
+// PARK SELECTION differs from ops by ONE thing, deliberately: there is NO
+// freshness partition. A customer park carries no `expiresAt`
+// (`opsConfirmParkExpiresAt` stamps ops sessions only), so every pending
+// confirmation is live — the same premise `matchToParked` above is built on. Any
+// TTL filter here would silently disable the niceties for older parks that the
+// matcher itself still resumes, which is exactly the divergence to avoid.
+//
+// NEITHER surface can EXECUTE: the decline path only unparks, and the restate
+// path touches no state at all (the park SURVIVES so a follow-up "sim" still runs
+// the normal, fully-adjudicated confirm-resume). The money-safety posture from
+// #352 is untouched — a soft affirmative still never executes on web.
+
+export {
+  webNegativeDeclineTarget,
+  webSoftAffirmativeRestateNotice,
+  WEB_NEGATIVE_DECLINE_ACK_PTBR,
+} from "./park-reply-triage.js";

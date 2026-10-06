@@ -126,7 +126,21 @@ const rawOrdersCapabilityPlanner: CapabilityPlanner<OrderState, OrderContext> =
       if (isAuthenticated) {
         allowedIntents.push(
           "order.checkout.create",
-          "order.cancel",
+          // LE2-024 RETIREMENT — `order.cancel` is REMOVED as a model target.
+          //
+          // This literal is the RUNTIME half of the cut; the catalog row's
+          // `plannerAdvertisedBy` is only the DECLARATION of it, and the
+          // `codegen-freshness` gate over this planner's real output is what
+          // holds the two in step. Removing one without the other leaves a kind
+          // the catalog says nobody advertises and the planner advertises anyway.
+          //
+          // A cancel utterance now reaches `workflow.orders.paid-cancel` and
+          // nothing else. `order.cancel` remains a fully live intent — the
+          // workflow's own cancel activity, the HTTP routes' kind, and the
+          // escalation approve path all adjudicate it exactly as before. What is
+          // gone is the PARSE that proposed it, and with it the ladder that never
+          // told a customer their paid order's cancellation implied a refund and
+          // then never issued one (parity divergences 1 and 2).
           // FE-T09 (D-a, the amend inversion): the grouped
           // `order.amend.request` is REMOVED as a model target —
           // resolver-composed-only (its remaining producer is the

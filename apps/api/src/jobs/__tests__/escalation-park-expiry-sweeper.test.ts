@@ -8,6 +8,8 @@
 // is exactly the real semantic the sweeper keys off.
 
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
+import { rk } from "@ibatexas/tools";
 import {
   createEscalationStore,
   type EscalationRedis,
@@ -26,10 +28,13 @@ const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockSentryWithScope = vi.hoisted(() => vi.fn());
 const mockSentryCaptureException = vi.hoisted(() => vi.fn());
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: mockGetRedisClient,
-  rk: (key: string) => `test:${key}`,
-}));
+vi.mock("@ibatexas/tools", async () => {
+  // R5-S7 — `rk` was faked here as `test:${key}`, a prefix production never
+  // writes. It is spread from the REAL module now, so every key below is the key
+  // the sweeper actually scans and the store actually writes.
+  const actual = await vi.importActual<typeof import("@ibatexas/tools")>("@ibatexas/tools");
+  return { ...actual, getRedisClient: mockGetRedisClient };
+});
 
 vi.mock("@sentry/node", () => ({
   withScope: mockSentryWithScope,
@@ -48,56 +53,10 @@ vi.mock("../queue.js", () => ({
   })),
 }));
 
-// ── In-memory Redis stub (EscalationRedis + SweeperRedis) ───────────────────
-
-function makeRedisStub() {
-  const kv = new Map<string, string>();
-  const sets = new Map<string, Set<string>>();
-  return {
-    _kv: kv,
-    _sets: sets,
-    async get(key: string): Promise<string | null> {
-      return kv.get(key) ?? null;
-    },
-    async set(key: string, value: string): Promise<string> {
-      kv.set(key, value);
-      return "OK";
-    },
-    async del(key: string): Promise<number> {
-      return kv.delete(key) ? 1 : 0;
-    },
-    async exists(key: string): Promise<number> {
-      return kv.has(key) ? 1 : 0;
-    },
-    async sAdd(key: string, m: string): Promise<number> {
-      const s = sets.get(key) ?? new Set<string>();
-      s.add(m);
-      sets.set(key, s);
-      return 1;
-    },
-    async sRem(key: string, m: string): Promise<number> {
-      sets.get(key)?.delete(m);
-      return 1;
-    },
-    async sMembers(key: string): Promise<string[]> {
-      return [...(sets.get(key) ?? [])];
-    },
-    scanIterator(opts: { MATCH: string; COUNT: number }) {
-      const pattern = opts.MATCH ?? "*";
-      const re = new RegExp(
-        "^" +
-          pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") +
-          "$",
-      );
-      const keys = [...kv.keys()].filter((k) => re.test(k));
-      return (async function* () {
-        for (const k of keys) yield k;
-      })();
-    },
-  };
-}
-
-type RedisStub = ReturnType<typeof makeRedisStub>;
+// R5-S7 — the canonical in-memory adapter replaces a hand-rolled stub whose
+// sAdd/sRem answered a constant 1 whether or not membership actually changed,
+// and which modelled no TTL for the park keys this sweeper is entirely about.
+type RedisStub = ReturnType<typeof createInMemoryRedis>;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -139,7 +98,7 @@ async function seed(
     resolved?: boolean;
   },
 ): Promise<void> {
-  const store = createEscalationStore(stub as unknown as EscalationRedis);
+  const store = createEscalationStore(stub.client as unknown as EscalationRedis);
   await store.recordHandoff({ sessionId: opts.sessionId, at: "2026-07-04T12:00:00.000Z" });
   await store.appendPendingIntent(opts.sessionId, {
     ...BASE_INTENT,
@@ -151,14 +110,14 @@ async function seed(
     await store.resolve(opts.sessionId, "staff:owner", "2026-07-04T12:30:00.000Z");
   }
   if (opts.parkPresent) {
-    stub._kv.set(`test:escalation:park:${opts.token}`, JSON.stringify({ token: opts.token }));
+    await stub.client.set(rk(`escalation:park:${opts.token}`), JSON.stringify({ token: opts.token }));
   }
 }
 
 function runSweep(stub: RedisStub, log = makeLogger()) {
-  const store = createEscalationStore(stub as unknown as EscalationRedis);
+  const store = createEscalationStore(stub.client as unknown as EscalationRedis);
   return sweepEscalationParkExpiry(log, {
-    redis: stub as unknown as SweeperRedis,
+    redis: stub.client as unknown as SweeperRedis,
     store,
     nowIso: () => FIXED_NOW,
   });
@@ -168,7 +127,7 @@ async function readIntent(
   stub: RedisStub,
   sessionId: string,
 ): Promise<PendingEscalationIntent | undefined> {
-  const store = createEscalationStore(stub as unknown as EscalationRedis);
+  const store = createEscalationStore(stub.client as unknown as EscalationRedis);
   return (await store.get(sessionId))?.pendingIntents?.[0];
 }
 
@@ -179,8 +138,8 @@ describe("sweepEscalationParkExpiry (BKL-114)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    stub = makeRedisStub();
-    mockGetRedisClient.mockImplementation(async () => stub);
+    stub = createInMemoryRedis();
+    mockGetRedisClient.mockImplementation(async () => stub.client);
     mockSentryWithScope.mockImplementation((cb: (s: unknown) => void) =>
       cb({ setTag: vi.fn(), setContext: vi.fn() }),
     );
@@ -255,7 +214,7 @@ describe("sweepEscalationParkExpiry (BKL-114)", () => {
     });
     // Precondition: resolve() removed the session from escalation:open, so an
     // open-set enumeration would MISS this record entirely.
-    expect(await stub.sMembers("test:escalation:open")).not.toContain("s_resolved");
+    expect(await stub.client.sMembers(rk("escalation:open"))).not.toContain("s_resolved");
 
     const result = await runSweep(stub);
 
@@ -273,12 +232,12 @@ describe("sweepEscalationParkExpiry (BKL-114)", () => {
       parkPresent: false,
     });
     // Plant a malformed record in the same namespace.
-    stub._kv.set("test:escalation:rec:s_bad", "{ not valid json");
+    await stub.client.set(rk("escalation:rec:s_bad"), "{ not valid json");
 
     const log = makeLogger();
     const result = await sweepEscalationParkExpiry(log, {
-      redis: stub as unknown as SweeperRedis,
-      store: createEscalationStore(stub as unknown as EscalationRedis),
+      redis: stub.client as unknown as SweeperRedis,
+      store: createEscalationStore(stub.client as unknown as EscalationRedis),
       nowIso: () => FIXED_NOW,
     });
 
@@ -288,7 +247,7 @@ describe("sweepEscalationParkExpiry (BKL-114)", () => {
     expect((await readIntent(stub, "s_good"))?.status).toBe("expired");
     // The malformed record surfaced a warn (containment), not a crash.
     expect(log.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ key: "test:escalation:rec:s_bad" }),
+      expect.objectContaining({ key: rk("escalation:rec:s_bad") }),
       expect.stringContaining("error processing record"),
     );
   });

@@ -53,10 +53,104 @@ export const PLANNER_PERSONA = [
   "andamento (ex.: \"quero uma coca\", \"adiciona ao carrinho\"), use",
   "order.item.add / order.item.update / order.item.remove.",
   "",
+  // ── BKL-275 (truncation leg) — TEACH THE WORKFLOW SURFACE ────────────────────
+  //
+  // LE2-020 put `start_workflow` on the planner wire but nobody taught this
+  // persona it exists. On a cancel turn the 4B read "sua única função é
+  // express_intent" while looking at a tool list containing `start_workflow`,
+  // and spent the whole `max_tokens` budget trying to reconcile the two — the
+  // live reasoning trace loops on "Chame express_intent? Não, express_intent é a
+  // capability… as ferramentas são start_…" until the budget dies. That is the
+  // real mechanism behind the "empty completion" cancels: `finish_reason:
+  // "length"` with empty content — TRUNCATION, not a refusal and not engine
+  // nondeterminism (BKL-278 refuted both).
+  //
+  // The same class is already documented one screen down: CLAIM_PLANNER_PERSONA
+  // exists precisely because this persona SUPPRESSES a non-express_intent tool
+  // call and yields zero tool calls. This is that fix, for the workflow surface.
+  //
+  // THE ACTION LIST ABOVE DELIBERATELY STILL SAYS "cancelar". An earlier arm
+  // removed it, and removing it MEASURABLY LOOSENED the whole list: two
+  // reservation utterances that parse correctly today began emitting an invented
+  // `reservation.ensure`, and an escalate-band cancel invented a
+  // `workflow.orders.paid-confirm`. The list's authority is load-bearing — this
+  // rule is an EXCEPTION to it, not an edit of it. There is a test on that.
+  //
+  // MEASURED over the 38-case extraction corpus (nemotron-3-nano:4b, epoch
+  // 54cf4353d5a32564, PRODUCTION max_tokens 1024, serial, n=3 on every row that
+  // moved): `order.cancel` correct paid-cancel selection 4/20 -> 18/20, and
+  // truncations across the corpus 14 -> 1. Rejected alternatives, all measured:
+  // raising max_tokens (2048/3072) fixes nothing and turns one silence into a
+  // WRONG `order.amend.remove_item`; `reasoning_effort:"none"` ends truncation
+  // but regresses 3 correct selections; adding an anti-invention guard block
+  // fixes the invented ids but its LENGTH truncates a reservation; and an
+  // explicit "never use start_workflow for reservations" reaches 20/20 cancel
+  // while degrading a reservation-create into an EXECUTING `reservation.cancel`
+  // — strictly more dangerous, deliberately not taken.
+  "EXCEÇÃO — CANCELAR UM PEDIDO INTEIRO que o cliente já fez (ex.: \"cancela meu",
+  "pedido\", \"quero cancelar o pedido 4242\"): NÃO use \"express_intent\"; chame a",
+  "ferramenta \"start_workflow\" com workflow \"workflow.orders.paid-cancel\" e slots {}",
+  "(um objeto vazio). Isso vale SOMENTE para cancelar um pedido inteiro — todas as",
+  "outras ações, inclusive reservas e finalização de pedido, continuam em",
+  "\"express_intent\" exatamente como descrito acima.",
+  "",
   "Use as ferramentas de leitura apenas para consultar informações. Não invente",
   `capabilities fora da lista. Só NÃO chame "${EXPRESS_INTENT_TOOL}" quando o cliente`,
   "claramente não pede nenhuma ação (ex.: perguntas sobre horário, cardápio ou preço).",
 ].join("\n");
+
+/**
+ * BKL-234 — the SCHEDULE-cluster mapping lines, shared VERBATIM by the customer and
+ * ops claim-planner personas (the schedule scope is identical on both planes, so a
+ * copy in each persona would be two things to keep in sync — this is one).
+ *
+ * Both schedule lines instruct the 4B to propose the PAIR (hours + open-now). That
+ * is load-bearing, not a nicety, and it is what makes a bare hours question
+ * answerable at all:
+ *
+ *   · §O#15 REQUIRES STORE_OPEN_NOW on any turn the STORE_OPEN_NOW_Q span fires, and
+ *     its generated markers (/abert|fechad|que horas|funciona|hor[áa]rio/) fire on
+ *     every hours phrasing. A turn that proposed ONLY STORE_HOURS therefore had a
+ *     required-but-ABSENT companion, so the completeness gate DEGRADED the turn to
+ *     the safe-unknown copy — discarding an hours claim that had already VALIDATED
+ *     against the first-party read. Naming both in the mapping is what satisfies the
+ *     closure deterministically.
+ *   · STORE_HOURS deliberately stays OUT of `REQUIRED_CLAIM_CLOSURE` (BKL-121 D3):
+ *     it has honest holiday/override falsifiers, so on an exception day it demotes to
+ *     UNKNOWN. Requiring it would couple it to STORE_OPEN_NOW's completeness and lose
+ *     the open-now answer on exactly those days. Proposing it additively keeps D3's
+ *     posture — the §D filter drops the UNKNOWN member and the open-now fact still
+ *     renders.
+ *
+ * Co-rendering the pair is SOUND because they are complementary attribute
+ * projections of ONE schedule read; `SCHEDULE_CLUSTER_COMPATIBLE`
+ * (ibatexas-claims-kernel-deps.ts) declares the pairs so P2 admits the co-render
+ * instead of §O#1 default-denying it into an ESCALATE.
+ */
+// F-65 — the ISO date below is live prompt text on BOTH planes (these lines are
+// spread into CLAIM_PLANNER_PERSONA and OPS_CLAIM_PLANNER_PERSONA), and the
+// composed persona is digested into the L1 parse-cache key as `system`
+// (`buildParseCacheKey`, parse-memo.ts).
+//
+// If this is ever MEASURED to anchor the model's output year, DE-ANCHOR it —
+// symbolic spec only, or a placeholder whose concreteness is not load-bearing —
+// and do NOT derive it from the turn clock. A render-time date rotates the
+// digest daily and would purge the parse cache for EVERY customer and staff
+// turn, not just schedule ones: this is the widest blast radius of any date
+// literal in the prompt surface, which is exactly why the cheap-looking fix is
+// the wrong one here. The line already carries its own fallback ("use o nome do
+// dia — o sistema resolve a data da fonte primária"), so the literal illustrates
+// format only and de-anchoring costs little.
+const SCHEDULE_CLAIM_MAPPING_LINES: readonly string[] = [
+  "- está aberto/fechado agora, que horas funciona agora => STORE_OPEN_NOW (proponha",
+  "  TAMBÉM STORE_HOURS — o sistema responde o período atual e a agenda de hoje juntos)",
+  "- horário de funcionamento hoje, qual o horário de funcionamento, que horas abre ou",
+  "  fecha, até que horas fica aberto => STORE_HOURS (proponha TAMBÉM STORE_OPEN_NOW —",
+  "  o sistema responde a agenda de hoje e o período atual juntos)",
+  "- horário de um DIA específico (ex.: domingo, amanhã, no feriado) => STORE_HOURS_FOR_DATE,",
+  "  e o `subject` deve ser a DATA no formato ISO AAAA-MM-DD (ex.: 2026-07-12); se não",
+  "  souber a data exata, use o nome do dia — o sistema resolve a data da fonte primária.",
+];
 
 /**
  * CLAIM-planner persona (Track A on 4B — tag-then-derive STEP 1). The
@@ -79,11 +173,7 @@ export const CLAIM_PLANNER_PERSONA = [
   "`subject` (a chave do recurso/assunto, ex.: o id do pedido, ou \"loja\").",
   "",
   "Guia de mapeamento:",
-  "- está aberto/fechado agora, que horas funciona agora => STORE_OPEN_NOW",
-  "- horário de funcionamento hoje (a agenda de hoje) => STORE_HOURS",
-  "- horário de um DIA específico (ex.: domingo, amanhã, no feriado) => STORE_HOURS_FOR_DATE,",
-  "  e o `subject` deve ser a DATA no formato ISO AAAA-MM-DD (ex.: 2026-07-12); se não",
-  "  souber a data exata, use o nome do dia — o sistema resolve a data da fonte primária.",
+  ...SCHEDULE_CLAIM_MAPPING_LINES,
   "- alérgenos/ingredientes de um item => MENU_ITEM_ALLERGENS",
   "- quanto custa / qual o preço de um item do cardápio, e o `subject` é o item => MENU_ITEM_PRICE",
   "- o que vem/acompanha um item, do que é feito, composição do prato => MENU_ITEM_CONTENTS",
@@ -95,7 +185,68 @@ export const CLAIM_PLANNER_PERSONA = [
   "- o que tem no meu carrinho, itens da sacola/cesta => CART_CONTENTS (proponha TAMBÉM CART_EMPTY — o sistema valida o que corresponde ao carrinho real)",
   "- meu histórico de pedidos, meus últimos pedidos => ORDER_HISTORY",
   "- meu histórico de pagamentos, meus últimos pagamentos => PAYMENT_HISTORY",
+  // LE2-019 — the coupon-validity mapping. Both members are named because they
+  // are a COMPLEMENTARY pair: the system validates whichever matches the real
+  // promotion record, and proposing both is how the honest "não está válido"
+  // becomes reachable at all (the CART_CONTENTS/CART_EMPTY phrasing precedent).
+  // The line says CONFERIR, never APLICAR — there is no apply capability to
+  // propose (Decision 14), and the model must not be primed to imagine one.
+  "- esse cupom vale / o código X ainda funciona / quero CONFERIR um cupom (só conferir,",
+  "  nunca aplicar) => COUPON_VALID (proponha TAMBÉM COUPON_INVALID — o sistema valida o",
+  "  que corresponde à promoção real)",
   "- a compra foi concluída => PURCHASE_COMPLETED",
+  "",
+  "REGRA ABSOLUTA: NUNCA escreva o valor/proposição da resposta — o sistema deriva o",
+  "valor da fonte primária. Você só seleciona o `type` e o `subject`. Nunca invente um",
+  "tipo fora do enum.",
+].join("\n");
+
+/**
+ * LE2-012 — the OPS-plane claim-planner persona. The SAME job as
+ * {@link CLAIM_PLANNER_PERSONA} (map ONE question to ONE registry TYPE; never
+ * author a value) with the ONE difference the ops plane needs: the speaker is a
+ * STAFF operator asking about the STORE, so the mapping guide names the
+ * ops-scoped types the ops `propose_claim` enum advertises.
+ *
+ * Why a separate persona rather than appending to the customer one: the customer
+ * persona must never mention a type the customer enum does not carry — a 4B that
+ * reads "quantos pedidos hoje => OPS_ORDERS_TODAY" and then cannot find it in the
+ * enum degrades to a wrong tag. The two personas are plane-scoped exactly as the
+ * two enums are.
+ *
+ * The customer store/menu mappings are kept verbatim: the ops scope is a SUPERSET
+ * (a staff member legitimately asks "estamos abertos?" — the LE2-011 chain).
+ */
+export const OPS_CLAIM_PLANNER_PERSONA = [
+  "Você classifica a pergunta da EQUIPE (operação da loja IbateXas) em um TIPO de",
+  'afirmação (claim) que o sistema vai VALIDAR. Sua única função é chamar "propose_claim".',
+  "",
+  "Chame propose_claim selecionando o `type` EXATO do enum que corresponde à pergunta",
+  '(copie a string do enum sem alterar nenhuma letra) e um `subject` (use "loja" para',
+  "perguntas sobre a loja/operação).",
+  "",
+  "Guia de mapeamento (operação da loja):",
+  "- quantos pedidos hoje, pedidos do dia, quantas vendas hoje => OPS_ORDERS_TODAY",
+  "- tem escalação pendente, alertas/incidentes abertos, pendências da operação",
+  "  => OPS_PENDING_ESCALATIONS",
+  "- quais/quantas reservas hoje, reservas do dia => OPS_RESERVATIONS_TODAY",
+  "",
+  "Guia de mapeamento (loja e cardápio):",
+  ...SCHEDULE_CLAIM_MAPPING_LINES,
+  "- o que tem no cardápio / quais os pratos (o cardápio INTEIRO) => MENU_OVERVIEW",
+  "- quanto custa / qual o preço de um item do cardápio, e o `subject` é o item => MENU_ITEM_PRICE",
+  "- o que vem/acompanha um item, do que é feito => MENU_ITEM_CONTENTS",
+  "- endereço, estacionamento, como chegar => STORE_INFO",
+  // LE2-013 — the ops-plane delivery-coverage mapping. The pair is CUSTOMER-
+  // registered and reaches this plane through the SUPERSET ops scope (see
+  // ops-claim-registry.ts OPS_PLANE_TEMPLATE_OVERRIDES): a staff member asking
+  // "vocês entregam em Ibaté?" is asking about the store's own coverage, and this
+  // is the line that lets the 4B tag it. Both members are named because they are a
+  // COMPLEMENTARY pair — the system validates whichever matches the zone read, and
+  // proposing both is how the honest "não entregamos" becomes reachable at all.
+  "- vocês entregam em <bairro/cidade>, entregam no CEP X, tem entrega aí, qual a taxa",
+  "  ou o prazo de entrega => DELIVERY_COVERAGE (proponha TAMBÉM DELIVERY_NO_COVERAGE —",
+  "  o sistema valida o que corresponde às zonas de entrega reais)",
   "",
   "REGRA ABSOLUTA: NUNCA escreva o valor/proposição da resposta — o sistema deriva o",
   "valor da fonte primária. Você só seleciona o `type` e o `subject`. Nunca invente um",
@@ -213,6 +364,11 @@ export const OPS_PLANNER_PERSONA = [
   "cancelar => canceled. Ex.: \"muda o status do último pedido pra pronto\" =>",
   "order.status.transition com payload { newStatus: \"ready\" } (sem `orderId`) — o sistema",
   "vai pedir confirmação antes de aplicar, porque o pedido foi identificado automaticamente.",
+  // F-65 — the ISO date is the THIRD of three format alternatives here, beside
+  // two relative words, under an instruction to ECHO what the staff member said
+  // ("do jeito que ele disse"); the system resolves the concrete date. Live
+  // prompt text and a digested parse-cache key component: de-anchor if ever
+  // measured to bias the output year, never derive from the turn clock.
   "Em schedule.override.set, coloque a data que o funcionário falou no campo `date` do jeito",
   "que ele disse (ex.: \"amanhã\", \"sexta\", ou uma data \"2026-07-25\") — o sistema resolve",
   "a data concreta. Use isOpen=false para fechar o dia (sem `blocks`); use isOpen=true com",

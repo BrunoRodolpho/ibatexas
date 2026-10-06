@@ -14,6 +14,7 @@
 | Agent tools — auth level, inputs, outputs (20 LLM-callable) | [docs/architecture/design/agent-tools.md](docs/architecture/design/agent-tools.md) |
 | PIX charge lifecycle Pack (`@adjudicate/pack-payments-pix`) | [BrunoRodolpho/adjudicate](https://github.com/BrunoRodolpho/adjudicate/blob/main/packages/pack-payments-pix/README.md), ADR #13 |
 | Kernel operations (always-on; no shadow / enforce / kill-switch) | [docs/ops/runbooks/kernel-operations.md](docs/ops/runbooks/kernel-operations.md) |
+| Alias mining — growing the gazetteer from recorded turns (`ibx alias mine`) | [docs/ops/runbooks/alias-mining.md](docs/ops/runbooks/alias-mining.md) |
 | Analytics events, PostHog dashboards | [docs/ops/analytics-dashboards.md](docs/ops/analytics-dashboards.md) |
 | Redis key patterns, TTLs | [docs/ops/redis-memory.md](docs/ops/redis-memory.md) |
 | Conversational turn pipeline (claustrum Conductor) | rule #9 below + `apps/api/src/claustrum-bootstrap.ts` |

@@ -291,4 +291,65 @@ describe("cancelOrder", () => {
       expect(result.message).toBe("Pedido não encontrado ou não pertence a este cliente.")
     })
   })
+
+  // ── F-48 — the escalation path reaches STAFF ────────────────────────────────
+  //
+  // `svc.cancelOrder` sets needsEscalation on its past-PONR refusal, whose
+  // customer copy is "Prazo para cancelamento automático já passou. Um
+  // atendente foi notificado e vai ajudar." This publish used to go to
+  // `order.escalation_needed` — a subject with ZERO subscribers — so no
+  // attendant was ever notified. It had NO test coverage at all before F-48.
+  describe("escalation when the cancel PONR has expired (F-48)", () => {
+    beforeEach(() => {
+      mockCancelOrder.mockResolvedValue({
+        success: false,
+        needsEscalation: true,
+        message:
+          "Prazo para cancelamento automático já passou. Um atendente foi notificado e vai ajudar.",
+      })
+    })
+
+    it("publishes support.handoff_requested so an attendant is actually notified", async () => {
+      const result = await cancelOrder(INPUT, CTX)
+
+      expect(result.needsEscalation).toBe(true)
+      expect(mockPublishNatsEvent).toHaveBeenCalledWith("support.handoff_requested", {
+        sessionId: "order-cancel-ponr:order_01",
+        reason: "Cancelamento solicitado após o prazo de cancelamento — pedido order_01",
+      })
+    })
+
+    it("never publishes the RETIRED subscriber-less order.escalation_needed subject", async () => {
+      await cancelOrder(INPUT, CTX)
+
+      const subjects = mockPublishNatsEvent.mock.calls.map((c: unknown[]) => c[0])
+      expect(subjects).not.toContain("order.escalation_needed")
+      expect(subjects).toContain("support.handoff_requested")
+    })
+
+    // The dedup key must NOT be BKL-103's `order-cancel:{orderId}`. That key
+    // belongs to the HTTP paid-cancel escalation, which carries a park token an
+    // OWNER approves. If this cheap notification-only escalation claimed it
+    // first, the handoff-subscriber would return early on the later paid-cancel
+    // event (7-day dedup TTL) — `appendPendingIntent` would never run and the
+    // Approve button would silently never appear.
+    it("does NOT collide with BKL-103's paid-cancel park/approval dedup key", async () => {
+      await cancelOrder(INPUT, CTX)
+
+      const call = mockPublishNatsEvent.mock.calls.find(
+        (c: unknown[]) => c[0] === "support.handoff_requested",
+      )
+      const { sessionId } = call![1] as { sessionId: string }
+      expect(sessionId).not.toBe("order-cancel:order_01")
+    })
+
+    it("does not escalate when the cancel succeeds", async () => {
+      mockCancelOrder.mockResolvedValue({ success: true, message: "Pedido cancelado com sucesso." })
+
+      await cancelOrder(INPUT, CTX)
+
+      const subjects = mockPublishNatsEvent.mock.calls.map((c: unknown[]) => c[0])
+      expect(subjects).not.toContain("support.handoff_requested")
+    })
+  })
 })

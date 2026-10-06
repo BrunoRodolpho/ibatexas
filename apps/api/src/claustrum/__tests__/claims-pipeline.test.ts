@@ -97,36 +97,40 @@ describe("claims-pipeline — buildClaimsSeams (byte-identical when OFF)", () =>
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BKL-152-edge — the `renderCarriersForTurn` carrier callback (@claustrum/core
-// 0.8.0). It closes over its OWN clock + tz and returns `resolvedQueryDate` ONLY for
-// a CONFIRMED NON-TODAY day (a today/unresolvable anchor omits it, so the decomposer
-// reads absent-under-active as "today → KEEP"). `disambiguationCandidates` is
-// sourced from the BKL-189 per-turn stash (tested below); an unstashed ledger
-// omits it.
-// Deterministic assertions only — "amanhã" is always today+1 (never today) and
-// "hoje" is always today, independent of the wall clock.
+// F-12 — the `renderCarriersForTurn` callback carries NO DATE, and no clock.
+//
+// THIS BLOCK USED TO PIN THE DATE CARRIER: three cases asserting that the callback
+// closed over its own clock + tz and returned `resolvedQueryDate` only for a
+// CONFIRMED NON-TODAY day, so the required-claim decomposer could read
+// absent-under-active as "the named weekday is today → KEEP the STORE_OPEN_NOW
+// companion". That KEEP branch is exactly what F-12 deleted — it made the
+// renderer's §O#15 gate require a companion the claim planner had already
+// suppressed, degrading an answerable hours turn one day a week. With its sole
+// reader gone the field would have been dead data crossing a seam, so the carrier
+// half was removed with it.
+//
+// What remains is `disambiguationCandidates` (BKL-170/BKL-189, sourced from the
+// per-turn stash). The date cases are replaced by an ABSENCE pin below: no
+// utterance may reintroduce the field, which is what would red if a future change
+// re-wired a clock into the render path.
 // ─────────────────────────────────────────────────────────────────────────────
-describe("claims-pipeline — BKL-152-edge renderCarriersForTurn (resolvedQueryDate carrier)", () => {
+describe("claims-pipeline — renderCarriersForTurn (F-12: no date carrier, no clock)", () => {
   const carrier = buildClaimsSeams({ planner: stubPlanner, env: ON_ENV }).renderCarriersForTurn;
   const call = (requestText: string) =>
     carrier?.({ ledger: new EvidenceLedger(), customerId: "cust_1", requestText });
-  const todayIso = (): string =>
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone: process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo",
-    }).format(new Date());
 
-  it("a relative NON-TODAY anchor ('amanhã') → resolvedQueryDate PRESENT (≠ today)", () => {
-    const out = call("vocês abrem amanhã?");
-    expect(out?.resolvedQueryDate).toBeDefined();
-    expect(out?.resolvedQueryDate).not.toBe(todayIso());
-  });
-
-  it("a TODAY anchor ('hoje') → resolvedQueryDate ABSENT (weekday==today ⇒ decomposer KEEPs)", () => {
-    expect(call("que horas vocês abrem hoje?")?.resolvedQueryDate).toBeUndefined();
-  });
-
-  it("NO date anchor → resolvedQueryDate ABSENT (nothing to thread)", () => {
-    expect(call("vocês estão abertos agora?")?.resolvedQueryDate).toBeUndefined();
+  it("F-12 (was: three resolvedQueryDate cases) — NO utterance threads a resolved date", () => {
+    // The three shapes the deleted cases covered, now asserted as one absence: a
+    // confirmed NON-TODAY anchor (the case that used to require the field PRESENT),
+    // a today anchor, and no anchor at all. "amanhã" is always today+1 and "hoje" is
+    // always today, so this stays deterministic under any wall clock.
+    for (const text of [
+      "vocês abrem amanhã?",
+      "que horas vocês abrem hoje?",
+      "vocês estão abertos agora?",
+    ]) {
+      expect(call(text)).not.toHaveProperty("resolvedQueryDate");
+    }
   });
 
   it("an UNSTASHED ledger threads no disambiguationCandidates (BKL-189 absent-path)", () => {
@@ -352,5 +356,96 @@ describe("BKL-189 — disambiguation-candidate producer (per-turn ledger-keyed s
       requestText: ORDER_Q,
     });
     expect("disambiguationCandidates" in out).toBe(false);
+  });
+});
+
+// ── BKL-270 — the dietary-posture gate ABORTS BOOT ──────────────────────────
+//
+// The gap this closes, stated plainly: before this test, NOTHING proved a registry
+// gate actually stops the pipeline from booting. The existing coverage proves only
+// that the assert FUNCTION throws when handed a bad table — a different claim, and
+// the weaker one. A gate wired in the wrong place, or wrapped in a try/catch, passes
+// every such test while serving traffic.
+//
+// So this drives the REAL composition root (`buildClaimsSeams` — the same call
+// `claustrum-bootstrap.ts` makes) with a registry that violates the gate, and pins
+// that the seams are never returned. The PLANE scope is the injection point: it is
+// the one registry a caller supplies, so it can be made bad without mutating a
+// module constant that every other test in the process shares.
+
+describe("BKL-270 — the dietary-posture boot gate is FAIL-CLOSED at the composition root", () => {
+  const readSpec = (key: string, posture?: string): unknown => ({
+    kind: "read_claim",
+    ...(posture === undefined ? {} : { dietaryPosture: posture }),
+    minSourceIntegrity: "structured",
+    requiredEvidence: [
+      {
+        key,
+        ownershipPolicy: "not_applicable",
+        freshnessPolicy: "must_read_this_turn",
+        sourceIntegrity: "structured",
+        provenancePolicy: "preserve",
+      },
+    ],
+    customerScoped: false,
+  });
+
+  const planeWith = (specs: Record<string, unknown>): never =>
+    ({
+      claimScope: { types: Object.keys(specs), specs },
+      templates: {},
+      gatherReads: () => [],
+    }) as never;
+
+  it("REFUSES TO BOOT when a plane read spec declares no dietaryPosture", () => {
+    expect(() =>
+      buildClaimsSeams({
+        planner: stubPlanner,
+        env: ON_ENV,
+        plane: planeWith({ OPS_UNDECLARED: readSpec("ops:undeclared") }),
+      }),
+    ).toThrow(/OPS_UNDECLARED/);
+  });
+
+  it("the refusal names the field and the ticket, so the fix is obvious from the log", () => {
+    expect(() =>
+      buildClaimsSeams({
+        planner: stubPlanner,
+        env: ON_ENV,
+        plane: planeWith({ OPS_UNDECLARED: readSpec("ops:undeclared") }),
+      }),
+    ).toThrow(/dietaryPosture[\s\S]*BKL-270/);
+  });
+
+  it("NON-VACUITY: declaring the posture gets the SAME plane PAST this gate", () => {
+    // Without this control the tests above would pass if `buildClaimsSeams` threw for
+    // any unrelated reason — a malformed plane shape, say.
+    //
+    // The synthetic type still fails a LATER gate (LE2-012 render drift: it has no
+    // template), and that is precisely what makes the control sharp — it proves the
+    // posture gate specifically STOPPED being the thing that rejects this plane, and
+    // it incidentally pins the gate ORDER: posture is checked before render drift.
+    let message = "";
+    try {
+      buildClaimsSeams({
+        planner: stubPlanner,
+        env: ON_ENV,
+        plane: planeWith({ OPS_DECLARED: readSpec("ops:declared", "answer-anyway") }),
+      });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toMatch(/dietaryPosture/);
+    expect(message).toMatch(/render drift/);
+  });
+
+  it("does NOT run when the pipeline is disabled — no seams exist, so there is nothing to protect", () => {
+    expect(() =>
+      buildClaimsSeams({
+        planner: stubPlanner,
+        env: OFF_ENV,
+        plane: planeWith({ OPS_UNDECLARED: readSpec("ops:undeclared") }),
+      }),
+    ).not.toThrow();
   });
 });

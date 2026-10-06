@@ -8,32 +8,25 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Command } from "commander";
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
+import { rk } from "@ibatexas/tools";
 
-const mockRedisClient = vi.hoisted(() => {
-  const store = new Map<string, string[]>();
-  return {
-    store,
-    scanIterator(opts: { MATCH: string; COUNT: number }): AsyncIterable<string> {
-      const pattern = opts.MATCH;
-      const prefix = pattern.replace(/\*$/, "");
-      const keys: string[] = [];
-      for (const k of store.keys()) {
-        if (k.startsWith(prefix)) keys.push(k);
-      }
-      return (async function* () {
-        for (const k of keys) yield k;
-      })();
-    },
-    async lLen(key: string) {
-      return store.get(key)?.length ?? 0;
-    },
-  };
+// R5-S8 — the canonical in-memory adapter replaces a hand-rolled double with
+// two fictions. (1) Its `scanIterator` reduced the glob to `startsWith` after
+// stripping one trailing `*`, so `MATCH` was pattern-matching in name only.
+// (2) Its `lLen` measured a JS array the TEST planted under the key; production
+// writes DLQs with LPUSH (`apps/api/src/subscribers/dlq.ts:29`), so the count in
+// every row came from the fixture's own shape rather than from a list. Seeding
+// through `lPush` here means `lLen` measures what the real producer wrote.
+const mockGetRedisClient = vi.hoisted(() => vi.fn());
+
+vi.mock("@ibatexas/tools", async () => {
+  // `rk` was faked as `test:${key}` — a prefix that depends on the fake rather
+  // than on APP_ENV. Spread from the real module so the keys seeded below are
+  // the keys `discoverDlqEvents` actually SCANs for.
+  const actual = await vi.importActual<typeof import("@ibatexas/tools")>("@ibatexas/tools");
+  return { ...actual, getRedisClient: mockGetRedisClient };
 });
-
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => mockRedisClient),
-  rk: (k: string) => `test:${k}`,
-}));
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: vi.fn(),
@@ -53,8 +46,19 @@ function captureStdout(): { restore: () => void; getOutput: () => string } {
 }
 
 describe("ibx dlq list — dynamic event discovery (W6-9)", () => {
+  let redis: ReturnType<typeof createInMemoryRedis>;
+
+  /** Seed a DLQ the way the producer writes it (`pushToDlq` → LPUSH). */
+  async function seedDlq(event: string, depth: number): Promise<void> {
+    await redis.client.lPush(
+      rk(`dlq:${event}`),
+      Array.from({ length: depth }, (_, i) => `entry-${i}`),
+    );
+  }
+
   beforeEach(() => {
-    mockRedisClient.store.clear();
+    redis = createInMemoryRedis();
+    mockGetRedisClient.mockImplementation(async () => redis.client);
   });
 
   afterEach(() => {
@@ -65,9 +69,9 @@ describe("ibx dlq list — dynamic event discovery (W6-9)", () => {
     // Seed Redis with three DLQ keys — including subjects that the
     // PRE-W6 hardcoded list omitted (`audit.intent.decision.v1` +
     // `intent.defer.resume`).
-    mockRedisClient.store.set("test:dlq:audit.intent.decision.v1", ["x", "y"]);
-    mockRedisClient.store.set("test:dlq:intent.defer.resume", ["z"]);
-    mockRedisClient.store.set("test:dlq:order.status_changed", ["w"]);
+    await seedDlq("audit.intent.decision.v1", 2);
+    await seedDlq("intent.defer.resume", 1);
+    await seedDlq("order.status_changed", 1);
 
     const stdout = captureStdout();
     try {
@@ -91,7 +95,6 @@ describe("ibx dlq list — dynamic event discovery (W6-9)", () => {
     // No DLQ keys present. SCAN returns []. The fallback hint list is
     // used so the operator's CLI doesn't show "✓ All DLQs empty" before
     // they've even attempted to publish anything.
-    mockRedisClient.store.clear();
     const stdout = captureStdout();
     try {
       const cmd = new Command();
@@ -111,7 +114,7 @@ describe("ibx dlq list — dynamic event discovery (W6-9)", () => {
   it("respects custom DLQ subjects added by future subscribers", async () => {
     // Future subjects (e.g. `customer.anonymize.failed`) are discovered
     // automatically without code changes — the gate is the SCAN.
-    mockRedisClient.store.set("test:dlq:customer.anonymize.failed", ["a"]);
+    await seedDlq("customer.anonymize.failed", 1);
 
     const stdout = captureStdout();
     try {

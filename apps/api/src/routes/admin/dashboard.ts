@@ -46,7 +46,11 @@ export async function dashboardRoutes(server: FastifyInstance): Promise<void> {
           const reservationSvc = createReservationService()
           activeReservations = await reservationSvc.countActive()
         } catch (err) {
-          server.log.warn({ err }, "Dashboard: failed to fetch from Medusa — returning zeros")
+          // F-34: this arm used to carry the Medusa catch's message verbatim, so
+          // a reservation outage was reported to on-call as a Medusa outage.
+          // Each fail-soft arm names its OWN source; pinned by attribution (not
+          // by prose) in __tests__/dashboard.test.ts.
+          server.log.warn({ err }, "Dashboard: failed to count active reservations — returning 0")
         }
 
         // Real open-escalation count (was hard-coded 0, masking the takeover

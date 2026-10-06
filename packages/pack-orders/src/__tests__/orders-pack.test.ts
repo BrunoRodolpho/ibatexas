@@ -194,6 +194,125 @@ describe("ordersPolicyBundle — state guards", () => {
     expect(decision.refusal.code).toBe("order.not_found")
   })
 
+  // ── BKL-216 — the amend in-message order-reference ambiguity CLARIFY ──────
+  //
+  // `resolveAmendOrderReference` (apps/api resolve-and-assemble.ts) resolves NO
+  // orderId when the message named ≥2 of the customer's OWN orders, stamping
+  // `orderReferenceAmbiguous*` instead. This guard must voice WHICH orders rather
+  // than let the turn fall to the generic `order.not_found` — the orders WERE
+  // found, the resolver just would not pick between two the customer named.
+  const AMBIGUITY_KINDS: readonly OrderIntentKind[] = [
+    "order.amend.request",
+    "order.amend.add_item",
+    "order.amend.update_qty",
+    "order.amend.remove_item",
+  ]
+
+  it.each(AMBIGUITY_KINDS)(
+    "%s: ≥2 named owned orders → REFUSE order.ambiguous_reference (pre-empts order.not_found) and voices both numbers",
+    (kind) => {
+      const decision = adjudicate(
+        env(kind, {
+          item: "coca",
+          orderReferenceAmbiguousCount: 2,
+          orderReferenceAmbiguousDisplayIds: [960763, 933869],
+        }),
+        state({ orderId: null }),
+        ordersPolicyBundle,
+      )
+      expect(decision.kind).toBe("REFUSE")
+      if (decision.kind !== "REFUSE") return
+      expect(decision.refusal.code).toBe("order.ambiguous_reference")
+      expect(decision.refusal.userFacing).toContain("#960763")
+      expect(decision.refusal.userFacing).toContain("#933869")
+      expect(decision.refusal.userFacing).toContain("Em qual deles?")
+    },
+  )
+
+  it("the ambiguity refusal carries the count in its audit basis (machine-readable, not just copy)", () => {
+    const decision = adjudicate(
+      env("order.amend.remove_item", {
+        item: "coca",
+        orderReferenceAmbiguousCount: 3,
+        orderReferenceAmbiguousDisplayIds: [1, 2, 3],
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(
+      decision.basis.some(
+        (b) =>
+          (b.detail as { reason?: string } | undefined)?.reason ===
+            "order_reference_ambiguous" &&
+          (b.detail as { count?: number } | undefined)?.count === 3,
+      ),
+    ).toBe(true)
+  })
+
+  it("NO ambiguity marker → the guard is inert; an unresolved amend keeps the honest order.not_found", () => {
+    const decision = adjudicate(
+      env("order.amend.remove_item", { item: "coca" }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
+  it("a malformed (non-numeric) count is inert, not fail-open — order.not_found stands", () => {
+    const decision = adjudicate(
+      env("order.amend.remove_item", {
+        item: "coca",
+        orderReferenceAmbiguousCount: "2",
+        orderReferenceAmbiguousDisplayIds: [1, 2],
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
+  it("missing/garbled displayIds still CLARIFY, and never fabricate a number", () => {
+    const decision = adjudicate(
+      env("order.amend.remove_item", {
+        item: "coca",
+        orderReferenceAmbiguousCount: 2,
+        orderReferenceAmbiguousDisplayIds: ["nope", null],
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.ambiguous_reference")
+    expect(decision.refusal.userFacing).toBe(
+      "Você citou mais de um pedido. Em qual deles?",
+    )
+    expect(decision.refusal.userFacing).not.toContain("#")
+  })
+
+  // Scope pin: the marker is only ever stamped for order.amend.* (BKL-198 owns the
+  // rest of the mutation plane), so the guard must not fire for other kinds.
+  it("order.cancel carrying the marker is NOT clarified by this guard (scope pin)", () => {
+    const decision = adjudicate(
+      env("order.cancel", {
+        orderId: "o-1",
+        orderReferenceAmbiguousCount: 2,
+        orderReferenceAmbiguousDisplayIds: [1, 2],
+      }),
+      state({ orderId: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.not_found")
+  })
+
   it("REFUSE order.cancel on already-cancelled order", () => {
     const decision = adjudicate(
       env("order.cancel", { orderId: "o-1" }),
@@ -259,6 +378,35 @@ describe("ordersPolicyBundle — state guards", () => {
   })
 
   // ── 034-F1: kernel ownership/IDOR guard (defense-in-depth) ────────────────
+  //
+  // F-26 — `enforceOrderOwnership` has TWO conjuncts and they REFUSE with the SAME
+  // code (`order.ownership_denied`): (1) the BINDING — the declared owner does not
+  // own the resource — and (2) the IDOR gate — the authenticated principal behind
+  // the acting session is not the declared owner. A code-only assertion cannot tell
+  // them apart, so either conjunct silently stands in for the other. Measured: with
+  // the two branches' reasons SWAPPED, all 222 tests in this package stayed green.
+  // The discriminating information is the auth basis `reason`, so every test below
+  // that drives a conjunct pins WHICH one spoke. Mirrors the house style of the
+  // adopter's claustrum/__tests__/ownership-set-agreement.test.ts (PR #530).
+  const BINDING_CONJUNCT = "resource_not_owned"
+  const IDOR_CONJUNCT = "tenant_binding_violation"
+
+  /**
+   * Flattens a decision to `EXECUTE` / `REQUEST_CONFIRMATION` / `REFUSE:<code>:<auth
+   * basis reason>` so one assertion reds by NAME on both the code and the conjunct.
+   * The basis row is keyed `category` (never `kind`).
+   */
+  function outcome(decision: unknown): string {
+    const d = decision as {
+      kind: string
+      refusal?: { code?: string }
+      basis?: readonly { category?: string; detail?: { reason?: string } }[]
+    }
+    if (d.kind !== "REFUSE") return d.kind
+    const reason = d.basis?.find((b) => b.category === "auth")?.detail?.reason ?? "no-auth-basis"
+    return `REFUSE:${d.refusal?.code}:${reason}`
+  }
+
   function cancelEnv(owner: string, resource: string, sessionId: string) {
     return buildEnvelope({
       kind: "order.cancel",
@@ -297,20 +445,45 @@ describe("ordersPolicyBundle — state guards", () => {
     if (decision.kind === "REFUSE") expect(decision.refusal.code).not.toBe("order.ownership_denied")
   })
 
-  it("OWNERSHIP CANARY (de-vacuumed): cancelling a NON-owned order REFUSEs order.ownership_denied", () => {
+  it("OWNERSHIP CANARY (de-vacuumed): cancelling a NON-owned order REFUSEs order.ownership_denied from the BINDING conjunct", () => {
     // store binds cust-A → order-A only; the envelope targets order-B → unbound → REFUSE.
+    // The session IS the authenticated owner (sess-A → cust-A), so the IDOR conjunct
+    // is not what spoke — but it WOULD speak with the SAME code if the binding branch
+    // were neutered (an unbound resource resolves principal to null, which also fails
+    // the IDOR equality). Pinning the conjunct is what makes this canary test its own
+    // mechanism instead of accepting the other one's refusal. See F-26 above.
     const decision = adjudicate(cancelEnv("cust-A", "order-B", "sess-A"), authState("cust-A", "order-A", "sess-A", "order-B"), ordersPolicyBundle)
     expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("order.ownership_denied")
+    expect(outcome(decision)).toBe(`REFUSE:order.ownership_denied:${BINDING_CONJUNCT}`)
   })
 
-  it("OWNERSHIP IDOR-gate: an unrecognised session acting on an owned order REFUSEs", () => {
+  it("OWNERSHIP IDOR-gate: an unrecognised session acting on an owned order REFUSEs — from the IDOR conjunct, not the binding", () => {
     // resource IS owned (bound), but principalOf(sess-B)=null != owner → IDOR REFUSE.
+    // Asserting the conjunct is what makes the name ("IDOR-gate") the tested part: a
+    // code-only pin is satisfied by the binding conjunct just as well. See F-26 above.
     const decision = adjudicate(cancelEnv("cust-A", "order-A", "sess-B"), authState("cust-A", "order-A", "sess-A", "order-A"), ordersPolicyBundle)
     expect(decision.kind).toBe("REFUSE")
-    if (decision.kind !== "REFUSE") return
-    expect(decision.refusal.code).toBe("order.ownership_denied")
+    expect(outcome(decision)).toBe(`REFUSE:order.ownership_denied:${IDOR_CONJUNCT}`)
+  })
+
+  it("F-26 — the two conjuncts are DISTINGUISHABLE: same code, different reason, on the same fixtures", () => {
+    // The finding itself, pinned as a standing claim: swapping the guard's two
+    // branches must not be a no-op. Same helper, same authority graph — the only
+    // difference between the rows is which conjunct the input trips.
+    const binding = outcome(
+      adjudicate(cancelEnv("cust-A", "order-B", "sess-A"), authState("cust-A", "order-A", "sess-A", "order-B"), ordersPolicyBundle),
+    )
+    const idor = outcome(
+      adjudicate(cancelEnv("cust-A", "order-A", "sess-B"), authState("cust-A", "order-A", "sess-A", "order-A"), ordersPolicyBundle),
+    )
+    // The codes AGREE (that is the shadowing hazard)…
+    expect(binding.split(":")[1]).toBe(idor.split(":")[1])
+    // …and the reasons DISAGREE (that is what defeats it).
+    expect([binding, idor]).toEqual([
+      `REFUSE:order.ownership_denied:${BINDING_CONJUNCT}`,
+      `REFUSE:order.ownership_denied:${IDOR_CONJUNCT}`,
+    ])
+    expect(BINDING_CONJUNCT).not.toBe(IDOR_CONJUNCT)
   })
 
   it("OWNERSHIP: guard is INERT when the host injects NO authority (no resourceRefs path)", () => {
@@ -511,6 +684,122 @@ describe("ordersPolicyBundle — REWRITE-clamp on stock-capped item.update", () 
       ordersPolicyBundle,
     )
     expect(decision.kind).toBe("EXECUTE")
+  })
+})
+
+// ── Business: guard ORDER is protective (F-57) ──────────────────────────
+
+/**
+ * `validateQuantity` sits ABOVE `clampUpdateToStockCap` in the business
+ * phase, and these tests exist so that fact cannot be edited away silently.
+ * Before this block the whole suite was 223/223 GREEN with the two guards in
+ * EITHER order, while swapping them turns a REFUSE of a malformed proposal
+ * into a clamp-then-EXECUTE of a laundered one.
+ *
+ * The two cases are a CONTROL/TREATMENT pair on ONE variable — integrality —
+ * and the control is what stops the treatment from being vacuous. Identical
+ * kind, itemId, state and stockCap; identical over-cap relation (both request
+ * more than the cap of 3). The control REWRITEs, which PROVES the clamp
+ * engages on exactly this envelope+state shape; so when the treatment REFUSEs
+ * instead, the only thing that can explain it is which guard ran first. Drop
+ * the control and the treatment would still pass with the clamp deleted
+ * entirely, and would be pinning nothing.
+ *
+ * Revert-to-red: swap the two entries in `ordersPolicyBundle.business` and
+ * the treatment must RED (it becomes REWRITE). Measured — see F-57.
+ */
+describe("ordersPolicyBundle — guard ORDER is protective (F-57)", () => {
+  const cappedAtThree = {
+    items: [
+      {
+        variantId: "v-1",
+        quantity: 1,
+        priceInCentavos: 5_000,
+        stockCap: 3,
+      },
+    ],
+  }
+
+  it("CONTROL: an INTEGER over-cap quantity REWRITEs — the clamp does engage here", () => {
+    const decision = adjudicate(
+      env("order.item.update", {
+        cartId: "cart-1",
+        itemId: "v-1",
+        quantity: 7,
+      }),
+      state(cappedAtThree),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REWRITE")
+    if (decision.kind !== "REWRITE") return
+    expect(
+      (decision.rewritten.payload as { quantity: number }).quantity,
+    ).toBe(3)
+  })
+
+  it("TREATMENT: a NON-INTEGER over-cap quantity REFUSEs, and is never clamped into an EXECUTE", () => {
+    const decision = adjudicate(
+      env("order.item.update", {
+        cartId: "cart-1",
+        itemId: "v-1",
+        quantity: 7.5,
+      }),
+      state(cappedAtThree),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    if (decision.kind !== "REFUSE") return
+    expect(decision.refusal.code).toBe("order.item.quantity_invalid")
+    // The failure this pins is not "some refusal happened" but "the malformed
+    // 7.5 never became a well-formed 3". Name the value so a future clamp-first
+    // ordering cannot satisfy this test by refusing for some later reason.
+    expect(decision.refusal.detail).toBe("quantity=7.5")
+  })
+})
+
+// ── Business: KNOWN HOLE — zero stockCap clamps to an invalid quantity ──
+
+/**
+ * CHARACTERIZATION, not an endorsement (F-57). `stockCap: 0` is a DEFINED
+ * cap, so `clampUpdateToStockCap` engages and rewrites any positive request
+ * to `quantity: 0` — a value `validateQuantity` itself rejects (`q <= 0`),
+ * reached because the clamp runs after validation and the kernel does not
+ * re-validate a rewritten envelope.
+ *
+ * This test asserts what the Pack DOES today so the hole stays visible; it is
+ * not a claim that this is correct. Closing it is a behaviour change (REFUSE
+ * where an EXECUTE happens now, via `refuseQuantityOverLimit`) and is open
+ * with the governor. When that ruling lands, this test SHOULD be replaced —
+ * deleting it is the intended outcome of the fix, not a regression.
+ *
+ * Inert in the ibatexas host: nothing populates `stockCap` and the live
+ * `ctx.items` is `undefined`, so this is an adopter-facing contract defect.
+ */
+describe("ordersPolicyBundle — stockCap: 0 (known hole, F-57)", () => {
+  it("clamps a positive request to quantity 0 and does NOT refuse", () => {
+    const decision = adjudicate(
+      env("order.item.update", {
+        cartId: "cart-1",
+        itemId: "v-1",
+        quantity: 5,
+      }),
+      state({
+        items: [
+          {
+            variantId: "v-1",
+            quantity: 1,
+            priceInCentavos: 5_000,
+            stockCap: 0,
+          },
+        ],
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REWRITE")
+    if (decision.kind !== "REWRITE") return
+    expect(
+      (decision.rewritten.payload as { quantity: number }).quantity,
+    ).toBe(0)
   })
 })
 
@@ -1537,5 +1826,832 @@ describe("BKL-145 — admin-session note.add auth recognition", () => {
     expect(decision.kind).toBe("REFUSE")
     if (decision.kind !== "REFUSE") return
     expect(decision.refusal.code).toBe("auth.required")
+  })
+})
+
+// ── Business: the reorder-last whole-workflow confirm (LE2-021) ──────────
+//
+// Driven through `adjudicate` against the REAL bundle, not by calling the guard
+// directly: the guard's whole contract is its position in `business[]` — above
+// `executeW5Kinds`, which also matches this kind — and a direct call would prove
+// the body works while saying nothing about whether it is reachable.
+
+describe("ordersPolicyBundle — confirmReorderLast (LE2-021)", () => {
+  const PREVIOUS_ORDER = {
+    previousOrderId: "order_prev_1",
+    previousOrderDisplayId: 1042,
+    previousOrderTotalInCentavos: 12_500,
+    previousOrderItems: [
+      { title: "Costela bovina defumada", quantity: 2 },
+      { title: "Pão de alho", quantity: 1 },
+      { title: "Farofa de bacon", quantity: 1 },
+    ],
+  }
+
+  /** A reorder-request state: authenticated, with (or without) a previous order. */
+  function reorderState(overrides: Partial<OrderState["ctx"]> = {}): OrderState {
+    return state({
+      cartId: null,
+      orderId: null,
+      items: undefined,
+      totalInCentavos: undefined,
+      ...overrides,
+    })
+  }
+
+  const reorderEnv = () => env("order.reorder.request", {})
+
+  it("REQUEST_CONFIRMATION naming the projected items and the projected total", () => {
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState(PREVIOUS_ORDER),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    expect((decision as { prompt?: string }).prompt).toBe(
+      "Vou repetir seu último pedido: 2x Costela bovina defumada, 1x Pão de alho, " +
+        "1x Farofa de bacon, total R$ 125,00. Confirma?",
+    )
+  })
+
+  it("QUOTES the projected total — it does not add the lines up", () => {
+    // The lines here sum to R$ 30,00; the projection says R$ 125,00 (a real
+    // order carries shipping and tips). The guard must say what the projection
+    // says. If it ever starts computing, this is the assertion that catches it.
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({
+        ...PREVIOUS_ORDER,
+        previousOrderItems: [{ title: "Costela", quantity: 1 }],
+      }),
+      ordersPolicyBundle,
+    )
+    expect((decision as { prompt?: string }).prompt).toContain("total R$ 125,00")
+    expect((decision as { prompt?: string }).prompt).not.toContain("R$ 30,00")
+  })
+
+  it("caps the item list at three and counts the remainder", () => {
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({
+        ...PREVIOUS_ORDER,
+        previousOrderItems: [
+          ...PREVIOUS_ORDER.previousOrderItems,
+          { title: "Vinagrete", quantity: 1 },
+          { title: "Guaraná", quantity: 3 },
+        ],
+      }),
+      ordersPolicyBundle,
+    )
+    expect((decision as { prompt?: string }).prompt).toContain(
+      "1x Farofa de bacon e mais 2 itens, total R$ 125,00",
+    )
+  })
+
+  it("uses the SINGULAR for a remainder of one", () => {
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({
+        ...PREVIOUS_ORDER,
+        previousOrderItems: [
+          ...PREVIOUS_ORDER.previousOrderItems,
+          { title: "Vinagrete", quantity: 1 },
+        ],
+      }),
+      ordersPolicyBundle,
+    )
+    expect((decision as { prompt?: string }).prompt).toContain("e mais 1 item,")
+  })
+
+  // ── The no-history REFUSE, one case per missing field ──────────────────
+  // Four fields, four independent absences. Parameterised because a single
+  // "no previous order" case would leave three of them free to be dropped from
+  // the condition without a test noticing.
+  it.each([
+    ["previousOrderId", { previousOrderId: undefined }],
+    ["previousOrderTotalInCentavos", { previousOrderTotalInCentavos: undefined }],
+    ["previousOrderItems", { previousOrderItems: undefined }],
+    ["an EMPTY item list", { previousOrderItems: [] }],
+  ])("REFUSEs honestly when %s is absent", (_label, missing) => {
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({ ...PREVIOUS_ORDER, ...(missing as Partial<OrderState["ctx"]>) }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    const refusal = (decision as { refusal?: { code?: string; userFacing?: string } }).refusal
+    expect(refusal?.code).toBe("order.reorder.no_history")
+    // HONEST: a state fact, never a permission frame.
+    expect(refusal?.userFacing).toBe(
+      "Ainda não encontrei nenhum pedido anterior seu pra repetir. Quer montar um novo?",
+    )
+    expect(refusal?.userFacing).not.toContain("não permitida")
+  })
+
+  it("REFUSEs an unwired host — no previousOrder* fields at all", () => {
+    const decision = adjudicate(reorderEnv(), reorderState(), ordersPolicyBundle)
+    expect(decision.kind).toBe("REFUSE")
+    expect(
+      (decision as { refusal?: { code?: string } }).refusal?.code,
+    ).toBe("order.reorder.no_history")
+  })
+
+  it("is INERT for every other kind", () => {
+    // The guard's first line. Without it a projected previous order would park
+    // an unrelated cart operation.
+    const decision = adjudicate(
+      env("order.cart.ensure", { cartId: "cart-1" }),
+      state(PREVIOUS_ORDER),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  // ── NON-VACUITY: the confirm is the only thing between the customer and
+  // an unasked cart rebuild. Same shape as the §O#10 proof above.
+  it("NON-VACUITY: removing confirmReorderLast flips the reorder to EXECUTE", () => {
+    const withGuard = adjudicate(
+      reorderEnv(),
+      reorderState(PREVIOUS_ORDER),
+      ordersPolicyBundle,
+    )
+    expect(withGuard.kind).toBe("REQUEST_CONFIRMATION")
+
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "confirmReorderLast",
+    )
+    expect(businessWithoutGuard.length).toBe(ordersPolicyBundle.business.length - 1)
+
+    const withoutGuard = adjudicate(
+      reorderEnv(),
+      reorderState(PREVIOUS_ORDER),
+      { ...ordersPolicyBundle, business: businessWithoutGuard },
+    )
+    // `executeW5Kinds` matches this kind too, and it sits BELOW the confirm.
+    // Removing the confirm does not fail the kind closed — it silently executes
+    // it, which is exactly why the ordering in `business[]` is load-bearing.
+    expect(withoutGuard.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSEs an UNAUTHENTICATED reorder before the confirm is ever considered", () => {
+    // `order.reorder.request` is absent from SYSTEM_OR_ANON_KINDS, so
+    // `requireAuthenticated` (an auth-phase guard) fires first. Asserted so the
+    // kind's auth posture is a tested property rather than an omission.
+    const decision = adjudicate(
+      reorderEnv(),
+      reorderState({ ...PREVIOUS_ORDER, customerId: null as unknown as string }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect(
+      (decision as { refusal?: { code?: string } }).refusal?.code,
+    ).not.toBe("order.reorder.no_history")
+  })
+})
+
+// ── Business: the swap-for-coupon whole-workflow confirm (LE2-023) ───────
+//
+// Driven through `adjudicate` against the REAL bundle for the same reason the
+// reorder block above is: this guard's contract is its POSITION in `business[]`
+// — above `executeW5Kinds`, which matches `order.coupon.swap.request` too — and
+// a direct call would prove the body works while saying nothing about whether it
+// is reachable.
+//
+// THE SENTENCE TEST IS THE POINT OF THIS BLOCK. The workflow declares
+// `confirm.statesFacts: ["orderAmount", "refundConsequence", "newTotal"]`, and
+// the cancel activity declares a coverage claiming the first two. The compiler
+// checks that claim against the workflow's own claim (`confirm-coverage-unstated`);
+// nothing static can check either against the guard's actual WORDS, because the
+// words live in this package. So these tests are the other half of that gate:
+// they drive the real guard and assert the real sentence carries each declared
+// fact. A copy edit here that dropped the amount would turn the coverage into a
+// lie, and this is the only thing that would notice.
+
+describe("ordersPolicyBundle — confirmSwapForCoupon (LE2-023)", () => {
+  /** A feasible, PAID swap: every ctx field the guard needs, all present. */
+  const FEASIBLE_PAID = {
+    previousOrderId: "order_prev_9",
+    previousOrderDisplayId: 2087,
+    previousOrderTotalInCentavos: 12_000,
+    previousOrderIsCancelable: true,
+    previousOrderPaymentIsSettled: true,
+    couponIsValid: true,
+    couponNewTotalInCentavos: 10_800,
+    couponCode: "BEMVINDO10",
+  }
+
+  function swapState(overrides: Partial<OrderState["ctx"]> = {}): OrderState {
+    return state({
+      cartId: null,
+      orderId: null,
+      items: undefined,
+      totalInCentavos: undefined,
+      paymentStatus: null,
+      ...overrides,
+    })
+  }
+
+  // The code rides the payload (a customer-authored slot) but the guard must
+  // never quote it — see the `couponCode` ctx field's doc. The payload here
+  // deliberately carries a DIFFERENT spelling from the ctx so the assertion
+  // below can tell the two apart.
+  const swapEnv = () => env("order.coupon.swap.request", { code: "bemvindo10" })
+
+  it("GATE 2 — the confirm sentence STATES all three declared facts", () => {
+    const decision = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), ordersPolicyBundle)
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    const prompt = (decision as { prompt?: string }).prompt ?? ""
+
+    // `orderAmount` — the projected order total, as money.
+    expect(prompt).toContain("R$ 120,00")
+    // `refundConsequence` — that the money comes back.
+    expect(prompt).toContain("reembolso")
+    // `newTotal` — what the customer pays after the route completes.
+    expect(prompt).toContain("R$ 108,00")
+  })
+
+  it("quotes the STORE's spelling of the coupon, never the payload's", () => {
+    const decision = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), ordersPolicyBundle)
+    const prompt = (decision as { prompt?: string }).prompt ?? ""
+    // ctx says BEMVINDO10, the payload said bemvindo10. The sentence a customer
+    // approves a cancellation against must not be assembled from untrusted text.
+    expect(prompt).toContain("BEMVINDO10")
+    expect(prompt).not.toContain("bemvindo10")
+  })
+
+  it("names the order by its DISPLAY id, the number a customer recognises", () => {
+    const decision = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), ordersPolicyBundle)
+    expect((decision as { prompt?: string }).prompt ?? "").toContain("#2087")
+  })
+
+  // ── The directional negative for the refund clause. ──────────────────────
+  //
+  // The clause is CONDITIONAL on `previousOrderPaymentIsSettled`, which is
+  // exactly the condition under which `gatePaidCancel` asks the question the
+  // workflow's coverage covers. So on the unpaid shape the clause must be
+  // ABSENT — we do not promise a refund that is not coming — and there is also
+  // no coverable confirm to resolve, because `gatePaidCancel` returns null.
+  // Without this test the conditional could collapse to unconditional and the
+  // GATE 2 test above would still pass.
+  it("OMITS the refund clause when the order was never PAID", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, previousOrderPaymentIsSettled: false }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    const prompt = (decision as { prompt?: string }).prompt ?? ""
+    expect(prompt).not.toContain("reembolso")
+    // …and still states the two facts that ARE true of an unpaid swap.
+    expect(prompt).toContain("R$ 120,00")
+    expect(prompt).toContain("R$ 108,00")
+  })
+
+  it("REFUSEs `order.reorder.no_history` when there is no previous order", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, previousOrderId: undefined }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.reorder.no_history",
+    )
+  })
+
+  it("REFUSEs `order.past_ponr` for an order past the point of no return", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, previousOrderIsCancelable: false }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.past_ponr",
+    )
+  })
+
+  it("REFUSEs `order.coupon.not_usable` for a coupon the store rejected", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, couponIsValid: false }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.coupon.not_usable",
+    )
+  })
+
+  // ABSENT is not the same fact as `false` (Inv 7 — "could not check" is not
+  // "not valid"), and the projection keeps them apart on purpose. They converge
+  // on ONE refusal here because the only honest sentence is about what we could
+  // establish about ourselves; see `refuseCouponNotUsable`'s doc. Asserted so
+  // the convergence is a tested decision rather than an accident of `!== true`.
+  it("REFUSEs the same way when the coupon lookup could not be MADE at all", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, couponIsValid: undefined }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.coupon.not_usable",
+    )
+  })
+
+  it("REFUSEs `order.coupon.swap.total_unknown` for a VALID but unpriceable coupon", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, couponNewTotalInCentavos: undefined }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    // Its OWN code, not `order.coupon.not_usable`: nothing is wrong with the
+    // customer's coupon, so the useful answer points them at checkout rather
+    // than at a different code.
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe(
+      "order.coupon.swap.total_unknown",
+    )
+  })
+
+  // ── NON-VACUITY. The confirm is the only thing between the customer and an
+  // unasked CANCELLATION of a real, paid order.
+  it("NON-VACUITY: removing confirmSwapForCoupon flips the swap to EXECUTE", () => {
+    const withGuard = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), ordersPolicyBundle)
+    expect(withGuard.kind).toBe("REQUEST_CONFIRMATION")
+
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "confirmSwapForCoupon",
+    )
+    expect(businessWithoutGuard.length).toBe(ordersPolicyBundle.business.length - 1)
+
+    const withoutGuard = adjudicate(swapEnv(), swapState(FEASIBLE_PAID), {
+      ...ordersPolicyBundle,
+      business: businessWithoutGuard,
+    })
+    // `executeW5Kinds` matches this kind and sits BELOW the confirm, so removing
+    // the confirm does not fail the kind closed — it silently executes it. That
+    // is precisely why the ordering in `business[]` is load-bearing, and why the
+    // guard's own doc says so.
+    expect(withoutGuard.kind).toBe("EXECUTE")
+  })
+
+  it("REFUSEs an UNAUTHENTICATED swap before the confirm is ever considered", () => {
+    const decision = adjudicate(
+      swapEnv(),
+      swapState({ ...FEASIBLE_PAID, customerId: null as unknown as string }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).not.toBe(
+      "order.coupon.not_usable",
+    )
+  })
+})
+
+// ── LE2-023 · THE SECOND LOCK, proven behaviourally ──────────────────────────
+//
+// `order.coupon.adjust` is declared so the swap-for-coupon workflow's
+// `coupon_on_placed_order` branch can NAME a real capability while shipping
+// closed. Two independent locks keep it unexecutable, in two packages:
+//
+//   LOCK 1 (catalog)     — `workflowScoped: true`, so no parse can propose it.
+//                          Pinned in the catalog's own projection tests and in
+//                          apps/api's WORKFLOW_SCOPED_KINDS pin.
+//   LOCK 2 (this bundle)  — no guard produces EXECUTE for the kind, so the
+//                          kernel's DEFAULT REFUSE is the only verdict it can
+//                          ever receive.
+//
+// This block is lock 2, and it is a BEHAVIOURAL assertion rather than a
+// structural one on purpose. The catalog cannot see guard verdicts (the same
+// reason `escalatable` is review-enforced), so "the pack refuses it" can only be
+// established by adjudicating it. It is the force-the-route-open experiment: the
+// route branch is bypassed entirely here — the envelope is submitted directly, as
+// though the switch were open — and the kind is still refused.
+
+describe("ordersPolicyBundle — order.coupon.adjust is DECLARED AND UNEXECUTABLE (LE2-023)", () => {
+  it("REFUSEs even on the shape most likely to succeed", () => {
+    // Authenticated, owning a live cart, a valid-looking code — everything a
+    // coupon apply would need. `order.coupon.apply` EXECUTEs on this state; this
+    // kind must not.
+    const decision = adjudicate(
+      env("order.coupon.adjust", { cartId: "cart-1", orderId: "order-1", code: "BEMVINDO10" }),
+      state({ orderId: "order-1", fulfillmentStatus: "pending", paymentStatus: "paid" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  it("is refused by the DEFAULT DENY, not by an incidental guard", () => {
+    // The distinction matters for the lock's durability. A refusal from some
+    // state guard would evaporate the moment a caller supplied whatever that
+    // guard wanted; a DEFAULT-DENY refusal cannot be satisfied by any payload or
+    // state at all, because no guard in the bundle claims the kind. So this
+    // asserts the SHAPE of the protection, not merely its current effect.
+    const decision = adjudicate(
+      env("order.coupon.adjust", { cartId: "cart-1", orderId: "order-1", code: "BEMVINDO10" }),
+      state({ orderId: "order-1", fulfillmentStatus: "pending", paymentStatus: "paid" }),
+      ordersPolicyBundle,
+    )
+    // `default_deny` is the KERNEL's own code, not this pack's declared
+    // `order.default.deny` — which is the stronger reading: the refusal is not
+    // authored anywhere in this bundle at all. No guard here has an opinion
+    // about the kind, so the kernel falls all the way through to its
+    // default-REFUSE floor. That floor cannot be satisfied by any payload or
+    // state, which is precisely the property the lock needs.
+    expect((decision as { refusal?: { code?: string } }).refusal?.code).toBe("default_deny")
+  })
+
+  it("CONTROL: the same state EXECUTEs the real cart coupon apply", () => {
+    // Without this the two cases above could pass because the state was wrong
+    // rather than because the kind is unexecutable — the vacuity that makes a
+    // negative test worthless. `order.coupon.apply` is the nearest neighbour and
+    // the capability this route actually uses.
+    const decision = adjudicate(
+      env("order.coupon.apply", { cartId: "cart-1", code: "BEMVINDO10" }),
+      state({ orderId: null, fulfillmentStatus: undefined, paymentStatus: null }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("appears in NO execute-producing kind set", () => {
+    // The structural complement of the behavioural cases: a future edit that
+    // adds the kind to an EXECUTE producer would flip the two REFUSE assertions
+    // above, but this one says WHY in one line at the point of the mistake.
+    const decision = adjudicate(
+      env("order.coupon.adjust", {}),
+      state({}),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).not.toBe("EXECUTE")
+    expect(decision.kind).not.toBe("REQUEST_CONFIRMATION")
+  })
+})
+
+/**
+ * BKL-280 — the stay-home / pickup contradiction guard.
+ *
+ * The V7-proven defect: on "não vou poder sair de casa hoje, fecha aí, pago em
+ * dinheiro na entrega" the 4B emits `order.checkout.create {delivery_type:
+ * "pickup", payment_method: "cash"}` — a valid capability with a wrong payload,
+ * which EXECUTES. `confirmDeliveryContradiction` turns that one case into a
+ * question without touching any other checkout path.
+ *
+ * Note the state these tests use: `totalInCentavos: 5_000` (R$ 50) sits BELOW
+ * the R$ 1.000 `confirmLargeTicket` band, so any REQUEST_CONFIRMATION observed
+ * here is unambiguously THIS guard's and never the money band's — and the
+ * prompt assertions pin exactly which sentence was asked.
+ */
+describe("BKL-280 — confirmDeliveryContradiction", () => {
+  /** The checkout state the V7 row actually adjudicates against. */
+  function checkoutState(overrides: Partial<OrderState["ctx"]> = {}): OrderState {
+    return state({
+      fulfillment: "pickup",
+      paymentMethod: "cash",
+      paymentStatus: null,
+      totalInCentavos: 5_000,
+      ...overrides,
+    })
+  }
+
+  const CONTRADICTION_PROMPT =
+    "O pedido está marcado como retirada no local, mas sua mensagem indica entrega. Como você prefere receber: entrega no seu endereço ou retirada no local?"
+
+  it("THE DEFECT: stay-home marker + delivery_type pickup ⇒ REQUEST_CONFIRMATION, never EXECUTE", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    // The specific sentence — proves it is THIS guard and not the money band.
+    expect(decision.prompt).toBe(CONTRADICTION_PROMPT)
+    // pt-BR customer copy (CLAUDE.md rule #4), offering BOTH options.
+    expect(decision.prompt).toContain("entrega")
+    expect(decision.prompt).toContain("retirada")
+  })
+
+  it("carries a business basis naming the rule (audit provenance)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    const rules = decision.basis.map(
+      (b) => (b.detail as { rule?: string } | undefined)?.rule,
+    )
+    expect(rules).toContain("delivery_type_contradicts_utterance")
+  })
+
+  it("tolerates wire spelling of the pickup value (case/whitespace)", () => {
+    // Can only ever ADD the question, never skip it.
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: " Pickup ",
+      }),
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+  })
+
+  // ── CONTROLS: every other checkout path is untouched ────────────────────
+
+  it("CONTROL — plain pickup ask (no marker) still EXECUTEs", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState(),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("CONTROL — stay-home marker WITH delivery_type delivery is untouched (EXECUTE)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "delivery",
+      }),
+      checkoutState({ fulfillment: "delivery", stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("CONTROL — plain delivery ask (no marker) still EXECUTEs", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "delivery",
+      }),
+      checkoutState({ fulfillment: "delivery" }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("CONTROL — an ABSENT flag (unwired host / resume path) leaves the checkout unchanged", () => {
+    // `stayHomeDeliveryMarker` undefined — not false. Lenient-when-absent.
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState(),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("CONTROL — the marker is INERT on a non-checkout kind", () => {
+    // The flag is only ever stamped for order.checkout.create, but even if some
+    // host set it elsewhere the guard must not move another kind's verdict.
+    const payload = {
+      cartId: "cart-1",
+      variantId: "v-1",
+      quantity: 1,
+      allergens: [],
+    }
+    const withFlag = adjudicate(
+      env("order.item.add", payload),
+      state({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+    )
+    const without = adjudicate(
+      env("order.item.add", payload),
+      state(),
+      ordersPolicyBundle,
+    )
+    expect(withFlag.kind).toBe(without.kind)
+  })
+
+  // ── THE MONEY LADDER IS NOT WEAKENED ───────────────────────────────────
+
+  it("MONEY BAND UNCHANGED — large-ticket delivery checkout still asks the MONEY question", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "card",
+        deliveryType: "delivery",
+      }),
+      checkoutState({
+        fulfillment: "delivery",
+        paymentMethod: "card",
+        totalInCentavos: 150_000,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toContain("R$")
+    expect(decision.prompt).not.toBe(CONTRADICTION_PROMPT)
+  })
+
+  it("ORDERING — on a CONTRADICTING large-ticket cart the contradiction is asked FIRST", () => {
+    // Both guards match and business guards are first-non-null-wins. Below
+    // confirmLargeTicket this guard would be unreachable here: the money
+    // sentence would be asked, a "sim" would satisfy it, and the wrong pickup
+    // checkout would EXECUTE unasked — the defect, for the priciest carts.
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "card",
+        deliveryType: "pickup",
+      }),
+      checkoutState({
+        paymentMethod: "card",
+        totalInCentavos: 150_000,
+        stayHomeDeliveryMarker: true,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toBe(CONTRADICTION_PROMPT)
+  })
+
+  it("MONEY BAND STILL GOVERNS the CORRECTED envelope (answering 'entrega' re-enters the ladder)", () => {
+    // The corrected turn is a NEW envelope carrying deliveryType: delivery.
+    // This guard is silent on it and confirmLargeTicket asks normally — which
+    // is why asking the contradiction first does not SKIP the money band.
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "card",
+        deliveryType: "delivery",
+      }),
+      checkoutState({
+        fulfillment: "delivery",
+        paymentMethod: "card",
+        totalInCentavos: 150_000,
+      }),
+      ordersPolicyBundle,
+    )
+    expect(decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(decision.prompt).toContain("R$")
+  })
+
+  it("the amount CAP still outranks the guard (a contradicting R$10.000+ cart REFUSEs)", () => {
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "card",
+        deliveryType: "pickup",
+      }),
+      checkoutState({
+        paymentMethod: "card",
+        totalInCentavos: 1_500_000,
+        stayHomeDeliveryMarker: true,
+      }),
+      ordersPolicyBundle,
+    )
+    // refuseAmountAboveCap runs BEFORE this guard — an over-cap checkout is
+    // still REFUSEd outright, never softened into a mere question.
+    expect(decision.kind).toBe("REFUSE")
+  })
+
+  // ── CONFIRMATION-RECEIPT SCOPING (the binding hazard) ───────────────────
+
+  it("a STALE receipt (different intentHash) does NOT bypass the guard", async () => {
+    const { adjudicateAndAudit } = await import("@adjudicate/core")
+    const contradicting = env("order.checkout.create", {
+      cartId: "cart-1",
+      paymentMethod: "cash",
+      deliveryType: "pickup",
+    })
+    // A receipt the customer earned against a DIFFERENT intent earlier in the
+    // conversation. Receipts are scoped to an intentHash, not to a question, so
+    // this is precisely the shape that must NOT let a pickup checkout through.
+    const otherEnvelope = env("order.cancel", {
+      orderId: "o-1",
+      reason: "changed_mind",
+    })
+    expect(otherEnvelope.intentHash).not.toBe(contradicting.intentHash)
+
+    const sink = { emit: async () => {} }
+    const resumed = await adjudicateAndAudit(
+      contradicting,
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+      {
+        sink,
+        confirmationReceipt: {
+          intentHash: otherEnvelope.intentHash,
+          at: DET_TIME,
+        },
+      },
+    )
+    expect(resumed.decision.kind).toBe("REQUEST_CONFIRMATION")
+    if (resumed.decision.kind !== "REQUEST_CONFIRMATION") return
+    expect(resumed.decision.prompt).toBe(CONTRADICTION_PROMPT)
+  })
+
+  it("the guard mints its OWN question — only a MATCHING receipt converts it", async () => {
+    // The positive half of the scoping pin: the confirm is a real, resolvable
+    // question (not a dead end), and it is resolved by a receipt for THIS
+    // envelope. Paired with the stale-receipt test, this proves the conversion
+    // is keyed on identity rather than on "some confirmation exists".
+    const { adjudicateAndAudit } = await import("@adjudicate/core")
+    const contradicting = env("order.checkout.create", {
+      cartId: "cart-1",
+      paymentMethod: "cash",
+      deliveryType: "pickup",
+    })
+    const sink = { emit: async () => {} }
+    const resumed = await adjudicateAndAudit(
+      contradicting,
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      ordersPolicyBundle,
+      {
+        sink,
+        confirmationReceipt: {
+          intentHash: contradicting.intentHash,
+          at: DET_TIME,
+        },
+      },
+    )
+    expect(resumed.decision.kind).toBe("EXECUTE")
+  })
+
+  // ── NON-VACUITY / REVERT-TO-RED at the guard seam ──────────────────────
+
+  it("REVERT-TO-RED — with the guard removed the V7 case EXECUTEs the wrong pickup checkout", () => {
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "confirmDeliveryContradiction",
+    )
+    // Sanity: exactly one guard was removed (the filter actually matched).
+    expect(businessWithoutGuard.length).toBe(
+      ordersPolicyBundle.business.length - 1,
+    )
+    const decision = adjudicate(
+      env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: "cash",
+        deliveryType: "pickup",
+      }),
+      checkoutState({ stayHomeDeliveryMarker: true }),
+      { ...ordersPolicyBundle, business: businessWithoutGuard },
+    )
+    // THE MEASURED DEFECT, reproduced: valid capability, wrong payload, EXECUTES.
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("REVERT-TO-RED — with the guard removed the CONTROLS are unchanged (the guard is the only difference)", () => {
+    const businessWithoutGuard = ordersPolicyBundle.business.filter(
+      (g) => g.name !== "confirmDeliveryContradiction",
+    )
+    const bundleWithout = {
+      ...ordersPolicyBundle,
+      business: businessWithoutGuard,
+    }
+    const controls: ReadonlyArray<[string, OrderState, string]> = [
+      ["plain pickup", checkoutState(), "pickup"],
+      ["plain delivery", checkoutState({ fulfillment: "delivery" }), "delivery"],
+      [
+        "marker + delivery",
+        checkoutState({ fulfillment: "delivery", stayHomeDeliveryMarker: true }),
+        "delivery",
+      ],
+      [
+        "large-ticket delivery",
+        checkoutState({
+          fulfillment: "delivery",
+          paymentMethod: "card",
+          totalInCentavos: 150_000,
+        }),
+        "delivery",
+      ],
+    ]
+    for (const [label, ctxState, deliveryType] of controls) {
+      const e = env("order.checkout.create", {
+        cartId: "cart-1",
+        paymentMethod: ctxState.ctx.paymentMethod ?? "cash",
+        deliveryType,
+      })
+      const withGuard = adjudicate(e, ctxState, ordersPolicyBundle)
+      const withoutGuard = adjudicate(e, ctxState, bundleWithout)
+      expect(`${label}:${withGuard.kind}`).toBe(`${label}:${withoutGuard.kind}`)
+    }
   })
 })

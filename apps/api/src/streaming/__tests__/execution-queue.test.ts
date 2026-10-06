@@ -99,13 +99,52 @@ describe("releaseWebAgentLock", () => {
     expect(mockRedis.eval).not.toHaveBeenCalled();
   });
 
-  it("falls back to an unconditional DEL when no lock state is tracked", async () => {
+  // F-21 (class rollout) — this case is the INVERSE of what it used to assert.
+  //
+  // It read: "falls back to an unconditional DEL when no lock state is
+  // tracked", and it passed, because that is exactly what the code did. The
+  // rollout's finding is that the fallback was the defect, not the feature: no
+  // tracked state means no lockValue, and a lockValue is this module's only
+  // ownership proof. The states that reach it — a process restart (the Map is
+  // per-process, the Redis key is not) or a second release for a session whose
+  // first already cleared the entry — are precisely the states where the key is
+  // most likely to belong to a DIFFERENT, live cycle. Deleting it lets a
+  // concurrent agent run for that session.
+  //
+  // Per the F-22 ruling's failure direction, with no ownership proof the safe
+  // action is leave-to-TTL plus a loud log. The KEYSPACE consequence (the key
+  // really survives, and a foreign owner keeps it) is proven against a real
+  // server in `execution-queue-release-fallback.test.ts`; what this unit case
+  // pins is the command-level claim the old assertion had backwards.
+  it("issues NO delete at all when no lock state is tracked (leaves it to the TTL)", async () => {
     mockRedis.del.mockResolvedValue(1);
+    mockRedis.eval.mockResolvedValue(1);
 
     await releaseWebAgentLock("sess-untracked");
 
-    expect(mockRedis.del).toHaveBeenCalledWith(
-      expect.stringContaining("web:agent:sess-untracked"),
+    // Neither spelling of "remove the key" — not the unconditional DEL that
+    // used to be asserted here, and not a compare-and-delete either, because
+    // there is no token to compare against.
+    expect(mockRedis.del).not.toHaveBeenCalled();
+    expect(mockRedis.eval).not.toHaveBeenCalled();
+  });
+
+  it("still deletes on the TRACKED path — the control for the case above", async () => {
+    // Without this, the case above would also pass if `releaseWebAgentLock`
+    // had simply stopped touching Redis entirely.
+    mockRedis.set.mockResolvedValue("OK");
+    mockRedis.eval.mockResolvedValue(1);
+
+    await acquireWebAgentLock("sess-tracked");
+    mockRedis.eval.mockClear();
+    await releaseWebAgentLock("sess-tracked");
+
+    expect(mockRedis.eval).toHaveBeenCalledWith(
+      expect.stringContaining("DEL"),
+      expect.objectContaining({
+        keys: [expect.stringContaining("web:agent:sess-tracked")],
+      }),
     );
+    expect(mockRedis.del).not.toHaveBeenCalled();
   });
 });

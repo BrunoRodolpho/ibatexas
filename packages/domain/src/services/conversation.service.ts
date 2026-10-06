@@ -175,6 +175,37 @@ export function createConversationService(options?: ConversationServiceOptions) 
     },
 
     /**
+     * The customer this session was FIRST archived under — the DURABLE answer to
+     * "who does this conversation belong to?" (F-9 Phase B).
+     *
+     * `null` customerId = archived as a guest; `null` row = never archived.
+     * Deliberately NARROW (one indexed `findUnique`, two columns, no joins and
+     * no message count) because it runs on an authenticated request's hot path,
+     * where `searchConversations` would be far too heavy for a yes/no question.
+     *
+     * WHY THIS IS AUTHORITATIVE, AND WHY IT IS SAFE TO TREAT AS SUCH.
+     * `findOrCreateBySessionId` above is CREATE-ONLY for `customerId`: when the
+     * row already exists it returns early and never updates the column. So the
+     * value is written once, at first archive, and is immutable for the life of
+     * the session. That is exactly the property a claimed-once invariant needs —
+     * a later claimant cannot rewrite the record that would refuse them — and it
+     * is the reason this read, rather than any TTL'd Redis key, can back the
+     * cross-session wall in `apps/api/src/session/session-claim.ts`.
+     *
+     * The corollary matters just as much: a session whose FIRST archived turn was
+     * a guest turn is permanently `customerId: null` here, so it stays claimable.
+     * That keeps the designed first-login-after-guest-shopping flow working.
+     */
+    async findOwnerBySessionId(
+      sessionId: string,
+    ): Promise<{ customerId: string | null } | null> {
+      return prisma.conversation.findUnique({
+        where: { sessionId },
+        select: { customerId: true },
+      })
+    },
+
+    /**
      * Delete a conversation (and all its messages via cascade) by sessionId.
      * Returns true if a row was deleted, false if not found.
      */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import { CAPABILITY_DEFINITIONS, generateChatDrivableToolKinds } from "../capability-definitions/index.js"
-import type { CapabilityDefinition } from "../capability-definitions/index.js"
+import { CAPABILITY_DEFINITIONS, generateChatDrivableToolKinds } from "@ibatexas/catalog"
+import type { CapabilityDefinition } from "@ibatexas/catalog"
 
 // FE-4 CONTRACT (FE-T26) — RETIRED-AS-TAUTOLOGICAL: this describe block
 // used to be titled "codegen-freshness gate — CHAT_DRIVABLE_TOOL_KINDS
@@ -41,6 +41,17 @@ describe("generateChatDrivableToolKinds — filter behavior (FE-4.3)", () => {
         auth: "staff",
         legacyNames: [],
         description: "test fixture — staff-only, must not appear in the chat projection",
+        // LE2-033: a REQUIRED chat-tier slot. Present so this fixture stays a
+        // legal chat-tier literal — the point it proves is the mutating+chat
+        // FILTER, not the slot contract.
+        conversationTriggers: [
+          "fixture gatilho um",
+          "fixture gatilho dois",
+          "fixture gatilho três",
+          "fixture gatilho quatro",
+          "fixture gatilho cinco",
+          "fixture gatilho seis",
+        ],
         guardRefs: [],
         refusalCode: "ops.default.deny",
       },
@@ -53,6 +64,14 @@ describe("generateChatDrivableToolKinds — filter behavior (FE-4.3)", () => {
         auth: "guest",
         legacyNames: [],
         description: "test fixture — read-only, must not appear in the MUTATING chat projection",
+        conversationTriggers: [
+          "fixture leitura um",
+          "fixture leitura dois",
+          "fixture leitura três",
+          "fixture leitura quatro",
+          "fixture leitura cinco",
+          "fixture leitura seis",
+        ],
         guardRefs: [],
         refusalCode: "order.default.deny",
       },
@@ -60,8 +79,8 @@ describe("generateChatDrivableToolKinds — filter behavior (FE-4.3)", () => {
     expect(generateChatDrivableToolKinds(withExtraNonChatDef)).toEqual(baseline)
   })
 
-  it("pins the real projection's cardinality (20, post-FE-T09 D-a: 18→20) — a silent drop or duplicate in CAPABILITY_DEFINITIONS would change this", () => {
-    expect(generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)).toHaveLength(20)
+  it("pins the real projection's cardinality (19, post-FE-T09 D-a: 18→20; LE2-024: 20→19) — a silent drop or duplicate in CAPABILITY_DEFINITIONS would change this", () => {
+    expect(generateChatDrivableToolKinds(CAPABILITY_DEFINITIONS)).toHaveLength(19)
   })
 })
 

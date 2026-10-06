@@ -1,0 +1,284 @@
+# menu.pairings.ask — LE2-029.
+#
+# WHAT THIS CORPUS CALIBRATES, AND WHAT IT DELIBERATELY DOES NOT
+#
+# A pairing/substitution question ("o que combina com brisket?", "acabou a
+# costela, o que peço no lugar?") is a READ, not a mutating capability: it
+# produces no IntentEnvelope and no kernel decision, and it is answered by the
+# DETERMINISTIC claim path (MENU_PAIRINGS / MENU_SUBSTITUTIONS —
+# apps/api/src/claustrum/claim-registry.ts) rendered through claim-gated
+# templates. `capability` here therefore names the READ-CLAIM FAMILY, not an
+# `IntentEnvelope` kind, and there is no live `extraction-accuracy` driver for it
+# — the same "not an IntentEnvelope kind" caveat coupon.validity.check.yaml and
+# delivery.coverage.check.yaml document. What the file IS is the authored,
+# independent-truth statement of what may be EXTRACTED from a pairing utterance.
+#
+# THE ONE PROPERTY EVERY CASE PINS: NOTHING. Every payload here is `{}` under
+# `payloadExactKeys`, and that uniformity is the assertion, not an omission.
+#
+# Unlike the coupon read — which relays exactly one customer-supplied datum, the
+# `code` — the pairing read has NO model-relayed field at all. Both of its inputs
+# are derived first-party from the utterance by pure code:
+#
+#   - the SUBJECT comes from the catalog's own alias canonicaliser
+#     (`canonicalizeAliases`, packages/catalog/src/alias-gazetteer.ts), matched
+#     whole-token against the authored `PAIRING_GRAPH`'s subject handles.
+#   - the RELATION comes from `classifyPairingAsk`, the SAME deterministic net the
+#     span classifier uses, so the span and the read can never disagree about
+#     which question was asked.
+#
+# So a model that emitted `{item: "brisket"}` — or `{subject: "costela"}`, or a
+# `productId` — would be authoring a datum the read does not accept and must not
+# be given. `payloadExactKeys` is what makes that bite: any invented key FAILS.
+#
+# WHY THAT IS THE LOAD-BEARING PIN AND NOT A TECHNICALITY. The subject lookup is
+# where this feature's one confident-wrong-answer risk lives, and the
+# canonicaliser is the thing that refuses it. "costela" names TWO products
+# (costela-bovina-defumada and costela-defumada-congelada, different prices,
+# different fulfilment), so the canonicaliser DECLINES and the read degrades to
+# the honest unknown rather than answering about the wrong one. A model that
+# "helpfully" relayed a resolved subject would route straight around that decline
+# and hand the customer pairing advice for a product they did not name. The
+# empty payload is the statement that no such path exists.
+#
+# There is no `hydratedIntentIR` block anywhere in this file: a read never
+# hydrates an intent, and asserting an empty one would be a fiction.
+#
+# THE READ IS BOUNDED IN THREE MORE DIRECTIONS, and the must-degrade bucket
+# records each. It never answers a TWO-question utterance (the pair is a presence
+# complement, so answering both is structurally forbidden and answering one half
+# confidently would pass half an answer off as a whole one). It never answers an
+# utterance carrying an ALLERGEN or DIETARY marker (the graph asserts TASTE and
+# the catalog holds no ingredient knowledge; a suggestion list handed to a
+# "sem glúten" question reads as a clearance it cannot give — BKL-143/123/184).
+# And it never answers about an item the authored graph has not heard of, because
+# the graph is a ten-edge seed and an absent edge carries no information.
+#
+# N = 16 (the low-risk-tier sizing this repo uses for read-shaped corpora),
+# split 5 pairing / 4 substitution / 4 must-degrade / 3 must-not-classify.
+capability: menu.pairings.ask
+source: tickets/language-engine-2/issues/29-pairings-capability.md
+plane: customer
+cases:
+  # ── PAIRING asks: "what goes with X" ────────────────────────────────────────
+  # The additive relation. Every one of these resolves a subject and renders the
+  # house's authored `pairs-with` edges as LIVE product titles. Nothing is
+  # extracted on the way: the register varies, the payload does not.
+
+  - id: pairing-canonical-alias
+    utterance: o que combina com brisket?
+    note: >-
+      The canonical case, and the ticket's own headline utterance. "brisket" is a
+      gazetteer alias for brisket-americano, resolved by the canonicaliser and
+      not by the model. Expected turn branch: MENU_PAIRINGS, rendering the three
+      authored edges (Mandioca Frita, Limonada Suíça, Brownie com Sorvete) as the
+      products' OWN catalog titles.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: pairing-canonical-handle
+    utterance: qual acompanhamento vai bem com brisket-americano?
+    note: >-
+      The SAME subject named by its canonical handle, in the "acompanhamento"
+      register. Renders identically to the alias form — that equivalence is the
+      ticket's AC-3, and it is a property of the canonicaliser, so there is
+      nothing here for a model to relay either.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: pairing-second-subject
+    utterance: o que vai bem com a linguiça?
+    note: >-
+      A DIFFERENT subject, so the file does not calibrate on brisket alone.
+      "linguiça" is an unambiguous alias for linguica-artesanal-defumada, whose
+      single authored edge renders one suggestion (Feijão Tropeiro) — the
+      one-item branch of the pt-BR list frame.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: pairing-formal-register
+    utterance: Gostaria de uma sugestão do que servir junto com o brisket.
+    note: >-
+      Formal/polite STATEMENT form rather than an interrogative. Still a pairing
+      ask ("sugestão", "junto com"), still nothing extractable. The politeness
+      words are the register, never a datum.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: pairing-shouted
+    utterance: O QUE COMBINA COM BRISKET?
+    note: >-
+      All-caps register. The nets lower-case before matching, so this is the same
+      question as `pairing-canonical-alias`; the case exists so a register-
+      sensitive extractor cannot pass the file by handling one casing only.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  # ── SUBSTITUTION asks: "what do I have INSTEAD" ─────────────────────────────
+  # The replacing relation, and a different ACT: the customer has already been
+  # told they cannot have what they wanted. Same empty extraction — the relation
+  # is picked by `classifyPairingAsk`, never proposed by the model.
+
+  - id: substitution-out-of-stock
+    utterance: acabou a costela-bovina-defumada, o que peço no lugar?
+    note: >-
+      The out-of-stock frame ("acabou" + "no lugar"). Expected turn branch:
+      MENU_SUBSTITUTIONS, rendering the stand-in the MENU ITSELF states (the
+      frozen "pré-pronta para aquecer em casa" form of the same cut) — a grounded
+      edge, not an authored guess.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: substitution-em-vez
+    utterance: em vez do frango-defumado-inteiro, o que vocês indicam?
+    note: >-
+      The "em vez de" frame on the one AUTHORED substitution in the seed (poultry
+      standing in for pork). Its edge carries ownerReview — which is a property of
+      the DATA and its review surface, never of the extraction, so nothing here
+      changes what may be relayed.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: substitution-borrowed-pairing-vocabulary
+    utterance: o que vai bem no lugar da costela-bovina-defumada?
+    note: >-
+      ONE question that borrows BOTH vocabularies — "vai bem" is pairing
+      phrasing, "no lugar" is substitution phrasing. The customer's operative
+      words are the ones saying they cannot have what they asked for, so this is a
+      substitution ask and the precedence in `classifyPairingAsk` resolves it.
+      Contrast `degrade-two-questions-at-once` below, which is genuinely two
+      questions and degrades instead.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: substitution-similar-to
+    utterance: não tem mais pulled-pork, o que tem parecido com ele?
+    note: >-
+      The "parecido com" frame. MEASURED CAVEAT, recorded because it is true
+      rather than because it changes the pin: this utterance does not currently
+      reach the deterministic read at all — the shared BKL-201 mutation net's
+      `p[õo]r` root matches the "por" inside "pork", so the PAIRING_Q span is
+      suppressed and the turn takes the model path. Fail-SAFE (a read routes to
+      the model, never a wrong render) and pre-existing, and the extraction pin is
+      the same either way: nothing may be relayed.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  # ── MUST-DEGRADE cases: a pairing ask the read refuses to answer ────────────
+  # Each is a DIFFERENT reason the read declines, and each would be answered
+  # confidently by a system willing to guess. The empty payload is the same, and
+  # here it is doing the anti-hallucination work most directly: an invented
+  # subject is precisely what would turn each of these into a wrong answer.
+
+  - id: degrade-unknown-item
+    utterance: o que combina com sushi?
+    note: >-
+      An item the house does not sell and the graph has never heard of. Nothing
+      resolves; the turn abstains. An extractor that relayed "sushi" would be
+      handing the read a subject it must then fail to find — the empty payload
+      says the failure happens at the canonicaliser, not downstream.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: degrade-ambiguous-subject
+    utterance: o que combina com costela?
+    note: >-
+      THE CASE THIS FILE'S HEADER IS ABOUT. "costela" names TWO products with
+      different prices and different fulfilment, so the canonicaliser DECLINES to
+      guess and the read degrades to the honest unknown. A model that resolved it
+      to either product would route around the decline and give pairing advice
+      about an item the customer did not name.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: degrade-two-questions-at-once
+    utterance: o que combina com a costela bovina e o que posso pôr no lugar?
+    note: >-
+      TWO questions in one utterance, each with its own interrogative head. The
+      claim pair is a PRESENCE COMPLEMENT — at most one key may be recorded in a
+      turn — so answering both is structurally forbidden, and answering the half
+      the precedence happens to pick would pass half an answer off as a whole one
+      (costela-bovina-defumada carries edges of BOTH relations). The read
+      degrades and the turn says so.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: degrade-allergen-marked
+    utterance: o que combina com brisket que seja sem glúten?
+    note: >-
+      A pairing ask carrying a DIETARY marker. The subject resolves and the
+      relation is asked, and the read still refuses: the graph asserts TASTE and
+      the catalog holds no ingredient knowledge at all, so a suggestion list
+      handed to this question would read as a gluten clearance sourced from a
+      hand-authored table with no staff member in the loop (BKL-143/123/184).
+      Expected turn branch: the allergen abstain plus a real staff handoff offer.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  # ── MUST-NOT-CLASSIFY cases: not a pairing question at all ──────────────────
+  # These guard the opposite failure from the ones above: an utterance that names
+  # two menu items, or borrows pairing-adjacent words, must not be mined as a
+  # pairing ask. A read that answered here would silently DROP what the customer
+  # actually asked for — the P4 silent-drop direction.
+
+  - id: refuse-mutation-imperative
+    utterance: põe uma farofa junto do brisket
+    note: >-
+      An ADD IMPERATIVE that happens to contain the pairing word "junto". It is a
+      cart MUTATION belonging to order.item.add, not this read; the shared BKL-201
+      mutation net suppresses the span. Answering "a farofa combina com o brisket"
+      here would tell the customer something true and never add the farofa.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: refuse-different-menu-read
+    utterance: quanto custa o brisket?
+    note: >-
+      A PRICE question about a graph subject (MENU_ITEM_PRICE owns it). Naming an
+      item the pairing graph knows is not the same as asking what goes with it,
+      and the pairing extraction must stay empty rather than mine every utterance
+      that mentions a pairable product.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true
+
+  - id: refuse-plain-order
+    utterance: quero um brisket e uma limonada
+    note: >-
+      A plain ORDER naming two items that ARE a declared pairing edge. The
+      conjunction is the customer's order, not a question about what goes with
+      what — and reading it as one would answer a question nobody asked while
+      dropping the order.
+    expectPayload:
+      extractionIR:
+        payload: {}
+        payloadExactKeys: true

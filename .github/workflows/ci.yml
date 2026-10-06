@@ -9,6 +9,16 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      # BKL-249 — same pinned version + checksum as e2e-smoke.yml and
+      # journeys-nightly.yml. Needed HERE because the dev-stack profile gate
+      # (packages/cli/src/__tests__/process-compose-validate.test.ts) skip-guards
+      # on the binary's absence: without this install the process-compose
+      # profiles would go UNVALIDATED in the required job while the suite still
+      # reported green.
+      PROCESS_COMPOSE_VERSION: v1.103.0
+      # sha256 of process-compose_linux_amd64.tar.gz for the pinned version.
+      PROCESS_COMPOSE_SHA256: 79f79f4efcb26b7abb29d5ce7aa2b9807afa1333b1ef1c5dee607b12fbc0ba89
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -18,15 +28,98 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # BKL-272 — raw NUL (0x00) guard. A single 0x00 in a tracked source makes
+      # `file` classify it as binary, and grep -I / ripgrep then skip it
+      # SILENTLY (exit 1, no output) — so every grep-shaped check in this repo
+      # (the conformance rule-inventory scanner, count pins, drift mirrors,
+      # stand-down checks) returns a false negative on that file. Git's ~8KB
+      # binary heuristic hides it from review too: 4 of the 7 NULs swept in
+      # BKL-272 sat past 8KB and diffed as ordinary text.
+      #
+      # Runs BEFORE `pnpm install` on purpose: it needs nothing but node (pinned
+      # by setup-node above) and git, so it cannot be skipped for a missing
+      # dependency and gives the fastest possible signal. Per BKL-249 this gate
+      # has NO skipIf/binary-probe shape — a guard that can silently no-op is
+      # exactly the failure mode it exists to prevent, so it exits non-zero even
+      # if `git ls-files` comes back empty.
+      - name: No raw NUL bytes in tracked sources (BKL-272)
+        run: node scripts/check-no-nul-bytes.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ibatexas/domain db:generate
+      # F-53 reach guard. `pnpm lint` below is what actually ENFORCES the
+      # audit-redaction import ban; this proves the ban is in effect in every
+      # workspace, which lint itself cannot tell you — a workspace that never
+      # inherited the rule lints clean precisely because the rule is missing.
+      #
+      # Runs BEFORE `pnpm lint` so a coverage hole reports in seconds instead of
+      # behind the full fan-out, and stays answerable while lint is red for
+      # unrelated reasons. Not a package test on purpose: `test` is a CACHEABLE
+      # turbo task with package-scoped inputs, so a cross-workspace assertion
+      # living in one package's suite certifies workspaces it never re-read
+      # (measured on this branch: planting a bypass in apps/api and re-running
+      # `turbo test --filter=@ibatexas/audit-sink` reported FULL TURBO, 2 cached).
+      - name: Audit-sink import ban covers every workspace (F-53)
+        run: node scripts/check-audit-sink-import-ban.mjs
       - run: pnpm lint
       # Fail-fast diagnostic: T4 / R2-2 / T6 conformance suites use Postgres +
       # Redis testcontainers. ubuntu-latest ships with Docker preinstalled, but
       # we probe `docker info` first so an unavailable daemon surfaces as a
       # clear error rather than a cryptic mid-suite testcontainer-boot failure.
+      #
+      # This probe IS the Redis provisioning for this job, and deliberately so
+      # (M0 / the multi()/eval ruling Q1). The shared harness
+      # `apps/api/src/__tests__/helpers/redis-testcontainer.ts` starts its OWN
+      # `redis:7-alpine` per test file on a host-ephemeral port, and runs
+      # whenever `IBX_SKIP_REAL_REDIS` is unset — which it is here. A GitHub
+      # `services: redis:` container would therefore be dead weight: no suite
+      # would connect to it. Validated Docker is what makes the EXISTING
+      # harness run unchanged, and it already does — measured on dev @
+      # 2f5c4979, sweeper-resolver-race.test.ts ran 3 tests in 6654ms in this
+      # job. What was missing was the loud-skip gate below.
       - name: Verify Docker is available (testcontainer prerequisite)
         run: docker info
+      # BKL-249 — process-compose is the validator behind the dev-stack profile
+      # gate in the cli suite (`--dry-run` loads process-compose.yaml /
+      # .test.yaml / .e2e.yaml without booting anything). Installed as a suite
+      # prerequisite, in the same spirit as the docker probe above: the gate
+      # skips itself when the binary is missing, so a silent skip here would
+      # make it decorative.
+      - name: Install process-compose (pinned + checksum-verified)
+        run: |
+          curl -fsSL -o /tmp/pc.tar.gz "https://github.com/F1bonacc1/process-compose/releases/download/${PROCESS_COMPOSE_VERSION}/process-compose_linux_amd64.tar.gz"
+          echo "${PROCESS_COMPOSE_SHA256}  /tmp/pc.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/pc.tar.gz -C /tmp process-compose
+          sudo mv /tmp/process-compose /usr/local/bin/process-compose
+          # BKL-288: `-L` on every non-supervisor invocation. process-compose
+          # TRUNCATES its shared $TMPDIR/process-compose-$USER.log default on
+          # each startup — `version` and `--dry-run` included — so a bare probe
+          # destroys a running supervisor's forensic log.
+          process-compose version -L /tmp/pc-version-smoke.log
+      # M0 loud-skip gate (multi()/eval ruling Q1). `turbo test` below reports a
+      # skipped suite as PASSED: on dev @ 2f5c4979 this job printed
+      # "✓ park-deferred-intent-nx.test.ts (4 tests | 3 skipped)" and twelve
+      # real-Redis cases across five files never ran. This step drives the
+      # hand-enumerated real-Redis suites itself and fails when any of them
+      # executes fewer cases than the roll call names — zero included.
+      #
+      # It re-runs those suites rather than parsing `turbo test`'s output on
+      # purpose: `test` is a CACHEABLE turbo task, so a report from a cache HIT
+      # would certify suites that did not run in this job. ~15s wall for all 12
+      # (the F-21 class rollout enrolled three more: the checkout idempotency
+      # gate, the agent trigger dedup claims, and the web-agent release fallback).
+      #
+      # Placed BEFORE `turbo test`, not after, for two reasons: it reports in
+      # seconds instead of behind an ~8-minute fan-out, and — the real one — a
+      # gate that only speaks when every other package is green is a weak
+      # instrument. Real-Redis coverage should be answerable during a red
+      # period too, not silenced by an unrelated failure elsewhere in the
+      # monorepo. The explicit dependency build makes the workspace dists this
+      # needs a stated precondition rather than a side effect of `pnpm lint`'s
+      # own `^build` (it is a cache hit in practice).
+      - name: Real-Redis loud-skip gate (M0 / ruling Q1)
+        run: |
+          pnpm exec turbo build --filter=@ibatexas/api^...
+          node scripts/check-real-redis-suites.mjs
       # Force the lcov reporter for EVERY package so SonarCloud gets coverage
       # from all of them. The root vitest.config sets reporter=[text,lcov], but
       # packages with their OWN vitest.config (apps/api, domain, …) don't inherit
@@ -72,6 +165,32 @@ jobs:
         env:
           pnpm_config_pm_on_fail: ignore
       - run: pnpm build
+      # Catalog compiler gate (LE2-016). `pnpm build` ALREADY runs the four
+      # static passes — @ibatexas/catalog's own `build` script is
+      # `tsc && tsx scripts/check-catalog.ts`, so a bad catalog can never
+      # produce a dist/ for a downstream package and the build above fails
+      # first. This step re-runs the identical passes through the CLI for two
+      # reasons: it makes the catalog verdict a NAMED, visible check in the CI
+      # log rather than a line buried in turbo's fan-out, and it proves the
+      # `ibx catalog check` entry point itself works on every commit (the
+      # command a human runs locally must be the command CI runs). Pure — no
+      # DB, no network, no services. Needs the built CLI → after `pnpm build`.
+      - name: Catalog compiler gate (LE2-016/018, static passes)
+        run: node packages/cli/dist/index.js catalog check
+      # LE2-018's LIVE half deliberately does NOT run here, and the honest
+      # reason is that it cannot: `ibx catalog check --live` reconciles declared
+      # external references against Medusa and the domain database, and a
+      # GitHub-hosted runner has neither (no commerce container, no
+      # DATABASE_URL, no admin credentials). A step that "ran" it here would
+      # either be skipped-but-green or would fail every build — both are worse
+      # than not claiming the check.
+      #
+      # It runs in the deploy pipeline instead, against the environment about to
+      # be deployed: the `catalog-live` job in deploy-staging.yml, gated BEFORE
+      # `deploy`. See docs/setup/deployment.md ("Pre-deploy gate"). That is the
+      # mitigation LE2 Implementation Decision 16 names for the strict boot
+      # gate — a dangling reference surfaces at deploy time rather than as an
+      # api that refuses to start.
       # Pack governance gates (F11/F12). The Tier-3 planner-coherence checks
       # already ride `pnpm test` (per-pack conformance suites); these add the
       # AI-BOM drift gate (EU AI Act Art. 11 / NIST AI RMF) and the Tier-1

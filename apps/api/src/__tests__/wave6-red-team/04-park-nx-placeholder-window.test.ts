@@ -92,7 +92,7 @@ describe("RED-TEAM Target 1 — NX wrapper placeholder + quota-leak window", () 
     //
     //   } catch (err) {
     //     await releaseNxPlaceholder(redis, parkKey, placeholderValue); // Lua CAD
-    //     await redis.decr?.(counterKey)?.catch(() => {});              // quota slot
+    //     await redis.decr(counterKey).catch(() => {});                 // quota slot
     //     throw err;
     //   }
     //
@@ -102,6 +102,16 @@ describe("RED-TEAM Target 1 — NX wrapper placeholder + quota-leak window", () 
     // WS5/WS8 (claustrum-on-dev): the canonical wrapper lives in apps/api at
     // `adapters/park-nx.ts` (the llm-provider transition-shim copy was deleted
     // together with the brain in WS8). Read the canonical module.
+    //
+    // F-22 moved two things this assertion depended on, and the assertions
+    // moved with them rather than being loosened:
+    //   • `releaseNxPlaceholder` grew its OWN `catch (err)`, so the naive
+    //     `indexOf("} catch (err) {")` now lands on that one. The search is
+    //     anchored past the framework delegation, which is what the comment
+    //     below always SAID it did.
+    //   • the quota DECR dropped its optional-call cast (`redis.decr?.(…)`)
+    //     for a direct `redis.decr(…)`, because `decr` is a REQUIRED member of
+    //     the composition-validated surface. The regex tracks that.
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const wrapperPath = join(
@@ -115,15 +125,27 @@ describe("RED-TEAM Target 1 — NX wrapper placeholder + quota-leak window", () 
     // Locate the catch block by searching for the signature `} catch (err) {`
     // immediately following the framework primitive delegation — robust to
     // line-number drift across edits.
-    const catchIdx = source.indexOf("} catch (err) {");
+    const delegationIdx = source.indexOf("await parkDeferredIntent(");
+    expect(delegationIdx).toBeGreaterThan(-1);
+    const catchIdx = source.indexOf("} catch (err) {", delegationIdx);
     expect(catchIdx).toBeGreaterThan(-1);
-    const catchBlock = source.slice(catchIdx, catchIdx + 600);
+    // Bound the slice at the enclosing function's closing brace (the first
+    // column-0 `}` after the catch) rather than at an arbitrary character
+    // count — a fixed count silently truncates the block as comments grow,
+    // which is exactly how the `throw err` assertion first went missing.
+    const fnEndIdx = source.indexOf("\n}", catchIdx);
+    expect(fnEndIdx).toBeGreaterThan(catchIdx);
+    const catchBlock = source.slice(catchIdx, fnEndIdx);
     // Placeholder cleanup (Lua compare-and-delete via releaseNxPlaceholder).
     expect(catchBlock).toContain("releaseNxPlaceholder");
     expect(catchBlock).toContain("parkKey");
     // Quota-slot cleanup — the P1-8 remediation (no longer the documented hazard).
-    expect(catchBlock).toMatch(/decr\?\.\(counterKey/);
+    expect(catchBlock).toMatch(/redis\.decr\(counterKey/);
     expect(catchBlock).toContain("throw err");
+    // F-22: the catch must NOT reach for a raw DEL. The pre-F-22 cleanup
+    // degraded to `redis.del(parkKey)` whenever the Lua release was
+    // unavailable or threw, which is the defect that ruling retired.
+    expect(catchBlock).not.toMatch(/\.del\??\.?\(/);
   });
 });
 

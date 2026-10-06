@@ -142,14 +142,6 @@ function systemActor() {
   }
 }
 
-// User-driven kinds tolerate UNTRUSTED.
-function userActor() {
-  return {
-    principal: "user" as const,
-    sessionId: "user:test-suite",
-  }
-}
-
 function llmActor() {
   return {
     principal: "llm" as const,

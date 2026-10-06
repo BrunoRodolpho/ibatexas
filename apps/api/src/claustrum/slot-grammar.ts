@@ -37,8 +37,31 @@
  * import beyond the `@adjudicate/core` claims types it consumes.
  */
 
-// inv.18 v2 — STORE_OPEN_NOW's validated template is GENERATED from its
-// ClaimDefinition source by the claimdef-compiler (DO NOT EDIT the generated file).
+// inv.18 v2 — these validated templates are GENERATED from their ClaimDefinition
+// sources by the claimdef-compiler (DO NOT EDIT the generated files). Each slot below
+// is a projection of the source's `render.validated` block, with the PROPOSITION
+// `claimType` filled = self, so a template can no longer drift from the registry spec
+// its proposition binds to.
+import { CART_CONTENTS_TEMPLATE } from "./claimdefs/cart-contents.generated.js";
+import { CART_EMPTY_TEMPLATE } from "./claimdefs/cart-empty.generated.js";
+import { COUPON_INVALID_TEMPLATE } from "./claimdefs/coupon-invalid.generated.js";
+import { COUPON_VALID_TEMPLATE } from "./claimdefs/coupon-valid.generated.js";
+import { DELIVERY_COVERAGE_TEMPLATE } from "./claimdefs/delivery-coverage.generated.js";
+import { DELIVERY_NO_COVERAGE_TEMPLATE } from "./claimdefs/delivery-no-coverage.generated.js";
+import { MENU_DIETARY_TEMPLATE } from "./claimdefs/menu-dietary.generated.js";
+import { MENU_ITEM_CONTENTS_TEMPLATE } from "./claimdefs/menu-item-contents.generated.js";
+import { MENU_ITEM_PRICE_TEMPLATE } from "./claimdefs/menu-item-price.generated.js";
+import { MENU_OVERVIEW_TEMPLATE } from "./claimdefs/menu-overview.generated.js";
+import { MENU_PAIRINGS_TEMPLATE } from "./claimdefs/menu-pairings.generated.js";
+import { MENU_SUBSTITUTIONS_TEMPLATE } from "./claimdefs/menu-substitutions.generated.js";
+import { ORDER_FULFILLMENT_STAGE_TEMPLATE } from "./claimdefs/order-fulfillment-stage.generated.js";
+import { ORDER_HISTORY_TEMPLATE } from "./claimdefs/order-history.generated.js";
+import { PAYMENT_HISTORY_TEMPLATE } from "./claimdefs/payment-history.generated.js";
+import { PAYMENT_STATUS_TEMPLATE } from "./claimdefs/payment-status.generated.js";
+import { RESERVATION_STATUS_TEMPLATE } from "./claimdefs/reservation-status.generated.js";
+import { STORE_HOURS_FOR_DATE_TEMPLATE } from "./claimdefs/store-hours-for-date.generated.js";
+import { STORE_HOURS_TEMPLATE } from "./claimdefs/store-hours.generated.js";
+import { STORE_INFO_TEMPLATE } from "./claimdefs/store-info.generated.js";
 import { STORE_OPEN_NOW_TEMPLATE } from "./claimdefs/store-open-now.generated.js";
 
 /**
@@ -125,13 +148,22 @@ export function renderPropositionFreeText(template: Template): string {
     .join("");
 }
 
-/** Convenience constructors — keep the table below readable; pure, no behaviour. */
+/**
+ * Convenience constructor — keeps the SAFE-posture tables below readable; pure, no
+ * behaviour.
+ *
+ * The matching `prop` constructor is GONE as of R2-S9, and its absence is the state the
+ * adoption arc was aiming at: every entry of {@link VALIDATED_TEMPLATES} is now a spliced
+ * import from a `./claimdefs/*.generated.ts`, so no PROPOSITION slot is authored in this
+ * file any more. A proposition slot must name the claim TYPE and FIELD it binds to, and
+ * the two live in the `.claim.ts` source where the compiler derives the slot↔C6-field
+ * alignment BY CONSTRUCTION (Inv 6) instead of by two files agreeing. Re-introducing a
+ * local `prop` here would re-open exactly that gap, so a proposition template belongs in a
+ * source, never here. `lit` survives because the SAFE postures are proposition-FREE by
+ * construction (registry §5) — they are the system speaking about itself, keyed to no
+ * domain type, and so have no source to live in.
+ */
 const lit = (text: string): TemplateSlot => ({ kind: "LITERAL", text });
-const prop = (claimType: string, field: string): TemplateSlot => ({
-  kind: "PROPOSITION",
-  claimType,
-  field,
-});
 
 /**
  * The REPRESENTATIVE template grammar (SDD §Q scope guard: representative, not the
@@ -177,6 +209,14 @@ export const MENU_OVERVIEW = "MENU_OVERVIEW";
 export const MENU_DIETARY = "MENU_DIETARY";
 /** BKL-136 — the PUBLIC store-info read (owner-attested address/parking scalar). */
 export const STORE_INFO = "STORE_INFO";
+/** LE2-002 / NEW-007 — the PUBLIC delivery-coverage pair (zone-grounded scalars). */
+export const DELIVERY_COVERAGE = "DELIVERY_COVERAGE";
+export const DELIVERY_NO_COVERAGE = "DELIVERY_NO_COVERAGE";
+/** LE2-019 — the PUBLIC coupon-validity pair (promotion-record-grounded scalars). */
+export const COUPON_VALID = "COUPON_VALID";
+export const MENU_PAIRINGS = "MENU_PAIRINGS";
+export const MENU_SUBSTITUTIONS = "MENU_SUBSTITUTIONS";
+export const COUPON_INVALID = "COUPON_INVALID";
 
 /**
  * Per-type `validated` (asserting) templates, keyed by claim type. Each is the ONE
@@ -190,121 +230,83 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // render.prop("mealPeriod") with claimType filled = self; the ~11-line handwritten
   // entry collapsed into this single spliced import.
   [STORE_OPEN_NOW]: STORE_OPEN_NOW_TEMPLATE,
-  // BKL-121 — the STORE_HOURS validated template. Static pt-BR around the single
-  // ledger-bound proposition prop(STORE_HOURS, "hoursText"), bound 1:1 to the C6
-  // value-binding FIELD (claim-registry.ts `valueBinding.path = ["hoursText"]`); the
-  // StoreHoursRead shape's field is `hoursText` (turn-reads.ts). The value is a
-  // FREE-FORM pt-BR hours string ("11h–15h / 18h–23h" | "fechado"), evidence-bound
-  // from the real weekly schedule (never an enum, so no claims-labels localization).
-  [STORE_HOURS]: {
-    claimType: STORE_HOURS,
-    posture: "validated",
-    slots: [
-      lit("Hoje nosso horário de funcionamento é: "),
-      prop(STORE_HOURS, "hoursText"),
-      lit("."),
-    ],
-  },
+  // inv.18 v2 / R2-S1 — the STORE_HOURS template is GENERATED from its ClaimDefinition
+  // source (./claimdefs/store-hours.generated.ts — DO NOT EDIT). The proposition slot
+  // prop(STORE_HOURS, "hoursText") is derived from the source's render.prop("hoursText")
+  // with claimType filled = self, and the compiler binds it to the SAME source's C6
+  // `valueBinding.path = ["hoursText"]` — so the 1:1 slot↔field alignment (Inv 6) is now
+  // true BY CONSTRUCTION rather than by two files agreeing. The ~13-line handwritten
+  // entry collapsed into this single spliced import.
+  [STORE_HOURS]: STORE_HOURS_TEMPLATE,
   // BKL-138 — the DAY-SPECIFIC hours template (SCN-002/003). A SINGLE ledger-bound
-  // proposition prop(STORE_HOURS_FOR_DATE, "hoursText"), bound 1:1 to the C6
-  // value-binding FIELD (claim-registry.ts `valueBinding.path = ["hoursText"]`) — the
-  // per-date twin of STORE_HOURS. Deliberately DAY-GENERIC static text ("nesse dia" —
-  // the day the customer asked about): the single-proposition shape mirrors the proven
-  // STORE_HOURS chain and its ONE `buildClaimDefinition` value projection exactly, so
-  // it stays sound-by-construction (a second, differently-projected day-name
-  // proposition would fight the auto-assembled ClaimDefinition — see claim-definition-
-  // registry.ts). Renders the QUERIED date's REAL weekly hours; a holiday/override on
-  // that date already demoted the claim to UNKNOWN upstream (never reaches here).
-  [STORE_HOURS_FOR_DATE]: {
-    claimType: STORE_HOURS_FOR_DATE,
-    posture: "validated",
-    slots: [
-      lit("Nesse dia, nosso horário de funcionamento é: "),
-      prop(STORE_HOURS_FOR_DATE, "hoursText"),
-      lit("."),
-    ],
-  },
-  [ORDER_FULFILLMENT_STAGE]: {
-    claimType: ORDER_FULFILLMENT_STAGE,
-    posture: "validated",
-    slots: [
-      lit("Seu pedido está na etapa: "),
-      // F1 — bind 1:1 to the C6 value-binding FIELD. The kernel validates this
-      // claim's value at `valueBinding.path = ["fulfillmentStatus"]` (claim-
-      // registry.ts) against the ledger; the OrderFulfillmentRead shape's field is
-      // `fulfillmentStatus` (turn-reads.ts), NOT `stage`. The old `stage` slot read
-      // a field the validated value never carries → the proposition was UNFILLABLE
-      // and a legitimately-VALIDATED ORDER claim abstained to UNKNOWN. Reading the
-      // ACTUAL value field makes a VALIDATED ORDER claim render.
-      prop(ORDER_FULFILLMENT_STAGE, "fulfillmentStatus"),
-      lit("."),
-    ],
-  },
-  [PAYMENT_STATUS]: {
-    claimType: PAYMENT_STATUS,
-    posture: "validated",
-    slots: [
-      lit("O status do seu pagamento é: "),
-      prop(PAYMENT_STATUS, "status"),
-      lit("."),
-    ],
-  },
-  // FE-T17 — the reservation-status validated template. ONE proposition slot
-  // (self-type, "status"), mirroring PAYMENT_STATUS / ORDER_FULFILLMENT_STAGE
-  // exactly. NOT multi-field: the linked kernel's mint step (SDD §5 C6 / the
-  // published `runClaimsKernel` "F2" narrowing — `kernels.js`) reconstructs the
-  // CanonicalClaim's value carrying ONLY the C6-`valueBinding.path`-proven slice
-  // and drops every sibling field of the read as unvalidated content (by design —
-  // only the bound path was ever compared against the ledger). A second
-  // proposition slot reading a sibling field (e.g. `partySize`) would therefore
-  // ALWAYS be UNFILLABLE post-mint, aborting the whole template to UNKNOWN (Inv 6
-  // is all-or-nothing per template) — so this template, like every other Triad
-  // type here, renders exactly the one C6-bound field.
-  // BKL-185 — the ONE proposition slot binds the pre-composed `statusLine`
-  // (status + optional "— DD/MM às HH:MM, para N pessoa(s)" detail; see the
-  // registry's valueBinding note). Detail-absent → statusLine === status → the
-  // render is byte-identical to the pre-BKL-185 status-only form.
-  [RESERVATION_STATUS]: {
-    claimType: RESERVATION_STATUS,
-    posture: "validated",
-    slots: [
-      lit("O status da sua reserva é: "),
-      prop(RESERVATION_STATUS, "statusLine"),
-      lit("."),
-    ],
-  },
-  // BKL-139 — the cart-contents validated template. ONE proposition slot binding 1:1
-  // to the C6 valueBinding FIELD (`itemsSummaryText`, claim-registry.ts
-  // `valueBinding.path = ["itemsSummaryText"]`). The value is a DETERMINISTICALLY
+  // proposition prop(STORE_HOURS_FOR_DATE, "hoursText") — the per-date twin of STORE_HOURS.
+  //
+  // inv.18 v2 / R2-S8 — the template is now GENERATED from its ClaimDefinition source
+  // (./claimdefs/store-hours-for-date.generated.ts — DO NOT EDIT). The slot is derived from
+  // the source's `render.prop("hoursText")` with claimType filled = self, and the compiler
+  // binds it to the SAME source's C6 `valueBinding.path = ["hoursText"]` — so the 1:1
+  // slot↔field alignment (Inv 6) is now true BY CONSTRUCTION rather than by two files
+  // agreeing, and the DAY-GENERIC static text ("nesse dia" — the day the customer asked
+  // about) travels with it. The ~13-line handwritten entry collapsed into this spliced
+  // import. Renders the QUERIED date's REAL weekly hours; a holiday/override on that date
+  // already demoted the claim to UNKNOWN upstream (never reaches here).
+  [STORE_HOURS_FOR_DATE]: STORE_HOURS_FOR_DATE_TEMPLATE,
+  // inv.18 v2 / R2-S7 — the STATUS SIBLINGS' validated templates are GENERATED from their
+  // ClaimDefinition sources (./claimdefs/order-fulfillment-stage.generated.ts /
+  // ./claimdefs/payment-status.generated.ts — DO NOT EDIT). Each single proposition slot is
+  // derived from the source's `prop("fulfillmentStatus")` / `prop("status")` with claimType
+  // filled = self, and the compiler binds it to the SAME source's C6 `valueBinding.path` — so
+  // the 1:1 slot↔field alignment (Inv 6) is now true BY CONSTRUCTION rather than by two files
+  // agreeing. The F1 rationale (the kernel validates the ORDER value at
+  // `["fulfillmentStatus"]`, the field the OrderFulfillmentRead shape actually carries; the
+  // old `stage` slot read a field the validated value never carries → the proposition was
+  // UNFILLABLE and a legitimately-VALIDATED ORDER claim abstained to UNKNOWN) moved verbatim
+  // into that source.
+  //
+  // BOTH bound fields are ENUM MEMBERS, so `claims-labels.ts` localizes them to pt-BR off the
+  // keys `ORDER_FULFILLMENT_STAGE.fulfillmentStatus` (7 members) / `PAYMENT_STATUS.status`
+  // (12 members) — a DISPLAY map keyed by `${claimType}.${field}` and assembled from the type
+  // name plus THESE slots' fields. That map stays hand-written at its own site; what the
+  // sources owe it is the field names, unchanged by this migration (asserted by the
+  // slot↔C6-field alignment guards). The `ORDER_FULFILLMENT_STAGE` / `PAYMENT_STATUS` const
+  // identifiers above stay exported for the rest of the grammar's consumers; the compiled
+  // templates carry the same `claimType` string by construction (asserted by
+  // reference-identity + deep-equal guards). UNAFFECTED by either type's `perResourceKey`
+  // facet: a slot names a FIELD of the validated value, never a ledger key, so the runtime
+  // `:{subject}` suffixing never reaches here.
+  [ORDER_FULFILLMENT_STAGE]: ORDER_FULFILLMENT_STAGE_TEMPLATE,
+  [PAYMENT_STATUS]: PAYMENT_STATUS_TEMPLATE,
+  // inv.18 v2 / R2-S4 — the reservation-status validated template is GENERATED from its
+  // ClaimDefinition source (./claimdefs/reservation-status.generated.ts — DO NOT EDIT).
+  // Its single proposition slot is derived from the source's `prop("statusLine")` with
+  // claimType filled = self, and the compiler binds it to the SAME source's C6
+  // `valueBinding.path` — so the 1:1 slot↔field alignment (Inv 6) is true BY
+  // CONSTRUCTION rather than by two files agreeing. The FE-T17 single-C6-field rationale
+  // (a second slot reading a sibling read field would be UNFILLABLE post-mint) and the
+  // BKL-185 `statusLine` note moved verbatim into that source. UNAFFECTED by the type's
+  // `perResourceKey` facet: a slot names a FIELD of the validated value, never a ledger
+  // key, so the runtime `:{subject}` suffixing never reaches here.
+  [RESERVATION_STATUS]: RESERVATION_STATUS_TEMPLATE,
+  // BKL-139 / BKL-163 — the cart PRESENCE-COMPLEMENT PAIR's validated templates. ONE
+  // proposition slot each, bound 1:1 to the C6 valueBinding FIELD (`itemsSummaryText` /
+  // `emptinessText`, claim-registry.ts). CART_CONTENTS's value is a DETERMINISTICALLY
   // PRE-COMPOSED pt-BR summary ("2x Costela — total R$123,00"), evidence-bound from the
-  // owner-scoped cart read (turn-reads.ts `composeCartItemsSummary`) — never an enum
-  // (so no claims-labels localization), never model-authored (FE-D04 / BKL-149). Same
-  // single-C6-field shape as STORE_HOURS_FOR_DATE / RESERVATION_STATUS (the frozen
-  // single-scalar kernel drops every sibling read field post-mint).
-  [CART_CONTENTS]: {
-    claimType: CART_CONTENTS,
-    posture: "validated",
-    slots: [
-      lit("No seu carrinho: "),
-      prop(CART_CONTENTS, "itemsSummaryText"),
-      lit("."),
-    ],
-  },
-  // BKL-163 — the provably-empty cart template. ONE proposition slot bound 1:1 to
-  // the C6 valueBinding FIELD (`emptinessText`, claim-registry.ts) — the
-  // code-composed literal "vazio" the investigator records ONLY when the
-  // owner-scoped cart read proved `hasItems: false`. Friendly VALIDATED answer for
-  // the empty cart (replacing the honest-UNKNOWN degrade of PR #291 deviation (a));
-  // the menu pointer is STATIC literal text (an offer, not a proposition).
-  [CART_EMPTY]: {
-    claimType: CART_EMPTY,
-    posture: "validated",
-    slots: [
-      lit("Seu carrinho está "),
-      prop(CART_EMPTY, "emptinessText"),
-      lit(" no momento — quer dar uma olhada no cardápio?"),
-    ],
-  },
+  // owner-scoped cart read (turn-reads.ts `composeCartItemsSummary`); CART_EMPTY's is the
+  // code-composed literal "vazio" the investigator records ONLY when that same read proved
+  // `hasItems: false`. Neither is an enum (so no claims-labels localization) and neither is
+  // model-authored (FE-D04 / BKL-149). Same single-C6-field shape as STORE_HOURS_FOR_DATE /
+  // RESERVATION_STATUS (the frozen single-scalar kernel drops every sibling read field
+  // post-mint). The empty template's menu pointer is STATIC literal text — an OFFER, not a
+  // proposition (Inv 6 permits offers/requests).
+  // inv.18 v2 / R2-S6 — BOTH templates are GENERATED from their ClaimDefinition sources
+  // (./claimdefs/cart-contents.generated.ts / ./claimdefs/cart-empty.generated.ts), so the
+  // frame literals and the bound field can no longer drift from the registry row's C6
+  // `valueBinding` or from the SHARED closure row — all of them are projections of one
+  // source per type. The `CART_CONTENTS` / `CART_EMPTY` const identifiers above stay
+  // exported for the rest of the grammar's consumers; the compiled templates carry the same
+  // `claimType` string by construction (asserted by reference-identity + deep-equal guards).
+  [CART_CONTENTS]: CART_CONTENTS_TEMPLATE,
+  [CART_EMPTY]: CART_EMPTY_TEMPLATE,
   // FE-D03 slice C — the ORDER_HISTORY / PAYMENT_HISTORY validated templates. ONE
   // proposition slot each, bound 1:1 to the C6 valueBinding FIELD (`historySummaryText`,
   // claim-registry.ts). The value is a DETERMINISTICALLY PRE-COMPOSED, bounded
@@ -312,24 +314,15 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // composePaymentHistorySummary) — never an enum, never model-authored. Same
   // single-C6-field shape as CART_CONTENTS (the frozen single-scalar kernel drops every
   // sibling field post-mint, so a list renders as one bound string).
-  [ORDER_HISTORY]: {
-    claimType: ORDER_HISTORY,
-    posture: "validated",
-    slots: [
-      lit("Seu histórico de pedidos: "),
-      prop(ORDER_HISTORY, "historySummaryText"),
-      lit("."),
-    ],
-  },
-  [PAYMENT_HISTORY]: {
-    claimType: PAYMENT_HISTORY,
-    posture: "validated",
-    slots: [
-      lit("Seu histórico de pagamentos: "),
-      prop(PAYMENT_HISTORY, "historySummaryText"),
-      lit("."),
-    ],
-  },
+  // inv.18 v2 / R2-S5 — BOTH templates are GENERATED from their ClaimDefinition sources
+  // (./claimdefs/order-history.generated.ts / ./claimdefs/payment-history.generated.ts),
+  // so the frame literals and the bound field can no longer drift from the registry row's
+  // C6 `valueBinding` or from the closure row — all three are projections of one source.
+  // The `ORDER_HISTORY` / `PAYMENT_HISTORY` const identifiers above stay exported for the
+  // rest of the grammar's consumers; the compiled templates carry the same `claimType`
+  // string by construction (asserted by reference-identity + deep-equal guards).
+  [ORDER_HISTORY]: ORDER_HISTORY_TEMPLATE,
+  [PAYMENT_HISTORY]: PAYMENT_HISTORY_TEMPLATE,
   // BKL-142 — the menu price/contents validated templates. ONE proposition slot each,
   // bound 1:1 to the C6 valueBinding FIELD (`priceText` / `contentsText`, claim-
   // registry.ts). The value is a DETERMINISTICALLY PRE-COMPOSED pt-BR scalar
@@ -338,43 +331,119 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
   // product, never an enum, never model-authored. Same single-C6-field shape as
   // CART_CONTENTS / STORE_HOURS_FOR_DATE (the frozen single-scalar kernel drops every
   // sibling read field post-mint).
-  [MENU_ITEM_PRICE]: {
-    claimType: MENU_ITEM_PRICE,
-    posture: "validated",
-    slots: [prop(MENU_ITEM_PRICE, "priceText"), lit(".")],
-  },
-  [MENU_ITEM_CONTENTS]: {
-    claimType: MENU_ITEM_CONTENTS,
-    posture: "validated",
-    slots: [prop(MENU_ITEM_CONTENTS, "contentsText"), lit(".")],
-  },
+  // inv.18 v2 / R2-S2 + R2-S3 — BOTH templates are GENERATED from their ClaimDefinition
+  // sources (./claimdefs/menu-item-price.generated.ts /
+  // ./claimdefs/menu-item-contents.generated.ts — DO NOT EDIT). Each single proposition
+  // slot is derived from the source's render.prop("priceText") / prop("contentsText") with
+  // claimType filled = self, and the compiler binds it to the SAME source's C6
+  // `valueBinding.path` — so the 1:1 slot↔field alignment (Inv 6) is true BY CONSTRUCTION
+  // rather than by two files agreeing. The templates are UNAFFECTED by the types'
+  // `perResourceKey` facet: a slot names a FIELD of the validated value, never a ledger
+  // key, so the runtime `:{subject}` suffixing never reaches here.
+  [MENU_ITEM_PRICE]: MENU_ITEM_PRICE_TEMPLATE,
+  [MENU_ITEM_CONTENTS]: MENU_ITEM_CONTENTS_TEMPLATE,
   // BKL-142 — the menu-WIDE overview validated template. ONE proposition slot bound
   // 1:1 to the C6 `overviewText` (the deterministic first-party listing composed in
   // menu-item-resolver.ts `composeMenuOverviewText`), never model-authored.
-  [MENU_OVERVIEW]: {
-    claimType: MENU_OVERVIEW,
-    posture: "validated",
-    slots: [prop(MENU_OVERVIEW, "overviewText")],
-  },
+  // inv.18 v2 / R2-S9 — GENERATED from the ClaimDefinition source
+  // (./claimdefs/menu-overview.generated.ts — DO NOT EDIT). The slot is derived from the
+  // source's `render.prop("overviewText")` with claimType filled = self, and the compiler
+  // binds it to the SAME source's C6 `valueBinding.path`. The BARE single-prop shape (like
+  // STORE_INFO / MENU_DIETARY) is unchanged — the composed listing is already a complete
+  // sentence.
+  [MENU_OVERVIEW]: MENU_OVERVIEW_TEMPLATE,
   // BKL-214 — the dietary-preference validated template. ONE proposition slot bound
   // 1:1 to the C6 `dietaryText` (the deterministic tagged-product list composed in
   // menu-item-resolver.ts `composeDietaryOptionsText`), never model-authored. A positive
   // preference list only — the scalar NEVER contains a "não contém X" allergen assurance.
-  [MENU_DIETARY]: {
-    claimType: MENU_DIETARY,
-    posture: "validated",
-    slots: [prop(MENU_DIETARY, "dietaryText")],
-  },
-  // BKL-136 — the store-info validated template. ONE proposition slot bound 1:1 to
-  // the C6 valueBinding FIELD (`infoText`, claim-registry.ts) — the deterministic
-  // pre-composed pt-BR address/parking sentence (store-info-resolver.ts), derived
-  // from OWNER-ATTESTED Medusa store.metadata. Bare single-prop shape like
-  // MENU_OVERVIEW (the scalar is already a complete sentence).
-  [STORE_INFO]: {
-    claimType: STORE_INFO,
-    posture: "validated",
-    slots: [prop(STORE_INFO, "infoText")],
-  },
+  // inv.18 v2 / R2-S3 — GENERATED from the ClaimDefinition source
+  // (./claimdefs/menu-dietary.generated.ts — DO NOT EDIT); the ~5-line handwritten entry
+  // collapsed into this spliced import. The BARE single-prop shape (like MENU_OVERVIEW /
+  // STORE_INFO) is unchanged — the composed scalar already ends in its own period.
+  [MENU_DIETARY]: MENU_DIETARY_TEMPLATE,
+  // inv.18 v2 / R2-S1 — the STORE_INFO template is GENERATED from its ClaimDefinition
+  // source (./claimdefs/store-info.generated.ts — DO NOT EDIT). Its single proposition
+  // slot is derived from the source's render.prop("infoText") and bound by the compiler
+  // to the SAME source's C6 `valueBinding.path = ["infoText"]`; the ~10-line handwritten
+  // entry collapsed into this spliced import. The bare single-prop shape (like
+  // MENU_OVERVIEW) is unchanged — the scalar store-info-resolver.ts composes from
+  // OWNER-ATTESTED Medusa store.metadata is already a complete sentence.
+  [STORE_INFO]: STORE_INFO_TEMPLATE,
+  // LE2-002 / NEW-007 — the GROUNDED-YES delivery-coverage template. ONE proposition
+  // slot bound 1:1 to the C6 valueBinding FIELD (`coverageText`, claim-registry.ts):
+  // the deterministic pt-BR scalar delivery-coverage-resolver.ts composes from the
+  // zone row's INTEGER centavos + minutes (Hard Rule 2) — never model-authored, and
+  // never reachable without a VALIDATED zone read behind it (which is precisely the
+  // ungrounded "Sim, entregamos em Ibate" this ticket closes).
+  //
+  // The SOFT CAVEAT is STATIC LITERAL text, not part of the proposition, and that
+  // split is deliberate: "confirmo certinho pelo endereço no checkout" asserts
+  // nothing about the world — it describes what the SYSTEM will do next — so it
+  // belongs in the frame, not in the ledger-bound value. Keeping it literal also
+  // means it can never be dropped by the frozen single-C6-field mint (which keeps
+  // only the bound path and discards every sibling read field).
+  // inv.18 v2 / R2-S9 — GENERATED from ./claimdefs/delivery-coverage.generated.ts (DO NOT
+  // EDIT). Both the proposition slot AND the static caveat literal are projections of the
+  // source's `render.validated` block, so the frame can no longer drift from the registry
+  // row's C6 `valueBinding` or from the SHARED closure row — all three are projections of
+  // one source. The `DELIVERY_COVERAGE` const identifier above stays exported for the rest
+  // of the grammar's consumers; the compiled template carries the same `claimType` string
+  // by construction.
+  [DELIVERY_COVERAGE]: DELIVERY_COVERAGE_TEMPLATE,
+  // LE2-002 / NEW-007 — the HONEST-NO template. Also a VALIDATED assertion (a
+  // definitive out-of-every-zone determination IS a fact, not an absence of one),
+  // with its own static frame: the negative carries a PICKUP offer where the
+  // positive carries the checkout caveat. Bound 1:1 to the C6 `noCoverageText`.
+  // inv.18 v2 / R2-S9 — GENERATED from ./claimdefs/delivery-no-coverage.generated.ts.
+  [DELIVERY_NO_COVERAGE]: DELIVERY_NO_COVERAGE_TEMPLATE,
+  // LE2-019 — the GROUNDED-YES coupon template. ONE proposition slot bound 1:1 to
+  // the C6 valueBinding FIELD (`validityText`, claim-registry.ts): the
+  // deterministic pt-BR scalar coupon-validity-resolver.ts composes from the
+  // PROMOTION RECORD's own code + `application_method` — never model-authored, and
+  // never reachable without a VALIDATED promotion lookup behind it.
+  //
+  // The application hint is STATIC LITERAL text, not part of the proposition, and
+  // that split is deliberate on TWO counts. First, the DELIVERY_COVERAGE reason:
+  // "é só informar o código no checkout" asserts nothing about the world — it
+  // describes what the CUSTOMER does next — so it belongs in the frame, not in the
+  // ledger-bound value. Second, Decision 14: the sentence describes the customer
+  // entering a code at checkout; it never says the SYSTEM will apply anything,
+  // because there is no apply / price-adjustment path this sentence could
+  // promise. (LE2-023 amends the wording, not the rule: `order.coupon.adjust` is
+  // now DECLARED, but it is workflow-scoped and refused by policy, so it remains
+  // nothing a customer-facing sentence may offer.)
+  // inv.18 v2 / R2-S9 — GENERATED from ./claimdefs/coupon-valid.generated.ts.
+  [COUPON_VALID]: COUPON_VALID_TEMPLATE,
+  // LE2-019 — the HONEST-NO template. Also a VALIDATED assertion (a definitive
+  // not-usable determination off a SUCCESSFUL promotion lookup IS a fact, not an
+  // absence of one), with its own static frame: the negative carries an offer to
+  // check ANOTHER code where the positive carries the checkout hint. Bound 1:1 to
+  // the C6 `invalidityText`. It states no REASON — why a campaign is exhausted or
+  // a promotion is still in draft is store-internal, and voicing it would assert
+  // facts the customer cannot verify and the claim never validated.
+  // inv.18 v2 / R2-S9 — GENERATED from ./claimdefs/coupon-invalid.generated.ts.
+  [COUPON_INVALID]: COUPON_INVALID_TEMPLATE,
+  // LE2-029 — the PAIRING template. ONE ledger-bound proposition carrying the
+  // whole factual payload: the sentence pairing-resolver.ts composed IN CODE from
+  // the authored graph's edges and the LIVE product titles those edges resolved
+  // to. Never model-authored, and never a handle — the customer sees the store's
+  // own pt-BR product names (Hard Rule 4).
+  //
+  // The static frame is an OFFER and asserts nothing about the world: "quer que eu
+  // adicione?" describes what the CUSTOMER may ask for next. It is deliberately
+  // not "posso adicionar pra você" — this is a READ span, and a sentence that
+  // promised the system would act would put a mutation on it (Decision 14's
+  // negative space, the BKL-201/206 discipline).
+  // inv.18 v2 / R2-S9 — GENERATED from ./claimdefs/menu-pairings.generated.ts. LE2-029
+  // registered this family across SIX files; three of them are now projections of that one
+  // source (this template, the registry row, and the SHARED PAIRING_Q closure row).
+  [MENU_PAIRINGS]: MENU_PAIRINGS_TEMPLATE,
+  // LE2-029 — the SUBSTITUTION template. Its own static frame, because answering
+  // an absence is a different act from suggesting an addition: the customer here
+  // has already been told they cannot have what they wanted, so the frame
+  // acknowledges the swap rather than inviting an extra.
+  // inv.18 v2 / R2-S9 — GENERATED from ./claimdefs/menu-substitutions.generated.ts.
+  [MENU_SUBSTITUTIONS]: MENU_SUBSTITUTIONS_TEMPLATE,
   // NOTE: ORDER_ESTIMATED_ARRIVAL was REMOVED here (inv.18 validator wiring). It
   // had a `validated` template (a PROPOSITION slot prop(…, "etaMinutes")) but NO
   // registered ClaimDefinition — it is absent from CLAIM_REGISTRY/REGISTRY_SPECS
@@ -403,10 +472,25 @@ export const VALIDATED_TEMPLATES: Readonly<Record<string, Template>> = {
 //     decision-gated (allergens are Hard-Rule-1 safety-critical; a renderer
 //     list-slot capability + an owner liability policy are prerequisites) — a
 //     separate focused effort, not a template edit here.
+//     R2-S9 — this type now COMPILES from `./claimdefs/menu-item-allergens.claim.ts`,
+//     and the adoption made its absence STRUCTURAL rather than merely observed: the
+//     source declares no `render` block, so the compiler emits `renderTemplate:
+//     undefined` and the generator omits the `_TEMPLATE` export ENTIRELY. There is no
+//     empty-slot template for anyone to splice in here even by accident.
 //   · PURCHASE_COMPLETED — an action_claim rendered via the responder's
 //     SUCCESS_CLAIM_CLASSES path (ibatexas-responder.ts), NOT the read-template
 //     grammar. It is DELIBERATELY + PERMANENTLY not in VALIDATED_TEMPLATES; it is
 //     NOT pending any template and must NOT be filed under BKL-121/-123.
+//     R2-S9 — the same fact is now also the reason this is the ONE registry type
+//     EXCLUDED BY DESIGN from the claimdef compiler (census: 22 generated + 1
+//     documented exclusion = 23). See `./claimdefs/generate.ts`'s EXCLUDED_BY_DESIGN
+//     note and `./claim-registry.ts`'s PURCHASE_COMPLETED ruling.
+//
+// R2-S9 — EVERY entry of VALIDATED_TEMPLATES above is now a spliced import from a
+// `./claimdefs/*.generated.ts`. No PROPOSITION slot is authored in this file any more,
+// which is why the local `prop` constructor is gone (see `lit`'s note above): a
+// proposition names a claim TYPE and FIELD, and both belong in the `.claim.ts` source
+// where the compiler derives the slot↔C6-field alignment by construction.
 //
 // STORE_HOURS GRADUATED (BKL-121): it now has the validated template above (the full
 // read→evidence→falsifier→derive→template chain), so it is NO LONGER in the gap — a
@@ -495,6 +579,62 @@ export const SAFE_UNKNOWN_ALLERGEN_TEMPLATE: Template = {
   slots: [
     lit(
       "Não localizei essa informação de alérgenos confirmada agora — por segurança, prefiro não arriscar uma resposta. Quer que eu peça para um atendente confirmar com a cozinha?",
+    ),
+  ],
+};
+
+/**
+ * LE2-002 / NEW-007 — the DELIVERY-COVERAGE CLARIFY variant: the third branch of
+ * spec Implementation Decision 4. Selected ONLY when the request carries
+ * delivery-coverage phrasing (required-claim-decomposer.ts `isDeliveryCoverageAsk`
+ * — the SAME net the span classifier uses to route the question to the coverage
+ * claims) AND the terminal is CLARIFY; every other CLARIFY renders the generic
+ * {@link SAFE_TEMPLATES}.clarify, byte-identical.
+ *
+ * This is what the resolver's refusal to GUESS renders as. A place name that
+ * matched no active zone must NOT be nearest-neighboured onto the closest one, so
+ * the turn asks for the CEP — the ONE datum that resolves coverage exactly, through
+ * the estimation tool.
+ *
+ * PROPOSITION-FREE BY CONSTRUCTION (Inv 6 / §O#5): it asserts NO coverage fact in
+ * either direction — it never says the place is probably covered, never says it is
+ * not, and never names a nearby zone. It reports only the SYSTEM's own state ("por
+ * aqui eu confirmo pelo CEP") and asks. Standalone const (SAFE_TEMPLATES is closed
+ * over the posture union).
+ */
+export const SAFE_CLARIFY_DELIVERY_CEP_TEMPLATE: Template = {
+  claimType: "__SAFE_CLARIFY_DELIVERY_CEP__",
+  posture: "clarify",
+  slots: [
+    lit(
+      "Para confirmar a entrega eu preciso do CEP — me manda o CEP do endereço que eu verifico a taxa e o prazo certinhos.",
+    ),
+  ],
+};
+
+/**
+ * LE2-019 — the COUPON-VALIDITY CLARIFY variant. Selected ONLY when the request
+ * carries coupon phrasing (required-claim-decomposer.ts `isCouponValidityAsk` —
+ * the SAME net the span classifier uses to route the question to the coupon
+ * claims) AND the terminal is CLARIFY; every other CLARIFY renders the generic
+ * {@link SAFE_TEMPLATES}.clarify, byte-identical.
+ *
+ * This is what the resolver's refusal to GUESS renders as. Coupon phrasing with
+ * no extractable code — or with TWO, which we will not pick between — must NOT be
+ * answered about some code the customer did not name, so the turn asks for the
+ * one datum that settles it.
+ *
+ * PROPOSITION-FREE BY CONSTRUCTION (Inv 6 / §O#5): it asserts NO validity fact in
+ * either direction — it never says a coupon is probably good, never says it is
+ * not, and never names a promotion. It reports only the SYSTEM's own state and
+ * asks. Standalone const (SAFE_TEMPLATES is closed over the posture union).
+ */
+export const SAFE_CLARIFY_COUPON_CODE_TEMPLATE: Template = {
+  claimType: "__SAFE_CLARIFY_COUPON_CODE__",
+  posture: "clarify",
+  slots: [
+    lit(
+      "Para conferir o cupom eu preciso do código — me manda o código certinho que eu verifico se está valendo.",
     ),
   ],
 };

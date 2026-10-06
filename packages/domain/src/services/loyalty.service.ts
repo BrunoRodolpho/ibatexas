@@ -1,5 +1,8 @@
 // LoyaltyService — punch-card loyalty program.
-// 10 stamps = R$20 discount (coupon FIEL20 — must be created in Medusa admin).
+// 10 stamps = R$20 discount. The coupon itself is the declared external
+// reference `promotion.loyalty-reward` (LE2-018) — configured, and verified to
+// exist in Medusa at api boot, rather than the "must be created in Medusa
+// admin" note that used to stand here.
 // stamps resets to 0 after reward; totalEarned is a lifetime counter.
 //
 // ── Audit 2026-05-23 NEW-W9-V4 — kernel chokepoint for addStamp ─────────

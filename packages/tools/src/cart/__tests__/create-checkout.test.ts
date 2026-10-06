@@ -585,6 +585,97 @@ describe("createCheckout", () => {
 
       expect(result.pixExpiresAt).toBe(new Date(expiresAtUnix * 1000).toISOString())
     })
+
+    // BKL-230 — the payer-identity guard boundary. These pin BOTH sides of the
+    // `extra.customerName || extra.customerEmail` requirement, because the chat
+    // plane used to hit the failing side on every single PIX checkout (its
+    // registry executor never passed `extra` at all). The caller-side wiring
+    // that fixes it lives in apps/api (pix-payer-identity.ts +
+    // register-ibatexas-tool-packs.ts); these prove what that wiring buys.
+    describe("payer-identity guard (BKL-230)", () => {
+      it("with NO payer identity: fails with the existing pt-BR message and NEVER confirms a PaymentIntent", async () => {
+        setupStripeMocks()
+
+        const result = await createCheckout(PIX_INPUT, CTX)
+
+        expect(result.success).toBe(false)
+        expect(result.paymentMethod).toBe("pix")
+        expect(result.message).toBe("Nome e email são obrigatórios para pagamento PIX.")
+        // The honest failure must be inert: no Stripe confirm, and therefore no
+        // `metadata.cartId` write — which is exactly why the webhook never saw
+        // a `payment_intent.succeeded` for chat PIX and no order ever landed.
+        expect(mockStripeConfirm).not.toHaveBeenCalled()
+        expect(mockStripeUpdate).not.toHaveBeenCalled()
+      })
+
+      it("with a payer identity: passes the guard and confirms with THAT payer's billing_details + writes metadata.cartId", async () => {
+        setupStripeMocks()
+        mockStripeConfirm.mockResolvedValue({
+          status: "requires_action",
+          next_action: {
+            pix_display_qr_code: {
+              data: "00020126580014br.gov.bcb.pix...",
+              image_url_svg: "https://stripe.com/pix-qr.svg",
+              expires_at: 1711987200,
+            },
+          },
+        })
+        mockStripeUpdate.mockResolvedValue({})
+
+        const result = await createCheckout(PIX_INPUT, CTX, {
+          customerName: "Maria Souza",
+          customerEmail: "maria@example.com",
+          customerTaxId: "123.456.789-09",
+        })
+
+        expect(result.success).toBe(true)
+        expect(result.pixQrCode).toBe("https://stripe.com/pix-qr.svg")
+
+        // The resolved identity reaches Stripe verbatim — no fallback default
+        // substituted for a payer we actually know.
+        expect(mockStripeConfirm).toHaveBeenCalledTimes(1)
+        const [confirmedPi, confirmParams] = mockStripeConfirm.mock.calls[0]!
+        expect(confirmedPi).toBe("pi_test123")
+        expect(confirmParams.payment_method_data).toMatchObject({
+          type: "pix",
+          billing_details: {
+            name: "Maria Souza",
+            email: "maria@example.com",
+            tax_id: "123.456.789-09",
+          },
+        })
+
+        // metadata.cartId is the handle the Stripe webhook uses to complete the
+        // cart into an order. Its absence was the terminal symptom of BKL-230.
+        expect(mockStripeUpdate).toHaveBeenCalledWith(
+          "pi_test123",
+          { metadata: { cartId: "cart_01" } },
+          expect.anything(),
+        )
+      })
+
+      it("accepts an email-only payer identity (name absent) — the guard is an OR, not an AND", async () => {
+        setupStripeMocks()
+        mockStripeConfirm.mockResolvedValue({
+          status: "requires_action",
+          next_action: {
+            pix_display_qr_code: { data: "pix-code", image_url_svg: "https://stripe.com/qr.svg" },
+          },
+        })
+        mockStripeUpdate.mockResolvedValue({})
+
+        const result = await createCheckout(PIX_INPUT, CTX, {
+          customerEmail: "so-email@example.com",
+        })
+
+        expect(result.success).toBe(true)
+        expect(mockStripeConfirm).toHaveBeenCalledTimes(1)
+        const [, confirmParams] = mockStripeConfirm.mock.calls[0]!
+        expect(confirmParams.payment_method_data.billing_details.email).toBe(
+          "so-email@example.com",
+        )
+      })
+    })
   })
 
   describe("unsupported payment method", () => {

@@ -238,6 +238,37 @@ export function createOpsAlertService(options?: OpsAlertServiceOptions) {
     },
 
     /**
+     * BKL-260 — resolve an alert the caller has ALREADY adjudicated. THE CALLER
+     * MUST HOLD A POSITIVE (EXECUTE/REWRITE) `Decision` for the verb that
+     * authorized this close; this method performs NO adjudication. It is the raw
+     * post-decision persistence body {@link resolveAlertFromEnvelope} runs, and
+     * mirrors `OrderCommandService.writeAdjudicatedNote` (BKL-083 option b).
+     *
+     * The only caller is the ops tool registry's `ops.alert.resolve.staff`
+     * executor, dispatched by the ops Conductor on a decision the composed ops
+     * router produced with `adminSessionOnlyGuard` + `staffRoleGuard`
+     * {OWNER,MANAGER} + the actionability guard against resolver-projected state.
+     * It used to BUILD a SYSTEM `ops.alert.resolve` envelope and adjudicate it
+     * here a second time — a second decision for one staff action, and a strictly
+     * WEAKER one: `opsAlertPolicyBundle` carries no state guards and no auth
+     * guards, and its SYSTEM taint floor was satisfied by construction because the
+     * executor itself had just stamped `taint: "SYSTEM"`. That inner run could
+     * only ever return EXECUTE.
+     *
+     * `resolveAlertFromEnvelope` stays the entry point for the callers that have
+     * NO decision behind them — the admin ops-alerts resolve route and the
+     * watchdog jobs — and MUST keep adjudicating (CLAUDE.md rule #9).
+     *
+     * Returns the current row whether it transitioned or was already closed, and
+     * `null` ONLY when the id does not exist (the ops render gate keys on that).
+     */
+    async writeAdjudicatedAlertResolve(
+      payload: OpsAlertResolvePayload,
+    ): Promise<OpsAlert | null> {
+      return resolveExecutor(payload)
+    },
+
+    /**
      * By-id read. Returns the alert row or `null` when the id does not exist.
      * Backs the BKL-088 ops-plane resolver: it projects `{id,status}` into the
      * pack-ops `OpsState.alert` so `requireAlertActionable` can fail closed on

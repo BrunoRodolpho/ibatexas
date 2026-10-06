@@ -7,7 +7,21 @@ export { searchProducts, SearchProductsTool } from "./search/search-products.js"
 
 // ── Catalog tools ──────────────────────────────────────────────────────────────
 export { getProductDetails, GetProductDetailsTool } from "./catalog/get-product-details.js"
-export { estimateDelivery, EstimateDeliveryTool, invalidateDeliveryCache } from "./catalog/estimate-delivery.js"
+export {
+  estimateDelivery,
+  EstimateDeliveryTool,
+  invalidateDeliveryCache,
+  // R5-S6 — the injectable Redis-shaped client seam. `DeliveryCacheClient` is
+  // the NARROW command slice this module issues; the canonical double lives at
+  // the `@ibatexas/tools/testing` subpath.
+  type DeliveryCacheClient,
+  type DeliveryCacheOptions,
+  // F-42 — the invalidation path's OWN honest Pick (`{scan, del}`), split out
+  // of the union above so the admin route that threads it declares only the
+  // commands that path actually issues.
+  type DeliveryCacheInvalidationClient,
+  type DeliveryCacheInvalidationOptions,
+} from "./catalog/estimate-delivery.js"
 export { reverseGeocode } from "./catalog/reverse-geocode.js"
 export type { ReverseGeocodeResult } from "./catalog/reverse-geocode.js"
 // BKL-179 — checkInventory / getNutritionalInfo were dead ToolDefinitions
@@ -19,7 +33,11 @@ export { withOrderOwnership, withReservationOwnership } from "./guards/with-owne
 
 // ── Cart tools ─────────────────────────────────────────────────────────────────
 export { assertCartOwnership } from "./cart/assert-cart-ownership.js"
-export { getOrCreateCart, GetOrCreateCartTool } from "./cart/get-or-create-cart.js"
+export {
+  getOrCreateCart,
+  GetOrCreateCartTool,
+  acquireCartCreationLock,
+} from "./cart/get-or-create-cart.js"
 export { getCart, GetCartTool } from "./cart/get-cart.js"
 export { addToCart, AddToCartTool } from "./cart/add-to-cart.js"
 export { updateCart, UpdateCartTool } from "./cart/update-cart.js"
@@ -32,6 +50,16 @@ export { checkOrderStatus, CheckOrderStatusTool } from "./cart/check-order-statu
 export { checkPaymentStatus, CheckPaymentStatusTool } from "./cart/check-payment-status.js"
 export { cancelOrder, CancelOrderTool } from "./cart/cancel-order.js"
 export { amendOrder, AmendOrderTool } from "./cart/amend-order.js"
+// F-48 — the HTTP batch-amend route denies BEFORE it ever calls amendOrder
+// (validateAmendChanges → 422), so it cannot inherit the tool path's wiring and
+// needs the publisher itself. Same helper, same dedup family, same
+// system-authored reason text.
+export {
+  publishOrderEscalation,
+  orderEscalationSessionId,
+  orderEscalationReason,
+  type OrderEscalationSituation,
+} from "./cart/_escalation.js"
 export { changeDeliveryAddress } from "./cart/change-delivery-address.js"
 export { switchOrderType } from "./cart/switch-order-type.js"
 export { reorder, ReorderTool } from "./cart/reorder.js"
@@ -45,7 +73,7 @@ export { addOrderNote, AddOrderNoteTool } from "./cart/add-order-note.js"
 export { getCustomerProfile, GetCustomerProfileTool } from "./intelligence/get-customer-profile.js"
 export { getRecommendations, GetRecommendationsTool, buildPersonalizedQuery } from "./intelligence/get-recommendations.js"
 export { updatePreferences, UpdatePreferencesTool } from "./intelligence/update-preferences.js"
-export { submitReview, SubmitReviewTool } from "./intelligence/submit-review.js"
+export { submitReview, submitReviewPreAdjudicated, SubmitReviewTool } from "./intelligence/submit-review.js"
 export { getAlsoAdded, GetAlsoAddedTool } from "./intelligence/get-also-added.js"
 export { getOrderedTogether, GetOrderedTogetherTool } from "./intelligence/get-ordered-together.js"
 export { scheduleFollowUp, ScheduleFollowUpTool } from "./intelligence/schedule-follow-up.js"
@@ -53,6 +81,36 @@ export { getLoyaltyBalance, GetLoyaltyBalanceTool } from "./intelligence/get-loy
 export { syncReviewStats } from "./intelligence/sync-review-stats.js"
 export { getAndConsumeWelcomeCredit } from "./intelligence/welcome-credit.js"
 export { PROFILE_TTL_SECONDS, RECENTLY_VIEWED_MAX } from "./intelligence/types.js"
+
+// ── External references (LE2-018) ─────────────────────────────────────────────
+// The catalog declares which promotions/zones the code depends on; this is
+// where a declaration meets a live store. Consumers call
+// `requireExternalReferenceKey`; the api's boot gate and `ibx catalog check
+// --live` call the reconciler.
+export {
+  assertExternalReferencesReconcile,
+  DEFAULT_EXTERNAL_REFERENCE_PROBES,
+  ExternalReferenceConfigError,
+  externalReferenceKey,
+  ExternalReferenceReconciliationError,
+  externalReferencesForStore,
+  findExternalReference,
+  formatExternalReferenceMiss,
+  formatExternalReferenceReport,
+  probeDeliveryZone,
+  probeMedusaPromotion,
+  reconcileExternalReferences,
+  requireExternalReferenceKey,
+  type EnvLike,
+  type ExternalReferenceHit,
+  type ExternalReferenceMiss,
+  type ExternalReferenceMissReason,
+  type ExternalReferenceProbe,
+  type ExternalReferenceProbes,
+  type ExternalReferenceReconciliation,
+  type ProbeVerdict,
+  type ReconcileOptions,
+} from "./external-references/index.js"
 
 // ── Redis ──────────────────────────────────────────────────────────────────────
 export { getRedisClient, closeRedisClient } from "./redis/client.js"
@@ -72,7 +130,14 @@ export {
   type CircuitBreakerOptions,
 } from "./redis/circuit-breaker.js"
 export { safeRedis } from "./redis/safe-redis.js"
-export { acquireLock, withLock, type LockHandle } from "./redis/distributed-lock.js"
+export {
+  acquireLock,
+  acquireLockAtKey,
+  acquireLockAtKeyOn,
+  withLock,
+  type LockHandle,
+  type LockRedisClient,
+} from "./redis/distributed-lock.js"
 
 // ── Tracing ──────────────────────────────────────────────────────────────────
 export {
@@ -269,11 +334,11 @@ export { EMBED_DIM } from "./config.js"
 
 // ── Reservation tools ──────────────────────────────────────────────────────────
 export { checkTableAvailability, CheckTableAvailabilityTool } from "./reservation/check-availability.js"
-export { createReservation, CreateReservationTool } from "./reservation/create-reservation.js"
-export { modifyReservation, ModifyReservationTool } from "./reservation/modify-reservation.js"
-export { cancelReservation, CancelReservationTool } from "./reservation/cancel-reservation.js"
+export { createReservation, createReservationPreAdjudicated, CreateReservationTool } from "./reservation/create-reservation.js"
+export { modifyReservation, modifyReservationPreAdjudicated, ModifyReservationTool } from "./reservation/modify-reservation.js"
+export { cancelReservation, cancelReservationPreAdjudicated, CancelReservationTool } from "./reservation/cancel-reservation.js"
 export { getMyReservations, GetMyReservationsTool } from "./reservation/get-my-reservations.js"
-export { joinWaitlist, JoinWaitlistTool } from "./reservation/join-waitlist.js"
+export { joinWaitlist, joinWaitlistPreAdjudicated, JoinWaitlistTool } from "./reservation/join-waitlist.js"
 export {
   sendReservationConfirmation,
   sendReservationModified,

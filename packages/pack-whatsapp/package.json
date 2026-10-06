@@ -10,11 +10,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./refusals": {
+      "types": "./dist/refusals.d.ts",
+      "import": "./dist/refusals.js",
+      "default": "./dist/refusals.js"
     }
   },
   "scripts": {
     "build": "tsc --outDir dist",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint \"src/**/*.ts\"",
     "test": "vitest run"
   },
   "peerDependencies": {

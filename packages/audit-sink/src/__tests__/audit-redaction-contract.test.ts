@@ -12,9 +12,13 @@
 //   6. Envelope `actor`, `taint`, `kind`, `nonce`, `createdAt`, `version` are
 //      preserved (governance invariant).
 //
-// Plus a bypass-detection assertion: every audit-emit call site in the
-// llm-provider tree routes through `getAuditSink()`, never directly to
-// multiSink or a sink primitive.
+// Plus a bypass-detection assertion scoped to THIS PACKAGE: no file under
+// `packages/audit-sink/src` reaches a raw sink primitive instead of
+// `getAuditSink()`. (It formerly claimed to cover "the llm-provider tree" —
+// a tree deleted in the claustrum-on-dev cutover.) The repo-wide half of that
+// invariant is enforced by the ESLint ban described in
+// `intent-audit-wiring.ts`, NOT here; this walker cannot see outside its own
+// package.
 //
 // See investigation 08 §"P0 #1" for the threat model. See
 // docs/adjudicate-migration/tasks/18-audit-redactor.md for the spec.
@@ -979,6 +983,17 @@ describe("audit-redaction CONTRACT (CI gate)", () => {
 // `src/` builds a sink primitive directly and emits past the redactor. The
 // canonical bypass shape is `multiSink(...)` or `createNatsSink({...}).emit`
 // or `createConsoleSink({...}).emit` outside the authorised composers.
+//
+// SCOPE (F-53): `walkSrc` roots at `join(__dirname, "..")` — that is
+// `packages/audit-sink/src` and nothing else. This test is NOT evidence for
+// any claim about other workspaces, and must not be cited as such: a
+// byte-identical bypass probe was measured RED here and GREEN in apps/api.
+// Repo-wide enforcement is the ESLint `no-restricted-imports` ban
+// (`AUDIT_RAW_SINK_IMPORT_BAN` in `@ibatexas/eslint-config`), whose per-
+// workspace reach is re-measured by `scripts/check-audit-sink-import-ban.mjs`.
+// Widening this walker to the repo root was considered and rejected: `test` is
+// a CACHEABLE turbo task with package-scoped inputs, so this suite is not
+// re-run when another workspace changes and would certify code it never read.
 //
 // Authorised composers (the ONLY files allowed to import the raw sink
 // primitives) — both thread every emit through the redactor first:

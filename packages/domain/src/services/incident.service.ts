@@ -455,6 +455,38 @@ export function createIncidentService(options?: IncidentServiceOptions) {
       )
     },
 
+    /**
+     * BKL-260 — close an incident the caller has ALREADY adjudicated. THE CALLER
+     * MUST HOLD A POSITIVE (EXECUTE/REWRITE) `Decision` for the verb that
+     * authorized this close; this method performs NO adjudication. It is the raw
+     * post-decision persistence body {@link closeIncidentFromEnvelope} runs, and
+     * mirrors `OrderCommandService.writeAdjudicatedNote` (BKL-083 option b).
+     *
+     * The only caller is the ops tool registry's `incident.ticket.close.staff`
+     * executor, dispatched by the ops Conductor on a decision the composed ops
+     * router produced with `adminSessionOnlyGuard` + `staffRoleGuard`
+     * {OWNER,MANAGER} + the actionability guard against resolver-projected state.
+     * It used to BUILD a SYSTEM `incident.ticket.close` envelope and adjudicate it
+     * here a second time — a second decision for one staff action, and a strictly
+     * WEAKER one: `incidentPolicyBundle` carries no state guards and no auth
+     * guards, its frozen-cause guard is scoped to `incident.ticket.open`, and its
+     * SYSTEM taint floor was satisfied by construction because the executor itself
+     * had just stamped `taint: "SYSTEM"`. That inner run could only ever return
+     * EXECUTE.
+     *
+     * `closeIncidentFromEnvelope` stays the entry point for the callers that have
+     * NO decision behind them — the admin incidents resolve route, the auto-close
+     * driver, and the hand-off path — and MUST keep adjudicating (rule #9).
+     *
+     * Returns the current row whether it transitioned or was already closed, and
+     * `null` ONLY when the id does not exist (the ops render gate keys on that).
+     */
+    async writeAdjudicatedIncidentClose(
+      payload: IncidentClosePayload,
+    ): Promise<ConversationIncident | null> {
+      return closeExecutor(payload)
+    },
+
     // ── Reads ──────────────────────────────────────────────────────────────
 
     /**

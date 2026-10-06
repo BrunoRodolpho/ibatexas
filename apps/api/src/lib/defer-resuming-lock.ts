@@ -35,6 +35,16 @@
 
 import { randomUUID } from "node:crypto"
 import { getRedisClient } from "@ibatexas/tools"
+import type { RedisClientType } from "redis"
+
+/**
+ * The declared subset this helper issues: SET (NX acquire) and EVAL (the
+ * compare-and-delete release). Narrowed per the `DeliveryCacheClient`
+ * precedent in `packages/tools/src/catalog/estimate-delivery.ts` — a caller
+ * that threads a client only has to satisfy these two commands, and a command
+ * this module does not name is a compile error rather than a runtime surprise.
+ */
+export type DeferResumingLockClient = Pick<RedisClientType, "set" | "eval">
 
 const RELEASE_LOCK_SCRIPT = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -68,9 +78,10 @@ export async function acquireDeferResumingLock(
   key: string,
   ttlSeconds: number,
   holder: DeferResumingHolder,
+  client?: DeferResumingLockClient,
 ): Promise<AcquireDeferResumingLockResult> {
   try {
-    const redis = await getRedisClient()
+    const redis = client ?? (await getRedisClient())
     const lockValue = `${holder}:${randomUUID()}`
     const result = await redis.set(key, lockValue, {
       NX: true,
@@ -98,10 +109,11 @@ export async function acquireDeferResumingLock(
 export async function releaseDeferResumingLock(
   key: string,
   lockValue: string | null,
+  client?: DeferResumingLockClient,
 ): Promise<void> {
   if (lockValue === null) return
   try {
-    const redis = await getRedisClient()
+    const redis = client ?? (await getRedisClient())
     await (
       redis as unknown as {
         eval: (

@@ -21,11 +21,36 @@
 // kernel runs so the pack has the data it needs to reach EXECUTE (the
 // service's inner `create()` re-reads under FOR UPDATE for serializability;
 // the policy read is advisory).
+//
+// ── BKL-243 — two entry points, so a conductor turn adjudicates ONCE ──────
+//
+// Same defect and same fix shape as BKL-232 (`reservation.modify`, PR #386).
+// This tool has two callers, and only ONE of them has already adjudicated:
+//
+//   - `createReservation` (SELF-ADJUDICATING) — the REST `POST
+//     /api/reservations` route (apps/api/src/routes/reservations.ts), which
+//     reaches the tool with no kernel decision behind it. It MUST mint and
+//     adjudicate its own envelope or the mutation would run ungated
+//     (CLAUDE.md rule #9).
+//   - `createReservationPreAdjudicated` (BKL-243) — the claustrum tool
+//     registry (apps/api/src/tools/register-ibatexas-tool-packs.ts). The
+//     Conductor has ALREADY adjudicated this exact `reservation.create`
+//     envelope through the audited kernel AND claimed its execution-ledger
+//     key; re-minting a second envelope here adjudicated the same intent a
+//     second time — a duplicate the ledger can never dedup, because the
+//     envelope built below carries a fresh `nonce: randomUUID()` and a payload
+//     without `customerId`, so its `intentHash` cannot collide.
+//
+// Write-time invariants are unaffected on the pre-adjudicated path:
+// `reservationService.create` re-reads the slot under a `FOR UPDATE` lock and
+// re-checks capacity inside its own transaction — the slot hydration below is
+// advisory, exists only to feed a kernel run, and is therefore skipped when the
+// Conductor has already decided.
 
 import { randomUUID } from "node:crypto"
 import { createReservationService, prisma } from "@ibatexas/domain"
 import { getAuditSink } from "@ibatexas/audit-sink"
-import { CreateReservationInputSchema, ReservationStatus, type CreateReservationInput, type CreateReservationOutput } from "@ibatexas/types"
+import { CreateReservationInputSchema, ReservationStatus, type CreateReservationInput, type CreateReservationOutput, type SpecialRequest, type TableLocation, type ReservationDTO } from "@ibatexas/types"
 import { publishNatsEvent } from "@ibatexas/nats-client"
 import { buildEnvelope } from "@adjudicate/core"
 import type {
@@ -35,10 +60,114 @@ import type {
 import { buildDateTime, formatDateBR, locationLabel } from "./utils.js"
 import { sendReservationConfirmation } from "./notifications.js"
 
-export async function createReservation(
+/**
+ * How the caller reached this tool — i.e. who owns the kernel decision.
+ *
+ * `"self"`      — nobody adjudicated yet; mint + adjudicate an envelope here.
+ * `"conductor"` — the claustrum Conductor already adjudicated this intent and
+ *                 claimed its execution-ledger key; execute, do NOT re-adjudicate
+ *                 (BKL-243).
+ */
+type CreateAuthority = "self" | "conductor"
+
+/**
+ * The post-write side effects + pt-BR confirmation, shared by both entry points
+ * so the pre-adjudicated path cannot drift from the self-adjudicating one.
+ */
+async function succeed(
+  parsed: CreateReservationInput,
+  reservation: ReservationDTO,
+  tableLocation: TableLocation | null,
+): Promise<CreateReservationOutput> {
+  const dateTime = buildDateTime(new Date(reservation.timeSlot.date), reservation.timeSlot.startTime)
+  const dateBR = formatDateBR(new Date(reservation.timeSlot.date))
+  const loc = locationLabel(tableLocation)
+
+  const confirmationMessage = [
+    `✅ Reserva confirmada!`,
+    `📅 ${dateBR} às ${reservation.timeSlot.startTime}`,
+    `👥 ${parsed.partySize} pessoa(s) — ${loc}`,
+    `ID da reserva: ${reservation.id}`,
+  ].join("\n")
+
+  void publishNatsEvent("reservation.created", {
+    eventType: "reservation.created",
+    customerId: parsed.customerId,
+    sessionId: parsed.customerId,
+    channel: "web",
+    timestamp: new Date().toISOString(),
+    metadata: {
+      reservationId: reservation.id,
+      partySize: parsed.partySize,
+      date: reservation.timeSlot.date,
+      startTime: reservation.timeSlot.startTime,
+      tableLocation,
+    },
+  }).catch((err) => console.error("[create_reservation] NATS publish error:", (err as Error).message))
+
+  await sendReservationConfirmation({
+    ...reservation,
+    status: ReservationStatus.CONFIRMED,
+  })
+
+  return {
+    reservationId: reservation.id,
+    confirmed: true,
+    tableLocation,
+    dateTime,
+    partySize: parsed.partySize,
+    confirmationMessage,
+  }
+}
+
+export function createReservation(
   input: CreateReservationInput,
 ): Promise<CreateReservationOutput> {
+  return createReservationImpl(input, "self")
+}
+
+/**
+ * BKL-243 — the entry point the claustrum tool registry dispatches on a kernel
+ * EXECUTE. Identical to {@link createReservation} (same write, same confirmation
+ * + NATS side effects, same result shape) except that it does NOT re-adjudicate:
+ * the Conductor's audited, ledger-claimed decision is the single authorization
+ * for this mutation.
+ */
+export function createReservationPreAdjudicated(
+  input: CreateReservationInput,
+): Promise<CreateReservationOutput> {
+  return createReservationImpl(input, "conductor")
+}
+
+async function createReservationImpl(
+  input: CreateReservationInput,
+  authority: CreateAuthority,
+): Promise<CreateReservationOutput> {
   const parsed = CreateReservationInputSchema.parse(input)
+
+  // BKL-046: pass the configured AuditSink so the kernel's `reservation.create`
+  // EXECUTE persists a governance audit record. `createReservationService()`
+  // silently drops audit emission when no sink is supplied, so the sink must be
+  // wired here — mirroring the cart-tool wrapper-call sites, which read the
+  // singleton via `getAuditSink()` at request time (after boot DI is in place).
+  const svc = createReservationService({ auditSink: getAuditSink() })
+
+  // ── BKL-243 — the Conductor already authorized this intent ─────────
+  // Execute the mutation under its decision. No second envelope, no second
+  // adjudication. The pack-guard slot projection below exists only to feed a
+  // kernel run, so it is skipped here too (it was a redundant read on this
+  // path — `svc.create` re-reads the slot FOR UPDATE regardless).
+  if (authority === "conductor") {
+    const { reservation, tableLocation } = await svc.create({
+      customerId: parsed.customerId,
+      timeSlotId: parsed.timeSlotId,
+      partySize: parsed.partySize,
+      ...(parsed.specialRequests === undefined
+        ? {}
+        : { specialRequests: parsed.specialRequests as SpecialRequest[] }),
+    })
+    return succeed(parsed, reservation, tableLocation)
+  }
 
   // ── Project state for the pack policies ────────────────────────────
   // The pack's `requireSlotWithCapacity` REFUSEs when `state.ctx.slot` is
@@ -94,12 +223,6 @@ export async function createReservation(
     taint: "UNTRUSTED",
   })
 
-  // BKL-046: pass the configured AuditSink so the kernel's `reservation.create`
-  // EXECUTE persists a governance audit record. `createReservationService()`
-  // silently drops audit emission when no sink is supplied, so the sink must be
-  // wired here — mirroring the cart-tool wrapper-call sites, which read the
-  // singleton via `getAuditSink()` at request time (after boot DI is in place).
-  const svc = createReservationService({ auditSink: getAuditSink() })
   const outcome = await svc.createFromEnvelope(envelope, state, {
     customerId: parsed.customerId,
   })
@@ -114,46 +237,7 @@ export async function createReservation(
   }
 
   const { reservation, tableLocation } = outcome.result!
-
-  const dateTime = buildDateTime(new Date(reservation.timeSlot.date), reservation.timeSlot.startTime)
-  const dateBR = formatDateBR(new Date(reservation.timeSlot.date))
-  const loc = locationLabel(tableLocation)
-
-  const confirmationMessage = [
-    `✅ Reserva confirmada!`,
-    `📅 ${dateBR} às ${reservation.timeSlot.startTime}`,
-    `👥 ${parsed.partySize} pessoa(s) — ${loc}`,
-    `ID da reserva: ${reservation.id}`,
-  ].join("\n")
-
-  void publishNatsEvent("reservation.created", {
-    eventType: "reservation.created",
-    customerId: parsed.customerId,
-    sessionId: parsed.customerId,
-    channel: "web",
-    timestamp: new Date().toISOString(),
-    metadata: {
-      reservationId: reservation.id,
-      partySize: parsed.partySize,
-      date: reservation.timeSlot.date,
-      startTime: reservation.timeSlot.startTime,
-      tableLocation,
-    },
-  }).catch((err) => console.error("[create_reservation] NATS publish error:", (err as Error).message))
-
-  await sendReservationConfirmation({
-    ...reservation,
-    status: ReservationStatus.CONFIRMED,
-  })
-
-  return {
-    reservationId: reservation.id,
-    confirmed: true,
-    tableLocation,
-    dateTime,
-    partySize: parsed.partySize,
-    confirmationMessage,
-  }
+  return succeed(parsed, reservation, tableLocation)
 }
 
 // ── Tool definition ───────────────────────────────────────────────────────────

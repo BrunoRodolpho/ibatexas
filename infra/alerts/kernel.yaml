@@ -98,21 +98,35 @@ groups:
             JetStream stream slow or consumer ack drift.
           runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/security/NATS-AUTH-REQUIREMENTS.md"
 
-      # ── 7 ──────────────────────────────────────────────────────────────────
-      - alert: KernelLedgerUnavailable
-        expr: sum(rate(kernel_ledger_op_total{outcome="error"}[1m])) > 0
-        for: 1m
-        labels:
-          severity: S1
-          team: kernel
-          page: pagerduty
-        annotations:
-          summary: "Kernel execution-ledger error rate > 0"
-          description: |
-            Redis-backed execution ledger is failing. With FAIL_OPEN=true
-            replay protection is downgraded; without FAIL_OPEN we are
-            refusing every mutation. WhatsApp owner per investigation/07.
-          runbook_url: "https://github.com/ibatexas/ibatexas/blob/main/docs/adjudicate-migration/migration/05-kill-switch-strategy.md"
+      # NOTE (BKL-244): the KernelLedgerUnavailable alert was DELETED, not
+      # re-pointed. It fired on `kernel_ledger_op_total{outcome="error"}`,
+      # which is a label value nothing ever emits: @adjudicate/core 1.9.0
+      # emits ledger ops from exactly two sites in
+      # `dist/kernel/adjudicate-and-audit.js` — the check (`hit`/`miss`,
+      # ~line 313) and the record (`ok`/`duplicate`, ~line 567). `"error"`
+      # exists in the `LedgerOpEvent` TYPE union but is never constructed.
+      # (The infra-grafana-alerts.test.ts gate validates metric NAMES against
+      # the sink, not label VALUES — which is how this stayed green while dead.
+      # Its description was stale too: it referenced a FAIL_OPEN knob that the
+      # always-on cutover removed.)
+      #
+      # There is no truthful signal to re-point at. Redis ledger unavailability
+      # emits NO kernel metric at all: `checkLedger` rejects at step 1 of
+      # adjudicateAndAudit, which is BEFORE the MetricsSink emit at step 4, and
+      # the kernel does not catch ledger throws. The bridge's
+      # `safeAuditedAdjudicate` catch (apps/api/src/claustrum-bootstrap.ts:1274)
+      # manufactures a `SECURITY` / `policy_not_ready` REFUSE locally without
+      # calling recordRefusal/recordDecision — so `kernel_refusal_total` does
+      # not move either. Inventing a re-point would restore the theater.
+      #
+      # What covers this today: Redis is required at boot (claustrum-bootstrap
+      # resolves the client BEFORE buildAdjudicator), so an outage at boot is a
+      # failed boot, caught by deploy/health alerting. Post-boot it is visible
+      # as turn-level `policy_not_ready` refusals in the logs — see
+      # docs/ops/runbooks/kernel-operations.md, "Redis outage (ledger offline)".
+      # Restoring a real alert needs a metric on the fail-closed path (a
+      # kernel-metrics-sink code change), tracked separately from this
+      # docs/alert-drift fix.
 
       # ── 8 ──────────────────────────────────────────────────────────────────
       - alert: KernelDeferTimeoutRate

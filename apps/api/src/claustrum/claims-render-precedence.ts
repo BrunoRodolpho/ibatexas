@@ -26,6 +26,7 @@
 
 import type { ClaimsRenderPrecedence } from "@claustrum/core";
 import { shouldDegradeToSafeUnknown } from "./interrogative-discriminator.js";
+import { isOpsWriteTwinReadRescue } from "./ops-write-twin-rescue.js";
 
 /** The seam's turn context — the exact shape @claustrum/core 0.7.0 passes in. */
 export type RenderPrecedenceContext = Parameters<ClaimsRenderPrecedence>[0];
@@ -33,9 +34,11 @@ export type RenderPrecedenceContext = Parameters<ClaimsRenderPrecedence>[0];
 /** Which lattice rule decided this turn — the telemetry `mechanism` join field. */
 export type RenderPrecedenceMechanism =
   | "claims_escalate_or_suppression" // rule 1 — safety-first / no-leak
+  | "write_twin_read_render" // rule 2a — a mis-parsed READ's validated answer wins
   | "live_action_decision" // rule 2 — the deterministic kernel reply wins
   | "validated_render" // rule 3 — never withhold a validated fact
   | "committed_mutation_action" // rule 3b — a committed mutation's action reply wins over a degenerate render
+  | "deterministic_read_render" // rule 3c — a deterministic READ render wins over a degenerate render
   | "safe_degrade" // rule 4 — a question degrades honestly
   | "conversational_prose"; // rule 4 — a statement's prose stands
 
@@ -63,6 +66,41 @@ function isLiveActionDecision(ctx: RenderPrecedenceContext): boolean {
 }
 
 /**
+ * PLANE SIGNALS the lattice cannot derive from the published seam context. Optional
+ * and absent by default — an omitted signal set leaves every verdict BYTE-IDENTICAL
+ * to the pre-LE2 lattice (the customer plane passes nothing).
+ */
+export interface RenderPrecedenceSignals {
+  /**
+   * TRUE iff the responder's draft for THIS turn is a DETERMINISTIC read render
+   * rather than model prose — the BKL-100 ops read-answer governor
+   * (`readAnswer.render`), which answers a staff read from the ACTUAL captured read
+   * result with no model call.
+   *
+   * LE2 decision 6 (ops convergence) needs it: once the ops conductor wires
+   * `claimsRenderer`, an ops read turn whose claims happen to DEGRADE would have its
+   * grounded, first-party read answer clobbered by the proposition-free UNKNOWN
+   * copy — a strict LOSS of true information. This signal is the READ analog of
+   * rule 3b (`committed_mutation_action`), and like it, it only ever protects a
+   * draft from a DEGENERATE render: rule 1 (no-leak) and rule 3 (validated render)
+   * are both checked first, so a genuinely VALIDATED claim still supersedes.
+   */
+  readonly deterministicReadRender?: boolean;
+  /**
+   * BKL-262 Stage 1 — does this plane enable the WRITE-TWIN READ RESCUE (rule 2a)?
+   *
+   * The OPS composition passes `true`. The customer plane passes nothing, so the
+   * rescue is never evaluated there and every customer verdict stays BYTE-IDENTICAL
+   * (the owner's Stage-1 scope is the ops conductor lattice only).
+   *
+   * Enabling it does NOT rescue a turn by itself: the five-conjunct predicate in
+   * `ops-write-twin-rescue.ts` still has to be earned, and its default on every
+   * conjunct is "rule 2 stands".
+   */
+  readonly writeTwinReadRescue?: boolean;
+}
+
+/**
  * The RATIFIED precedence lattice (termprecdesign 2026-07-10) — TOP WINS. Given the
  * seam context, decide whether the claims render supersedes the responder draft.
  * PURE: same inputs ⟹ same verdict (the only text input, `requestText`, is read by
@@ -71,6 +109,11 @@ function isLiveActionDecision(ctx: RenderPrecedenceContext): boolean {
  *   1. claims ESCALATE OR any set-gate suppression → RENDER (safety-first; the safe
  *      template must win — a suppressed proposition must NEVER re-leak via a kept
  *      draft). HARD invariant; checked FIRST so nothing below can override no-leak.
+ *  2a. (ops only, BKL-262 Stage 1) a REFUSED envelope that is the DECLARED WRITE TWIN
+ *      of the read the turn actually asked, whose claims VALIDATED and ANSWER that
+ *      read, on a turn carrying NO mutation shape → RENDER. A mis-parsed QUESTION
+ *      must not have its validated answer replaced by prose explaining the refusal of
+ *      a mutation the operator never requested. Declines to rule 2 on any doubt.
  *   2. a LIVE ACTION decision (REQUEST_CONFIRMATION / ESCALATE / REFUSE-with-envelopes)
  *      → KEEP DRAFT — the deterministic kernel reply is the deliverable, winning even
  *      over a claims VALIDATED RENDER. Fixes BKL-155.
@@ -91,6 +134,7 @@ function isLiveActionDecision(ctx: RenderPrecedenceContext): boolean {
  */
 export function decideRenderPrecedence(
   ctx: RenderPrecedenceContext,
+  signals: RenderPrecedenceSignals = {},
 ): RenderPrecedenceVerdict {
   const { claims, requestText } = ctx;
 
@@ -100,6 +144,41 @@ export function decideRenderPrecedence(
     claims.consistency.suppressions.length > 0
   ) {
     return { decision: "render", mechanism: "claims_escalate_or_suppression" };
+  }
+
+  // Rule 2a (BKL-262 Stage 1, owner ruling 2026-07-27 option (b)) — THE WRITE-TWIN
+  // READ RESCUE. A staff QUESTION that the planner mis-parsed into a MUTATION is
+  // kernel-REFUSEd, and rule 2 below then keeps a draft that — because
+  // `renderOpsActionAnswer` returns undefined for a refused dispatch — is the
+  // conversationalRefusal RECOVERY SYNTHESIS, i.e. raw model prose. Live-measured
+  // twice: a coverage question answered "Não, a loja está fechada…" when the ground
+  // truth was Sim, and fabricated hours ("das 10h às 22h!") shipping verbatim WHILE
+  // the correct hours claim validated in the same turn.
+  //
+  // So: when the refused envelope is the DECLARED WRITE TWIN of the read that was
+  // actually asked AND that read's claims VALIDATED and ANSWER it, the validated
+  // render outranks the kept draft. Ordered ABOVE rule 2 because outranking rule 2 is
+  // the entire fix, and BELOW rule 1 because no-leak/safety-first stays the hard
+  // invariant nothing may override.
+  //
+  // This NEVER masks a real refusal — the predicate declines a mutation-shaped turn
+  // outright, so a staff member who genuinely tried to change the hours and got
+  // refused still sees the refusal (see ops-write-twin-rescue.ts, conjunct 4). It also
+  // leaves rule 2's REQUEST_CONFIRMATION / ESCALATE legs completely untouched, so
+  // park/confirm semantics for legitimate action turns are unchanged.
+  //
+  // Absent signal (customer plane) → skipped entirely → byte-identical.
+  if (
+    signals.writeTwinReadRescue === true &&
+    isOpsWriteTwinReadRescue({
+      decisionKind: ctx.decision.kind,
+      envelopeKinds: ctx.plan.envelopes.map((e) => String(e.kind)),
+      claimsTerminal: claims.terminal,
+      perClaim: claims.perClaim,
+      requestText: requestText ?? "",
+    })
+  ) {
+    return { decision: "render", mechanism: "write_twin_read_render" };
   }
 
   // Rule 2 — the live action decision's deterministic kernel reply is the deliverable.
@@ -132,6 +211,20 @@ export function decideRenderPrecedence(
     ctx.plan.envelopes.length >= 1
   ) {
     return { decision: "keep_draft", mechanism: "committed_mutation_action" };
+  }
+
+  // Rule 3c (LE2 decision 6) — the READ analog of 3b: a DETERMINISTIC read render is
+  // the turn's deliverable and must WIN over a DEGENERATE (non-RENDER) claims render.
+  // The ops plane's BKL-100 read-answer governor answers a staff read from the ACTUAL
+  // captured read (no model call, no authored number); replacing that grounded answer
+  // with "Não localizei essa informação confirmada agora" because an UNRELATED claim
+  // candidate failed would DESTROY true information — the mirror image of the
+  // confabulation the pipeline exists to stop. Rule 1 (suppression/ESCALATE) and rule
+  // 3 (validated read) are already peeled off above, so this only ever fires on the
+  // safe degenerate-render case, and a genuinely VALIDATED claim still supersedes.
+  // Absent signal (customer plane) → skipped → byte-identical.
+  if (signals.deterministicReadRender === true) {
+    return { decision: "keep_draft", mechanism: "deterministic_read_render" };
   }
 
   // Rule 4 — a conversational degrade: the request SHAPE decides render-safe vs prose.

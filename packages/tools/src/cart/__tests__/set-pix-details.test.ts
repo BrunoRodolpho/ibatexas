@@ -353,7 +353,7 @@ describe("setPixDetails — sanitization", () => {
   })
 
   it("strips control characters from a CPF and still validates the digits", async () => {
-    const result = await setPixDetails({ cpf: "529.982.247-25 <x>" }, CTX)
+    const result = await setPixDetails({ cpf: "529.982.247-25\x00<x>" }, CTX)
 
     expect(result.valid).toBe(true)
     expect(result.event?.payload.cpf).toBe(VALID_CPF)

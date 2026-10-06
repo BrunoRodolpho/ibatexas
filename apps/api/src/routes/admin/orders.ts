@@ -17,6 +17,10 @@ import {
   prisma,
   type OrderStatusTransitionPayload,
   type FiscalDocumentRecord,
+  type OrderCommandService,
+  type OrderQueryService,
+  type PaymentQueryService,
+  type FiscalDocumentService,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import { requireManagerRole } from "../../middleware/staff-auth.js";
@@ -175,6 +179,58 @@ function buildFallbackOrderDetail(order: Record<string, unknown>) {
 
 // ── PATCH helpers ───────────────────────────────────────────────────────────
 
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+// ── R5 rollout, family 5 — this route's Redis client seam ───────────────────
+//
+// The ONE `getRedisClient()` call this module used to make directly now
+// resolves through `AdminOrderRouteDeps.redis`.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule) ─────────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream}. MEASURED for
+// this module: the downstream half is EMPTY. Every `redis` occurrence in the
+// file was read (not just the one call site): the client is bound to a
+// function-local `const` and its single command is issued on it directly. No
+// site passes `redis` to anything.
+//
+// ── The HAND-IT-TO read (#548's rule, and its negative half) ───────────────
+//
+// This handler's other collaborators were read for a client parameter, not
+// only for a Redis call of their own. None takes one:
+//
+//   • `commandSvc.transitionStatusFromEnvelope(envelope)` — envelope only.
+//     `createOrderCommandService(log, { auditSink, authGuards })` has no
+//     Redis member; the kernel itself is pure (no I/O).
+//   • `medusaAdmin(path)` — HTTP.
+//   • `publishNatsEvent(subject, payload)` — NATS.
+//   • `getAuditSink()` / `staffRoleGuard` — no arguments / a guard fn.
+//
+// So there is no `atomicIncr`-shaped hand-off here: the class that made
+// `auth.ts`, `analytics.ts` and `whatsapp-webhook.ts` Lua-gated in #548 does
+// not reach this file, and there is no `eval`/`multi` in its own text either.
+//
+// ── Feature detection: MEASURED, none ─────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/middleware` and `packages/tools/src`: zero live Redis probes.
+
+/**
+ * The PATCH idempotency dedup gate: one `SET key "1" EX 300 NX`, whose null
+ * return IS the duplicate verdict.
+ */
+type StatusDedupRedis = Pick<RedisClient, "set">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route issues — the type
+ * `AdminOrderRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived from the per-consumer type
+ * above: a derived union can never disagree with its consumer, so it could
+ * not catch a consumer that grew a command nobody declared (F-14).
+ */
+export type AdminOrderRouteRedisClient = Pick<RedisClient, "set">;
+
 type PatchRespond = { kind: "respond"; code: number; body: Record<string, unknown> };
 type KernelAttemptResult =
   | PatchRespond
@@ -199,9 +255,12 @@ type FallbackResult =
     };
 
 /** Reserve the x-request-id dedup key; returns true when the request is a duplicate. */
-async function isDuplicateStatusRequest(requestId: string | undefined): Promise<boolean> {
+async function isDuplicateStatusRequest(
+  resolveRedis: () => Promise<StatusDedupRedis>,
+  requestId: string | undefined,
+): Promise<boolean> {
   if (!requestId) return false;
-  const redis = await getRedisClient();
+  const redis: StatusDedupRedis = await resolveRedis();
   const dedupKey = rk(`order:status:dedup:${requestId}`);
   const isNew = await redis.set(dedupKey, "1", { EX: 300, NX: true });
   return !isNew;
@@ -379,23 +438,104 @@ async function loadUpdatedOrderResponse(querySvc: OrderQuerySvc, id: string) {
   }
 }
 
-export async function orderRoutes(server: FastifyInstance): Promise<void> {
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Factories, not instances (the R5-S2 rule), and here that property is
+// load-bearing rather than stylistic: `orderCommandService` closes over a
+// `getAuditSink()` call that MUST NOT run until the onReady hook. Because the
+// member is a factory, resolving the dep set in the plugin body constructs
+// nothing and calls nothing — the sink is still resolved inside onReady, after
+// bootstrapAuditSinkDI(). The T8 conformance gate
+// (src/__tests__/bypass-detection/audit-sink-bootstrap-order-conformance.test.ts)
+// pins that: it scans the plugin-body prefix with onReady bodies blotted out,
+// and this block lives at MODULE level, outside that prefix.
+//
+// The other three keep their registration-time construction timing exactly.
+
+/** The domain services `admin/orders.ts` resolves through the seam. */
+export interface AdminOrderRouteDeps {
+  /**
+   * Builds the audit-wired, staff-role-guarded OrderCommandService behind
+   * `order.status.transition`. Invoked from the onReady hook ONLY — calling it
+   * during plugin-body execution would throw AuditSinkNotInitializedError and
+   * crash production boot.
+   */
+  readonly orderCommandService: () => OrderCommandService;
+  /** Builds the OrderQueryService behind the list + detail projection reads. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the PaymentQueryService for the active-payment batch + detail read. */
+  readonly paymentQueryService: () => PaymentQueryService;
+  /** Builds the FiscalDocumentService for the detail view's fiscal section. */
+  readonly fiscalDocumentService: () => FiscalDocumentService;
+  /**
+   * Resolves the Redis client the PATCH idempotency gate issues against
+   * (R5 rollout, family 5 — see the Pick analysis above `StatusDedupRedis`).
+   *
+   * A FACTORY returning a promise, not an instance, so the `await` stays
+   * exactly where it was — per REQUEST, inside the guard. An instance would
+   * hoist the resolution to registration and change when a Redis outage first
+   * surfaces (today: on the first PATCH carrying an `x-request-id`, as a 502
+   * through this handler's outer catch — never at boot).
+   */
+  readonly redis: () => Promise<AdminOrderRouteRedisClient>;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/admin/index.ts is unchanged.
+ */
+export interface AdminOrderRoutesOptions {
+  readonly deps?: Partial<AdminOrderRouteDeps>;
+}
+
+/**
+ * The production set — byte-for-byte the construction this file did inline.
+ * Takes `server` because two of the four constructions bind `server.log`.
+ */
+function defaultAdminOrderRouteDeps(server: FastifyInstance): AdminOrderRouteDeps {
+  return {
+    orderCommandService: () =>
+      createOrderCommandService(server.log, {
+        auditSink: getAuditSink(),
+        // BKL-074 — kernel role backstop: staffRoleGuard gates the admin
+        // order.status.transition path (inert unless an `admin:` envelope).
+        authGuards: [staffRoleGuard],
+      }),
+    orderQueryService: () => createOrderQueryService(),
+    paymentQueryService: () => createPaymentQueryService(),
+    fiscalDocumentService: () => createFiscalDocumentService(),
+    redis: () => getRedisClient(),
+  };
+}
+
+function resolveAdminOrderRouteDeps(
+  server: FastifyInstance,
+  options?: AdminOrderRoutesOptions,
+): AdminOrderRouteDeps {
+  return { ...defaultAdminOrderRouteDeps(server), ...(options?.deps ?? {}) };
+}
+
+export async function orderRoutes(
+  server: FastifyInstance,
+  options?: AdminOrderRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so NOTHING is
+  // constructed here — which is what keeps `commandSvc`'s `getAuditSink()`
+  // inside the onReady hook below. See the AdminOrderRouteDeps block above.
+  const deps = resolveAdminOrderRouteDeps(server, options);
   // Defer audit-sink resolution to onReady (see adminPaymentRoutes for
   // the full rationale — boot-order race between plugin-body execution
   // during buildServer() and bootstrapAuditSinkDI() in index.ts).
-  let commandSvc!: ReturnType<typeof createOrderCommandService>;
+  let commandSvc!: OrderCommandService;
   server.addHook("onReady", async () => {
-    commandSvc = createOrderCommandService(server.log, {
-      auditSink: getAuditSink(),
-      // BKL-074 — kernel role backstop: staffRoleGuard gates the admin
-      // order.status.transition path (inert unless an `admin:` envelope).
-      authGuards: [staffRoleGuard],
-    });
+    commandSvc = deps.orderCommandService();
   });
-  const querySvc = createOrderQueryService();
-  const paymentQuerySvc = createPaymentQueryService();
-  const fiscalSvc = createFiscalDocumentService();
+  const querySvc = deps.orderQueryService();
+  const paymentQuerySvc = deps.paymentQueryService();
+  const fiscalSvc = deps.fiscalDocumentService();
 
   // ── GET /api/admin/orders ──────────────────────────────────────────────────
   // INTENTIONALLY open to any authenticated staff (no requireManagerRole),
@@ -601,7 +741,7 @@ export async function orderRoutes(server: FastifyInstance): Promise<void> {
 
       try {
         // Idempotency guard via x-request-id (catches double-clicks)
-        if (await isDuplicateStatusRequest(requestId)) {
+        if (await isDuplicateStatusRequest(deps.redis, requestId)) {
           return reply.code(409).send({ error: "Requisicao duplicada." });
         }
 

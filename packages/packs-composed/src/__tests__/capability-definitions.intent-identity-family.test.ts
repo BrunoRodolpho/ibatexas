@@ -42,12 +42,13 @@ import { whatsappCapabilityPlanner } from "@ibatexas/pack-whatsapp"
 
 import {
   CAPABILITY_DEFINITIONS,
+  EXPECTED_CAPABILITY_COUNT,
   generateIntentKindsMirror,
   generateKnownIntentKinds,
   generatePackIntents,
   generatePlannerAllowedIntents,
-} from "../capability-definitions/index.js"
-import type { CapabilityDefinition, CapabilityPackId } from "../capability-definitions/index.js"
+} from "@ibatexas/catalog"
+import type { CapabilityDefinition, CapabilityPackId } from "@ibatexas/catalog"
 
 const ALL_PACKS: readonly CapabilityPackId[] = [
   "ibatexas/pack-orders",
@@ -61,7 +62,7 @@ const ALL_PACKS: readonly CapabilityPackId[] = [
 // ── Family 1: KNOWN_INTENT_KINDS ─────────────────────────────────────────
 
 describe("codegen-freshness gate — KNOWN_INTENT_KINDS (FE-T20 family 1)", () => {
-  it("reproduces KNOWN_INTENT_KINDS byte-for-byte (set contents) from the 58 authored definitions + the two real external inputs", () => {
+  it("reproduces KNOWN_INTENT_KINDS byte-for-byte (set contents) from the authored definitions + the two real external inputs", () => {
     const generated = generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
       // Real runtime materialization — the actual installed PIX pack's own
       // declared intents, never a hand-retyped literal.
@@ -75,17 +76,26 @@ describe("codegen-freshness gate — KNOWN_INTENT_KINDS (FE-T20 family 1)", () =
     expect([...paymentsPixPack.intents].sort()).toEqual([...PIX_INTENT_KINDS].sort())
   })
 
-  it("the 58 authored definitions alone (no external inputs) cover exactly KNOWN_INTENT_KINDS minus the 3 pix + 1 loyalty kinds", () => {
-    // 66 → 61 (BKL-176 retired 5 dead payment.charge.*) → 59 (BKL-177 PR-A
-    // retired order.cancel.system + reservation.waitlist.notify) → 57 (BKL-177
-    // PR-B retired whatsapp.message.send + template.send) → 58 (NEW-014 added
-    // the system-only order.fiscal.emit).
-    expect(CAPABILITY_DEFINITIONS).toHaveLength(58)
+  it("the authored definitions alone (no external inputs) cover exactly KNOWN_INTENT_KINDS minus the 3 pix + 1 loyalty kinds", () => {
+    // The history this count walked, kept because it is the record of WHICH
+    // kinds moved and why, which the constant cannot carry: 66 → 61 (BKL-176
+    // retired 5 dead payment.charge.*) → 59 (BKL-177 PR-A retired
+    // order.cancel.system + reservation.waitlist.notify) → 57 (BKL-177 PR-B
+    // retired whatsapp.message.send + template.send) → 58 (NEW-014 added the
+    // system-only order.fiscal.emit) → 59 (LE2-021 added order.reorder.request,
+    // the reorder-last workflow's anchor) → 61 (LE2-023 added
+    // order.coupon.swap.request, the swap-for-coupon anchor, and
+    // order.coupon.adjust, the workflow-scoped target of that workflow's
+    // coupon_on_placed_order branch — declared so the branch can name it while
+    // shipping CLOSED, and refused by the kernel's default_deny if it ever ran)
+    // → 62 (LE2-024: +order.cancel.request, the paid-cancel workflow's anchor).
+    // The LIVE number is EXPECTED_CAPABILITY_COUNT — R6-S4; do not re-spell it.
+    expect(CAPABILITY_DEFINITIONS).toHaveLength(EXPECTED_CAPABILITY_COUNT)
     const registryOnly = generateKnownIntentKinds(CAPABILITY_DEFINITIONS, {
       pixIntentKinds: [],
       loyaltyIntentKinds: [],
     })
-    expect(registryOnly.size).toBe(58)
+    expect(registryOnly.size).toBe(EXPECTED_CAPABILITY_COUNT)
     const pixSet = new Set<string>(PIX_INTENT_KINDS)
     const expected = new Set(
       [...KNOWN_INTENT_KINDS].filter((k) => !pixSet.has(k) && !LOYALTY_INTENT_KINDS.has(k)),
@@ -135,6 +145,15 @@ describe("codegen-freshness gate — per-pack type-union mirror (FE-T20 family 2
 })
 
 // ── Family 3: per-pack runtime intents[] (each Pack's own PackV0.intents) ──
+//
+// R6 leg 1a made those six arrays GENERATED regions, so they now have a SECOND
+// gate — regen-pack-intents-freshness.test.ts, which diffs each pack's
+// committed SOURCE TEXT against a fresh `buildPackIntentsRegion()`. This
+// describe block is KEPT, not superseded: it reads the RUNTIME-LOADED
+// `xxxPack.intents` value the application actually imports, which is the only
+// side that can catch the array arriving from somewhere other than the spliced
+// region (a stale dist, a re-export, a filtered copy). The source-text gate
+// records the same reasoning from its own end.
 
 describe("codegen-freshness gate — per-pack runtime intents[] (FE-T20 family 3)", () => {
   it("ibatexas/pack-orders: reproduces ordersPack.intents byte-for-byte", async () => {

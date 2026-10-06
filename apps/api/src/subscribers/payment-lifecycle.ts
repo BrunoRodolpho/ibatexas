@@ -131,6 +131,14 @@ async function kernelAuthorizedMutation(
 // `order.escalation_needed` publish was removed here: it had NO subscriber (a
 // dead event that evaporated). The DLQ is the durable recovery record; the honest
 // staff-escalation path is the #320 chain, not this event.
+//
+// F-48 (completion of BKL-181): BKL-181 removed only THIS producer. Three more
+// survived in the cart tools (amend-order remove/update_qty past PONR,
+// cancel-order past PONR) and kept telling customers "Um atendente foi
+// notificado" into the void. They now publish `support.handoff_requested` (the
+// ratified staff spine — see packages/tools/src/cart/_escalation.ts). The
+// `order.escalation_needed` subject has ZERO producers repo-wide and is RETIRED;
+// this comment is its history, not a live reference.
 async function escalateTransitionError(
   err: unknown,
   ctx: {

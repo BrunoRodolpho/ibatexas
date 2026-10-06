@@ -38,6 +38,20 @@ import { Pool } from "pg";
 import type { FastifyInstance } from "fastify";
 import { createAuditRedactor } from "@ibatexas/audit-sink";
 import { logger } from "../lib/logger.js";
+// LE2-030 — one vocabulary for "this reply did not land", shared with the writer.
+import { FAILED_WHATSAPP_STATUSES } from "../whatsapp/delivery-store.js";
+// LE2-031 — the rail reads as customers, not kernel sessions. The identity
+// ladder + ordering live in a pure module so they are unit-pinnable.
+import { groupConversationsByCustomer } from "./qa-rca-grouping.js";
+// RCA-legibility (spans route) — the PURE span classifiers, replayed server-side
+// on a turn's archived inbound text. First ../claustrum/ imports in this file:
+// both modules are pure data + functions (no I/O, no env, no model), so the
+// dev-route module graph widens without any boot-order or side-effect hazard.
+import {
+  classifyRequestSpans,
+  decomposeRequiredClaims,
+} from "../claustrum/required-claim-decomposer.js";
+import { classifyOnlyRequiredTypes } from "../claustrum/classify-only-reads.js";
 
 // Dedicated lazy read pool (own connection, not the bootstrap writer pool — the
 // RCA surface is dev-only and strictly read-only). connectionString mirrors
@@ -238,6 +252,22 @@ const VL_FIELD_ALLOWLIST = [
   "inbound", // conductor's 280-char REDACTED inbound text
   "response", // conductor's 280-char REDACTED reply text
   "errorCode",
+  // RCA-legibility — reply-provenance fields: the precedence verdict
+  // (claims.render_precedence), the safe-template identity
+  // (claims.template_selected), the claim-planner walls
+  // (claim_planner.proposal_summary / classify_only), and the funnel tier.
+  "mechanism",
+  "decision",
+  "plane",
+  "templateId",
+  "terminal",
+  "forcedTerminal",
+  "suppressedTypes",
+  "suppressionCount",
+  "envelopeCount",
+  "tier",
+  "funnelTier",
+  "funnelReason",
 ] as const;
 function vlFields(l: VlRaw): Record<string, string> | null {
   let out: Record<string, string> | null = null;
@@ -270,6 +300,58 @@ async function probeStore(fn: () => Promise<unknown>): Promise<StoreProbe> {
   } catch (err) {
     return { ok: false, latencyMs: Date.now() - t0, error: (err as Error).message };
   }
+}
+
+// ── LE2-031: the phone-hash identity lane ───────────────────────────────────
+
+/** Best-effort salted phone hash per conversation — the fallback identity for a
+ *  guest who never became a customer row. Two independent sources, because they
+ *  cover each other's blind spot: `whatsapp_delivery` has a row whenever a reply
+ *  was HANDED to Twilio (LE2-030), and `conversation_incidents` has one exactly
+ *  when a reply never landed. Delivery wins on conflict (it is written at send,
+ *  the incident lane is derived).
+ *
+ *  Each source degrades on its own — an absent table leaves those sessions
+ *  without a hash, which lands them in the explicit "unidentified" bucket
+ *  rather than 500-ing the rail. Same fail-safe posture as every other read
+ *  here; the value is a hash, never a phone number. */
+async function fetchPhoneHashes(ids: ReadonlyArray<string>): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (ids.length === 0) return out;
+  const read = async (sql: string, lane: string): Promise<Array<Record<string, unknown>>> => {
+    try {
+      return (await pool().query(sql, [ids])).rows as Array<Record<string, unknown>>;
+    } catch (err) {
+      logger.warn(
+        { component: "qa-rca", lane, err: (err as Error).message },
+        "phone-hash lane unavailable — sessions fall back to the unidentified bucket",
+      );
+      return [];
+    }
+  };
+  const [incidents, deliveries] = await Promise.all([
+    read(
+      `SELECT DISTINCT ON (session_id) session_id AS conversation_id, phone_hash
+       FROM ibx_domain.conversation_incidents
+       WHERE session_id = ANY($1) AND phone_hash IS NOT NULL
+       ORDER BY session_id, last_drop_at DESC`,
+      "incidents",
+    ),
+    read(
+      `SELECT DISTINCT ON (conversation_id) conversation_id, phone_hash
+       FROM whatsapp_delivery
+       WHERE conversation_id = ANY($1) AND phone_hash IS NOT NULL
+       ORDER BY conversation_id, sent_at DESC`,
+      "delivery",
+    ),
+  ]);
+  // Delivery applied last so it wins on conflict.
+  for (const r of [...incidents, ...deliveries]) {
+    const conv = str(r.conversation_id);
+    const hash = str(r.phone_hash);
+    if (conv !== null && hash !== null && hash.length > 0) out.set(conv, hash);
+  }
+  return out;
 }
 
 // ── routes ──────────────────────────────────────────────────────────────────
@@ -365,19 +447,29 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       ).rows;
     }
 
-    // Best-effort enrichment: channel + chat cuid + last archived message from
-    // the domain schema. Message content is redacted server-side (see header).
+    // Best-effort enrichment: channel + chat cuid + customer id + last archived
+    // message from the domain schema. Message content is redacted server-side
+    // (see header). customer_id is the TOP rung of LE2-031's identity ladder —
+    // when this enrichment is skipped every session falls back to the phone
+    // hash and then to the explicit "unidentified" bucket, never to a guess.
     const meta = new Map<
       string,
-      { channel: string | null; chatCuid: string | null; lastText: string | null; lastRole: string | null }
+      {
+        channel: string | null;
+        chatCuid: string | null;
+        customerId: string | null;
+        lastText: string | null;
+        lastRole: string | null;
+      }
     >();
     const ids = rows
       .map((r) => str((r as Record<string, unknown>).session_id))
       .filter((v): v is string => v !== null);
+    const phoneHashes = fetchPhoneHashes(ids);
     if (ids.length > 0) {
       try {
         const enr = await pool().query(
-          `SELECT c.session_id, c.id AS chat_cuid, c.channel, m.content, m.role
+          `SELECT c.session_id, c.id AS chat_cuid, c.channel, c.customer_id, m.content, m.role
            FROM ibx_domain.conversations c
            LEFT JOIN LATERAL (
              SELECT content, role FROM ibx_domain.conversation_messages
@@ -393,6 +485,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
             meta.set(sid, {
               channel: str(r.channel),
               chatCuid: str(r.chat_cuid),
+              customerId: str(r.customer_id),
               lastText: content !== null ? redactText(content).slice(0, 160) : null,
               lastRole: str(r.role),
             });
@@ -402,6 +495,7 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
         logger.warn({ component: "qa-rca", err: (err as Error).message }, "conversation enrichment skipped");
       }
     }
+    const hashes = await phoneHashes;
 
     const conversations = rows
       .map((r) => {
@@ -417,12 +511,21 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
           lastText: m?.lastText ?? null,
           lastRole: m?.lastRole ?? null,
           turnCount: num(row.turns) ?? 0,
+          // LE2-031 identity columns — the rail groups on these, and they are
+          // both opaque (a cuid and a salted hash); no PII crosses the wire.
+          customerId: m?.customerId ?? null,
+          phoneHash: hashes.get(sid) ?? null,
         };
       })
       .filter((c) => pushedDown || channels === null || channels.has(c.channel))
       .slice(0, limit);
 
-    return { conversations };
+    // LE2-031 — the rail's top-level rows. Derived from exactly the
+    // conversations served above (after filtering + LIMIT), so a group never
+    // references a session the client cannot see. The flat `conversations`
+    // array stays on the wire unchanged: the sub-rows, the channel facets and
+    // every existing consumer still read it.
+    return { conversations, groups: groupConversationsByCustomer(conversations) };
   });
 
   // ── turns of one conversation ─────────────────────────────────────────────
@@ -558,8 +661,14 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       const window = WINDOW_RE.test(request.query.window ?? "") ? (request.query.window as string) : null;
 
       // 1) resolve conversation + span from turn_trace (the only plaintext key).
+      // LE2-014: catalog_version rides along on this same aggregate — it is
+      // stamped identically on every row of the turn (turn_trace has no root
+      // row), so max() reads the turn's single value without a second query.
+      // NULL for turns written before the column existed; surfaced as null, not
+      // guessed.
       const head = await pool().query(
-        `SELECT conversation_id, min(recorded_at) AS started_at, max(recorded_at) AS ended_at
+        `SELECT conversation_id, min(recorded_at) AS started_at, max(recorded_at) AS ended_at,
+                max(catalog_version) AS catalog_version
          FROM turn_trace WHERE turn_id = $1 GROUP BY conversation_id LIMIT 1`,
         [turnId],
       );
@@ -567,8 +676,9 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
       const conv = str(h.conversation_id);
       const startedAt = iso(h.started_at);
       const endedAt = iso(h.ended_at);
+      const catalogVersion = num(h.catalog_version);
 
-      const degraded = { adj: false, vl: false };
+      const degraded = { adj: false, vl: false, wire: false, delivery: false };
 
       // 2) [LLM] the model calls, then [ADJ] via this turn's intent hashes —
       //    the [LLM]→[ADJ] chain, the [VL] fetch, and the context enrichment
@@ -666,7 +776,85 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
         }
       })();
 
-      const [{ llm, adj }, vl, enrich] = await Promise.all([llmAdjBranch, vlBranch, enrichBranch]);
+      // [WIRE] Wire Truth — the durable request/response exchanges captured at
+      // the model relay (llm_wire, one row per ATTEMPT: retries share a
+      // call_index across ascending seq). Fail-safe to empty + flagged, so a
+      // pre-capture turn (or a DB without the table yet) reads as explicit
+      // absence, never as breakage.
+      const wireBranch = (async () => {
+        try {
+          const wireRes = await pool().query(
+            `SELECT seq, call_index, model, request_jsonb, response_jsonb, request_hash,
+                    request_truncated, response_truncated, recorded_at
+             FROM llm_wire WHERE turn_id = $1 ORDER BY seq`,
+            [turnId],
+          );
+          return wireRes.rows.map((r) => {
+            const row = r as Record<string, unknown>;
+            return {
+              seq: num(row.seq) ?? 0,
+              callIndex: num(row.call_index),
+              model: str(row.model),
+              request: row.request_jsonb ?? null,
+              response: row.response_jsonb ?? null,
+              requestHash: str(row.request_hash),
+              requestTruncated: row.request_truncated === true,
+              responseTruncated: row.response_truncated === true,
+              recordedAt: iso(row.recorded_at),
+            };
+          });
+        } catch (err) {
+          degraded.wire = true;
+          logger.warn({ component: "qa-rca", err: (err as Error).message }, "[WIRE] read degraded to empty");
+          return [];
+        }
+      })();
+
+      // [DELIVERY] LE2-030 — the Twilio delivery confirmation per outbound reply
+      // part (whatsapp_delivery, one row per SID captured at send). Same
+      // fail-safe posture as the wire lane: an unreachable/absent store degrades
+      // to empty AND flags it, so the workbench can tell "no callback yet"
+      // (pending — the normal early state) from "the store did not answer".
+      const deliveryBranch = (async () => {
+        try {
+          const res = await pool().query(
+            `SELECT message_sid, part_index, status, sent_at, status_at,
+                    error_code, error_message, callback_count, source
+             FROM whatsapp_delivery WHERE turn_id = $1 ORDER BY part_index, sent_at`,
+            [turnId],
+          );
+          return res.rows.map((r) => {
+            const row = r as Record<string, unknown>;
+            return {
+              messageSid: str(row.message_sid),
+              partIndex: num(row.part_index) ?? 0,
+              // null = no callback has ever arrived for this SID → "pending".
+              status: str(row.status),
+              sentAt: iso(row.sent_at),
+              statusAt: iso(row.status_at),
+              errorCode: str(row.error_code),
+              errorMessage: str(row.error_message),
+              callbackCount: num(row.callback_count) ?? 0,
+              source: str(row.source),
+            };
+          });
+        } catch (err) {
+          degraded.delivery = true;
+          logger.warn(
+            { component: "qa-rca", err: (err as Error).message },
+            "[DELIVERY] read degraded to empty",
+          );
+          return [];
+        }
+      })();
+
+      const [{ llm, adj }, vl, enrich, wire, delivery] = await Promise.all([
+        llmAdjBranch,
+        vlBranch,
+        enrichBranch,
+        wireBranch,
+        deliveryBranch,
+      ]);
       const channel = enrich.channel;
       const chatCuid = enrich.chatCuid;
       const phoneHash: string | null = null;
@@ -688,6 +876,8 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
             startedAt,
             endedAt,
             durationMs: Number.isFinite(startMs) && Number.isFinite(endMs) ? endMs - startMs : null,
+            // LE2-014 — the catalog this turn ran under (the replay key).
+            catalogVersion,
           },
           llm,
           adj: adj.map((row) => {
@@ -722,11 +912,187 @@ export function registerRcaReadRoutes(server: FastifyInstance): void {
             msg: str(l._msg),
             fields: vlFields(l),
           })),
+          wire,
+          // LE2-030 — per-reply-part Twilio delivery confirmation.
+          delivery,
           degraded,
         },
       };
     },
   );
+
+  // ── span attribution (RCA-legibility) ─────────────────────────────────────
+  // Re-run the DETERMINISTIC span classifiers on the turn's inbound text so the
+  // workbench can show WHY a message routed the way it did (which span nets
+  // fired, which claim types they force, whether the classify-only read path was
+  // eligible) without grepping regexes. The classifiers are pure (no I/O, no
+  // env) — this replays classification, it mutates nothing.
+  //
+  // CAVEATS the response states rather than hides:
+  //  - conversation_messages carries no turn id; the inbound text is matched by
+  //    the SAME [start-5min, start+15s] window heuristic the turns list uses
+  //    (`confidence` says whether the window was unambiguous).
+  //  - the turn's live classifier input was the pre-archival perception text;
+  //    the archived copy is a faithful-but-not-byte-identical replay.
+  //  - L0/L1 funnel turns write no turn_trace rows → 404 here (nothing to
+  //    attribute — those turns never reach the span classifier's consumers).
+  // Structure-only response: span classes + type names + a 120-char redacted
+  // snippet (the same exposure the turns list already grants via userText).
+  server.get<{ Params: { turnId: string } }>(
+    "/internal/qa/rca/turns/:turnId/spans",
+    RL,
+    async (request, reply) => {
+      const turnId = request.params.turnId;
+      if (!SAFE_ID.test(turnId)) return reply.code(400).send({ error: "invalid turn id" });
+
+      const head = await pool().query(
+        `SELECT conversation_id, min(recorded_at) AS started_at
+         FROM turn_trace WHERE turn_id = $1 GROUP BY conversation_id LIMIT 1`,
+        [turnId],
+      );
+      const h = (head.rows[0] ?? {}) as Record<string, unknown>;
+      const conv = str(h.conversation_id);
+      const startedAt = iso(h.started_at);
+      if (conv === null || startedAt === null) {
+        return reply.code(404).send({ error: "turn not found in turn_trace" });
+      }
+
+      // The inbound user message, by the turns-list window heuristic (no turn id
+      // on conversation_messages). ≥2 candidates in the window → "ambiguous";
+      // the LATEST one is still classified (it is the most likely trigger).
+      const startMs = Date.parse(startedAt);
+      let matched: { at: string; content: string } | null = null;
+      let windowCount = 0;
+      try {
+        const msgRes = await pool().query(
+          `SELECT m.content, m.sent_at FROM ibx_domain.conversations c
+           JOIN ibx_domain.conversation_messages m ON m.conversation_id = c.id
+           WHERE c.session_id = $1 AND m.role = 'user'
+             AND m.sent_at >= $2 AND m.sent_at <= $3
+           ORDER BY m.sent_at DESC`,
+          [conv, new Date(startMs - 300_000).toISOString(), new Date(startMs + 15_000).toISOString()],
+        );
+        const rows = msgRes.rows as Array<Record<string, unknown>>;
+        windowCount = rows.length;
+        const top = rows[0];
+        if (top !== undefined) {
+          const at = iso(top.sent_at);
+          const content = str(top.content);
+          if (at !== null && content !== null) matched = { at, content };
+        }
+      } catch {
+        /* domain schema optional — falls through to confidence "none" */
+      }
+
+      if (matched === null) {
+        return {
+          spanClasses: [],
+          requiredTypes: null,
+          classifyOnlyEligible: false,
+          matchedMessageAt: null,
+          snippet: null,
+          confidence: "none",
+        };
+      }
+
+      const spanClasses = classifyRequestSpans(matched.content);
+      // The ownership-free projection — the same call the classify-only gate and
+      // the renderer's §O#15 gate both make (F-12: the decomposition takes no
+      // clock, so this replay reproduces the live required set exactly for any
+      // schedule ask). Ownership is per-turn runtime state this replay does not
+      // have; the set shown is the OVER-INCLUDING one (that demote-only signal
+      // could only shrink it).
+      const requiredTypes = [...decomposeRequiredClaims(spanClasses)];
+      const classifyOnlyEligible = classifyOnlyRequiredTypes(matched.content) !== undefined;
+
+      return {
+        spanClasses,
+        requiredTypes,
+        classifyOnlyEligible,
+        matchedMessageAt: matched.at,
+        snippet: redactText(matched.content).slice(0, 120),
+        confidence: windowCount > 1 ? "ambiguous" : "single_match",
+      };
+    },
+  );
+
+  // ── undelivered replies (LE2-030 AC4) ─────────────────────────────────────
+  // The queryable surface for "which replies never landed": rows whose LATEST
+  // status is a failure (failed / undelivered / canceled), UNION rows that
+  // carry no delivery confirmation at all after a threshold — the silent case,
+  // which is the one that used to be invisible. A reply sent 3 seconds ago with
+  // no callback yet is NOT undelivered, it is pending; the threshold (default
+  // 15 min, Twilio's own delivery window is far shorter) is what separates them.
+  //
+  // Same fail-safe posture as every other read here: an unreachable/absent
+  // store answers `{ rows: [], degraded: true }`, never a 500.
+  server.get<{
+    Querystring: { thresholdMinutes?: string; limit?: string; from?: string; to?: string };
+  }>("/internal/qa/rca/deliveries/undelivered", RL, async (request) => {
+    const thresholdMinutes = Math.min(
+      Math.max(num(request.query.thresholdMinutes) ?? 15, 0),
+      7 * 24 * 60,
+    );
+    const limit = Math.min(Math.max(num(request.query.limit) ?? 100, 1), 500);
+    const from = isoParam(request.query.from);
+    const to = isoParam(request.query.to);
+
+    const params: unknown[] = [[...FAILED_WHATSAPP_STATUSES], thresholdMinutes];
+    let range = "";
+    if (from !== null) {
+      params.push(from);
+      range += ` AND sent_at >= $${params.length}`;
+    }
+    if (to !== null) {
+      params.push(to);
+      range += ` AND sent_at <= $${params.length}`;
+    }
+    params.push(limit);
+
+    try {
+      const { rows } = await pool().query(
+        `SELECT message_sid, turn_id, conversation_id, part_index, phone_hash, source,
+                sent_at, status, status_at, error_code, error_message, callback_count,
+                CASE WHEN status = ANY($1::text[]) THEN 'failed' ELSE 'no_confirmation' END AS reason
+         FROM whatsapp_delivery
+         WHERE (status = ANY($1::text[])
+                OR (status IS NULL AND sent_at < now() - make_interval(mins => $2::int)))
+               ${range}
+         ORDER BY sent_at DESC
+         LIMIT $${params.length}`,
+        params,
+      );
+      return {
+        thresholdMinutes,
+        degraded: false,
+        rows: rows.map((r) => {
+          const row = r as Record<string, unknown>;
+          return {
+            messageSid: str(row.message_sid),
+            turnId: str(row.turn_id),
+            conversationId: str(row.conversation_id),
+            partIndex: num(row.part_index) ?? 0,
+            phoneHash: str(row.phone_hash),
+            source: str(row.source),
+            sentAt: iso(row.sent_at),
+            status: str(row.status),
+            statusAt: iso(row.status_at),
+            errorCode: str(row.error_code),
+            errorMessage: str(row.error_message),
+            callbackCount: num(row.callback_count) ?? 0,
+            /** 'failed' = Twilio said so; 'no_confirmation' = silence past the threshold. */
+            reason: str(row.reason),
+          };
+        }),
+      };
+    } catch (err) {
+      logger.warn(
+        { component: "qa-rca", err: (err as Error).message },
+        "undelivered query degraded to empty",
+      );
+      return { thresholdMinutes, degraded: true, rows: [] };
+    }
+  });
 
   // ── find a message by text (ibx-find-msg.sh as a route) ───────────────────
   // Searches the audit ledger's archived message content (populated on

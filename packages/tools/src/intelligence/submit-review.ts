@@ -18,6 +18,34 @@
 //   - Emits a governance audit record via the configured AuditSink
 //   - Delegates to the legacy `submitReview()` for the Prisma write +
 //     aggregate stats lookup
+//
+// ── BKL-243 — two entry points, so a conductor turn adjudicates ONCE ──────
+//
+// Same defect and same fix shape as BKL-232 (`reservation.modify`, PR #386).
+// This tool has two callers, and only ONE of them has already adjudicated:
+//
+//   - `submitReview` (SELF-ADJUDICATING) — the REST `POST /api/me/reviews`
+//     route (apps/api/src/routes/me.ts), which reaches the tool with no kernel
+//     decision behind it. It MUST mint and adjudicate its own envelope or the
+//     mutation would run ungated (CLAUDE.md rule #9).
+//   - `submitReviewPreAdjudicated` (BKL-243) — the claustrum tool registry
+//     (apps/api/src/tools/register-ibatexas-tool-packs.ts). The Conductor has
+//     ALREADY adjudicated this exact `order.review.submit` envelope through the
+//     audited kernel AND claimed its execution-ledger key; re-minting a second
+//     envelope here adjudicated the same intent a second time, and that second
+//     adjudication is AUDIT-BLIND — `createCustomerService()` is called with no
+//     `auditSink`, so an inner REFUSE would silently contradict the audited
+//     EXECUTE with nothing in the trail to show for it.
+//
+// `order.review.submit` is in AUTORESOLVE_CONFIRM_KINDS, so the live shape is a
+// park-then-confirm turn exactly like `reservation.cancel`'s; the resume leg is
+// what dispatches this handler.
+//
+// The inner bundle was also a strict SUBSET of the Conductor's: the composed
+// router carries `refuseUnresolvedReviewProductGuard`
+// (apps/api/src/claustrum/compose-policy-packs.ts) on top of `ordersPolicyBundle`,
+// and it reads a resolver-stamped flag this tool never set. Deleting the inner
+// run removes an unaudited decision without removing any guard coverage.
 
 import { randomUUID } from "node:crypto"
 import { SubmitReviewInputSchema, NonRetryableError, type SubmitReviewInput, type AgentContext } from "@ibatexas/types"
@@ -30,9 +58,83 @@ import type {
 } from "@ibatexas/pack-orders"
 import { getTypesenseClient, COLLECTION } from "../typesense/client.js"
 
-export async function submitReview(
+/**
+ * How the caller reached this tool — i.e. who owns the kernel decision.
+ *
+ * `"self"`      — nobody adjudicated yet; mint + adjudicate an envelope here.
+ * `"conductor"` — the claustrum Conductor already adjudicated this intent and
+ *                 claimed its execution-ledger key; execute, do NOT re-adjudicate
+ *                 (BKL-243).
+ */
+type SubmitReviewAuthority = "self" | "conductor"
+
+/**
+ * The post-write cache refresh + NATS publish + pt-BR result, shared by both
+ * entry points so the pre-adjudicated path cannot drift from the
+ * self-adjudicating one.
+ */
+async function succeed(
+  parsed: SubmitReviewInput,
+  customerId: string,
+  aggregate: { avgRating: number; reviewCount: number },
+): Promise<{ success: boolean; message: string }> {
+  const { productId, orderId, rating } = parsed
+  const { avgRating, reviewCount } = aggregate
+
+  // Update Typesense document (cache layer — stays in tools)
+  const typesense = getTypesenseClient()
+  try {
+    await typesense
+      .collections<Record<string, unknown>>(COLLECTION)
+      .documents(productId)
+      .update({ rating: avgRating, reviewCount })
+  } catch {
+    // Non-fatal: product may not be in Typesense yet
+  }
+
+  // TODO: Add subscriber for review.submitted when review analytics pipeline is built
+  void publishNatsEvent("review.submitted", {
+    eventType: "review.submitted",
+    productId,
+    orderId,
+    customerId,
+    rating,
+    reviewCount,
+    newAvgRating: avgRating,
+  }).catch((err) => console.error("[submit_review] NATS publish error:", (err as Error).message))
+
+  const stars = "⭐".repeat(rating)
+  return {
+    success: true,
+    message: `Avaliação enviada! ${stars} Obrigado pelo seu feedback.`,
+  }
+}
+
+export function submitReview(
   input: SubmitReviewInput,
   ctx: AgentContext,
+): Promise<{ success: boolean; message: string }> {
+  return submitReviewImpl(input, ctx, "self")
+}
+
+/**
+ * BKL-243 — the entry point the claustrum tool registry dispatches on a kernel
+ * EXECUTE. Identical to {@link submitReview} (same auth check, same write, same
+ * Typesense + NATS side effects, same pt-BR result) except that it does NOT
+ * re-adjudicate: the Conductor's audited, ledger-claimed decision is the single
+ * authorization for this mutation.
+ */
+export function submitReviewPreAdjudicated(
+  input: SubmitReviewInput,
+  ctx: AgentContext,
+): Promise<{ success: boolean; message: string }> {
+  return submitReviewImpl(input, ctx, "conductor")
+}
+
+async function submitReviewImpl(
+  input: SubmitReviewInput,
+  ctx: AgentContext,
+  authority: SubmitReviewAuthority,
 ): Promise<{ success: boolean; message: string }> {
   const parsed = SubmitReviewInputSchema.parse(input)
 
@@ -41,6 +143,22 @@ export async function submitReview(
   }
 
   const { productId, orderId, rating, comment } = parsed
+
+  // ── BKL-243 — the Conductor already authorized this intent ─────────
+  // Execute the mutation under its decision. No second envelope, no second
+  // adjudication, no audit-blind inner run.
+  if (authority === "conductor") {
+    const svc = createCustomerService()
+    const aggregate = await svc.submitReview({
+      customerId: ctx.customerId,
+      productId,
+      orderId,
+      rating,
+      ...(comment === undefined ? {} : { comment }),
+      channel: ctx.channel,
+    })
+    return succeed(parsed, ctx.customerId, aggregate)
+  }
 
   // ── Build the IntentEnvelope ────────────────────────────────────────
   // LLM-dispatched mutation → UNTRUSTED taint, principal="llm". The kernel
@@ -93,35 +211,7 @@ export async function submitReview(
     throw new NonRetryableError(message)
   }
 
-  const { avgRating, reviewCount } = outcome.result!
-
-  // Update Typesense document (cache layer — stays in tools)
-  const typesense = getTypesenseClient()
-  try {
-    await typesense
-      .collections<Record<string, unknown>>(COLLECTION)
-      .documents(productId)
-      .update({ rating: avgRating, reviewCount })
-  } catch {
-    // Non-fatal: product may not be in Typesense yet
-  }
-
-  // TODO: Add subscriber for review.submitted when review analytics pipeline is built
-  void publishNatsEvent("review.submitted", {
-    eventType: "review.submitted",
-    productId,
-    orderId,
-    customerId: ctx.customerId,
-    rating,
-    reviewCount,
-    newAvgRating: avgRating,
-  }).catch((err) => console.error("[submit_review] NATS publish error:", (err as Error).message))
-
-  const stars = "⭐".repeat(rating)
-  return {
-    success: true,
-    message: `Avaliação enviada! ${stars} Obrigado pelo seu feedback.`,
-  }
+  return succeed(parsed, ctx.customerId, outcome.result!)
 }
 
 export const SubmitReviewTool = {

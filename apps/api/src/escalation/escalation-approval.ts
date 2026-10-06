@@ -40,7 +40,11 @@ import {
 } from "@adjudicate/core";
 import { adjudicateAndAudit, type PolicyBundle } from "@adjudicate/core/kernel";
 import { buildSupersessionChains } from "@adjudicate/audit";
-import type { ParkedEscalationIntent } from "./escalation-park-store.js";
+import {
+  isEscalationResumableKind,
+  type EscalationResumableKind,
+  type ParkedEscalationIntent,
+} from "./escalation-park-store.js";
 import type { PendingEscalationIntent } from "./escalation-store.js";
 
 /** Audit sink slice `adjudicateAndAudit` needs (structural; AuditSink-compatible). */
@@ -56,6 +60,14 @@ export interface ApprovalAuditSink {
 export type EscalationExecutor = (
   payload: unknown,
   approverStaffId: string,
+  /**
+   * BKL-103 — the approver's ROLE, threaded from the resolve surface. Additive
+   * third parameter: existing executors that ignore it are unaffected. An executor
+   * that composes a further ADJUDICATED step needs it, because the pack overlays
+   * hard-gate on `"OWNER"` and defaulting a role would be inventing authority (the
+   * approved-cancel executor refuses when it is absent).
+   */
+  approverRole: string,
 ) => Promise<void>;
 
 export type EscalationApprovalStatus =
@@ -173,9 +185,26 @@ function refusalTextFor(decision: Decision): string {
  * below (fail-closed): adding a resumable money verb
  * (escalation-park-store.ts `ESCALATION_RESUMABLE_KINDS`) is a deliberate
  * governance decision and MUST name its intended marker basis here.
+ *
+ * BKL-113 — this map is now typed EXHAUSTIVE over `EscalationResumableKind`, so
+ * the "MUST name its intended marker basis here" above is a COMPILE error rather
+ * than a runtime fail-closed only. The runtime `undefined` fallback below is
+ * retained as defense-in-depth (the lookup key is a `string` off the parked
+ * record, which a cast could have widened past the type).
  */
-const REQUIRED_ESCALATION_APPROVAL_BASIS: Readonly<Record<string, string>> = {
+const REQUIRED_ESCALATION_APPROVAL_BASIS: Readonly<
+  Record<EscalationResumableKind, string>
+> = {
   "payment.refund.issue": "refund_escalation_approved",
+  // BKL-103 — the basis reason `gatePaidCancel`'s escalate-band overlay
+  // (@ibatexas/pack-orders policies.ts) emits when the OWNER-approval marker
+  // converts its OWN ESCALATE. Pins WHICH band was allowed to be the converting
+  // factor: the unconditional resume receipt flips ANY REQUEST_CONFIRMATION for
+  // the matching intentHash to EXECUTE, so a cancel that reached CONFIRM through
+  // any OTHER band (e.g. a lowered escalate threshold routing it through
+  // `paid_cancel_requires_confirmation`, which carries NO owner/self-approve
+  // assertion) must NOT be blessed as an approved escalation.
+  "order.cancel": "paid_cancel_escalation_approved",
 };
 
 /**
@@ -193,7 +222,9 @@ function executeReachedViaEscalationMarker(
   decision: Decision,
   intentKind: string,
 ): boolean {
-  const requiredReason = REQUIRED_ESCALATION_APPROVAL_BASIS[intentKind];
+  const requiredReason = isEscalationResumableKind(intentKind)
+    ? REQUIRED_ESCALATION_APPROVAL_BASIS[intentKind]
+    : undefined;
   if (requiredReason === undefined) return false; // unmapped resumable kind → fail closed
   return decision.basis.some(
     (b) =>
@@ -269,9 +300,26 @@ export function createEscalationApprovalEngine(
           principal: parked.actorPrincipal,
           sessionId: parked.actorSessionId,
           ...(parked.actorRole !== undefined ? { role: parked.actorRole } : {}),
+          // LE2-024 — hash-bearing, like `resourceRefs` below. A WORKFLOW
+          // activity's envelope carries the Capsule's `customerId`; without
+          // restoring it the rebuild hashes differently and the integrity check
+          // below refuses every workflow-created approval. Absent for every
+          // planner-minted envelope, so the ops and direct-cancel rebuilds stay
+          // byte-identical.
+          ...(parked.actorCustomerId !== undefined
+            ? { customerId: parked.actorCustomerId }
+            : {}),
         },
         taint: parked.taint,
         nonce: parked.nonce,
+        // BKL-103 — `resourceRefs` are part of the intentHash pre-image, and the
+        // CUSTOMER plane's resolver stamps them on every ownership-gated order kind
+        // (034-F1). Restoring them is what lets the rebuilt envelope hash to the
+        // parked `intentHash` and pass the FIX 3 integrity check below; omitted when
+        // absent, so an ops refund rebuild is byte-identical to pre-BKL-103.
+        ...(parked.resourceRefs !== undefined
+          ? { resourceRefs: parked.resourceRefs }
+          : {}),
       }) as IntentEnvelope;
 
       // FIX 3 — ENFORCE the core integrity claim: the rebuilt envelope MUST hash
@@ -401,7 +449,7 @@ export function createEscalationApprovalEngine(
         };
       }
       try {
-        await executor(parked.payload, approver.id);
+        await executor(parked.payload, approver.id, approver.role);
       } catch (err) {
         // FIX 4c — bind + log the executor error (was silently discarded).
         deps.log?.error(

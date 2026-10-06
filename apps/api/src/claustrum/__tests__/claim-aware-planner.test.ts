@@ -8,9 +8,8 @@
  *   2. POST-planning completeness (§P4/Inv 8/§J.8): an UNMAPPED interrogative/
  *      imperative span → CLARIFY (never silently dropped); a mapped span → its
  *      claim disposition.
- *   3. §O#9 closed-taxonomy safety routing: an UNRECOGNIZED safety marker →
- *      ESCALATE (closed-by-construction); a recognized non-safety request is NOT
- *      over-escalated.
+ *   3. §O#9 safety routing: ANY flagged safety marker → ESCALATE (unconditional
+ *      on what the marker says); a request with NO marker is NOT over-escalated.
  *   4. The produced `CandidateClaim`s match the LINKED `@adjudicate/core` shape,
  *      so Q6a's `runClaimsKernel` consumes them — proven by feeding them through
  *      the real kernel (NOT a stub) and asserting a non-throwing typed result.
@@ -21,7 +20,30 @@
  *   - remove the enum constraint in `selectCandidateClaim` (free-gen) → test (1) RED.
  *   - remove the `mappedClaimType === undefined → CLARIFY` branch in
  *     `checkCompleteness` → test (2) RED.
- *   - remove the unrecognized-marker `→ ESCALATE` default in `routeSafety` → test (3) RED.
+ *   - make `routeSafety` return `undefined` for a NON-EMPTY marker list (let a
+ *     flagged marker pass through as ordinary) → test (3) RED: exactly 3 of the
+ *     §O#9 describe's 5 cases fail (the two marker-present unit cases and the
+ *     `proposeClaims` forced-terminal case); the two no-marker cases stay green,
+ *     as they must. MEASURED by running that mutation, 2026-08-05.
+ *
+ * CORRECTION (2026-08-05). This ledger's third line USED to read "remove the
+ * unrecognized-marker `→ ESCALATE` default in `routeSafety` → test (3) RED".
+ * That claim was FALSE, and measurably so: `routeSafety` consulted a
+ * `RECOGNIZED_SAFETY_MARKERS` set and then returned the IDENTICAL `"ESCALATE"`
+ * from both non-empty branches, so it was observationally
+ * `markers.length === 0 ? undefined : "ESCALATE"` and deleting the
+ * unrecognized-marker branch changed NO behaviour — the whole
+ * `apps/api/src/claustrum` tree (3227 tests) stayed GREEN under that exact
+ * mutation. A ledger is a claim and gets the same standard as the test it
+ * describes; this one had never been run.
+ *
+ * The failure was SAFE — the property test (3) names holds MORE strongly than
+ * test (3) proved (routing is unconditional on marker identity, not merely
+ * safe-by-default on unrecognized ones) — but a dead set reading as a live
+ * taxonomy offers zero resistance to the next person who differentiates
+ * markers, which is the only direction that can weaken §O#9. The set is now
+ * DELETED (claim-registry.ts carries the disposition note) and the
+ * unconditionality it hid is pinned below.
  *
  * Pure unit tests — a hand-built `ModelProvider` mock (no live model), no DB.
  */
@@ -201,18 +223,34 @@ describe("Q6b P4 completeness — unmapped span → CLARIFY (SDD §J.8)", () => 
   });
 });
 
-// ── (3) §O#9 closed-taxonomy safety routing ─────────────────────────────────
+// ── (3) §O#9 safety routing ─────────────────────────────────────────────────
 
-describe("Q6b §O#9 closed-taxonomy safety routing", () => {
-  it("an UNRECOGNIZED safety marker → ESCALATE (closed by construction)", () => {
-    // A novel, attacker-crafted marker string not in the closed taxonomy.
+describe("Q6b §O#9 safety routing", () => {
+  it("an UNRECOGNIZED safety marker → ESCALATE (no pass-through escape)", () => {
+    // A novel, attacker-crafted marker string.
     expect(routeSafety({ markers: ["some-novel-unmodeled-marker"] })).toBe("ESCALATE");
     // SDD §O#9 — harassment / medical-emergency have no typed terminal yet → ESCALATE.
     expect(routeSafety({ markers: ["harassment"] })).toBe("ESCALATE");
     expect(routeSafety({ markers: ["medical-emergency"] })).toBe("ESCALATE");
   });
 
-  it("a recognized NON-safety request (no marker) is NOT over-escalated", () => {
+  it("EVERY flagged marker escalates — recognition is not a condition (the retired RECOGNIZED_SAFETY_MARKERS members included)", () => {
+    // These two strings WERE the entire `RECOGNIZED_SAFETY_MARKERS` set that
+    // `routeSafety` consulted and then ignored (both branches returned
+    // "ESCALATE"), which is why deleting that branch reddened nothing. They
+    // escalate exactly like a novel marker — and this test is the resistance
+    // the old shape did not offer: a future carve-out giving a "recognized"
+    // marker a non-escalate terminal must red HERE, deliberately, rather than
+    // sliding past a set nothing observed.
+    expect(routeSafety({ markers: ["allergen-severe-reaction"] })).toBe("ESCALATE");
+    expect(routeSafety({ markers: ["foodborne-illness"] })).toBe("ESCALATE");
+    // Mixed list: a formerly-"recognized" marker alongside a novel one.
+    expect(
+      routeSafety({ markers: ["allergen-severe-reaction", "some-novel-unmodeled-marker"] }),
+    ).toBe("ESCALATE");
+  });
+
+  it("a request with NO marker is NOT over-escalated", () => {
     expect(routeSafety({ markers: [] })).toBeUndefined();
   });
 

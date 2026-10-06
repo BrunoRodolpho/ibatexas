@@ -136,13 +136,18 @@ describe("composer surfaces", () => {
     const composed = await composer.compose(
       {
         cognition: mkState("cancela"),
-        capabilities: ["order.cancel"],
+        // LE2-024 — re-pointed off `order.cancel`, which is identity-tier now
+        // and so has no generated capability fragment. Any chat-tier kind
+        // exercises the same "acted capability pulls its fragment" property.
+        capabilities: ["order.checkout.create"],
         extra: { surface: RESPONDER_GROUNDED_SURFACE },
       },
       PROMPT_BUDGET,
     );
     expect(composed.fragmentManifest).toContain("ibatexas/responder.grounded");
-    expect(composed.fragmentManifest).toContain("ibatexas/capability.order.cancel");
+    expect(composed.fragmentManifest).toContain(
+      "ibatexas/capability.order.checkout.create",
+    );
     // A capability NOT acted this turn is not pulled in.
     expect(composed.fragmentManifest).not.toContain("ibatexas/capability.reservation.create");
   });

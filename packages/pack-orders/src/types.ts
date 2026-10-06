@@ -55,6 +55,61 @@ import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
  *                                     (composite — produces multiple
  *                                     `order.item.add` envelopes inside the
  *                                     executor).
+ *   - `order.reorder.request`      — UNTRUSTED. LE2-021. ASK to repeat the last
+ *                                     order. The governance ANCHOR of the
+ *                                     `workflow.orders.reorder-last` workflow
+ *                                     and nothing else: it carries the
+ *                                     unconditional whole-workflow CONFIRM
+ *                                     (`confirmReorderLast`) and the no-history
+ *                                     REFUSE, while `order.reorder` above does
+ *                                     the actual rebuilding as a
+ *                                     workflow-scoped activity. Two kinds
+ *                                     because the ASK and the ACT need
+ *                                     different access classes: the ask is
+ *                                     parse-reachable (a workflow's selection
+ *                                     envelope is minted from a parse), the act
+ *                                     never is.
+ *   - `order.coupon.swap.request`  — UNTRUSTED. LE2-023. ASK to cancel a placed
+ *                                     order and rebuild it with a coupon
+ *                                     applied. The governance ANCHOR of the
+ *                                     `workflow.orders.swap-for-coupon`
+ *                                     workflow, on the same ASK/ACT split as
+ *                                     `order.reorder.request` above: it carries
+ *                                     the whole-workflow CONFIRM
+ *                                     (`confirmSwapForCoupon`, which states the
+ *                                     order amount, the refund consequence and
+ *                                     the new total) while the route's own
+ *                                     `order.cancel` / `order.reorder` /
+ *                                     `order.coupon.apply` activities each do
+ *                                     one governed piece of the work.
+ *   - `order.cancel.request`       — UNTRUSTED. LE2-024. ASK to cancel a placed
+ *                                     order. The governance ANCHOR of the
+ *                                     `workflow.orders.paid-cancel` workflow, on
+ *                                     the same ASK/ACT split as the two anchors
+ *                                     above — with one difference that is the
+ *                                     whole point of that ticket: the ACT it
+ *                                     fronts is `order.cancel`, which ALREADY
+ *                                     exists as a directly-parseable capability.
+ *                                     So `confirmPaidCancel` does not author a
+ *                                     new question; it asks `gatePaidCancel`'s
+ *                                     own, through the shared
+ *                                     `paidCancelConfirmText`, and a parity suite
+ *                                     pins the two renders byte-identical.
+ *   - `order.coupon.adjust`        — DECLARED AND UNEXECUTABLE. LE2-023. Apply a
+ *                                     coupon to an ALREADY-PLACED order by
+ *                                     adjusting its price. It is workflow-scoped
+ *                                     (no parse can reach it) AND no guard in
+ *                                     this bundle produces EXECUTE for it, so
+ *                                     the kernel's default REFUSE is the only
+ *                                     verdict it can ever receive. It exists so
+ *                                     the swap-for-coupon workflow's
+ *                                     `coupon_on_placed_order` policy branch can
+ *                                     NAME a real capability while shipping
+ *                                     closed — see that workflow's route and
+ *                                     `WORKFLOW_POLICY_SWITCHES`. Opening the
+ *                                     branch is a catalog edit; making it RUN
+ *                                     additionally requires a pack policy change
+ *                                     here, which is the second of the two locks.
  *   - `order.projection.create`    — SYSTEM. Initial projection row for an
  *                                     order on cart-intelligence subscriber.
  *   - `order.status.transition`    — SYSTEM/TRUSTED. Direct status flip
@@ -66,6 +121,7 @@ import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
  *   - `order.amend.remove_item`    — UNTRUSTED. Granular amend — drop a line.
  */
 export type OrderIntentKind =
+  // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
   | "order.cart.ensure"
   | "order.item.add"
   | "order.item.update"
@@ -84,10 +140,15 @@ export type OrderIntentKind =
   | "order.note.add"
   | "order.review.submit"
   | "order.reorder"
+  | "order.reorder.request"
+  | "order.coupon.swap.request"
+  | "order.cancel.request"
+  | "order.coupon.adjust"
   | "order.projection.create"
   | "order.status.transition"
   | "order.status.reconcile"
   | "order.fiscal.emit"
+  // ═══ END GENERATED REGION ═══
 
 // ── Payloads ────────────────────────────────────────────────────────────
 
@@ -143,6 +204,25 @@ export interface OrderCheckoutCreatePayload {
 export interface OrderCancelPayload {
   readonly orderId: string
   readonly reason?: string
+  /**
+   * BKL-103 — the PROPOSER stamp: the authenticated id of whoever REQUESTED this
+   * cancel (the customer, on both the HTTP and conversational planes). Identity
+   * class — stamped by the host's authenticated write side, NEVER model-fillable
+   * (`actorId` is in `FORBIDDEN_EXTRACTION_FIELD_NAMES`, so no extraction schema
+   * can expose it), mirroring `OrderStatusTransitionPayload.actorId` and
+   * `PaymentRefundIssuePayload.actorId`.
+   *
+   * It exists because `order.cancel` is a RESUMABLE escalation kind
+   * (`ESCALATION_RESUMABLE_KINDS`, apps/api escalation-park-store.ts): the
+   * escalate-band self-approve overlay in `./policies.ts` compares
+   * `approval.approverId !== payload.actorId`, so WITHOUT this stamp the
+   * comparand is `undefined`, the comparison is trivially true, and the deepest
+   * separation-of-duty gate silently degrades (the BKL-113 hazard). Optional so
+   * a legacy/unstamped caller still type-checks — but an unstamped payload
+   * cannot convert an ESCALATE (the overlay requires a non-empty comparand), so
+   * absence fails SAFE (the escalation simply stays escalated).
+   */
+  readonly actorId?: string
 }
 
 export interface OrderCancelSystemPayload {
@@ -240,6 +320,65 @@ export interface OrderReorderPayload {
   readonly paymentMethod: "pix" | "card" | "cash"
 }
 
+/**
+ * LE2-021 — the reorder-last ASK (`order.reorder.request`).
+ *
+ * It carries NO AUTHORED FIELDS, and that absence is the design rather than an
+ * omission. The one value this act needs — WHICH previous order — is the one
+ * value a language model must never supply: an order id it reported would be
+ * indistinguishable from an order id it invented, and the customer would be
+ * shown a confirmation for someone else's basket or for nothing at all. So the
+ * id never rides the payload. `resolveAndAssemble` projects the customer's last
+ * order from an OWNER-SCOPED read and stamps it on `OrderState.ctx`
+ * (`previousOrderId` and friends below), where `confirmReorderLast` reads it to
+ * author the confirm sentence — see that guard in `./policies.ts`.
+ *
+ * The single optional field is written by the WORKFLOW RUNTIME, never by a
+ * parse: it is the instance handle that has to survive the confirm park (see
+ * `WORKFLOW_INSTANCE_PAYLOAD_KEY` in the host). No guard in this Pack reads it;
+ * it is declared only so the payload type does not lie about what is on the
+ * envelope the kernel actually sees.
+ */
+export interface OrderReorderRequestPayload {
+  readonly _workflowInstanceId?: string
+}
+
+/**
+ * LE2-023 — the swap-for-coupon ASK (`order.coupon.swap.request`).
+ *
+ * ── WHY THIS ONE CARRIES AN AUTHORED FIELD AND THE REORDER ASK DOES NOT ──────
+ *
+ * `OrderReorderRequestPayload` above carries nothing because the value its act
+ * needs is an ORDER ID, and an order id a language model reported is
+ * indistinguishable from one it invented. This ask needs a COUPON CODE, which is
+ * the opposite case in the one way that matters: the customer TYPED it. The model
+ * is reporting a string the customer authored in the selecting utterance, not
+ * originating an identifier that names somebody's money — and it arrives through
+ * the workflow's closed slot surface, so `sanitizeWorkflowSlots` drops every key
+ * the workflow does not declare before this payload is built.
+ *
+ * That is exactly the `WorkflowParamSource` `"slot"` member's warrant, and it is
+ * why the swap route can be parameterised at all while the reorder route cannot.
+ *
+ * ── AND WHY THE GUARD STILL DOES NOT QUOTE THIS STRING BACK ──────────────────
+ *
+ * `confirmSwapForCoupon` names the coupon from `ctx.couponCode` — the code the
+ * STORE matched — never from this field. The two differ whenever the customer
+ * types `bemvindo15` and the promotion is `BEMVINDO15`, and quoting the store's
+ * own spelling is both more accurate and structurally safer: an untrusted string
+ * that reached a customer-facing sentence verbatim would be a prose-injection
+ * surface on the one sentence the customer is asked to approve a cancellation
+ * against. The projection round-trips it through the store first; see
+ * `couponCode` on the ctx below.
+ */
+export interface OrderCouponSwapRequestPayload {
+  /** The coupon code the customer authored, verbatim. See the doc above. */
+  readonly code?: string
+  /** Written by the WORKFLOW RUNTIME, never by a parse — the instance handle
+   *  that survives the confirm park. No guard in this Pack reads it. */
+  readonly _workflowInstanceId?: string
+}
+
 export interface OrderProjectionCreatePayload {
   readonly orderId: string
   readonly customerId: string
@@ -312,6 +451,8 @@ export type OrderPayload =
   | OrderNoteAddPayload
   | OrderReviewSubmitPayload
   | OrderReorderPayload
+  | OrderReorderRequestPayload
+  | OrderCouponSwapRequestPayload
   | OrderFiscalEmitPayload
   | OrderProjectionCreatePayload
   | OrderStatusTransitionPayload
@@ -400,6 +541,29 @@ export interface OrderState {
      */
     readonly amendItemConfirmed?: boolean
     /**
+     * BKL-280 — TRUE when the customer's OWN utterance on this turn carried an
+     * explicit stay-home ("não vou poder sair de casa") or delivery-request
+     * ("pago na entrega", "manda pra minha casa") marker.
+     *
+     * Stamped deterministically by the host at resolve time
+     * (`hasStayHomeDeliveryMarker` → `resolveAndAssemble`,
+     * apps/api/src/claustrum/resolve-and-assemble.ts) from a CLOSED list of
+     * literal substrings. Data-independent in the SDD §H sense and, critically,
+     * MODEL-UNFORGEABLE: it is derived from the customer's text, never from the
+     * payload the planner emitted — which is what lets
+     * `confirmDeliveryContradiction` (`./policies.ts`) catch a
+     * `delivery_type: pickup` the model got wrong. Raw prose never reaches the
+     * guard; only this boolean does.
+     *
+     * Like every other host-supplied flag on this ctx, LENIENT WHEN ABSENT: an
+     * unwired host (or the confirm-RESUME path, which re-resolves with no
+     * utterance text) leaves it undefined, the guard returns null, and the
+     * checkout ladder behaves byte-identically to before this flag existed. The
+     * guard only ever ADDS a question; absence can never turn a REFUSE into an
+     * EXECUTE.
+     */
+    readonly stayHomeDeliveryMarker?: boolean
+    /**
      * FE-T05 (Language Engine, HydratedIntentIR provenance) — how the target
      * order for `order.status.transition` was resolved:
      *   - `"authoritative"` — the staff gave an EXPLICIT reference (a display
@@ -431,6 +595,129 @@ export interface OrderState {
      * (the extraction schema simply has no field for the reference to ride).
      */
     readonly orderNamedInMessage?: boolean
+    /**
+     * LE2-021 — THE PREVIOUS ORDER, projected by the host for the reorder-last
+     * workflow's anchor (`order.reorder.request`). Four fields, all optional,
+     * all fail-SAFE when absent.
+     *
+     * # Why they exist at all
+     *
+     * `confirmReorderLast` (`./policies.ts`) has to author a sentence naming
+     * what the customer is about to re-buy — items and total — because a
+     * confirmation that says only "confirma?" buys the customer nothing they
+     * could check. Every other `ctx` field describing money or items on this
+     * state describes the CURRENT cart (`items`, `totalInCentavos`), which for
+     * a reorder is empty or, worse, someone's half-built unrelated basket. So
+     * the previous order needs its own carrier.
+     *
+     * # Why the HOST stamps them and the payload does not carry them
+     *
+     * Same reason as {@link OrderReorderRequestPayload}: the model must not be
+     * the source of an order id or of a price it will then be quoted back on.
+     * The host reads them from the domain `OrderProjection` under an
+     * OWNER-SCOPED query, so the values are first-party by construction and the
+     * guard's sentence is grounded in the same sense every other grounded
+     * action value in this Pack is.
+     *
+     * # Absent means NO HISTORY, and that is a decision, not a gap
+     *
+     * `confirmReorderLast` REFUSEs (honestly, `order.reorder.no_history`) when
+     * `previousOrderId` is absent rather than confirming a repeat of nothing.
+     * Lenient-when-absent here therefore means fail-SAFE, matching
+     * `amendItemConfirmed` above: a host that has not wired the projection sees
+     * the honest refusal, never a bypass.
+     */
+    readonly previousOrderId?: string
+    /** The previous order's DISPLAY number — what a customer recognises. */
+    readonly previousOrderDisplayId?: number
+    /** The previous order's grand total, integer centavos (Hard Rule #2). */
+    readonly previousOrderTotalInCentavos?: number
+    /**
+     * The previous order's lines, in the order the projection recorded them.
+     * `title` is the product name as it was SOLD (the projection's own copy),
+     * never a name re-derived at read time — a reorder confirm that renamed a
+     * product would be quoting something the customer never bought.
+     */
+    readonly previousOrderItems?: ReadonlyArray<{
+      readonly title: string
+      readonly quantity: number
+    }>
+    /**
+     * LE2-023 — the five fields `confirmSwapForCoupon` reads, on the same terms
+     * as the four `previousOrder*` fields above: host-stamped from first-party
+     * reads, all optional, and LENIENT-WHEN-ABSENT MEANING FAIL-SAFE.
+     *
+     * That last property is the one to hold on to, because for this guard it is
+     * doing more work than it does for the reorder ask. Every one of these is a
+     * precondition for a sentence that asks a customer to approve CANCELLING A
+     * REAL ORDER, so the guard REFUSEs on any absence rather than confirming
+     * around it — an unwired host, a failed promotion lookup and a genuinely
+     * unusable coupon all converge on an honest sentence, and none of them can
+     * produce a confirmation for a swap the system could not price.
+     *
+     * The first two are DERIVED host-side (in `previousOrderCtxFields`) from
+     * sets this Pack itself exports — `CUSTOMER_POST_PONR_FULFILLMENT` and
+     * `CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES` — rather than transcribed, so
+     * the projection that decides whether to OFFER the swap and the guards that
+     * will later decide whether to ALLOW the cancel (`requireCancellable`,
+     * `gatePaidCancel`) cannot drift apart.
+     */
+    readonly previousOrderIsCancelable?: boolean
+    /**
+     * Whether the previous order's money is already captured — what makes the
+     * confirm's REFUND CLAUSE true. The sentence states the refund consequence
+     * exactly when this is `true`, because "cancelar implica reembolso" is a
+     * promise about money moving back, and on an unpaid order there is no money
+     * to move. It is also the precise condition under which `gatePaidCancel`
+     * asks its own confirm, which is the question the workflow's declared
+     * coverage covers.
+     */
+    readonly previousOrderPaymentIsSettled?: boolean
+    /** Whether the named coupon is usable RIGHT NOW, from the same
+     *  `evaluatePromotionRecord` predicate the display route and the
+     *  COUPON_VALID claim read. ABSENT when the lookup could not be made at all
+     *  — which is NOT `false`, and the guard treats the two the same way only
+     *  because both refuse (see `coupon-price-projection.ts` on Inv 7). */
+    readonly couponIsValid?: boolean
+    /** What the rebuilt basket costs with the coupon applied, integer centavos
+     *  (Hard Rule #2). ABSENT for every promotion shape this system cannot price
+     *  soundly, so the guard refuses to quote rather than quoting a number
+     *  checkout would not honour. */
+    readonly couponNewTotalInCentavos?: number
+    /**
+     * The coupon code AS THE STORE SPELLS IT — read off the matched promotion
+     * record, never off the envelope payload. See
+     * `OrderCouponSwapRequestPayload` above for why the difference is
+     * load-bearing rather than cosmetic.
+     */
+    readonly couponCode?: string
+    /**
+     * BKL-103 / AUT-017 — the ESCALATE→OWNER-approve→executable-resume marker for
+     * the RESUMABLE `order.cancel` escalation. Structural mirror of
+     * `PaymentState.ctx.escalationApproval` (`@ibatexas/pack-payments`).
+     *
+     * Present ONLY on the adopter-side escalation-approval RESUME path (never on
+     * an ordinary turn): `createEscalationApprovalEngine`
+     * (apps/api/src/escalation/escalation-approval.ts) re-projects the FRESH
+     * order state and stamps this marker, so `gatePaidCancel`'s escalate band
+     * converts its OWN ESCALATE into a REQUEST_CONFIRMATION, which the paired
+     * `confirmationReceipt` (same `intentHash`) then flips to EXECUTE via the
+     * kernel's 2a override. The marker rides STATE, never the payload — so
+     * `intentHash` is unchanged and it is unforgeable from the wire.
+     *
+     * Absent ⟹ the escalate band is BYTE-IDENTICAL to its pre-BKL-103 behaviour
+     * (a >=R$1.000 paid cancel ESCALATEs).
+     */
+    readonly escalationApproval?: {
+      /** The parked envelope's `intentHash` — MUST equal `envelope.intentHash`. */
+      readonly intentHash: string
+      /** The approving staff id (raw staffId — NOT the proposer, checked below). */
+      readonly approverId: string
+      /** The approving staff role — the overlay fires ONLY for `"OWNER"`. */
+      readonly approverRole: string
+      /** ISO-8601 wall-clock of the OWNER approval. */
+      readonly at: string
+    }
   }
 }
 

@@ -39,6 +39,7 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import { medusaAdjudicated } from "../medusa/adjudicated.js";
 import { withLock } from "../redis/distributed-lock.js";
 import { stripeAdjudicated } from "../stripe/adjudicated.js";
+import { publishOrderEscalation } from "./_escalation.js";
 import { createTooledOrderService } from "./_shared.js";
 import { cancelStalePaymentIntent } from "./_stripe-helpers.js";
 
@@ -321,13 +322,14 @@ async function handleRemoveItem(
   }
   const result = await svc.cancelItem(parsed.orderId, customerId, parsed.itemTitle);
 
+  // F-48 — `svc.cancelItem` sets needsEscalation on BOTH its past-PONR refusal
+  // and its order-edit failure, and both tell the customer an attendant was
+  // notified (order.service.ts). Reach the staff spine so that is TRUE.
   if (result.needsEscalation) {
-    void publishNatsEvent("order.escalation_needed", {
+    publishOrderEscalation({
+      situation: "amend_remove_past_ponr",
       orderId: parsed.orderId,
-      customerId,
-      reason: "amend_remove_past_ponr",
-      itemTitle: parsed.itemTitle,
-      timestamp: new Date().toISOString(),
+      displayId: order.display_id,
     });
   }
 
@@ -378,12 +380,12 @@ async function handleUpdateQty(
       : undefined;
     const ponr = getEffectivePonr({ amendMinutes });
     if (!isWithinPonr(new Date(order.created_at), ponr.amendMinutes)) {
-      void publishNatsEvent("order.escalation_needed", {
+      // F-48 — the message below promises an attendant was notified; this is
+      // the publish that makes it true (staff spine, not the dead subject).
+      publishOrderEscalation({
+        situation: "amend_qty_past_ponr",
         orderId: parsed.orderId,
-        customerId,
-        reason: "amend_qty_past_ponr",
-        itemTitle: parsed.itemTitle,
-        timestamp: new Date().toISOString(),
+        displayId: order.display_id,
       });
       return {
         success: false,
@@ -715,6 +717,22 @@ export async function amendOrder(
       fulfillmentStatus: fulfillmentStatus as OrderFulfillmentStatus,
     });
     if (!check.allowed) {
+      // F-48 (governor ruling) — BOTH escalating arms of the shared
+      // remove/update_qty validator tell the customer "Um atendente foi
+      // notificado": the routine 'preparing' denial (:77) and the PONR-expired
+      // denial (:79). This is a PRE-KERNEL early return — no envelope is built
+      // past this point — so the publish belongs here in the tools layer,
+      // exactly like the two past-PONR sites, and carries the same
+      // system-authored-reason posture. Keyed on the validator's own `escalate`
+      // flag, so whichever arm denied is the one that reaches staff.
+      if (check.escalate) {
+        publishOrderEscalation({
+          situation: "amend_denied_needs_staff",
+          orderId: parsed.orderId,
+          displayId: order.display_id,
+          fulfillmentStatus: fulfillmentStatus as OrderFulfillmentStatus,
+        });
+      }
       return {
         success: false,
         message: check.reason,

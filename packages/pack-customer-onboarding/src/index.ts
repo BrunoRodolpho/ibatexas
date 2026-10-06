@@ -178,6 +178,7 @@ export const customerOnboardingPack = {
   version: "1.0.0",
   contract: "v0",
   intents: [
+    // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
     "customer.create",
     "customer.profile.update",
     "customer.preferences.update",
@@ -186,6 +187,7 @@ export const customerOnboardingPack = {
     "customer.address.remove",
     "customer.anonymize",
     "customer.anonymize.cancel",
+    // ═══ END GENERATED REGION ═══
   ],
   policy: customerOnboardingPolicyBundle,
   planner: customerOnboardingCapabilityPlanner,

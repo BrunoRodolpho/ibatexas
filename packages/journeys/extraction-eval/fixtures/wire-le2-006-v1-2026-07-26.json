@@ -1,0 +1,5381 @@
+{
+  "formatVersion": 1,
+  "source": "wire",
+  "id": "wire-le2-006-v1-2026-07-26",
+  "synthetic": false,
+  "note": "LE2-006 wire-constraint V1 AFTER-MEASURE (2026-07-26). REAL observed model completions — NOT hand-authored — captured from the live pinned engine nemotron-3-nano:4b at http://192.168.1.80:11434/v1 (temperature 0, maxTokens 1024) with NO response_format on tool-bearing bodies: this is the V1 wire the branch now sends, which is what makes this fixture the CURRENT-REGIME evidence. Pooled from the 4 serialized V1 passes of the LE2-006 adoption sweep (raw/le2-006/variant-drives-2026-07-26T09-20-00-451Z, 09-24-05-592Z, 09-27-46-437Z, 09-35-07-483Z), same engine session as the 2 V0 control passes. PROVENANCE CAVEAT: the utterances are AUTHORED re-drives, not production traffic, and the capture is from the experiment harness (a scoped fetch interceptor), NOT an export of the llm_wire store. Seam: the REAL production planner createIbatexasPlanner(...).propose() composed exactly as claustrum-bootstrap.ts composes the customer plane and ops-conductor.ts composes the ops plane. `completion` is verbatim choices[0].message.content; `toolCall` is choices[0].message.tool_calls[0]. Utterance ids prefixed ops-hist-/cus-hist- are the BYTE-EXACT historical flagged/ghost turn texts, so this fixture shares join keys with wire-ops-2026-07-21.json and refusal-corpus.yaml (normalizeUtterance does NOT strip accents — 'Ibate' != 'Ibaté'). The V0 counterpart is fixtures-v0-baseline/wire-le2-001-redrive-2026-07-25.json; see results/06-adoption-after-measure-2026-07-26.md.",
+  "artifacts": [
+    {
+      "utterance": "quero uma coca",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:03.013Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona duas linguiças no carrinho",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:06.263Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "linguiça",
+            "quantity": 2
+          }
+        }
+      }
+    },
+    {
+      "utterance": "me vê um brisket e uma batata",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-03",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:10.449Z",
+        "finishReason": "stop"
+      },
+      "completion": "Entendi! Você está vendo um brisket e uma batata. Quer adicionar esses itens ao seu carrinho?"
+    },
+    {
+      "utterance": "quero 3 porções de costela",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:14.310Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "costela",
+            "quantity": 3
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda pra 3 cocas",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-qty-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.update",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:18.373Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.update",
+          "payload": {
+            "item": "coca",
+            "quantidade": 3
+          }
+        }
+      }
+    },
+    {
+      "utterance": "deixa só uma linguiça",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-qty-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.update",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:20.969Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "linguiça"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira a coca do carrinho",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-rm-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.remove",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:27.704Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.remove",
+          "payload": {
+            "productId": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "remove a batata",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-rm-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.remove",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:29.400Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.remove",
+          "payload": {
+            "item": "batata"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aplica o cupom X1234",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-coupon-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.coupon.apply",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:32.302Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.coupon.apply",
+          "payload": {
+            "couponCode": "X1234"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "usa o cupom BEMVINDO10",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-coupon-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.coupon.apply",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:34.891Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.coupon.apply",
+          "payload": {
+            "couponCode": "BEMVINDO10"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero fechar o pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:39.987Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "quero fechar no pix e retirar lá",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:42.757Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "delivery_type": "pickup",
+            "payment_method": "pix"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "finaliza pra mim, pago no cartão, entrega",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:45.337Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "delivery_type": "delivery",
+            "payment_method": "card"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela meu pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-cancel-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:53.356Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.cancel",
+          "payload": {
+            "reason": "cancela meu pedido"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero cancelar o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-cancel-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:55.566Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.cancel",
+          "payload": {
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona uma coca no meu pedido que já fiz",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-amend-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.amend.add_item",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:20:58.359Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.amend.add_item",
+          "payload": {
+            "item": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira a batata do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-amend-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.amend.remove_item",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:05.039Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.amend.remove_item",
+          "payload": {
+            "item": "batata"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "anota que é sem cebola, por favor",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-note-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:09.298Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "sem cebola"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero reservar uma mesa pra 4 pessoas amanhã às 20h",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-resv-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "reservation.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:13.859Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "reservation.create",
+          "payload": {
+            "date": "2025-08-15",
+            "partySize": 4,
+            "preferredTime": "20:00"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela minha reserva",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-resv-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "reservation.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:20.289Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "reservation.cancel",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "gera um novo pix pro meu pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-pix-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.pix.regenerate",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:25.468Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.pix.regenerate",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "põe mais uma coquinha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-05",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:28.526Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "coquinha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero um combo família",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-06",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:31.109Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "combo família"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "pode fechar, pago em dinheiro",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:33.335Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "payment_method": "cash"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "vocês entregam em Ibaté?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-coverage-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:37.938Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, entregamos em Ibate!"
+    },
+    {
+      "utterance": "entrega em Araraquara?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-coverage-02",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:41.104Z",
+        "finishReason": "stop"
+      },
+      "completion": "Entrega em Araraquara? Sim, oferecemos entrega para o bairro de Araraquara. Posso confirmar a disponibilidade para uma data específica ou ajudar com uma reserva?"
+    },
+    {
+      "utterance": "Oi, bom dia!",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-smalltalk-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:44.319Z",
+        "finishReason": "stop"
+      },
+      "completion": "Bom dia! Como posso ajudar?"
+    },
+    {
+      "utterance": "vocês estão abertos agora?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-hours-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:46.770Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, estamos abertos agora!"
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-hist-scare",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:49.519Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, a IbateXas entrega em Ibate! 😊"
+    },
+    {
+      "utterance": "Oi",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-hist-ghost-b",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:53.693Z",
+        "finishReason": "stop"
+      },
+      "completion": "Olá! Como posso ajudar?"
+    },
+    {
+      "utterance": "acabou a picanha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:55.635Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira o brisket do cardápio",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:57.677Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "brisket"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "marca a costela como indisponível",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:21:59.784Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "voltou a linguiça, pode vender de novo",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:02.502Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": true,
+            "productId": "linguiça"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aumenta o preço da picanha pra 95 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:05.388Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 9500,
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda o preço do brisket pra R$ 120,50",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:08.501Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 12050,
+            "productId": "brisket"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "coloca a costela a 78 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:11.675Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 7800,
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o especial de hoje é feijoada por 45 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:15.083Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "hoje",
+            "productId": "feijoada",
+            "promoPriceCentavos": 4500
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda o especial de amanhã pra picanha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:17.777Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "amanhã",
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "coloca a costela como especial de hoje",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:20.254Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "hoje",
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aceita o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:22.991Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "confirmed"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o pedido 4242 tá pronto",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:25.877Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "ready"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o 4242 saiu pra entrega",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:28.748Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "in_delivery"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:31.507Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "canceled"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "anota no pedido 4242 que o cliente pediu sem cebola",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-note-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:33.346Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "cliente pediu sem cebola",
+            "orderId": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona uma observação no pedido da Maria: entregar no portão",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-note-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:37.032Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "entregar no portão",
+            "orderId": "Maria"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "reembolsa 10 reais do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:39.683Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "amount": 10,
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "estorna o pedido da Maria, cliente desistiu",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:43.026Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "orderReference": "pedido da Maria",
+            "reason": "cliente desistiu"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "devolve R$ 25,50 do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:46.690Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "amount": 25.5,
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "amanhã não abre",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:49.196Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "isOpen": false
+          }
+        }
+      }
+    },
+    {
+      "utterance": "fechado dia 25",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:53.873Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "date": "2025-09-25",
+            "isOpen": false
+          }
+        }
+      }
+    },
+    {
+      "utterance": "amanhã abrimos só às 18h",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:22:59.133Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "blocks": [
+              {
+                "end": "23:00",
+                "label": "Jantar",
+                "start": "18:00"
+              }
+            ],
+            "isOpen": true
+          }
+        }
+      }
+    },
+    {
+      "utterance": "resolve o alerta 17",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-alert-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "ops.alert.resolve.staff",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:02.649Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "ops.alert.resolve.staff",
+          "payload": {
+            "alertId": 17
+          }
+        }
+      }
+    },
+    {
+      "utterance": "fecha o incidente 9",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-incident-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "incident.ticket.close.staff",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:06.315Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "incident.ticket.close.staff",
+          "payload": {
+            "incidentId": "9"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "entregamos em Ibaté?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-coverage-01",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:09.387Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "a gente entrega em Araraquara?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-coverage-02",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:11.132Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_napshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "Oi, bom dia!",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-smalltalk-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:14.306Z",
+        "finishReason": "stop"
+      },
+      "completion": "Bom dia! Como posso ajudar?"
+    },
+    {
+      "utterance": "como foi o dia hoje?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-status-q-01",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:15.546Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-scare",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:22.042Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, entregamos em Ibate."
+    },
+    {
+      "utterance": "Oi boa noite",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-ghost-a",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:24.098Z",
+        "finishReason": "stop"
+      },
+      "completion": "Boa noite! Como posso ajudar?"
+    },
+    {
+      "utterance": "Oi",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-ghost-b",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:25.619Z",
+        "finishReason": "stop"
+      },
+      "completion": "Oi! Como posso ajudar?"
+    },
+    {
+      "utterance": "Vocês estão abertos?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-open",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:23:28.025Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "quero uma coca",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:08.101Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona duas linguiças no carrinho",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:11.222Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "linguiça",
+            "quantity": 2
+          }
+        }
+      }
+    },
+    {
+      "utterance": "me vê um brisket e uma batata",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-03",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:15.127Z",
+        "finishReason": "stop"
+      },
+      "completion": "Entendi! Você está vendo um brisket e uma batata. Quer adicionar esses itens ao seu carrinho?"
+    },
+    {
+      "utterance": "quero 3 porções de costela",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:18.817Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "costela",
+            "quantity": 3
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda pra 3 cocas",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-qty-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.update",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:22.673Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.update",
+          "payload": {
+            "item": "coca",
+            "quantidade": 3
+          }
+        }
+      }
+    },
+    {
+      "utterance": "deixa só uma linguiça",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-qty-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.update",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:25.148Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "linguiça"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira a coca do carrinho",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-rm-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.remove",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:31.771Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.remove",
+          "payload": {
+            "productId": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "remove a batata",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-rm-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.remove",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:33.559Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.remove",
+          "payload": {
+            "item": "batata"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aplica o cupom X1234",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-coupon-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.coupon.apply",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:36.395Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.coupon.apply",
+          "payload": {
+            "couponCode": "X1234"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "usa o cupom BEMVINDO10",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-coupon-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.coupon.apply",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:38.981Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.coupon.apply",
+          "payload": {
+            "couponCode": "BEMVINDO10"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero fechar o pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:43.967Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "quero fechar no pix e retirar lá",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:46.769Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "delivery_type": "pickup",
+            "payment_method": "pix"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "finaliza pra mim, pago no cartão, entrega",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:49.331Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "delivery_type": "delivery",
+            "payment_method": "card"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela meu pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-cancel-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:57.275Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.cancel",
+          "payload": {
+            "reason": "cancela meu pedido"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero cancelar o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-cancel-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:24:59.461Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.cancel",
+          "payload": {
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona uma coca no meu pedido que já fiz",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-amend-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.amend.add_item",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:02.341Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.amend.add_item",
+          "payload": {
+            "item": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira a batata do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-amend-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.amend.remove_item",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:09.019Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.amend.remove_item",
+          "payload": {
+            "item": "batata"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "anota que é sem cebola, por favor",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-note-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:13.345Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "sem cebola"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero reservar uma mesa pra 4 pessoas amanhã às 20h",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-resv-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "reservation.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:17.895Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "reservation.create",
+          "payload": {
+            "date": "2025-08-15",
+            "partySize": 4,
+            "preferredTime": "20:00"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela minha reserva",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-resv-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "reservation.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:24.280Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "reservation.cancel",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "gera um novo pix pro meu pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-pix-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.pix.regenerate",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:29.422Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.pix.regenerate",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "põe mais uma coquinha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-05",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:32.366Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "coquinha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero um combo família",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-06",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:34.964Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "combo família"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "pode fechar, pago em dinheiro",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:37.180Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "payment_method": "cash"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "vocês entregam em Ibaté?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-coverage-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:41.819Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, entregamos em Ibate!"
+    },
+    {
+      "utterance": "entrega em Araraquara?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-coverage-02",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:44.999Z",
+        "finishReason": "stop"
+      },
+      "completion": "Entrega em Araraquara? Sim, oferecemos entrega para o bairro de Araraquara. Posso confirmar a disponibilidade para uma data específica ou ajudar com uma reserva?"
+    },
+    {
+      "utterance": "Oi, bom dia!",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-smalltalk-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:48.153Z",
+        "finishReason": "stop"
+      },
+      "completion": "Bom dia! Como posso ajudar?"
+    },
+    {
+      "utterance": "vocês estão abertos agora?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-hours-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:50.668Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, estamos abertos agora!"
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-hist-scare",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:53.424Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, a IbateXas entrega em Ibate! 😊"
+    },
+    {
+      "utterance": "Oi",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-hist-ghost-b",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:57.581Z",
+        "finishReason": "stop"
+      },
+      "completion": "Olá! Como posso ajudar?"
+    },
+    {
+      "utterance": "acabou a picanha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:25:59.677Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira o brisket do cardápio",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:01.666Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "brisket"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "marca a costela como indisponível",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:03.762Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "voltou a linguiça, pode vender de novo",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:06.540Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": true,
+            "productId": "linguiça"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aumenta o preço da picanha pra 95 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:09.329Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 9500,
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda o preço do brisket pra R$ 120,50",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:12.439Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 12050,
+            "productId": "brisket"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "coloca a costela a 78 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:15.570Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 7800,
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o especial de hoje é feijoada por 45 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:18.919Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "hoje",
+            "productId": "feijoada",
+            "promoPriceCentavos": 4500
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda o especial de amanhã pra picanha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:21.561Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "amanhã",
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "coloca a costela como especial de hoje",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:24.002Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "hoje",
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aceita o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:26.756Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "confirmed"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o pedido 4242 tá pronto",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:29.682Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "ready"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o 4242 saiu pra entrega",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:32.549Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "in_delivery"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:35.247Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "canceled"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "anota no pedido 4242 que o cliente pediu sem cebola",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-note-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:37.156Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "cliente pediu sem cebola",
+            "orderId": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona uma observação no pedido da Maria: entregar no portão",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-note-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:40.843Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "entregar no portão",
+            "orderId": "Maria"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "reembolsa 10 reais do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:43.609Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "amount": 10,
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "estorna o pedido da Maria, cliente desistiu",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:46.988Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "orderReference": "pedido da Maria",
+            "reason": "cliente desistiu"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "devolve R$ 25,50 do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:50.722Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "amount": 25.5,
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "amanhã não abre",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:53.216Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "isOpen": false
+          }
+        }
+      }
+    },
+    {
+      "utterance": "fechado dia 25",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:26:57.893Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "date": "2025-09-25",
+            "isOpen": false
+          }
+        }
+      }
+    },
+    {
+      "utterance": "amanhã abrimos só às 18h",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:03.124Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "blocks": [
+              {
+                "end": "23:00",
+                "label": "Jantar",
+                "start": "18:00"
+              }
+            ],
+            "isOpen": true
+          }
+        }
+      }
+    },
+    {
+      "utterance": "resolve o alerta 17",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-alert-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "ops.alert.resolve.staff",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:06.650Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "ops.alert.resolve.staff",
+          "payload": {
+            "alertId": 17
+          }
+        }
+      }
+    },
+    {
+      "utterance": "fecha o incidente 9",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-incident-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "incident.ticket.close.staff",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:10.335Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "incident.ticket.close.staff",
+          "payload": {
+            "incidentId": "9"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "entregamos em Ibaté?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-coverage-01",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:13.291Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "a gente entrega em Araraquara?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-coverage-02",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:15.012Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_napshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "Oi, bom dia!",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-smalltalk-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:18.149Z",
+        "finishReason": "stop"
+      },
+      "completion": "Bom dia! Como posso ajudar?"
+    },
+    {
+      "utterance": "como foi o dia hoje?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-status-q-01",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:19.390Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-scare",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:25.900Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, entregamos em Ibate."
+    },
+    {
+      "utterance": "Oi boa noite",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-ghost-a",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:27.947Z",
+        "finishReason": "stop"
+      },
+      "completion": "Boa noite! Como posso ajudar?"
+    },
+    {
+      "utterance": "Oi",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-ghost-b",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:29.463Z",
+        "finishReason": "stop"
+      },
+      "completion": "Oi! Como posso ajudar?"
+    },
+    {
+      "utterance": "Vocês estão abertos?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-open",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:31.865Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "quero uma coca",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:48.658Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona duas linguiças no carrinho",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:51.920Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "linguiça",
+            "quantity": 2
+          }
+        }
+      }
+    },
+    {
+      "utterance": "me vê um brisket e uma batata",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-03",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:56.037Z",
+        "finishReason": "stop"
+      },
+      "completion": "Entendi! Você está vendo um brisket e uma batata. Quer adicionar esses itens ao seu carrinho?"
+    },
+    {
+      "utterance": "quero 3 porções de costela",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:27:59.771Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "costela",
+            "quantity": 3
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda pra 3 cocas",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-qty-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.update",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:03.765Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.update",
+          "payload": {
+            "item": "coca",
+            "quantidade": 3
+          }
+        }
+      }
+    },
+    {
+      "utterance": "deixa só uma linguiça",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-qty-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.update",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:06.298Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "linguiça"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira a coca do carrinho",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-rm-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.remove",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:13.109Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.remove",
+          "payload": {
+            "productId": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "remove a batata",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-rm-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.remove",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:14.800Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.remove",
+          "payload": {
+            "item": "batata"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aplica o cupom X1234",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-coupon-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.coupon.apply",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:17.723Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.coupon.apply",
+          "payload": {
+            "couponCode": "X1234"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "usa o cupom BEMVINDO10",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-coupon-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.coupon.apply",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:20.331Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.coupon.apply",
+          "payload": {
+            "couponCode": "BEMVINDO10"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero fechar o pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:25.412Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "quero fechar no pix e retirar lá",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:28.261Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "delivery_type": "pickup",
+            "payment_method": "pix"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "finaliza pra mim, pago no cartão, entrega",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:30.821Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "delivery_type": "delivery",
+            "payment_method": "card"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela meu pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-cancel-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:38.909Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.cancel",
+          "payload": {
+            "reason": "cancela meu pedido"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero cancelar o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-cancel-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:41.155Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.cancel",
+          "payload": {
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona uma coca no meu pedido que já fiz",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-amend-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.amend.add_item",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:43.959Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.amend.add_item",
+          "payload": {
+            "item": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira a batata do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-amend-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.amend.remove_item",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:50.685Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.amend.remove_item",
+          "payload": {
+            "item": "batata"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "anota que é sem cebola, por favor",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-note-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:55.020Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "sem cebola"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero reservar uma mesa pra 4 pessoas amanhã às 20h",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-resv-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "reservation.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:28:59.697Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "reservation.create",
+          "payload": {
+            "date": "2025-08-15",
+            "partySize": 4,
+            "preferredTime": "20:00"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela minha reserva",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-resv-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "reservation.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:06.227Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "reservation.cancel",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "gera um novo pix pro meu pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-pix-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.pix.regenerate",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:11.393Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.pix.regenerate",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "põe mais uma coquinha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-05",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:14.385Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "coquinha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero um combo família",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-06",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:17.004Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "combo família"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "pode fechar, pago em dinheiro",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:19.251Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "payment_method": "cash"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "vocês entregam em Ibaté?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-coverage-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:23.892Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, entregamos em Ibate!"
+    },
+    {
+      "utterance": "entrega em Araraquara?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-coverage-02",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:27.065Z",
+        "finishReason": "stop"
+      },
+      "completion": "Entrega em Araraquara? Sim, oferecemos entrega para o bairro de Araraquara. Posso confirmar a disponibilidade para uma data específica ou ajudar com uma reserva?"
+    },
+    {
+      "utterance": "Oi, bom dia!",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-smalltalk-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:30.202Z",
+        "finishReason": "stop"
+      },
+      "completion": "Bom dia! Como posso ajudar?"
+    },
+    {
+      "utterance": "vocês estão abertos agora?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-hours-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:32.622Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, estamos abertos agora!"
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-hist-scare",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:35.417Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, a IbateXas entrega em Ibate! 😊"
+    },
+    {
+      "utterance": "Oi",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-hist-ghost-b",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:39.613Z",
+        "finishReason": "stop"
+      },
+      "completion": "Olá! Como posso ajudar?"
+    },
+    {
+      "utterance": "acabou a picanha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:41.572Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira o brisket do cardápio",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:43.703Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "brisket"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "marca a costela como indisponível",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:45.817Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "voltou a linguiça, pode vender de novo",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:48.545Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": true,
+            "productId": "linguiça"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aumenta o preço da picanha pra 95 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:51.374Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 9500,
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda o preço do brisket pra R$ 120,50",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:54.513Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 12050,
+            "productId": "brisket"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "coloca a costela a 78 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:29:57.771Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 7800,
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o especial de hoje é feijoada por 45 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:01.343Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "hoje",
+            "productId": "feijoada",
+            "promoPriceCentavos": 4500
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda o especial de amanhã pra picanha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:04.038Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "amanhã",
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "coloca a costela como especial de hoje",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:06.561Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "hoje",
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aceita o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:09.295Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "confirmed"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o pedido 4242 tá pronto",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:12.214Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "ready"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o 4242 saiu pra entrega",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:15.167Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "in_delivery"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:17.929Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "canceled"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "anota no pedido 4242 que o cliente pediu sem cebola",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-note-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:19.775Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "cliente pediu sem cebola",
+            "orderId": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona uma observação no pedido da Maria: entregar no portão",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-note-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:23.406Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "entregar no portão",
+            "orderId": "Maria"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "reembolsa 10 reais do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:26.047Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "amount": 10,
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "estorna o pedido da Maria, cliente desistiu",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:29.358Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "orderReference": "pedido da Maria",
+            "reason": "cliente desistiu"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "devolve R$ 25,50 do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:33.088Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "amount": 25.5,
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "amanhã não abre",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:35.645Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "isOpen": false
+          }
+        }
+      }
+    },
+    {
+      "utterance": "fechado dia 25",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:40.313Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "date": "2025-09-25",
+            "isOpen": false
+          }
+        }
+      }
+    },
+    {
+      "utterance": "amanhã abrimos só às 18h",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:45.679Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "blocks": [
+              {
+                "end": "23:00",
+                "label": "Jantar",
+                "start": "18:00"
+              }
+            ],
+            "isOpen": true
+          }
+        }
+      }
+    },
+    {
+      "utterance": "resolve o alerta 17",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-alert-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "ops.alert.resolve.staff",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:49.262Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "ops.alert.resolve.staff",
+          "payload": {
+            "alertId": 17
+          }
+        }
+      }
+    },
+    {
+      "utterance": "fecha o incidente 9",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-incident-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "incident.ticket.close.staff",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:52.948Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "incident.ticket.close.staff",
+          "payload": {
+            "incidentId": "9"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "entregamos em Ibaté?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-coverage-01",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:55.982Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "a gente entrega em Araraquara?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-coverage-02",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:30:57.763Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_napshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "Oi, bom dia!",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-smalltalk-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:31:00.939Z",
+        "finishReason": "stop"
+      },
+      "completion": "Bom dia! Como posso ajudar?"
+    },
+    {
+      "utterance": "como foi o dia hoje?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-status-q-01",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:31:02.188Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-scare",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:31:08.775Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, entregamos em Ibate."
+    },
+    {
+      "utterance": "Oi boa noite",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-ghost-a",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:31:10.973Z",
+        "finishReason": "stop"
+      },
+      "completion": "Boa noite! Como posso ajudar?"
+    },
+    {
+      "utterance": "Oi",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-ghost-b",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:31:12.611Z",
+        "finishReason": "stop"
+      },
+      "completion": "Oi! Como posso ajudar?"
+    },
+    {
+      "utterance": "Vocês estão abertos?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-open",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:31:15.069Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "quero uma coca",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:09.804Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona duas linguiças no carrinho",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:12.879Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "linguiça",
+            "quantity": 2
+          }
+        }
+      }
+    },
+    {
+      "utterance": "me vê um brisket e uma batata",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-03",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:16.758Z",
+        "finishReason": "stop"
+      },
+      "completion": "Entendi! Você está vendo um brisket e uma batata. Quer adicionar esses itens ao seu carrinho?"
+    },
+    {
+      "utterance": "quero 3 porções de costela",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:20.407Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "costela",
+            "quantity": 3
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda pra 3 cocas",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-qty-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.update",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:24.308Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.update",
+          "payload": {
+            "item": "coca",
+            "quantidade": 3
+          }
+        }
+      }
+    },
+    {
+      "utterance": "deixa só uma linguiça",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-qty-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.update",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:26.802Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "linguiça"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira a coca do carrinho",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-rm-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.remove",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:33.410Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.remove",
+          "payload": {
+            "productId": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "remove a batata",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-rm-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.remove",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:35.083Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.remove",
+          "payload": {
+            "item": "batata"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aplica o cupom X1234",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-coupon-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.coupon.apply",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:38.030Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.coupon.apply",
+          "payload": {
+            "couponCode": "X1234"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "usa o cupom BEMVINDO10",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-coupon-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.coupon.apply",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:40.594Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.coupon.apply",
+          "payload": {
+            "couponCode": "BEMVINDO10"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero fechar o pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:45.574Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "quero fechar no pix e retirar lá",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:48.371Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "delivery_type": "pickup",
+            "payment_method": "pix"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "finaliza pra mim, pago no cartão, entrega",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:50.881Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "delivery_type": "delivery",
+            "payment_method": "card"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela meu pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-cancel-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:35:58.783Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.cancel",
+          "payload": {
+            "reason": "cancela meu pedido"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero cancelar o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-cancel-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:00.947Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.cancel",
+          "payload": {
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona uma coca no meu pedido que já fiz",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-amend-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.amend.add_item",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:03.707Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.amend.add_item",
+          "payload": {
+            "item": "coca"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira a batata do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-amend-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.amend.remove_item",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:10.333Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.amend.remove_item",
+          "payload": {
+            "item": "batata"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "anota que é sem cebola, por favor",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-note-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:14.606Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "sem cebola"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero reservar uma mesa pra 4 pessoas amanhã às 20h",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-resv-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "reservation.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:19.131Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "reservation.create",
+          "payload": {
+            "date": "2025-08-15",
+            "partySize": 4,
+            "preferredTime": "20:00"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela minha reserva",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-resv-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "reservation.cancel",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:25.543Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "reservation.cancel",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "gera um novo pix pro meu pedido",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-pix-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.pix.regenerate",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:30.657Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.pix.regenerate",
+          "payload": {}
+        }
+      }
+    },
+    {
+      "utterance": "põe mais uma coquinha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-05",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:33.737Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "coquinha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "quero um combo família",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-add-06",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.item.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:36.398Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.item.add",
+          "payload": {
+            "item": "combo família"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "pode fechar, pago em dinheiro",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-checkout-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.checkout.create",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:38.650Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.checkout.create",
+          "payload": {
+            "payment_method": "cash"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "vocês entregam em Ibaté?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-coverage-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:43.222Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, entregamos em Ibate!"
+    },
+    {
+      "utterance": "entrega em Araraquara?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-coverage-02",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:46.436Z",
+        "finishReason": "stop"
+      },
+      "completion": "Entrega em Araraquara? Sim, oferecemos entrega para o bairro de Araraquara. Posso confirmar a disponibilidade para uma data específica ou ajudar com uma reserva?"
+    },
+    {
+      "utterance": "Oi, bom dia!",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-smalltalk-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:49.507Z",
+        "finishReason": "stop"
+      },
+      "completion": "Bom dia! Como posso ajudar?"
+    },
+    {
+      "utterance": "vocês estão abertos agora?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-ctl-hours-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:51.904Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, estamos abertos agora!"
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-hist-scare",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:54.728Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, a IbateXas entrega em Ibate! 😊"
+    },
+    {
+      "utterance": "Oi",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "customer-conversational-planner",
+        "utteranceId": "cus-hist-ghost-b",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:36:58.853Z",
+        "finishReason": "stop"
+      },
+      "completion": "Olá! Como posso ajudar?"
+    },
+    {
+      "utterance": "acabou a picanha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:00.873Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "tira o brisket do cardápio",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:02.862Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "brisket"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "marca a costela como indisponível",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:04.976Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": false,
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "voltou a linguiça, pode vender de novo",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-avail-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.availability.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:07.679Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.availability.set",
+          "payload": {
+            "available": true,
+            "productId": "linguiça"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aumenta o preço da picanha pra 95 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:10.545Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 9500,
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda o preço do brisket pra R$ 120,50",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:13.621Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 12050,
+            "productId": "brisket"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "coloca a costela a 78 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-price-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "product.price.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:16.735Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "product.price.set",
+          "payload": {
+            "priceCentavos": 7800,
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o especial de hoje é feijoada por 45 reais",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:20.125Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "hoje",
+            "productId": "feijoada",
+            "promoPriceCentavos": 4500
+          }
+        }
+      }
+    },
+    {
+      "utterance": "muda o especial de amanhã pra picanha",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:22.793Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "amanhã",
+            "productId": "picanha"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "coloca a costela como especial de hoje",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-special-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "menu.special.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:25.346Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "menu.special.set",
+          "payload": {
+            "date": "hoje",
+            "productId": "costela"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "aceita o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:28.162Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "confirmed"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o pedido 4242 tá pronto",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:31.040Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "ready"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "o 4242 saiu pra entrega",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:33.912Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "in_delivery"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "cancela o pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-status-04",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.status.transition",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:36.602Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.status.transition",
+          "payload": {
+            "newStatus": "canceled"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "anota no pedido 4242 que o cliente pediu sem cebola",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-note-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:38.467Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "cliente pediu sem cebola",
+            "orderId": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "adiciona uma observação no pedido da Maria: entregar no portão",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-note-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "order.note.add",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:42.090Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "order.note.add",
+          "payload": {
+            "body": "entregar no portão",
+            "orderId": "Maria"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "reembolsa 10 reais do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:44.742Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "amount": 10,
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "estorna o pedido da Maria, cliente desistiu",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:48.077Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "orderReference": "pedido da Maria",
+            "reason": "cliente desistiu"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "devolve R$ 25,50 do pedido 4242",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-refund-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "payment.refund.issue",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:51.868Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "payment.refund.issue",
+          "payload": {
+            "amount": 25.5,
+            "orderReference": "4242"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "amanhã não abre",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:54.426Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "isOpen": false
+          }
+        }
+      }
+    },
+    {
+      "utterance": "fechado dia 25",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-02",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:37:59.138Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "date": "2025-09-25",
+            "isOpen": false
+          }
+        }
+      }
+    },
+    {
+      "utterance": "amanhã abrimos só às 18h",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-sched-03",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "schedule.override.set",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:04.369Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "schedule.override.set",
+          "payload": {
+            "blocks": [
+              {
+                "end": "23:00",
+                "label": "Jantar",
+                "start": "18:00"
+              }
+            ],
+            "isOpen": true
+          }
+        }
+      }
+    },
+    {
+      "utterance": "resolve o alerta 17",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-alert-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "ops.alert.resolve.staff",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:07.861Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "ops.alert.resolve.staff",
+          "payload": {
+            "alertId": 17
+          }
+        }
+      }
+    },
+    {
+      "utterance": "fecha o incidente 9",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-incident-01",
+        "repeatIndex": 0,
+        "klass": "A1_STRUCTURED_EXPRESS_INTENT",
+        "expectedCapability": "incident.ticket.close.staff",
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:11.520Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "express_intent",
+        "arguments": {
+          "capability": "incident.ticket.close.staff",
+          "payload": {
+            "incidentId": "9"
+          }
+        }
+      }
+    },
+    {
+      "utterance": "entregamos em Ibaté?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-coverage-01",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:14.534Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "a gente entrega em Araraquara?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-coverage-02",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:16.238Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_napshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "Oi, bom dia!",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-smalltalk-01",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:19.352Z",
+        "finishReason": "stop"
+      },
+      "completion": "Bom dia! Como posso ajudar?"
+    },
+    {
+      "utterance": "como foi o dia hoje?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-ctl-status-q-01",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:20.597Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-scare",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:27.197Z",
+        "finishReason": "stop"
+      },
+      "completion": "Sim, entregamos em Ibate."
+    },
+    {
+      "utterance": "Oi boa noite",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-ghost-a",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:29.240Z",
+        "finishReason": "stop"
+      },
+      "completion": "Boa noite! Como posso ajudar?"
+    },
+    {
+      "utterance": "Oi",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-ghost-b",
+        "repeatIndex": 0,
+        "klass": "C3_PROSE",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:30.781Z",
+        "finishReason": "stop"
+      },
+      "completion": "Oi! Como posso ajudar?"
+    },
+    {
+      "utterance": "Vocês estão abertos?",
+      "provenance": {
+        "store": "le2-001-redrive",
+        "surface": "ops-conductor-planner",
+        "utteranceId": "ops-hist-open",
+        "repeatIndex": 0,
+        "klass": "A2_STRUCTURED_READ_ONLY",
+        "expectedCapability": null,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-26T09:38:33.237Z",
+        "finishReason": "tool_calls"
+      },
+      "toolCall": {
+        "name": "ops_snapshot",
+        "arguments": {}
+      }
+    }
+  ]
+}

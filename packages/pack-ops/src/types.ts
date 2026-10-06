@@ -87,12 +87,14 @@ import { createSystemTaintPolicy } from "@adjudicate/primitives"
  * the two whose EXECUTOR then drives the same-named SYSTEM domain write layer.
  */
 export type OpsIntentKind =
+  // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
   | "product.availability.set"
   | "product.price.set"
   | "menu.special.set"
   | "ops.alert.resolve.staff"
   | "incident.ticket.close.staff"
   | "schedule.override.set"
+  // ═══ END GENERATED REGION ═══
 
 // ── Payloads ────────────────────────────────────────────────────────────────
 

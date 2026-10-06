@@ -42,8 +42,38 @@ export interface RedisTestHarness {
   readonly url: string
   readonly host: string
   readonly port: number
+  /** Lua scripts (EVAL/EVALSHA) executed through `client` so far. */
+  readonly luaCallCount: () => number
   /** Stop + remove the container. Idempotent. */
   readonly teardown: () => Promise<void>
+}
+
+export interface RedisTestContainerOptions {
+  /**
+   * Declare that this suite's point is a Lua invariant.
+   *
+   * F-37 (M3) is what this exists for. `sweeper-resolver-race.test.ts` was
+   * enrolled in the M0 roll call, started a real container, and passed — while
+   * the Lua path it was cited for never executed, because the suite's own
+   * `@ibatexas/tools` shim omitted `eval` and `releaseDeferResumingLock`
+   * swallows a failed release by design. Roll-call enrolment proves a FILE
+   * ran; it says nothing about whether that file's Lua ran, and the gate
+   * counted the file as executing because the file DID execute.
+   *
+   * With this set, `teardown()` throws when ZERO scripts reached the
+   * container. It is deliberately a ZERO alarm and not a count: a per-suite
+   * expected-call number would be 21 hand-maintained figures across the roll
+   * call, each a fresh way to red spuriously, to catch a failure mode that is
+   * always "the Lua stopped happening entirely". The asymmetry mirrors the
+   * gate's completeness alarm — this can only ever ADD a failure, never
+   * satisfy a requirement.
+   *
+   * Suites that assert their Lua's EFFECTS directly (the six M1 shape suites)
+   * do not need it; they red on their own the moment a script stops running.
+   * It is for suites where the Lua is a side effect of the path under test,
+   * which is exactly where it can die unnoticed.
+   */
+  readonly expectLuaCalls?: boolean
 }
 
 /**
@@ -54,7 +84,9 @@ export interface RedisTestHarness {
  * The container image is `redis:7-alpine` — small, well-understood,
  * matches production (`docker-compose.yml`).
  */
-export async function setupRedisTestContainer(): Promise<RedisTestHarness> {
+export async function setupRedisTestContainer(
+  options: RedisTestContainerOptions = {},
+): Promise<RedisTestHarness> {
   // testcontainers picks an ephemeral host port — exposes 6379 inside.
   const container: StartedTestContainer = await new GenericContainer(
     "redis:7-alpine",
@@ -73,11 +105,29 @@ export async function setupRedisTestContainer(): Promise<RedisTestHarness> {
   })
   await client.connect()
 
+  // Count scripts as they go by. Instrumented by replacing the two methods on
+  // the instance rather than wrapping the client in a Proxy: node-redis v4
+  // methods read private (`#`) fields, which throw when `this` is a Proxy, and
+  // a Proxy client also has no spyable own properties (the spy-delegate
+  // precedent). `.apply(client, …)` keeps `this` the real client.
+  let luaCalls = 0
+  for (const method of ["eval", "evalSha"] as const) {
+    const original = client[method] as (...a: unknown[]) => unknown
+    if (typeof original !== "function") continue
+    ;(client as unknown as Record<string, unknown>)[method] = (
+      ...args: unknown[]
+    ) => {
+      luaCalls += 1
+      return original.apply(client, args)
+    }
+  }
+
   return {
     client,
     url,
     host,
     port,
+    luaCallCount: () => luaCalls,
     async teardown() {
       try {
         if (client.isOpen) {
@@ -85,6 +135,16 @@ export async function setupRedisTestContainer(): Promise<RedisTestHarness> {
         }
       } finally {
         await container.stop({ remove: true, timeout: 10_000 }).catch(() => undefined)
+      }
+      // AFTER the container is down, so a failure here never leaks one.
+      if (options.expectLuaCalls === true && luaCalls === 0) {
+        throw new Error(
+          "[redis-testcontainer] this suite declared `expectLuaCalls: true` and ran a real " +
+            "Redis container, but ZERO Lua scripts (EVAL/EVALSHA) reached it. The suite is " +
+            "green over a Lua path that never executed — F-37's shape. Usual cause: a shim " +
+            "or mock between the SUT and the container omits `eval`, and the production code " +
+            "swallows the resulting TypeError. See docs/architecture/redis-lua-testing-decision.md.",
+        )
       }
     },
   }

@@ -30,10 +30,12 @@ export interface CreateCheckoutOutput {
   pixExpiresAt?: string;
   // Card
   stripeClientSecret?: string;
-  // Card — the Stripe PaymentIntent id (e.g. `pi_…`). The order itself is
-  // created LATER by the Stripe webhook, so a card checkout has no `orderId`
-  // yet; the guest tracks via `/pedido/<paymentIntentId>`. Surfaced so the
-  // route can mint a per-order access token bound to this id (R0a guest-card).
+  // Card + PIX — the Stripe PaymentIntent id (e.g. `pi_…`). The order itself is
+  // created LATER by the Stripe webhook, so neither has a real order id yet;
+  // the guest tracks via `/pedido/<paymentIntentId>`. Surfaced for card so the
+  // route can mint a per-order access token bound to this id (R0a guest-card),
+  // and for PIX so the expiry monitor can key on the attempt (BKL-241) without
+  // reading it out of the overloaded `orderId` field below.
   paymentIntentId?: string;
   // Cash
   orderId?: string;
@@ -174,7 +176,14 @@ async function confirmPixAndGetQrCode(
     return {
       success: true,
       paymentMethod: "pix",
+      // `orderId` is the CLIENT-FACING tracking id and stays the `pi_…` id: the
+      // Medusa order does not exist yet (the cart is completed by the webhook on
+      // payment) and the order-read path resolves `pi_`-prefixed ids explicitly.
+      // `paymentIntentId` carries the same value under its honest name so
+      // consumers that need the payment ATTEMPT — the PIX expiry monitor
+      // (BKL-241) — never have to infer the id space from `orderId`.
       orderId: paymentIntentId,
+      paymentIntentId,
       pixQrCode: pixData.image_url_svg ?? pixData.image_url_png,
       pixCopyPaste: pixData.data,
       pixExpiresAt: pixData.expires_at

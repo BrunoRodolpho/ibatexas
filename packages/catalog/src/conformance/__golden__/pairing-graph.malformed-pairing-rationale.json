@@ -1,0 +1,78 @@
+{
+  "fixture": "pairing-graph.malformed-pairing-rationale",
+  "targets": "pairing-graph/malformed-pairing-rationale",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/malformed-pairing-rationale"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 5,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "malformed-pairing-rationale",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "why",
+      "message": "\"   \" states no reason. `why` is the REVIEW surface for a table whose rows cannot be checked against anything external — an author's taste and the house's taste look identical without it — so an edge that declines to say why it exists is not reviewable, which is the one thing every row here has to be."
+    }
+  ],
+  "formatted": [
+    "pairing-graph/malformed-pairing-rationale: pairing:conformance-item-sujeito · why — \"   \" states no reason. `why` is the REVIEW surface for a table whose rows cannot be checked against anything external — an author's taste and the house's taste look identical without it — so an edge that declines to say why it exists is not reviewable, which is the one thing every row here has to be."
+  ]
+}

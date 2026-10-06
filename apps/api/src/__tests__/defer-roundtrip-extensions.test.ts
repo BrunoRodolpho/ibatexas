@@ -14,6 +14,8 @@
 // matrix" #4 flagged after task 03 landed only the smoke test.
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing"
+import { rk } from "@ibatexas/tools"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import type { PaymentStatusChangedEvent } from "@ibatexas/types"
 
@@ -27,78 +29,25 @@ const mockSentryWithScope = vi.hoisted(() => vi.fn())
 const mockSentryCaptureMessage = vi.hoisted(() => vi.fn())
 const mockSentryCaptureException = vi.hoisted(() => vi.fn())
 
-interface Entry {
-  value: string
-  ttl: number
-}
-const store = new Map<string, Entry>()
-
-function makeRedisStub() {
-  return {
-    async get(key: string): Promise<string | null> {
-      const e = store.get(key)
-      return e ? e.value : null
-    },
-    async set(
-      key: string,
-      value: string,
-      opts?: { NX?: boolean; EX?: number },
-    ): Promise<string | null> {
-      const exists = store.has(key)
-      if (opts?.NX && exists) return null
-      store.set(key, { value, ttl: opts?.EX ?? -1 })
-      return "OK"
-    },
-    async del(key: string): Promise<number> {
-      return store.delete(key) ? 1 : 0
-    },
-    async ttl(key: string): Promise<number> {
-      return store.get(key)?.ttl ?? -2
-    },
-    async incr(key: string): Promise<number> {
-      const e = store.get(key)
-      const n = e ? Number.parseInt(e.value, 10) + 1 : 1
-      store.set(key, { value: String(n), ttl: e?.ttl ?? -1 })
-      return n
-    },
-    async decr(key: string): Promise<number> {
-      const e = store.get(key)
-      const n = e ? Number.parseInt(e.value, 10) - 1 : -1
-      store.set(key, { value: String(n), ttl: e?.ttl ?? -1 })
-      return n
-    },
-    async expire(key: string, seconds: number): Promise<number> {
-      const e = store.get(key)
-      if (!e) return 0
-      store.set(key, { value: e.value, ttl: seconds })
-      return 1
-    },
-    scanIterator(opts: { MATCH?: string; COUNT?: number }) {
-      const pattern = opts.MATCH ?? "*"
-      const re = new RegExp(
-        "^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$",
-      )
-      const keys = [...store.keys()].filter((k) => re.test(k))
-      return (async function* () {
-        for (const k of keys) yield k
-      })()
-    },
-    async lPush(_k: string, _v: string): Promise<number> {
-      return 1
-    },
-  }
-}
-let redisStub: ReturnType<typeof makeRedisStub>
+// R5-S12 — the copy-pasted hand-rolled double is retired for the canonical
+// adapter, threaded in through the `startDeferResolverSubscriber({ redis })`
+// seam, with `rk()` running REAL (Hard Rule #7). The clock is frozen so the
+// TTL case below can pin an EXACT remaining lifetime: the retired double
+// stored the EX argument verbatim and read it straight back, so that case
+// could only ever re-assert its own input.
+const FROZEN_MS = 1_760_000_000_000
+let redis: InMemoryRedis
 
 vi.mock("@ibatexas/nats-client", () => ({
   subscribeNatsEvent: mockSubscribeNatsEvent,
   publishNatsEvent: mockPublishNatsEvent,
 }))
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => redisStub),
-  rk: (key: string) => `test:${key}`,
-}))
+const mockGetRedisClient = vi.hoisted(() => vi.fn())
+vi.mock("@ibatexas/tools", async (orig) => {
+  const real = await orig<typeof import("@ibatexas/tools")>()
+  return { ...real, getRedisClient: mockGetRedisClient }
+})
 
 vi.mock("@adjudicate/core/kernel", async () => {
   const real = await vi.importActual<typeof import("@adjudicate/core/kernel")>(
@@ -119,14 +68,15 @@ vi.mock("@sentry/node", () => ({
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function parkEnvelope(
+async function parkEnvelope(
   sessionId: string,
   envelope: IntentEnvelope,
   signal: string,
   ttlSeconds = 900,
-): void {
-  store.set(`test:defer:pending:${sessionId}`, {
-    value: JSON.stringify({
+): Promise<void> {
+  await redis.client.set(
+    parkKey(sessionId),
+    JSON.stringify({
       envelope: {
         ...envelope,
         actorPrincipal: envelope.actor.principal,
@@ -134,8 +84,12 @@ function parkEnvelope(
       signal,
       parkedAt: "2025-01-01T00:00:00.000Z",
     }),
-    ttl: ttlSeconds,
-  })
+    { EX: ttlSeconds } as { EX: number },
+  )
+}
+
+function parkKey(sessionId: string): string {
+  return rk(`defer:pending:${sessionId}`)
 }
 
 function paymentConfirmed(): PaymentStatusChangedEvent {
@@ -154,9 +108,9 @@ function paymentConfirmed(): PaymentStatusChangedEvent {
 
 describe("DEFER park/resume — extension cases (Task 20)", () => {
   beforeEach(() => {
-    store.clear()
     vi.clearAllMocks()
-    redisStub = makeRedisStub()
+    redis = createInMemoryRedis({ now: () => FROZEN_MS })
+    mockGetRedisClient.mockImplementation(async () => redis.client)
     mockSentryWithScope.mockImplementation((cb: (s: unknown) => void) =>
       cb({ setTag: vi.fn(), setContext: vi.fn(), setLevel: vi.fn() }),
     )
@@ -173,7 +127,7 @@ describe("DEFER park/resume — extension cases (Task 20)", () => {
       nonce: "dup-nonce-1",
     })
 
-    parkEnvelope(sessionId, envelope, "payment.confirmed")
+    await parkEnvelope(sessionId, envelope, "payment.confirmed")
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
 
     const dispatcher = vi.fn(async () => undefined)
@@ -181,7 +135,7 @@ describe("DEFER park/resume — extension cases (Task 20)", () => {
       await import("../subscribers/defer-resolver.js")
     setResumeIntentDispatcher(dispatcher)
 
-    await startDeferResolverSubscriber()
+    await startDeferResolverSubscriber(undefined, { redis: redis.client })
     const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as unknown as [
       string,
       (payload: unknown) => Promise<void>,
@@ -193,7 +147,7 @@ describe("DEFER park/resume — extension cases (Task 20)", () => {
     await callback(paymentConfirmed())
 
     expect(dispatcher).toHaveBeenCalledOnce()
-    expect(store.get(`test:defer:pending:${sessionId}`)).toBeUndefined()
+    expect(redis.peek(parkKey(sessionId))).toBeUndefined()
 
     setResumeIntentDispatcher(null)
   })
@@ -204,7 +158,7 @@ describe("DEFER park/resume — extension cases (Task 20)", () => {
       await import("../subscribers/defer-resolver.js")
     setResumeIntentDispatcher(dispatcher)
 
-    await startDeferResolverSubscriber()
+    await startDeferResolverSubscriber(undefined, { redis: redis.client })
     const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as unknown as [
       string,
       (payload: unknown) => Promise<void>,
@@ -219,7 +173,7 @@ describe("DEFER park/resume — extension cases (Task 20)", () => {
     setResumeIntentDispatcher(null)
   })
 
-  it("preserves the parked TTL on the Redis key (defer-sweeper contract)", () => {
+  it("preserves the parked TTL on the Redis key (defer-sweeper contract)", async () => {
     const sessionId = "sess_ttl"
     const envelope = buildEnvelope({
       kind: "order.confirm",
@@ -228,9 +182,10 @@ describe("DEFER park/resume — extension cases (Task 20)", () => {
       taint: "UNTRUSTED",
       nonce: "ttl-nonce-1",
     })
-    parkEnvelope(sessionId, envelope, "payment.confirmed", 600)
-    const entry = store.get(`test:defer:pending:${sessionId}`)
-    expect(entry).toBeDefined()
-    expect(entry!.ttl).toBe(600)
+    await parkEnvelope(sessionId, envelope, "payment.confirmed", 600)
+    // Against a frozen clock the remaining lifetime is exact, and it is read
+    // back as a real expiry rather than as the argument the seed passed in.
+    expect(redis.peek(parkKey(sessionId))).toBeDefined()
+    expect(redis.ttlMs(parkKey(sessionId))).toBe(600_000)
   })
 })

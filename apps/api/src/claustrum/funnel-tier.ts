@@ -1,0 +1,922 @@
+// funnel-tier.ts — the LE2 parse funnel's FIRST tier (L0) and the tier-attribution
+// contract every later tier reuses (LE2-007; spec §"P1 — funnel", Implementation
+// Decision 8).
+//
+// THE PROBLEM L0 CLOSES (spec §Problem Statement #1, "the greeting problem"): "Oi"
+// costs a full planner prompt against the whole capability roster, then a claim-planner
+// prompt, then a synthesis prompt — three model calls, maximum price for the minimum
+// question. L0 answers a social-ONLY utterance from a deterministic pt-BR template with
+// ZERO model calls on the wire.
+//
+// ── THE TWO SECTIONS OF THIS FILE (the claims-render-precedence idiom) ───────────
+//   1. PURE CORE — the closed lexicon, the social classifier, the L0 decision and the
+//      templates. No clock, no IO, no logging, no global state; unit-testable alone.
+//   2. THE PER-TURN SEAM — the turnId-keyed stage store + `createL0Funnel()`, the
+//      stateful object the planner / responder / telemetry consume. This half owns
+//      the process state and the one structured log line.
+//
+// ── WHY THE LEXICON IS NOT `isSmalltalkOnly` (owner decision 8) ──────────────────
+// L0 is social-ONLY: greetings, thanks, farewells. `isSmalltalkOnly`
+// (interrogative-discriminator.ts) is a deliberately WIDER phatic set that also holds
+// the AFFIRMATION family ("ok", "sim", "certo", "isso", "beleza", "combinado") because
+// over-inclusion is SAFE there — it only ever KEEPS a turn on the (clamped) prose path
+// for a DEMOTE-ONLY gate. Here the direction is inverted: a match SUPERSEDES the model,
+// so over-inclusion would answer a real turn with a template. An affirmative is
+// therefore excluded BY CONSTRUCTION — it is the confirm-window's vocabulary
+// (FE-D32/BKL-212: a bare "ok" on a parked confirmation restates the park; a "sim"
+// resumes it), never L0's. The two lexicons are pinned against each other by a census
+// test (`__tests__/funnel-tier.test.ts`) that enumerates BOTH deltas, so neither can
+// drift into the other silently. `normalize` is IMPORTED, not re-implemented, so the
+// two nets can never disagree on diacritics.
+//
+// CLOSED, DETERMINISTIC, NO FUZZY MATCHING (owner decision): exact tokens and exact
+// multiword phrases only — no similarity, no edit distance, no stemming. An
+// unrecognised social form ("oii", "bom-dia") falls through to the normal parse, which
+// is the SAFE failure direction: L0 never guesses, it only recognises.
+//
+// MIXED UTTERANCES FALL THROUGH: any information-bearing residual token ("oi, vocês
+// entregam?" → "voces", "entregam") makes the utterance non-social, so it parses
+// normally. That is the whole of AC #2.
+
+import type { CognitiveState } from "@claustrum/core";
+import { ALIAS_GAZETTEER, normalizeProseForm } from "@ibatexas/catalog";
+import { logger } from "../lib/logger.js";
+import { normalize } from "./interrogative-discriminator.js";
+import type { ScopeDecision } from "./capability-retrieval.js";
+import {
+  renderAliasClarify,
+  type AliasResolution,
+  type AmbiguousSurface,
+} from "./alias-canonicalization.js";
+import {
+  createParseCacheTelemetry,
+  isSilentParse,
+  PARSE_CACHE_TTL_SECONDS,
+  type MemoizedParse,
+  type ParseCacheCounters,
+  type ParseCacheKey,
+  type ParseCacheStore,
+} from "./parse-memo.js";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 1. PURE CORE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Which funnel tier RESOLVED a turn — the trace's tier attribution (spec: "every turn
+ * stamped with its catalog version and funnel-tier attribution").
+ *
+ * All three are LIVE: `L0` social short-circuit (LE2-007), `L1` byte-identical
+ * repeat → memoized parse (LE2-009), `L2` parse scoped to K plausible capabilities
+ * (LE2-008). The extensibility LE2-007 designed for held for the tiers' own detail
+ * keys: each tier added its own member and its own {@link FunnelStageRecord} keys.
+ *
+ * BKL-276 — but "no consumer switches on the tier value" was NEVER safe for the
+ * CLAIM short-circuit, and this comment used to assert it was. A stamp means only
+ * "some tier attributed this turn"; it does NOT mean "this turn already has a
+ * reply". Skipping the claim plane on a bare `stageFor(turnId) !== undefined`
+ * therefore silenced claims on every L2 turn — see {@link tierAuthorsOwnReply},
+ * which is now the ONE discriminator both the planner and the responder read.
+ *
+ * EXACTLY ONE TIER PER TURN. L0 and L1 CLAIM a turn (they resolve it without a model
+ * call); L2 does not — it still parses, just against a narrower surface. So the planner
+ * stamps L2 only after L1 has missed, and a turn can never carry two attributions.
+ */
+export type FunnelTier = "L0" | "L1" | "L2" | "ALIAS";
+
+/**
+ * Does this tier AUTHOR the turn's reply itself?
+ *
+ * The funnel's tiers split cleanly in two, and the split — not the mere presence of
+ * a stage record — is what every "has this turn already been answered?" consumer
+ * actually means:
+ *
+ *  - `L0` (social template) and `ALIAS` (the ambiguous-surface CLARIFY question)
+ *    RESOLVE the turn: no parse, no model call, and {@link FunnelResponderSeam.reply}
+ *    returns their deterministic pt-BR sentence. Proposing claims for them would put
+ *    a completion back on the wire for a turn that already has its answer — exactly
+ *    the cost the tier exists to remove — and (L0's original reason, BKL-110) let an
+ *    over-proposed claim clobber the template.
+ *  - `L1` (replayed parse) and `L2` (scoped parse) DO NOT author a reply. They still
+ *    parse; the reply is produced downstream from the re-minted envelopes "exactly as
+ *    on a miss" (see {@link FunnelResponderSeam.reply}). On a miss the claim plane
+ *    runs — so on L1/L2 it must run too, or the same utterance answers differently
+ *    depending on whether a retriever happens to be configured.
+ *
+ * Keeping this ONE predicate is the anti-drift measure: a future tier is opted into
+ * the short-circuit only by being named here, next to the `reply()` that must also
+ * answer for it.
+ */
+export function tierAuthorsOwnReply(tier: FunnelTier): boolean {
+  return tier === "L0" || tier === "ALIAS";
+}
+
+/**
+ * WHY a tier claimed the turn — the machine-stable join field for the trace.
+ * `social_only` is L0's (LE2-007); `memoized_parse` is L1's (LE2-009 — a
+ * byte-identical repeat whose parse was replayed from the cache). L2 appends its
+ * own ("scoped_parse", "full_roster_fallback") when it lands.
+ */
+export type FunnelReason =
+  | "social_only"
+  | "memoized_parse"
+  | "scoped_parse"
+  | "full_roster_fallback"
+  | "alias_ambiguous";
+
+/**
+ * The funnel's OBSERVABILITY CONTRACT — one stage record per funnel-resolved turn
+ * (spec §Testing Decisions: "Trace stage records are the funnel's observability
+ * contract: tier attribution, cache hits, retriever selections … are asserted by
+ * reading the trace").
+ *
+ * `detail` is the tier-specific, BOUNDED extension point: L0 records the social kind;
+ * L1 will record its cache key/hit; L2 its retrieved capability set and confidence.
+ * Scalars only, so the record stays cheap to log and safe to persist verbatim.
+ */
+export interface FunnelStageRecord {
+  readonly tier: FunnelTier;
+  readonly reason: FunnelReason;
+  readonly detail: Readonly<Record<string, string | number>>;
+  /** ISO instant the tier claimed the turn. */
+  readonly at: string;
+}
+
+/** The three social speech acts L0 answers. Nothing else is social. */
+export type SocialKind = "greeting" | "thanks" | "farewell";
+
+/** Word-token extractor over a normalized string (ASCII words only, post-strip).
+ *  Mirrors the interrogative-discriminator's own `WORD_TOKEN`; `String.match` with a
+ *  /g regex is stateless, so sharing one instance is safe. */
+const WORD_TOKEN = /[a-z0-9]+/g;
+
+/**
+ * Multiword social phrases, consumed (replaced by a space) BEFORE tokenizing so a
+ * phrase leaves no stray content-looking token, and CONTRIBUTING their kind (an
+ * "até logo" is a farewell even though neither word is a farewell token on its own).
+ * `\s+` between words tolerates extra spacing; `\b` anchors keep them word-exact.
+ *
+ * "boa noite" is deliberately a GREETING: it is overwhelmingly an opening in a
+ * restaurant chat, and when it genuinely closes a conversation it is paired with a
+ * farewell token ("boa noite, tchau"), which the precedence below resolves correctly.
+ */
+const SOCIAL_PHRASES: ReadonlyArray<{ readonly re: RegExp; readonly kind: SocialKind }> =
+  (
+    [
+      ["bom dia", "greeting"],
+      ["boa tarde", "greeting"],
+      ["boa noite", "greeting"],
+      ["boa madrugada", "greeting"],
+      ["tudo bem", "greeting"],
+      ["tudo bom", "greeting"],
+      ["tudo certo", "greeting"],
+      ["tudo joia", "greeting"],
+      ["tudo tranquilo", "greeting"],
+      ["como vai", "greeting"],
+      ["e ai", "greeting"],
+      ["fala ai", "greeting"],
+      ["ate logo", "farewell"],
+      ["ate mais", "farewell"],
+      ["ate breve", "farewell"],
+      ["ate amanha", "farewell"],
+      ["ate a proxima", "farewell"],
+      ["bom fim de semana", "farewell"],
+    ] as ReadonlyArray<readonly [string, SocialKind]>
+  ).map(([phrase, kind]) => ({
+    re: new RegExp(`\\b${phrase.replace(/ /g, "\\s+")}\\b`, "g"),
+    kind,
+  }));
+
+/**
+ * The CLOSED social token lexicon: token → the speech act it carries. Every token here
+ * is unambiguously social ON ITS OWN, because a token that also has a content reading
+ * ("ate" as the preposition "até 20 reais", "fala" as the imperative "fala o preço")
+ * can only reach this net when it is the WHOLE utterance — any content reading brings
+ * residual content tokens with it, which fails the social-only test below.
+ */
+const SOCIAL_TOKENS: ReadonlyMap<string, SocialKind> = new Map<string, SocialKind>([
+  // ── greetings ──
+  ["oi", "greeting"],
+  ["ola", "greeting"],
+  ["opa", "greeting"],
+  ["alo", "greeting"],
+  ["eae", "greeting"],
+  ["eai", "greeting"],
+  ["fala", "greeting"],
+  // ── thanks ──
+  ["obrigado", "thanks"],
+  ["obrigada", "thanks"],
+  ["obrigadao", "thanks"],
+  ["obg", "thanks"],
+  ["obgd", "thanks"],
+  ["brigado", "thanks"],
+  ["brigada", "thanks"],
+  ["valeu", "thanks"],
+  ["vlw", "thanks"],
+  ["grato", "thanks"],
+  ["grata", "thanks"],
+  // ── farewells ──
+  ["tchau", "farewell"],
+  ["tchauzinho", "farewell"],
+  ["xau", "farewell"],
+  ["ate", "farewell"],
+  ["adeus", "farewell"],
+  ["falou", "farewell"],
+  ["flw", "farewell"],
+  ["abraco", "farewell"],
+  ["abracos", "farewell"],
+  ["tmj", "farewell"],
+]);
+
+/**
+ * Tokens that carry NO speech act of their own but legitimately appear inside a social
+ * utterance — phrase remnants and intensifiers. They keep an utterance L0-eligible and
+ * NEVER decide its kind, so a bare "bem" or a bare "boa" is NOT L0 (no family token ⇒
+ * no template): they are the belt-and-braces for a phrase that did not match exactly,
+ * not a second lexicon.
+ */
+const SOCIAL_NEUTRAL_TOKENS: ReadonlySet<string> = new Set([
+  "e",
+  "ai",
+  "de",
+  "muito",
+  "mesmo",
+  "tudo",
+  "bem",
+  "bom",
+  "boa",
+  "dia",
+  "tarde",
+  "noite",
+  "madrugada",
+  "certo",
+  "joia",
+  "tranquilo",
+  "tranquila",
+  "como",
+  "vai",
+  "entao",
+  "fim",
+  "semana",
+]);
+
+/**
+ * The L0 recogniser: the social speech act of a SOCIAL-ONLY utterance, or `null` when
+ * the utterance carries anything else (⟹ it parses normally).
+ *
+ * PRECEDENCE when several families appear — farewell ▷ thanks ▷ greeting: the most
+ * TERMINAL act wins, because answering "obrigado, tchau" with a thanks template
+ * invites a continuation the customer just closed, and answering "oi, obrigado" with
+ * gratitude is warmer than a bare greeting.
+ *
+ * PURE, diacritic-insensitive, word-boundaried.
+ */
+export function classifySocialOnly(text: string): SocialKind | null {
+  if (typeof text !== "string" || text.trim().length === 0) return null;
+  let residual = normalize(text);
+  const found = new Set<SocialKind>();
+
+  // Consume the multiword phrases first, recording each one's kind. Comparing the
+  // before/after string (rather than `.test()`) keeps the /g regexes stateless.
+  for (const { re, kind } of SOCIAL_PHRASES) {
+    const before = residual;
+    residual = residual.replace(re, " ");
+    if (residual !== before) found.add(kind);
+  }
+
+  for (const token of residual.match(WORD_TOKEN) ?? []) {
+    const kind = SOCIAL_TOKENS.get(token);
+    if (kind !== undefined) {
+      found.add(kind);
+      continue;
+    }
+    // Anything not social and not a phrase remnant is information-bearing: the turn
+    // belongs to the normal parse (AC #2 — mixed utterances still parse).
+    if (!SOCIAL_NEUTRAL_TOKENS.has(token)) return null;
+  }
+
+  // Neutral-only input ("bem", "boa", pure punctuation) asserts no speech act — there
+  // is nothing to answer with a template.
+  if (found.size === 0) return null;
+  if (found.has("farewell")) return "farewell";
+  if (found.has("thanks")) return "thanks";
+  return "greeting";
+}
+
+/**
+ * The per-turn facts L0 needs that only the turn's INGRESS can see. Published by the
+ * customer ingresses (routes/chat.ts, routes/whatsapp-webhook.ts) via
+ * {@link openFunnelTurn} right before `handleTurn`.
+ */
+export interface FunnelTurnContext {
+  /**
+   * TRUE iff this turn's session has a PENDING CONFIRMATION (a park) — read from the
+   * authoritative `capsule.loadedSession.pendingConfirmations`.
+   *
+   * FE-D32 (ratified) — while a confirm window is open, L0 MUST NOT FIRE AT ALL. Not
+   * for affirmatives, not for bare courtesy: the restate-then-confirm path
+   * (`webSoftAffirmativeRestateNotice` at the ingress, `matchToParked` in the loop, the
+   * kernel's re-adjudication with a receipt) owns every reply in that window, and a
+   * warm template dropped into it would silently answer past a pending money decision.
+   */
+  readonly confirmWindowOpen: boolean;
+}
+
+/** L0's verdict for a turn: the social act to template, or `undefined` (no L0). */
+export interface L0Verdict {
+  readonly kind: SocialKind;
+}
+
+/**
+ * The L0 DECISION (pure): fire only when the ingress published this turn's context AND
+ * no confirm window is open AND the utterance is social-only.
+ *
+ * FAIL-CLOSED ON A MISSING CONTEXT — an `undefined` context is not "no park", it is
+ * "nobody told us", so L0 stands down and the turn takes the normal (model) path. That
+ * is why an ingress which never publishes (the agent plane, the ops plane, a future
+ * call site that forgets) silently loses the optimisation instead of gaining a risk.
+ */
+export function decideL0(input: {
+  readonly text: string;
+  readonly context: FunnelTurnContext | undefined;
+}): L0Verdict | undefined {
+  if (input.context === undefined) return undefined;
+  if (input.context.confirmWindowOpen) return undefined;
+  const kind = classifySocialOnly(input.text);
+  return kind === null ? undefined : { kind };
+}
+
+/**
+ * The template's named slots. `personalization` is RESERVED AND EMPTY until ticket 28
+ * (P3 memory) fills it with the grounded, render-gated recent-visit touch ("Como
+ * estava o brisket?"). Rendering drops empty slots entirely, so an empty
+ * personalization is BYTE-IDENTICAL to a template with no slot at all — the pin that
+ * lets ticket 28 land without re-baselining these strings.
+ */
+export interface L0TemplateSlots {
+  readonly personalization: string;
+}
+
+/** The reserved-but-unfilled slot set (ticket 28 replaces this at the call site). */
+export const EMPTY_L0_SLOTS: L0TemplateSlots = { personalization: "" };
+
+/**
+ * The pt-BR L0 templates (Hard Rule #4), warm and store-state NEUTRAL. Each is a
+ * sequence of segments joined with single spaces, empty segments dropped.
+ *
+ * They assert NOTHING about the world: no hours, no prices, no order state, no
+ * open/closed claim. That is what makes them safe to ship without the claims gate
+ * (spec Implementation Decision 6's small-talk carve-out) and what makes the
+ * closed-hours behaviour below a no-op by construction.
+ */
+const L0_TEMPLATES: Readonly<
+  Record<SocialKind, (slots: L0TemplateSlots) => ReadonlyArray<string>>
+> = {
+  greeting: (slots) => [
+    "Oi! Tudo bem?",
+    slots.personalization,
+    "Como posso te ajudar hoje?",
+  ],
+  thanks: (slots) => [
+    "Eu que agradeço!",
+    slots.personalization,
+    "Se precisar de mais alguma coisa, é só me chamar.",
+  ],
+  farewell: (slots) => [
+    "Até logo!",
+    slots.personalization,
+    "Quando quiser pedir, é só me mandar uma mensagem.",
+  ],
+};
+
+/** Render an L0 reply. PURE — same kind + slots ⟹ byte-identical text. */
+export function renderL0Reply(
+  kind: SocialKind,
+  slots: L0TemplateSlots = EMPTY_L0_SLOTS,
+): string {
+  return L0_TEMPLATES[kind](slots)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .join(" ");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2. THE PER-TURN SEAM (stateful)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Per-turn funnel state, keyed by `turnId` — the same idiom the turn_trace buffer
+ * (`pendingTraces`, claustrum-bootstrap.ts) and the ops read capture
+ * (`readAnswer.render(turnId)`) already use, and the only shape available on the
+ * customer plane: the conductor is composed ONCE per process there (unlike the ops
+ * plane's per-turn `composeOpsConductor`), so a per-turn closure does not exist.
+ *
+ * LRU-capped exactly like `pendingTraces`: a turn that opens a context but never
+ * reaches its ingress `finally` (a mid-turn throw) can never leak unboundedly.
+ */
+const MAX_TRACKED_TURNS = 500;
+const turnContexts = new Map<string, FunnelTurnContext>();
+const turnStages = new Map<string, FunnelStageRecord>();
+
+function evictOldest(map: Map<string, unknown>): void {
+  if (map.size < MAX_TRACKED_TURNS) return;
+  const oldest = map.keys().next().value;
+  if (oldest !== undefined) map.delete(oldest);
+}
+
+/**
+ * INGRESS SEAM — publish this turn's funnel context. Call AFTER `openCapsule` (the
+ * turnId and the loaded session both come from the capsule) and BEFORE `handleTurn`.
+ * Idempotent; pair it with {@link closeFunnelTurn} in the ingress `finally`.
+ */
+export function openFunnelTurn(turnId: string, context: FunnelTurnContext): void {
+  evictOldest(turnContexts);
+  turnContexts.set(turnId, context);
+}
+
+/** INGRESS SEAM — drop this turn's funnel state (context + stage). */
+export function closeFunnelTurn(turnId: string): void {
+  turnContexts.delete(turnId);
+  turnStages.delete(turnId);
+}
+
+/**
+ * The declared disambiguating tokens for an ambiguous surface, read back from the
+ * catalog. Kept a lookup rather than stashed on the stage record because the
+ * record's `detail` is scalars-only by contract (it is logged and may be persisted
+ * verbatim), and the catalog is inert data available to any caller.
+ */
+function aliasDisambiguatorsFor(surface: string): readonly string[] {
+  const folded = normalizeProseForm(surface);
+  return ALIAS_GAZETTEER.filter((e) => normalizeProseForm(e.surface) === folded).map(
+    (e) => e.disambiguatedBy ?? "",
+  );
+}
+
+/** This turn's published context, or `undefined` when no ingress published one. */
+export function funnelTurnContext(turnId: string): FunnelTurnContext | undefined {
+  return turnContexts.get(turnId);
+}
+
+/**
+ * This turn's stage record, or `undefined` when no tier claimed the turn. Read by the
+ * responder (to render the template), by the claim path (to stay off the wire) and by
+ * the once-per-turn telemetry stamp (to put tier attribution in the trace).
+ */
+export function funnelStage(turnId: string): FunnelStageRecord | undefined {
+  return turnStages.get(turnId);
+}
+
+/**
+ * The funnel seam the PLANNER consumes (`IbatexasPlannerDeps.funnel`). Absent ⇒ the
+ * planner is byte-identical to its pre-L0 behaviour, which is how every other
+ * composition (ops, agent plane, unit tests) opts out.
+ */
+export interface FunnelPlannerSeam {
+  /**
+   * Decide the tier for this turn and STAMP the stage record. Called at the very top
+   * of `propose` — before the tool surface is built and before any model call.
+   * `undefined` ⟹ no tier claimed the turn ⟹ the normal parse runs.
+   */
+  claim(state: CognitiveState): FunnelStageRecord | undefined;
+  /** The stage stamped for this turn, if any (the claim path reads this). */
+  stageFor(turnId: string): FunnelStageRecord | undefined;
+}
+
+/**
+ * The funnel seam the RESPONDER consumes (`IbatexasResponderDeps.funnel`). Absent ⇒
+ * byte-identical to the pre-L0 responder.
+ */
+export interface FunnelResponderSeam {
+  stageFor(turnId: string): FunnelStageRecord | undefined;
+  /** The deterministic pt-BR reply for a stamped stage, or `undefined` if the tier
+   *  does not author its own reply (L1/L2 do not — they still parse, so the reply
+   *  is produced downstream from the re-minted envelopes exactly as on a miss). */
+  reply(stage: FunnelStageRecord): string | undefined;
+}
+
+/**
+ * The L1 seam the PLANNER consumes (LE2-009) — parse memoization, exact match only.
+ *
+ * DELIBERATELY NOT PART OF {@link FunnelPlannerSeam}: L0 `claim()` is SYNCHRONOUS
+ * and decides the turn before any surface is built, while L1 is ASYNCHRONOUS (it
+ * reads Redis) and can only run AFTER the system prompt and tool surface exist —
+ * they are the cache key. Keeping them separate stops a caller from assuming one
+ * ordering for both. Absent ⟹ the planner is byte-identical to its pre-L1 behaviour.
+ */
+export interface FunnelParseMemoSeam {
+  /**
+   * Look up this turn's memoized parse. Returns `undefined` on a miss AND on any
+   * store fault (the store's fail-open contract) — a cache outage is never a turn
+   * failure. `canonical` feeds the repeat-miss counter on a miss.
+   */
+  lookupParse(
+    key: ParseCacheKey,
+    canonical: string,
+  ): Promise<MemoizedParse | undefined>;
+  /** Memoize a parse. A non-cacheable parse is recorded as a bypass, never stored. */
+  rememberParse(
+    key: ParseCacheKey,
+    parse: MemoizedParse,
+    cacheable: boolean,
+  ): Promise<void>;
+  /**
+   * Stamp the L1 stage record for a HIT — the trace's tier attribution, read back
+   * by `funnelStage(turnId)` at the once-per-turn telemetry seam exactly as L0's is.
+   */
+  stampMemoHit(turnId: string, key: ParseCacheKey, proposals: number): FunnelStageRecord;
+  /** The residual repeat-miss telemetry (decision 10's evidence gate). */
+  counters(): ParseCacheCounters;
+}
+
+/** L2's per-process counters — the fallback RATE the ticket requires be visible. */
+export interface ScopeCounters {
+  readonly scoped: number;
+  readonly fallback: number;
+  /** Of the fallbacks, how many were a genuine low-confidence decision (rather
+   *  than an unavailable retriever or a roster already at/below K) — the number
+   *  that actually says something about retrieval quality. */
+  readonly lowConfidence: number;
+}
+
+/**
+ * The L2 seam the PLANNER consumes (LE2-008) — scoped parse attribution.
+ *
+ * L2 does NOT claim a turn: unlike L0 (template) and L1 (replay) it still calls
+ * the model, it just calls it with a narrower surface. So this is a STAMP, not a
+ * `claim()`, and the planner must call it only AFTER L1 has missed — otherwise a
+ * turn that L1 resolved would carry an L2 attribution and the trace would name
+ * two tiers for one turn. Exactly one tier per turn is the contract.
+ */
+export interface FunnelScopeSeam {
+  /** Stamp this turn's scope decision (scoped or fallback) and count it. */
+  stampScope(turnId: string, decision: ScopeDecision): FunnelStageRecord;
+  /** The scoped/fallback split for this process. */
+  scopeCounters(): ScopeCounters;
+}
+
+/** L2-025b — the alias layer's per-process counters. */
+export interface AliasCounters {
+  /** Turns where at least one surface form was canonicalized. */
+  readonly canonicalized: number;
+  /** Individual surface→canonical resolutions. */
+  readonly resolutions: number;
+  /** Turns that CLARIFIED because a declared-ambiguous surface had no context. */
+  readonly clarified: number;
+}
+
+/**
+ * The ALIAS seam the planner consumes (LE2-025b). Two jobs, kept apart because
+ * they land on different turns:
+ *
+ *  - `recordAliases` — a turn that RESOLVED aliases still parses normally, so this
+ *    only files the resolutions for the trace ("why did it read costela as
+ *    costela-bovina-defumada"). It does NOT stamp a tier: the turn's tier is still
+ *    whatever L1/L2 decide, and inventing an "alias tier" for it would double-count
+ *    against the funnel's one-tier-per-turn contract.
+ *  - `stampAliasClarify` — a declared-ambiguous surface with nothing to
+ *    disambiguate it. This one DOES claim the turn: no parse happens, the responder
+ *    renders the deterministic pt-BR question, and zero model calls are made.
+ */
+export interface FunnelAliasSeam {
+  recordAliases(turnId: string, resolutions: readonly AliasResolution[]): void;
+  stampAliasClarify(
+    turnId: string,
+    ambiguous: readonly AmbiguousSurface[],
+  ): FunnelStageRecord;
+  /** This turn's resolutions — the trace surface. */
+  aliasResolutions(turnId: string): readonly AliasResolution[];
+  aliasCounters(): AliasCounters;
+}
+
+/**
+ * Build the L0 funnel seam. One instance per composition, shared by the planner and
+ * the responder so both read the SAME stamped stage for a turn.
+ *
+ * `now` is injectable so a deterministic suite can freeze the stage record's `at`.
+ */
+export function createL0Funnel(
+  opts: { readonly now?: () => number } = {},
+): FunnelPlannerSeam & FunnelResponderSeam {
+  return createParseFunnel(opts);
+}
+
+/**
+ * Build the funnel seam with BOTH tiers: L0 (social short-circuit, LE2-007) and —
+ * when a `parseCacheStore` is wired — L1 (exact-match parse memoization, LE2-009).
+ *
+ * ONE instance per composition, shared by the planner and the responder so both
+ * read the SAME stamped stage for a turn. Omitting `parseCacheStore` leaves L1
+ * absent and the composition byte-identical to LE2-007 — which is how the ops and
+ * agent planes (and every pre-L1 unit test) opt out without a flag.
+ *
+ * `now` is injectable so a deterministic suite can freeze a stage record's `at`.
+ */
+export function createParseFunnel(
+  opts: {
+    readonly now?: () => number;
+    readonly parseCacheStore?: ParseCacheStore;
+  } = {},
+): FunnelPlannerSeam & FunnelResponderSeam & FunnelScopeSeam & FunnelAliasSeam & Partial<FunnelParseMemoSeam> {
+  const now = opts.now ?? Date.now;
+  const store = opts.parseCacheStore;
+  const telemetry = createParseCacheTelemetry();
+
+  const parseMemo: FunnelParseMemoSeam | undefined =
+    store === undefined
+      ? undefined
+      : {
+          async lookupParse(
+            key: ParseCacheKey,
+            canonical: string,
+          ): Promise<MemoizedParse | undefined> {
+            const hit = await store.get(key.key);
+            if (hit === undefined) {
+              telemetry.recordMiss(canonical);
+              return undefined;
+            }
+            // BKL-274 — THE READ SIDE OF THE SILENCE REFUSAL, and the entire
+            // answer to the pre-fix residue.
+            //
+            // The write side (the planner's `isCacheableParse` call) stops NEW
+            // silence from being stored, but entries written by an earlier
+            // deploy stay readable for the rest of their 7-day TTL, and every
+            // one of them replays the defect. The two ways to reach them are a
+            // key-component bump (which throws away every GOOD entry too, and
+            // spends a component whose declared meaning is a parser-visible
+            // SURFACE change — which this fix is not) and an out-of-band
+            // eviction pass (which the module header deliberately refuses to
+            // own: "there is no separate invalidation path to get wrong").
+            //
+            // Re-checking the predicate HERE is strictly better than both. It
+            // neutralizes exactly the defective entries and nothing else, the
+            // moment this code ships, with no ops action and no honesty cost to
+            // the key. The dead entries simply age out unread.
+            //
+            // It is also the durable guard: the write side is one call site and
+            // could be bypassed by a future writer, while nothing is served
+            // without passing through here.
+            if (isSilentParse(hit)) {
+              telemetry.recordSilentEntryIgnored();
+              telemetry.recordMiss(canonical);
+              logger.info(
+                {
+                  component: "funnel",
+                  event: "funnel.l1.silent_entry_ignored",
+                  keyVersion: key.keyVersion,
+                  keyDigest: key.digest.slice(0, 12),
+                  ...telemetry.snapshot(),
+                },
+                "funnel L1: stored parse emitted nothing — treated as a MISS, never replayed (BKL-274)",
+              );
+              return undefined;
+            }
+            telemetry.recordHit();
+            return hit;
+          },
+          async rememberParse(
+            key: ParseCacheKey,
+            parse: MemoizedParse,
+            cacheable: boolean,
+          ): Promise<void> {
+            if (!cacheable) {
+              // A read-enriched, extraction-failed or SILENT parse (BKL-274):
+              // counted so the bypass RATE is visible, never written (see
+              // parse-memo.ts's header).
+              telemetry.recordBypass();
+              return;
+            }
+            await store.set(key.key, parse, PARSE_CACHE_TTL_SECONDS);
+            telemetry.recordStore();
+          },
+          stampMemoHit(
+            turnId: string,
+            key: ParseCacheKey,
+            proposals: number,
+          ): FunnelStageRecord {
+            const stage: FunnelStageRecord = {
+              tier: "L1",
+              reason: "memoized_parse",
+              detail: {
+                cacheHit: 1,
+                keyVersion: key.keyVersion,
+                // A PREFIX only: enough to correlate two turns that shared an
+                // entry in the trace, never enough to be a lookup handle, and
+                // structurally incapable of carrying the utterance itself.
+                keyDigest: key.digest.slice(0, 12),
+                proposals,
+              },
+              at: new Date(now()).toISOString(),
+            };
+            evictOldest(turnStages);
+            turnStages.set(turnId, stage);
+            const counters = telemetry.snapshot();
+            // The funnel's queryable L1 trace line. An L1 HIT makes zero model
+            // calls, so — exactly like L0 — it writes no turn_trace row and no
+            // llm_wire exchange; this line plus the per-turn conductor `turn`
+            // record (which stamps `funnelTier` from this stage) are where the
+            // tier attribution and the counters live for a zero-call turn.
+            logger.info(
+              {
+                component: "funnel",
+                event: "funnel.tier",
+                turnId,
+                tier: stage.tier,
+                reason: stage.reason,
+                keyVersion: key.keyVersion,
+                keyDigest: stage.detail.keyDigest,
+                ...counters,
+              },
+              "funnel: L1 memoized parse — no extraction call this turn",
+            );
+            return stage;
+          },
+          counters: () => telemetry.snapshot(),
+        };
+
+  // ── L2 (LE2-008) — scoped-parse attribution + the fallback rate ──────────────
+  let scopedCount = 0;
+  let fallbackCount = 0;
+  let lowConfidenceCount = 0;
+  const scopeSeam: FunnelScopeSeam = {
+    stampScope(turnId: string, decision: ScopeDecision): FunnelStageRecord {
+      if (decision.scoped) scopedCount += 1;
+      else {
+        fallbackCount += 1;
+        if (decision.reason === "low_confidence") lowConfidenceCount += 1;
+      }
+      const stage: FunnelStageRecord = {
+        tier: "L2",
+        reason: decision.scoped ? "scoped_parse" : "full_roster_fallback",
+        detail: {
+          // The RETRIEVER SELECTION the ticket requires in the trace. Capability
+          // kinds are internal ids, never customer text, so recording them verbatim
+          // carries no PII — and the ordered list is what makes a bad scope
+          // diagnosable from the trace alone rather than by re-running retrieval.
+          selected: decision.selected.join(","),
+          k: decision.selected.length,
+          confidence: Number(decision.confidence.toFixed(6)),
+          scopeReason: decision.reason,
+        },
+        at: new Date(now()).toISOString(),
+      };
+      evictOldest(turnStages);
+      turnStages.set(turnId, stage);
+      logger.info(
+        {
+          component: "funnel",
+          event: "funnel.tier",
+          turnId,
+          tier: stage.tier,
+          reason: stage.reason,
+          selected: decision.selected,
+          confidence: stage.detail.confidence,
+          scopeReason: decision.reason,
+          scoped: scopedCount,
+          fallback: fallbackCount,
+          lowConfidence: lowConfidenceCount,
+        },
+        decision.scoped
+          ? `funnel: L2 scoped parse — ${decision.selected.length} of the roster advertised`
+          : `funnel: L2 full-roster fallback (${decision.reason})`,
+      );
+      return stage;
+    },
+    scopeCounters: () => ({
+      scoped: scopedCount,
+      fallback: fallbackCount,
+      lowConfidence: lowConfidenceCount,
+    }),
+  };
+
+  // ── ALIAS (LE2-025b) — resolutions for the trace + the clarify short-circuit ──
+  const turnAliases = new Map<string, readonly AliasResolution[]>();
+  let canonicalizedTurns = 0;
+  let resolutionCount = 0;
+  let clarifiedTurns = 0;
+  const aliasSeam: FunnelAliasSeam = {
+    recordAliases(turnId: string, resolutions: readonly AliasResolution[]): void {
+      if (resolutions.length === 0) return;
+      evictOldest(turnAliases);
+      turnAliases.set(turnId, resolutions);
+      canonicalizedTurns += 1;
+      resolutionCount += resolutions.length;
+      logger.info(
+        {
+          component: "funnel",
+          event: "funnel.alias.resolved",
+          turnId,
+          resolutions: resolutions.map((r) =>
+            r.disambiguatedBy === undefined
+              ? `${r.surface}=>${r.canonical}`
+              : `${r.surface}=>${r.canonical} (via ${r.disambiguatedBy})`,
+          ),
+        },
+        `funnel: canonicalized ${resolutions.length} alias surface(s)`,
+      );
+    },
+    stampAliasClarify(
+      turnId: string,
+      ambiguous: readonly AmbiguousSurface[],
+    ): FunnelStageRecord {
+      clarifiedTurns += 1;
+      const first = ambiguous[0];
+      const stage: FunnelStageRecord = {
+        tier: "ALIAS",
+        reason: "alias_ambiguous",
+        detail: {
+          surface: first?.surface ?? "",
+          candidates: (first?.candidates ?? []).join(","),
+          ambiguousSurfaces: ambiguous.length,
+        },
+        at: new Date(now()).toISOString(),
+      };
+      evictOldest(turnStages);
+      turnStages.set(turnId, stage);
+      logger.info(
+        {
+          component: "funnel",
+          event: "funnel.tier",
+          turnId,
+          tier: stage.tier,
+          reason: stage.reason,
+          surface: stage.detail.surface,
+          candidates: first?.candidates ?? [],
+          clarified: clarifiedTurns,
+        },
+        "funnel: ALIAS clarify — a declared-ambiguous surface had no disambiguating token; no model call this turn",
+      );
+      return stage;
+    },
+    aliasResolutions: (turnId: string) => turnAliases.get(turnId) ?? [],
+    aliasCounters: () => ({
+      canonicalized: canonicalizedTurns,
+      resolutions: resolutionCount,
+      clarified: clarifiedTurns,
+    }),
+  };
+
+  return {
+    ...(parseMemo ?? {}),
+    ...scopeSeam,
+    ...aliasSeam,
+    claim(state: CognitiveState): FunnelStageRecord | undefined {
+      const verdict = decideL0({
+        text: state.perception.text,
+        context: funnelTurnContext(state.turnId),
+      });
+      if (verdict === undefined) return undefined;
+      const stage: FunnelStageRecord = {
+        tier: "L0",
+        reason: "social_only",
+        detail: { socialKind: verdict.kind },
+        at: new Date(now()).toISOString(),
+      };
+      evictOldest(turnStages);
+      turnStages.set(state.turnId, stage);
+      // The funnel's queryable trace line. An L0 turn writes NO turn_trace row and no
+      // llm_wire exchange BY DESIGN (there is no completion to record — the absence
+      // IS the win), so this line plus the per-turn conductor `turn` record
+      // (claustrum-bootstrap's emitTurn, which stamps `funnelTier` from the stage) are
+      // where tier attribution lives for a zero-call turn.
+      logger.info(
+        {
+          component: "funnel",
+          event: "funnel.tier",
+          turnId: state.turnId,
+          tier: stage.tier,
+          reason: stage.reason,
+          socialKind: verdict.kind,
+        },
+        "funnel: L0 social short-circuit — no model call this turn",
+      );
+      return stage;
+    },
+    stageFor(turnId: string): FunnelStageRecord | undefined {
+      return funnelStage(turnId);
+    },
+    reply(stage: FunnelStageRecord): string | undefined {
+      // The same predicate the planner's claim short-circuit reads (BKL-276), so
+      // "authors its own reply" can never mean two different things in the two
+      // places that ask. Behaviour-preserving: L1/L2 returned undefined here before.
+      if (!tierAuthorsOwnReply(stage.tier)) return undefined;
+      if (stage.tier === "ALIAS") {
+        // Rebuilt from the stamped detail rather than held in a closure, so the
+        // reply is a pure function of the record the trace already shows.
+        const surface = String(stage.detail.surface ?? "");
+        const candidates = String(stage.detail.candidates ?? "")
+          .split(",")
+          .filter((c) => c.length > 0);
+        return renderAliasClarify([
+          { surface, candidates, disambiguators: aliasDisambiguatorsFor(surface) },
+        ]);
+      }
+      if (stage.tier !== "L0") return undefined;
+      const kind = stage.detail.socialKind;
+      if (kind !== "greeting" && kind !== "thanks" && kind !== "farewell") {
+        return undefined;
+      }
+      return renderL0Reply(kind, EMPTY_L0_SLOTS);
+    },
+  };
+}

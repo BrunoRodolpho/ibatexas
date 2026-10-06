@@ -8,6 +8,13 @@ const compat = new FlatCompat({
   allConfig: js.configs.all,
 });
 
+// ── Audit-redaction chokepoint (F-53) ────────────────────────────────────────
+//
+// Spliced in explicitly because the `no-restricted-imports` block below REPLACES
+// (never merges) the base config's rule options — without this line the repo-wide
+// ban from @ibatexas/eslint-config would be silently dead across packages/tools.
+const { AUDIT_RAW_SINK_IMPORT_BAN } = require("@ibatexas/eslint-config/restricted-imports.js");
+
 // ── EGRESS BRAND enforcement (Plan 1 / Theorem E-1) ──────────────────────────
 // (c) ban `as RenderedReply` casts; (d) restrict the raw `twilio` SDK import to
 // the kernel-gated egress wrapper (twilio/adjudicated.ts). See apps/api config.
@@ -51,14 +58,22 @@ export default [
         RENDERED_REPLY_CAST_BAN,
         ...TWILIO_REST_HOST_BAN,
       ],
-      "no-restricted-imports": ["error", { paths: [TWILIO_IMPORT_BAN] }],
+      "no-restricted-imports": [
+        "error",
+        { paths: [TWILIO_IMPORT_BAN, AUDIT_RAW_SINK_IMPORT_BAN] },
+      ],
     },
   },
   {
     // The kernel-gated egress wrapper is the only sanctioned `twilio` importer.
+    // F-53: re-declared with the audit ban alone rather than "off" — being a
+    // sanctioned Twilio importer does not make it a sanctioned audit composer.
     files: ["src/twilio/adjudicated.ts"],
     rules: {
-      "no-restricted-imports": "off",
+      "no-restricted-imports": [
+        "error",
+        { paths: [AUDIT_RAW_SINK_IMPORT_BAN] },
+      ],
     },
   },
 ];

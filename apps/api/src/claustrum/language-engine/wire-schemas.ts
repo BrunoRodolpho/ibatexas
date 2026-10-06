@@ -1,10 +1,23 @@
-// wire-schemas.ts — the per-capability extraction schema -> `express_intent`
-// wire registry (FE-1.1 / FE-1.4). Consumed by `ibatexas-planner.ts`'s
-// `buildToolSurface`: when a turn's allowed-intent set contains a capability
-// registered here, the model sees that capability's real, narrowed `payload`
-// sub-schema instead of the generic `{type:"object"}` shape — the concrete
-// fix for "the model sees one mutation verb whose payload is an untyped,
-// empty-shaped object" (spec Problem Statement #1).
+// wire-schemas.ts — the per-capability extraction schema registry
+// (FE-1.1 / FE-1.4).
+//
+// NAME CAVEAT (BKL-255a): despite "wire" in the name, these schemas are NOT on
+// the wire today. FE-1.1/FE-1.4 composed them into the `express_intent` tool
+// definition as `allOf`/`if-then` clauses so the model would see each
+// capability's real, narrowed `payload` shape instead of the generic
+// `{type:"object"}` blob (spec Problem Statement #1). LE2-004 proved that
+// composition was never decoded: Ollama parses a tool schema into a closed Go
+// struct that DROPS `allOf`, without erroring. `buildToolSurface` no longer
+// emits it, so Problem Statement #1 stands OPEN on the advertise side —
+// re-expressing the narrowing under `properties.payload` (a form this engine
+// does decode) is BKL-255(b), owner-pending.
+//
+// What these schemas DO drive today is the PARSE seam, which is where the
+// model's payload is actually bounded: `ALLOWED_PAYLOAD_FIELD_NAMES_BY_
+// CAPABILITY` (below) backs `stripUnauthoredPayloadFields` in
+// `ibatexas-planner.ts`. Authoring a schema here is therefore still live and
+// still load-bearing — it just constrains what the runtime ACCEPTS rather than
+// what the model is TOLD.
 //
 // FE-T05 authored the first entry (order.status.transition); FE-T09 (D-a,
 // the amend inversion) adds the three granular post-checkout amend kinds;

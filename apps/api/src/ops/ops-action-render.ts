@@ -19,11 +19,18 @@
 // (ops-tool-registry.ts) + a safe generic fallback ("Pronto — ação concluída.") so
 // a newly-registered verb is never a FALSEHOOD, only LESS SPECIFIC.
 //
-// Only the three COMMITTED dispatch kinds render here (executed /
+// Only the three EXECUTED dispatch kinds render here (executed /
 // rewritten_and_executed / executed_plan). A deferred / awaiting_confirmation /
-// escalated / refused / FAILED dispatch committed nothing, so this returns
+// escalated / refused / FAILED dispatch ran nothing, so this returns
 // `undefined` and the responder falls through to its existing (honest) grounded
-// path — a failed EXECUTE must never be dressed as a success.
+// path — a failed EXECUTE must never be dressed as a success. BKL-240: that holds
+// for a tool that FAILS WITHOUT THROWING too. An `executed` dispatch proves only
+// that `tool.execute` did not throw, so a template ALSO abstains when the executor's
+// own result does not prove its write committed. The two REACHABLE signals on this
+// registry are `ops.alert.resolve.staff` / `incident.ticket.close.staff` reporting no
+// `status` (their SYSTEM write's inner adjudication did not EXECUTE) and
+// `menu.special.set` reporting a write that touched no row; `executorReportedFailure`
+// adds a forward-looking `{ success:false }` arm for future tools.
 //
 // pt-BR per Hard Rule #4; money via Intl.NumberFormat pt-BR/BRL (the same idiom as
 // ops-read-render.ts). A `schedule.override.set`/`menu.special.set` `date` is a
@@ -84,6 +91,29 @@ function isRecord(x: unknown): x is Record<string, unknown> {
 
 function isNum(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
+}
+
+/**
+ * BKL-240 — the COMMITTED status the two resolution executors report, or
+ * `undefined` when they reported NONE.
+ *
+ * `ops.alert.resolve.staff` / `incident.ticket.close.staff` are the ops verbs whose
+ * failure is reachable WITHOUT a throw. Their SYSTEM-write layer adjudicates the
+ * inner SYSTEM envelope itself (`withAdjudicate`) and its contract makes `result`
+ * OPTIONAL — `Promise<{ readonly result?: { readonly status: string } | null }>`
+ * (ops-tool-registry.ts:199 alert, :211 incident) — so a non-EXECUTE inner decision
+ * yields NO result, and the executors coerce that to `status: null`
+ * (ops-tool-registry.ts:732 alert, :761 incident). Nothing threw, so the dispatch is
+ * `executed`, and the fixed lines ("Pronto — alerta operacional resolvido.") were
+ * stated over an alert that is still OPEN.
+ *
+ * Both executors ALWAYS include the key (string or null), so requiring a real status
+ * here misses no committed write.
+ */
+function committedStatusOf(result: unknown): string | undefined {
+  if (!isRecord(result)) return undefined;
+  const status = result.status;
+  return typeof status === "string" && status.trim() !== "" ? status.trim() : undefined;
 }
 
 /**
@@ -169,10 +199,29 @@ function renderPriceSet(payload: unknown): string {
   return `Pronto — preço do ${subject} atualizado para ${brl(payload.priceCentavos)}.`;
 }
 
+/**
+ * BKL-240 — TRUE when the `menu.special.set` executor reported that its write
+ * touched NO row: `specialId: null`, propagated from the ROW-OR-NULL
+ * `OpsDailySpecialWriter.update` when the day's row vanished between the `list` and
+ * the `update` (ops-tool-registry.ts's `executeMenuSpecialSet`). Nothing threw, so
+ * the dispatch is `executed` — but no special exists to announce.
+ *
+ * An ABSENT `specialId` is NOT a reported failure: this template renders from the
+ * PAYLOAD, and the committed SCN-114 fixtures carry no result at all, so demanding
+ * the id would silently stop rendering every one of them (the same false-FAILURE
+ * trap the `!== false` polarity avoids elsewhere).
+ */
+function specialWriteTouchedNoRow(result: unknown): boolean {
+  return (
+    isRecord(result) && "specialId" in result && typeof result.specialId !== "string"
+  );
+}
+
 /** `menu.special.set` — the featured business-day (+ optional promo price);
  *  names the product when the resolver stamped it (BKL-156), else the generic
- *  form. */
-function renderMenuSpecial(payload: unknown): string {
+ *  form. `undefined` when the executor reported that no row was written (BKL-240). */
+function renderMenuSpecial(payload: unknown, result: unknown): string | undefined {
+  if (specialWriteTouchedNoRow(result)) return undefined;
   if (!isRecord(payload) || typeof payload.date !== "string") {
     return OPS_ACTION_GENERIC_PTBR;
   }
@@ -214,13 +263,18 @@ function renderRefund(_payload: unknown, result: unknown): string {
   return `Pronto — reembolso de ${brl(result.refundAmountCentavos)} emitido.`;
 }
 
-/** `ops.alert.resolve.staff` — the committed resolve. */
-function renderAlertResolve(): string {
+/** `ops.alert.resolve.staff` — the committed resolve. `undefined` when the SYSTEM
+ *  write reported NO status (BKL-240: the inner adjudication did not EXECUTE, so the
+ *  alert is still open — see `committedStatusOf`). */
+function renderAlertResolve(_payload: unknown, result: unknown): string | undefined {
+  if (committedStatusOf(result) === undefined) return undefined;
   return "Pronto — alerta operacional resolvido.";
 }
 
-/** `incident.ticket.close.staff` — the committed close. */
-function renderIncidentClose(): string {
+/** `incident.ticket.close.staff` — the committed close. `undefined` when the SYSTEM
+ *  write reported NO status (BKL-240 — same posture as the alert sibling). */
+function renderIncidentClose(_payload: unknown, result: unknown): string | undefined {
+  if (committedStatusOf(result) === undefined) return undefined;
   return "Pronto — incidente fechado.";
 }
 
@@ -229,9 +283,14 @@ function renderIncidentClose(): string {
  * `(payload, result)`. The exported KEYS feed a boot/drift parity gate + the tests
  * so a registered ops EXECUTE verb with no specific template is caught rather than
  * silently falling back to the generic line.
+ *
+ * BKL-240 — a template returns `undefined` when the executor's OWN result proves no
+ * commit for that kind (`ops.alert.resolve.staff` / `incident.ticket.close.staff`
+ * reporting no status; `menu.special.set` reporting a write that touched no row).
+ * The whole turn then falls to the honest grounded path.
  */
 const OPS_ACTION_TEMPLATES: Readonly<
-  Record<string, (payload: unknown, result: unknown) => string>
+  Record<string, (payload: unknown, result: unknown) => string | undefined>
 > = {
   "schedule.override.set": renderScheduleOverride,
   "product.availability.set": renderAvailability,
@@ -257,12 +316,22 @@ export interface ExecutedOpsAction {
 }
 
 /**
- * Extract the COMMITTED mutations from a `DispatchResult` (`acted`, typed `unknown`
- * at the responder seam). Only the three committed variants yield actions:
+ * Extract the DISPATCHED mutations from a `DispatchResult` (`acted`, typed `unknown`
+ * at the responder seam). Only the three dispatched-successfully variants yield
+ * actions:
  *   - `executed` / `rewritten_and_executed` → the single `{ envelope, result }`;
  *   - `executed_plan` → each `{ envelope, result }` in plan order.
  * Every other kind (refused / awaiting_confirmation / deferred / escalated /
- * FAILED) committed nothing ⇒ `[]`. Never throws (structural, defensive).
+ * FAILED) ran nothing ⇒ `[]`. Never throws (structural, defensive).
+ *
+ * BKL-240 — a returned action means the tool call RETURNED WITHOUT THROWING, NOT
+ * that the executor COMMITTED: @claustrum's dispatcher decides `executed` vs
+ * `failed` purely on whether `tool.execute` threw (execution/dispatch.js — it never
+ * inspects the returned value), so a tool that RETURNS a `{ success:false }` result
+ * lands here as fully `executed`. Callers that state a business outcome MUST consult
+ * `result.success` themselves (see `renderOpsActionAnswer` below); this function is
+ * deliberately outcome-BLIND, because `customer-action-render.ts` reuses it as the
+ * plane-neutral envelope+result extractor and applies its own per-kind gates.
  */
 export function executedOpsActions(acted: unknown): ExecutedOpsAction[] {
   if (!isRecord(acted) || typeof acted.kind !== "string") return [];
@@ -287,12 +356,13 @@ export function executedOpsActions(acted: unknown): ExecutedOpsAction[] {
   return [];
 }
 
-/** Render ONE committed action: its per-kind template, or the generic fallback for
- *  an unregistered kind. The template call is try/caught so a bad-but-plausible
+/** Render ONE dispatched action: its per-kind template, or the generic fallback for
+ *  an unregistered kind. `undefined` when the template proved the executor did NOT
+ *  commit (BKL-240). The template call is try/caught so a bad-but-plausible
  *  shape that slips structural narrowing DEGRADES to the generic line, never crashes
  *  the turn (a render throw would propagate out of respond() and ghost the staff
  *  turn entirely — the exact fail-honest posture ops-read-render.ts uses). */
-function renderExecutedAction(action: ExecutedOpsAction): string {
+function renderExecutedAction(action: ExecutedOpsAction): string | undefined {
   const template = OPS_ACTION_TEMPLATES[action.kind];
   if (template === undefined) return OPS_ACTION_GENERIC_PTBR;
   try {
@@ -303,15 +373,59 @@ function renderExecutedAction(action: ExecutedOpsAction): string {
 }
 
 /**
+ * BKL-240 — did the executor EXPLICITLY report failure via a `success` flag? Every
+ * template above states a COMPLETED mutation ("Pronto — fechei a loja em
+ * 11/07/2026."), and template selection keyed on `action.kind` alone asserts that on
+ * the strength of DISPATCH MECHANICS (see `executedOpsActions`): a tool that RETURNS
+ * a failure instead of throwing draws the full success line — a false success
+ * reported to STAFF, who then act on it (the operator believes the store is closed
+ * for the day, the refund is out, the incident is shut).
+ *
+ * This is the FORWARD-LOOKING arm of the gate. No ops executor sets `success` today —
+ * they return domain-shaped write projections (`{ newStatus, displayId }`,
+ * `{ refundAmountCentavos, … }`, `{ date, isOpen }`) — so it fires on nothing in the
+ * current registry; the REACHABLE ops failure signals are per-kind committed SHAPES
+ * (`committedStatusOf` for the two resolution verbs, `specialWriteTouchedNoRow` for
+ * menu.special.set) and are enforced inside those templates. It is kept because the
+ * cost is one comparison and any future ops tool that adopts the customer plane's
+ * `{ success:false }` convention inherits the safety without touching this file.
+ *
+ * Polarity is `success === false` — abstain only on a REPORTED failure, never on a
+ * merely unproven one — the ratified BKL-247 gate rather than checkout's `=== true`.
+ * Since every current result omits `success`, `=== true` would silently stop
+ * rendering EVERY registered verb and reintroduce the false-FAILURE this module was
+ * built to kill.
+ */
+function executorReportedFailure(action: ExecutedOpsAction): boolean {
+  return isRecord(action.result) && action.result.success === false;
+}
+
+/**
  * Render the deterministic ops EXECUTE (mutation-success) reply from `acted`, or
- * `undefined` when NO mutation committed this turn (the responder then falls through
- * to its existing grounded model path — a deferred/failed dispatch is NOT a success).
- * When ≥1 mutation committed the return is ALWAYS a string built from the executed
- * envelope(s) + result(s) — the model authors NONE of it. Multiple executions
- * (a transactional plan) render in plan order, joined.
+ * `undefined` when NO mutation was dispatched this turn (the responder then falls
+ * through to its existing grounded model path — a deferred/failed dispatch is NOT a
+ * success), or when any dispatched executor's own result FAILS to prove it committed
+ * (BKL-240). Otherwise the return is a string built from the executed envelope(s) +
+ * result(s) — the model authors NONE of it. Multiple executions (a transactional
+ * plan) render in plan order, joined.
+ *
+ * BKL-240 — the outcome check is turn-WIDE, not per-action: on a mixed transactional
+ * plan (one committed, one not) rendering only the successful lines would read as a
+ * COMPLETE success for the turn and silently swallow the failure. Abstaining hands the
+ * whole turn to the SAFE path this function already uses for a failed dispatch — the
+ * grounded model path, which voices the executor's own failure from the bounded acted
+ * summary, exactly as it did before BKL-149.
  */
 export function renderOpsActionAnswer(acted: unknown): string | undefined {
   const actions = executedOpsActions(acted);
   if (actions.length === 0) return undefined;
-  return actions.map(renderExecutedAction).join("\n\n");
+  if (actions.some(executorReportedFailure)) return undefined;
+  const lines: string[] = [];
+  for (const action of actions) {
+    const line = renderExecutedAction(action);
+    // A template that abstained proved the executor did not commit for its kind.
+    if (line === undefined) return undefined;
+    lines.push(line);
+  }
+  return lines.join("\n\n");
 }

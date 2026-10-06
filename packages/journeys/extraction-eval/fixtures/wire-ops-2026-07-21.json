@@ -1,0 +1,45 @@
+{
+  "formatVersion": 1,
+  "source": "wire",
+  "id": "wire-ops-2026-07-21",
+  "synthetic": false,
+  "note": "REAL export from the local dev stack's llm_wire (Postgres :5433), 2026-07-24 — every row the store held (6 rows = 3 turns x 2 attempts, captured 2026-07-21/22 right after the wire-truth capture landed). Only the PARSE attempt of each turn is an eval artifact: rows whose request system message is the ops EXTRACTION persona (\"interpretador de comandos operacionais\"); the sibling attempt on the same turn is the responder generating prose and asserts nothing about parsing. Completions are stored VERBATIM — LE2 tickets 01-03 are about what the model strands in this exact string. Sorted by (normalized utterance, turnId, seq). See ../README.md.",
+  "artifacts": [
+    {
+      "utterance": "Oi",
+      "completion": "{\"capability\": \"order.note.add\", \"payload\": {\"body\": \"Oi\", \"orderId\": \"\"}}",
+      "provenance": {
+        "store": "llm_wire",
+        "turnId": "3a54cb5c-37a0-41cf-997d-c29dd9cfa351",
+        "seq": 0,
+        "callIndex": 0,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-21T23:57:29.801Z"
+      }
+    },
+    {
+      "utterance": "Vocês entregam em Ibate?",
+      "completion": "{\"text\":\"Sim, entregamos em Ibate.\"}",
+      "provenance": {
+        "store": "llm_wire",
+        "turnId": "375e3d2b-05b7-45de-a454-2baef5f39365",
+        "seq": 0,
+        "callIndex": 0,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-22T00:02:07.848Z"
+      }
+    },
+    {
+      "utterance": "Vocês estão abertos?",
+      "completion": "{ \"capability\": null, \"payload\": null }",
+      "provenance": {
+        "store": "llm_wire",
+        "turnId": "92c13f52-9d51-4ede-9dd2-531f7f58ab57",
+        "seq": 0,
+        "callIndex": 0,
+        "model": "nemotron-3-nano:4b",
+        "recordedAt": "2026-07-21T23:58:07.522Z"
+      }
+    }
+  ]
+}

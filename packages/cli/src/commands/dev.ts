@@ -6,6 +6,11 @@ import ora from "ora"
 import { execa, execaSync } from "execa"
 import { ROOT } from "../utils/root.js"
 import { DEV_FLAGS } from "../lib/dev-flags.js"
+import {
+  DEV_SUPERVISOR_LOG,
+  disposableLogPath,
+  logFileArgs,
+} from "../lib/process-compose-log.js"
 import type { ServiceDef } from "../services.js"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -34,7 +39,15 @@ const APP_SERVICES = ["commerce", "api", "web", "admin", "qa-viewer", "adj-conso
 
 async function checkProcessCompose(): Promise<boolean> {
   try {
-    await execa("process-compose", ["version"], { reject: true })
+    // BKL-288: `version` initialises the logger and TRUNCATES process-compose's
+    // shared default log. `dev stop` / `dev restart` run this probe while the
+    // supervisor is LIVE, so without an own log path the probe wipes the very
+    // log you are about to read. Throwaway path — nothing ever reads it.
+    await execa(
+      "process-compose",
+      ["version", ...logFileArgs(disposableLogPath("version-probe"))],
+      { reject: true },
+    )
     return true
   } catch {
     return false
@@ -108,36 +121,56 @@ interface StartOpts {
   tui: boolean
   withTunnel?: boolean
   withStripe?: boolean
+  /** commander `--no-observability`: true (default) keeps the obs one-shot. */
+  observability?: boolean
   yes?: boolean
 }
+
+/** Default dev-stack process set. `observability` is a DEFAULT member: it brings
+ *  up VictoriaLogs, which is the only place zero-call funnel turns
+ *  (L0/L1/L2-fallback/ALIAS) are ever recorded — those write NO turn_trace row by
+ *  design, so the pino line IS the record and an outage loses them permanently
+ *  (never-written, not late). Exported so the drift test can prove
+ *  CORE + tunnel + stripe covers every process declared in process-compose.yaml,
+ *  which is what makes the `all` + opt-out expansion below faithful. */
+export const CORE_PROCESSES = [
+  "infra", "observability", "build-packages",
+  "commerce", "api", "web-clean", "web", "admin-clean", "admin",
+  "qa-viewer", "adj-console", "adjutant",
+] as const
+
+/** The two opt-in processes `all` adds on top of CORE_PROCESSES. */
+export const OPTIONAL_PROCESSES = ["tunnel", "stripe"] as const
 
 /** Resolve which process-compose processes to launch from the requested
  *  services + flags:
  *    named args → only those (process-compose resolves deps)
  *    "all"      → no filter (starts everything including tunnel/stripe)
  *    default    → core only, optionally + tunnel/stripe via flags
- *  Docker one-shots (`infra`, `observability`) are dropped when skipping Docker. */
-function resolveProcessList(
+ *  Docker one-shots (`infra`, `observability`) are dropped when skipping Docker.
+ *  Exported for unit testing — the default-membership of `observability` was
+ *  entirely unpinned before BKL-266. */
+export function resolveProcessList(
   services: string[],
   opts: StartOpts,
   skipDocker: boolean | undefined,
 ): string[] {
   const isAll = services.includes("all")
   const named = services.filter((s) => s !== "all")
+  const optOutObservability = opts.observability === false
 
-  const CORE = [
-    "infra", "observability", "build-packages",
-    "commerce", "api", "web-clean", "web", "admin-clean", "admin",
-    "qa-viewer", "adj-console", "adjutant",
-  ]
   let processes: string[]
 
   if (named.length > 0) {
     processes = named
   } else if (isAll) {
-    processes = [] // empty = start all processes in YAML
+    // Normally an empty filter (= start every process in the YAML). With the
+    // opt-out we must MATERIALIZE the set, since "everything except one" cannot
+    // be expressed as an empty filter. CORE + OPTIONAL is proven equal to the
+    // YAML's process set by the drift test, so the two paths stay equivalent.
+    processes = optOutObservability ? [...CORE_PROCESSES, ...OPTIONAL_PROCESSES] : []
   } else {
-    processes = [...CORE]
+    processes = [...CORE_PROCESSES]
     if (opts.withTunnel) processes.push("tunnel")
     if (opts.withStripe) processes.push("stripe")
   }
@@ -148,6 +181,16 @@ function resolveProcessList(
       const idx = processes.indexOf(dockerProc)
       if (idx !== -1) processes.splice(idx, 1)
     }
+  }
+
+  // BKL-266 — dedicated opt-out. Before this the ONLY way to skip the obs stack
+  // was --skip-docker, which also drops `infra`: "Postgres is already running"
+  // and "I don't want VictoriaLogs" were the same switch, so the evidence
+  // channel got dropped as a side effect of an unrelated choice. Skipping it is
+  // now an explicit, separate decision.
+  if (optOutObservability) {
+    const idx = processes.indexOf("observability")
+    if (idx !== -1) processes.splice(idx, 1)
   }
 
   return processes
@@ -167,6 +210,21 @@ async function confirmStart(opts: StartOpts): Promise<boolean> {
   }
 }
 
+/** argv for THE live dev supervisor.
+ *
+ *  BKL-288: the `-L` pair is load-bearing, not cosmetic. Without it the
+ *  supervisor writes to process-compose's shared `process-compose-$USER.log`
+ *  default, which every OTHER invocation on the machine (a `--dry-run`
+ *  validation, a `version` probe, the test-stack supervisor) truncates on
+ *  startup — silently destroying the running stack's forensic log. An explicit
+ *  stable path is the only way the live log stops being collateral. */
+export function buildPcUpArgs(processes: string[], tui?: boolean): string[] {
+  const args = ["up", "-f", PC_YAML, ...logFileArgs(DEV_SUPERVISOR_LOG)]
+  if (!tui) args.push("-t=false")
+  args.push(...processes)
+  return args
+}
+
 async function pcStart(
   services: string[],
   opts: StartOpts,
@@ -184,15 +242,9 @@ async function pcStart(
   const portsToCheck = Object.values(SERVICES).map((s) => s.port)
   checkGhostProcesses(portsToCheck)
 
-  // Build process-compose args
-  const args = ["up", "-f", PC_YAML]
-
-  if (!opts.tui) args.push("-t=false")
-
   const skipDocker = opts.skipDocker || opts.noDocker
   const processes = resolveProcessList(services, opts, skipDocker)
-
-  args.push(...processes)
+  const args = buildPcUpArgs(processes, opts.tui)
 
   console.log(chalk.bold.blue("\n  IbateXas Dev Environment\n"))
   await printStartPlan(processes, skipDocker)
@@ -304,20 +356,62 @@ async function pcRestart(target = "all"): Promise<void> {
 
 const PROCESS_COMPOSE_PORT = 8080
 
+/** ngrok's local inspector API — the ONLY port an ngrok agent listens on. The
+ *  tunnel itself is an OUTBOUND connection to ngrok's edge, and the api (not
+ *  ngrok) owns :3001, so a sweep over SERVICES ports can never see the agent. */
+const NGROK_INSPECTOR_PORT = 4040
+
+/** Which ports `ibx dev stop -f` sweeps.
+ *
+ *  Exported (and pure) because the tunnel's absence here was invisible: `-f`
+ *  short-circuits `pcStop` BEFORE `process-compose down`, so the `tunnel`
+ *  process's own `shutdown: {signal: 15}` never fires, and the sweep that
+ *  replaces it never matched ngrok. `-f` then SIGKILLs process-compose on :8080,
+ *  so the supervisor dies without reaping anything and ngrok reparents to pid 1
+ *  — still holding the account's reserved domain, which makes the NEXT
+ *  `ibx dev` fail with ERR_NGROK_334 while `stop -f` had reported "Done."
+ *
+ *  A named non-tunnel service must NOT take the tunnel down with it: stopping
+ *  `web` has nothing to do with WhatsApp webhook delivery. */
+export function resolveForceStopPorts(
+  serviceKey: string | undefined,
+  stopAll: boolean,
+  services: Record<string, ServiceDef>,
+): number[] {
+  if (stopAll) {
+    return [
+      ...Object.values(services).map((s) => s.port),
+      // process-compose's own HTTP server
+      PROCESS_COMPOSE_PORT,
+      NGROK_INSPECTOR_PORT,
+    ]
+  }
+  // `tunnel` is a process-compose process, not a SERVICES entry — before this it
+  // fell through the `SERVICES[serviceKey]` lookup to an empty list, so
+  // `ibx dev stop tunnel -f` killed nothing and still printed "Done."
+  if (serviceKey === "tunnel") return [NGROK_INSPECTOR_PORT]
+  const svc = serviceKey ? services[serviceKey] : undefined
+  return svc ? [svc.port] : []
+}
+
 async function forceStop(serviceKey: string | undefined, stopAll: boolean): Promise<void> {
   const { SERVICES } = await import("../services.js")
-  let targets: (typeof SERVICES)[string][]
-  if (stopAll) targets = Object.values(SERVICES)
-  else if (serviceKey) targets = [SERVICES[serviceKey]].filter(Boolean)
-  else targets = []
 
-  const ports = targets.map((s) => s.port)
-  // Also kill process-compose's own HTTP server on stop-all
-  if (stopAll) ports.push(PROCESS_COMPOSE_PORT)
+  if (!stopAll && serviceKey && serviceKey !== "tunnel" && !SERVICES[serviceKey]) {
+    console.log(chalk.yellow(`\n  Unknown service "${serviceKey}" — nothing to force-kill.\n`))
+    return
+  }
+
+  const ports = resolveForceStopPorts(serviceKey, stopAll, SERVICES)
+  const stopsTunnel = stopAll || serviceKey === "tunnel"
   console.log(chalk.bold.yellow(`\n  Force-killing processes on ports: ${ports.join(", ")}\n`))
 
   for (const port of ports) {
     forceKillPort(port)
+  }
+
+  if (stopsTunnel) {
+    killNgrokTunnel(SERVICES.api.port)
   }
 
   if (stopAll) {
@@ -325,6 +419,28 @@ async function forceStop(serviceKey: string | undefined, stopAll: boolean): Prom
   }
 
   console.log(chalk.green("\n  Done.\n"))
+}
+
+/** Kill the ngrok agent by argv, as a complement to the :4040 sweep.
+ *
+ *  The port sweep alone is not sufficient: `--inspect=false` leaves the agent
+ *  with NO listening port at all, and an already-orphaned agent (pid 1) can
+ *  outlive the process-compose run that spawned it by days. Matches the argv
+ *  that BOTH spawn paths produce — process-compose.yaml's `tunnel` command and
+ *  `ibx tunnel` — including the `--url <domain>` variant, which only appends.
+ *
+ *  Scoped to the api port on purpose: an ngrok pointed at :3001 IS this stack's
+ *  webhook tunnel, whoever started it. Tunnels to other ports are left alone. */
+function killNgrokTunnel(apiPort: number): void {
+  const pattern = `ngrok http ${apiPort}`
+  const { stdout } = execaSync("pgrep", ["-f", pattern], { reject: false })
+  const pids = (stdout ?? "").toString().trim().split("\n").filter(Boolean)
+  if (pids.length === 0) {
+    console.log(chalk.gray("    · ngrok tunnel: clear"))
+    return
+  }
+  execaSync("pkill", ["-9", "-f", pattern], { reject: false })
+  console.log(chalk.green(`    ✓ ngrok tunnel: killed ${pids.length} agent(s)`))
 }
 
 function forceKillPort(port: number): void {
@@ -356,26 +472,69 @@ async function stopDockerContainers(): Promise<void> {
 /**
  * BKL-151 (local half) — fail CLOSED on a dependency skew before building.
  *
- * When `pnpm-lock.yaml` is NEWER than `node_modules` the lockfile changed (a
- * merge touched a package.json / a dep bump) but `pnpm install` never ran, so
- * `node_modules` is stale. Building against a stale tree surfaces DOWNSTREAM as
- * an opaque ghost (the claims-validate `TypeError` on a shape that a newer dep
- * added) rather than an actionable message. Turn that into a DETERMINISTIC,
- * self-explaining skew error at the build seam. Returns the reason string when
- * skewed (for testing); `null` when in sync or indeterminate (fresh clone /
- * missing path → let pnpm itself surface it). Exported for unit testing.
+ * When the lockfile changed (a merge touched a package.json / a dep bump) but
+ * `pnpm install` never ran, `node_modules` is stale. Building against a stale
+ * tree surfaces DOWNSTREAM as an opaque ghost (the claims-validate `TypeError`
+ * on a shape that a newer dep added) rather than an actionable message. Turn
+ * that into a DETERMINISTIC, self-explaining skew error at the build seam.
+ *
+ * The signal is CONTENT, never mtimes. The original mtime heuristic
+ * (`pnpm-lock.yaml` newer than `node_modules`) compared two clocks that measure
+ * neither side of the question, and was wrong in both directions — measured
+ * 2026-07-26:
+ *   · `node_modules`' own mtime only advances when an ENTRY is created/removed
+ *     in that one directory. `pnpm install` rewrites `.modules.yaml` / `.pnpm/`
+ *     / `.bin/` IN PLACE, so a correct install left the root dir's mtime two
+ *     days stale and the guard fired again on the very next build. (The stamp
+ *     it was reading had been set by vite creating `.vite-temp` — not by pnpm.)
+ *   · Conversely ANY tool dropping a new top-level entry silences the guard
+ *     while the tree is genuinely stale.
+ *   · And `pnpm install` rewrites `pnpm-lock.yaml` as its last act, re-arming
+ *     the guard it was supposed to clear.
+ *
+ * pnpm keeps the lockfile it ACTUALLY installed at `node_modules/.pnpm/lock.yaml`
+ * (the "current" lockfile, kept in sync with the tree). Byte-comparing the two
+ * answers the real question exactly, with no clock involved. Fallback for trees
+ * without that file: pnpm 10's own validation clock in
+ * `node_modules/.pnpm-workspace-state-v1.json`.
+ *
+ * Returns the reason string when skewed (for testing); `null` when in sync or
+ * indeterminate (fresh clone / missing path → let pnpm itself surface it).
+ * Exported for unit testing.
  */
 export function depsSkewReason(root: string = ROOT): string | null {
+  let lockBytes: Buffer
   try {
+    lockBytes = fs.readFileSync(path.join(root, "pnpm-lock.yaml"))
+  } catch {
+    // No lockfile (e.g. a fresh clone) — not a skew we can assert.
+    return null
+  }
+
+  // Primary: the lockfile pnpm last installed, byte-for-byte.
+  try {
+    const installed = fs.readFileSync(path.join(root, "node_modules", ".pnpm", "lock.yaml"))
+    if (installed.equals(lockBytes)) return null
+    return "pnpm-lock.yaml differs from the lockfile pnpm last installed (node_modules/.pnpm/lock.yaml) — dependencies changed but were not installed"
+  } catch {
+    // No installed-lock (never installed, or a pnpm that does not write it) —
+    // fall through to pnpm's own validation clock.
+  }
+
+  // Fallback: pnpm 10 stamps when it last validated node_modules against the
+  // lockfile. Unlike a directory mtime this IS advanced by every install.
+  try {
+    const statePath = path.join(root, "node_modules", ".pnpm-workspace-state-v1.json")
+    const validatedAt = JSON.parse(fs.readFileSync(statePath, "utf8")).lastValidatedTimestamp
+    if (typeof validatedAt !== "number") return null
     const lockMtime = fs.statSync(path.join(root, "pnpm-lock.yaml")).mtimeMs
-    const nmMtime = fs.statSync(path.join(root, "node_modules")).mtimeMs
-    if (lockMtime > nmMtime) {
-      return "pnpm-lock.yaml is newer than node_modules — dependencies changed but were not installed"
+    if (lockMtime > validatedAt) {
+      return "pnpm-lock.yaml changed after pnpm last validated node_modules — dependencies changed but were not installed"
     }
     return null
   } catch {
-    // Missing lockfile or node_modules (e.g. a fresh clone) — not a skew we can
-    // assert; let the build / pnpm surface the real problem.
+    // No node_modules at all / unreadable state — indeterminate; let the build
+    // or pnpm surface the real problem.
     return null
   }
 }
@@ -461,6 +620,13 @@ async function printStartPlan(processes: string[], skipDocker: boolean | undefin
   }
   if (has("observability") && !skipDocker) {
     row("Observability", observabilityEndpoints().map((e) => `${e.name} ${e.address}`).join("  ·  "))
+  } else {
+    // BKL-266 — say the consequence out loud at the same place the developer
+    // chose it. VictoriaLogs is the ONLY record of a zero-call funnel turn.
+    console.log(
+      `  ${chalk.yellow("!")} ${"Observability".padEnd(NAME_W)} ` +
+        chalk.yellow("OFF — zero-call funnel turns (L0/L1/L2-fallback/ALIAS) will not be recorded anywhere"),
+    )
   }
   const services = resolveServices(undefined)
   for (const svc of services) {
@@ -559,6 +725,7 @@ export function registerDevCommands(dev: Command) {
     .argument("[services...]", "commerce api web admin all (default: 4 core services)")
     .option("--skip-docker, --no-docker", "Skip 'docker compose up' (assume infra is already running)")
     .option("--no-tui", "Disable TUI (plain log output)")
+    .option("--no-observability", "Skip the VictoriaLogs/VictoriaMetrics/Grafana stack (loses zero-call funnel records)")
     .option("--with-tunnel", "Enable ngrok tunnel")
     .option("--with-stripe", "Enable Stripe webhook forwarding")
     .option("-y, --yes", "Skip the start confirmation prompt")
@@ -572,6 +739,7 @@ export function registerDevCommands(dev: Command) {
     .description("Start dev stack in TUI — 4 core services by default, 'all' includes tunnel + stripe")
     .option("--skip-docker, --no-docker", "Skip 'docker compose up' (assume infra is already running)")
     .option("--no-tui", "Disable TUI (plain log output)")
+    .option("--no-observability", "Skip the VictoriaLogs/VictoriaMetrics/Grafana stack (loses zero-call funnel records)")
     .option("--with-tunnel", "Enable ngrok tunnel")
     .option("--with-stripe", "Enable Stripe webhook forwarding")
     .option("-y, --yes", "Skip the start confirmation prompt")
@@ -588,8 +756,8 @@ export function registerDevCommands(dev: Command) {
   // ── ibx dev stop [service] ──────────────────────────────────────────────
   dev
     .command("stop [service]")
-    .description("Stop service(s) — omit to stop all + Docker (-f to force-kill ports)")
-    .option("-f, --force", "Force-kill any process listening on service ports")
+    .description("Stop service(s) — omit to stop all + Docker (-f to force-kill ports). `tunnel` stops ngrok.")
+    .option("-f, --force", "Force-kill by port (services + :8080 + ngrok :4040); skips graceful shutdown")
     .action(async (serviceKey: string | undefined, opts: { force?: boolean }) => {
       await pcStop(serviceKey, opts)
     })

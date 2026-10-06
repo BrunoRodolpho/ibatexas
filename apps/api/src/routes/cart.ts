@@ -19,11 +19,15 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { buildCustomerEnvelope, runCustomerIntent } from "./__shared__/customer-intent-gateway.js";
-import { createCheckoutConfirmationStore } from "./checkout-confirmation-store.js";
+import {
+  createCheckoutConfirmationStore,
+  type CheckoutConfirmationStore,
+} from "./checkout-confirmation-store.js";
 import { identityCtx, loadCartCtx } from "../claustrum/resolve-and-assemble.js";
 import {
   getRedisClient,
   rk,
+  acquireLockAtKeyOn,
   estimateDelivery,
   createCheckout,
   reaisToCentavos,
@@ -43,7 +47,17 @@ import {
   COLLECTION,
 } from "@ibatexas/tools";
 import { Channel, COUPON_REJECTED_CODE, type UserType } from "@ibatexas/types";
-import { createCustomerService, createOrderCommandService, createPaymentQueryService, prisma } from "@ibatexas/domain";
+import {
+  createCustomerService,
+  createOrderCommandService,
+  createOrderQueryService,
+  createPaymentQueryService,
+  prisma,
+  type CustomerService,
+  type OrderCommandService,
+  type OrderQueryService,
+  type PaymentQueryService,
+} from "@ibatexas/domain";
 import { ordersPolicyBundle, type OrderCartSyncPayload, type OrderCheckoutCreatePayload, type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
 import { portugueseRefusalMessages } from "@ibatexas/pack-orders";
 import {
@@ -51,6 +65,15 @@ import {
   type CustomerPixDetailsSavePayload,
 } from "@ibatexas/pack-customer-onboarding";
 import { getAuditSink } from "@ibatexas/audit-sink";
+// LE2-019 — the ONE promotion-record validity predicate + the ONE store path,
+// shared with the grounded COUPON_VALID / COUPON_INVALID chat claim. PURE (no IO,
+// no clock), so importing it adds nothing to this route's transport surface: the
+// request below still goes through THIS module's own `medusaAdmin` shim.
+import {
+  evaluatePromotionRecord,
+  promotionByCodePath,
+  type PromotionListResponse,
+} from "../claustrum/promotion-validity.js";
 import { optionalAuth, requireAuth } from "../middleware/auth.js";
 import { medusaStore, medusaAdmin } from "./admin/_shared.js";
 
@@ -90,9 +113,215 @@ function mapMedusaErrorToReply(err: unknown, reply: FastifyReply): boolean {
 
 type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
 
+// ── R5 rollout — the cart family's Redis client seam ───────────────────────
+//
+// Every `getRedisClient()` this module used to call directly now resolves
+// through `CartRouteDeps.redis`. The per-consumer types below are the R5-S1
+// NARROWING rule applied one function at a time: each helper declares the
+// commands IT issues, so a client that cannot serve that helper is a `tsc`
+// error rather than a runtime `TypeError`, and reading a signature tells you
+// the whole Redis surface of the function without reading its body.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (R5-S12's lesson) ────────────────────────
+//
+// A Pick is only fail-closed if every declared command is genuinely ISSUED and
+// no consumer feature-detects an optional one (`typeof c.X === "function"` —
+// the shape that made `evalIncrCheck` degrade silently in the park path).
+// MEASURED for this family: there is no feature detection anywhere in
+// `routes/cart.ts`, `routes/checkout-confirmation-store.ts` or
+// `session/store.ts` — every command is called unconditionally once its branch
+// is reached. What this family DOES have is two consumers whose call is wrapped
+// in a swallowing `catch`, so a missing command degrades SILENTLY rather than
+// loudly:
+//
+//   • `loadCachedPixDetails`      — `catch { return null }` → looks like a cache
+//                                    miss and falls through to the DB lookup.
+//   • `cachePixDetailsForCustomer` — `catch { console.warn }`, and its call site
+//                                    `void`s the promise → nothing observes it.
+//
+// Those two are why the seam is born guarded by consuming-surface probes (see
+// `routes/__tests__/cart-redis-seam.test.ts`): each asserts the command landed
+// on the INJECTED keyspace, which a silent degradation cannot fake.
+//
+// Every other consumer here (`verifyCartOwnership`, `trackCartId`,
+// `untrackCartId`, the checkout gate, the `cart:owner` release) awaits its
+// command with no catch, so a missing member surfaces as a 500.
+
+/** `verifyCartOwnership` — read the owner key, then the atomic NX claim. */
+type CartOwnershipRedis = Pick<RedisClient, "get" | "set">;
+
+/** `trackCartId` — the `active:carts` hash write + its 48h TTL refresh. */
+type ActiveCartsRedis = Pick<RedisClient, "hSet" | "expire">;
+
+/** `untrackCartId` — the single `active:carts` field removal. */
+type UntrackCartRedis = Pick<RedisClient, "hDel">;
+
+/** `loadCachedPixDetails` — the PIX pre-fill read + its 90-day TTL refresh. */
+type PixCacheReadRedis = Pick<RedisClient, "hGetAll" | "expire">;
+
+/**
+ * `cachePixDetailsForCustomer` — the PIX cache write.
+ *
+ * `multi` only: the `hSet`/`expire` this helper issues are queued on the
+ * PIPELINE, not on the client, so declaring them here would be a lie about
+ * which object receives them. node-redis types the pipeline off `multi`'s own
+ * return type, so `tsc` still checks the queued commands exactly.
+ */
+type PixCacheWriteRedis = Pick<RedisClient, "multi">;
+
+/** `finalizeCheckout` — releasing the `cart:owner:<id>` claim after an order. */
+type CartOwnerReleaseRedis = Pick<RedisClient, "del">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route family issues — the type
+ * `CartRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived as an intersection of the
+ * per-consumer types above: a derived union can never disagree with its
+ * consumers, so it could not catch a consumer that grew a command nobody
+ * declared. `eval` is here because the checkout-confirmation store — built by
+ * `cartRoutes` off this same resolver — runs its single-use GET+DEL Lua through
+ * it. Widen this only by adding a command the family genuinely issues.
+ */
+export type CartRouteRedisClient = Pick<
+  RedisClient,
+  "get" | "set" | "del" | "hSet" | "hDel" | "hGetAll" | "expire" | "multi" | "eval"
+>;
+
 /** Supported checkout payment methods (mirrors the `z.enum(["pix","card","cash"])`
  *  body schema on POST /api/cart/checkout). */
 type PaymentMethod = "pix" | "card" | "cash";
+
+// ── R5-S2 — this route family's composition root ───────────────────────────
+//
+// The domain services the checkout chain reaches for, declared as LAZY
+// FACTORIES rather than constructed instances. `cartRoutes` resolves the set
+// once at registration and threads it down the chain; a caller overrides a
+// member through the plugin options (`server.register(cartRoutes, { deps })`) —
+// the same shape every third-party plugin registration in this app already
+// uses (`server.register(fastifyJwt, {...})` in server.ts, helmet, cors,
+// swagger, rate-limit), and the same "registrar takes a second parameter"
+// shape as `registerPromptRoutes(server, RL)` in routes/qa-prompts.ts. The
+// deps-object-with-resolved-defaults half mirrors `createResumeDispatcherAdapter
+// (deps: ResumeDispatcherAdapterDeps = {})` in src/adapters/resume-dispatcher.ts
+// and the `deps: Ops*Deps` threading throughout src/ops/.
+//
+// Two properties are load-bearing, not stylistic:
+//
+//   • FACTORIES, not instances. Every default still constructs on the request
+//     that needs it, never at plugin-registration time. That keeps
+//     `getAuditSink()` resolved per request exactly as before, and it keeps a
+//     test that mounts this plugin against a partial `@ibatexas/domain` mock
+//     from tripping over a missing factory at register time — the same reason
+//     routes/specials.ts memoizes lazily inside its plugin body instead of
+//     constructing in it.
+//
+//   • The chain functions take the resolved set as an ARGUMENT with NO default
+//     of their own. `cachePixDetailsForCustomer` is the proof point: it cannot
+//     silently fall back to a service bound to the `prisma` singleton, because
+//     there is nothing to fall back TO. A caller that omits the argument is a
+//     `tsc` error rather than a live connection — which is why the migrated
+//     route test no longer needs to intercept `@ibatexas/domain` to install a
+//     throwing `prisma` proxy: the reachability it was defending against no
+//     longer type-checks.
+//
+// R5-S5 completed the rollout R5-S2 enumerated: every SERVICE-FACTORY call in
+// this module now resolves through `CartRouteDeps`, and the one dynamic-import
+// site (`computeOrderStatus`) has its import hoisted to the static block above.
+//
+// What REMAINS internally constructed, and why it is not a mechanical move:
+//
+//   • prisma.orderProjection.findFirst   — 3 direct singleton reads
+//                                          (persistCheckoutOrderNote,
+//                                           resolveDisplayIdOrder, resolveStatusOrderId)
+//
+// These are raw `prisma` delegate reads, not service constructions: there is no
+// factory to swap and no service that owns `orderProjection` reads with the
+// shapes these three need (a `displayId` lookup selecting five columns, and two
+// id/displayId resolutions). Injecting the raw client here would widen the seam
+// to a PrismaClient — the exact coupling R5-S1 narrowed `CustomerService` away
+// from — so the honest move is an owning query service first, then a factory
+// member like the ones below. Out of scope for this slice.
+
+/** The domain services `cart.ts`'s checkout chain resolves through the seam. */
+export interface CartRouteDeps {
+  /**
+   * Builds the CustomerService that executes the `customer.pix.details.save`
+   * envelope. Called once per persist, so the audit sink is resolved on the
+   * request rather than at registration.
+   */
+  readonly customerService: () => CustomerService;
+  /**
+   * Builds the UNAUDITED CustomerService used by the three read-only customer
+   * lookups (PIX pre-fill in `loadCachedPixDetails`, and the `medusaId` binding
+   * in `resolveCustomerCartBody` + the POST /api/cart handler). Deliberately a
+   * SEPARATE member from `customerService` above: those sites called bare
+   * `createCustomerService()` with no audit sink, and collapsing them onto the
+   * audited factory would add an audit-sink resolution to three read paths that
+   * never had one. Called per site, so each still gets its own instance.
+   */
+  readonly customerLookupService: () => CustomerService;
+  /**
+   * Builds the OrderCommandService behind `persistCheckoutOrderNote`'s
+   * kernel-adjudicated `order.note.add`. Called once per persist so the audit
+   * sink resolves on the request, matching the inline construction it replaces.
+   */
+  readonly orderCommandService: () => OrderCommandService;
+  /**
+   * Builds the OrderQueryService for `computeOrderStatus`'s projection read.
+   * R5-S2 flagged this site as needing its `await import("@ibatexas/domain")`
+   * hoisted first; the import is now static, so the factory is ordinary.
+   */
+  readonly orderQueryService: () => OrderQueryService;
+  /**
+   * Builds the PaymentQueryService for the two active-payment reads
+   * (`computeOrderStatus` and the GET order-details handler).
+   */
+  readonly paymentQueryService: () => PaymentQueryService;
+  /**
+   * Resolves the Redis client every Redis touch in this family runs on — the
+   * ten direct `getRedisClient()` calls this module used to make, plus the
+   * checkout-confirmation store `cartRoutes` builds off it.
+   *
+   * A FACTORY, for the same reason the service members above are: nothing
+   * connects at plugin-registration time. It returns a PROMISE because that is
+   * what `getRedisClient()` returns, and because keeping the `await` at each
+   * original call site is what makes "resolved at the same point" literally
+   * true — no consumer hoists the resolution out of the branch (or the
+   * try/catch) that owns it. `loadCachedPixDetails` still resolves inside its
+   * swallowing catch; the delivery-estimate and coupon handlers, which reach
+   * Redis never, still resolve nothing at all.
+   */
+  readonly redis: () => Promise<CartRouteRedisClient>;
+}
+
+/**
+ * Fastify plugin options for `cartRoutes`. The overrides are nested under
+ * `deps` so no member can collide with a Fastify-reserved register option
+ * (`prefix`, `logLevel`, `logSerializers`). Omitted or partial → the
+ * production default fills the remainder, so `server.register(cartRoutes)`
+ * in routes/index.ts is unchanged and constructs exactly what it did before.
+ */
+export interface CartRoutesOptions {
+  readonly deps?: Partial<CartRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction cart.ts did inline. */
+function defaultCartRouteDeps(): CartRouteDeps {
+  return {
+    customerService: () => createCustomerService({ auditSink: getAuditSink() }),
+    customerLookupService: () => createCustomerService(),
+    orderCommandService: () =>
+      createOrderCommandService(undefined, { auditSink: getAuditSink() }),
+    orderQueryService: () => createOrderQueryService(),
+    paymentQueryService: () => createPaymentQueryService(),
+    redis: () => getRedisClient(),
+  };
+}
+
+function resolveCartRouteDeps(options?: CartRoutesOptions): CartRouteDeps {
+  return { ...defaultCartRouteDeps(), ...(options?.deps ?? {}) };
+}
 
 // ── P0-7 (audit-2026-05-24) — deterministic idempotency-key helpers ────────
 //
@@ -121,11 +350,16 @@ function resolveCartIdempotencyKey(
 
 const PIX_CACHE_TTL = 90 * 86400; // 90 days
 
+/** `deps` is REQUIRED and has no default — same rule as
+ *  `cachePixDetailsForCustomer`: the swallowing `catch` below would turn a
+ *  singleton-bound read into a silent `null`, so reachability is a compile
+ *  error rather than a live connection. */
 async function loadCachedPixDetails(
   customerId: string,
+  deps: Pick<CartRouteDeps, "customerLookupService" | "redis">,
 ): Promise<{ name?: string; email?: string; cpf?: string } | null> {
   try {
-    const redis = await getRedisClient();
+    const redis: PixCacheReadRedis = await deps.redis();
     const key = rk(`customer:pix:${customerId}`);
     const hash = await redis.hGetAll(key);
     if (hash && Object.keys(hash).length > 0) {
@@ -136,7 +370,7 @@ async function loadCachedPixDetails(
         cpf: hash.cpf || undefined,
       };
     }
-    const svc = createCustomerService();
+    const svc = deps.customerLookupService();
     const customer = await svc.getById(customerId);
     const cpf = (customer as Record<string, unknown>).cpf as string | null | undefined;
     if (customer.email || cpf) {
@@ -154,13 +388,19 @@ async function loadCachedPixDetails(
 
 /** Cache PIX details to Redis + persist to Prisma via the kernel-adjudicated
  *  `customer.pix.details.save` envelope. Exported for unit-test access.
+ *
+ *  `deps` is REQUIRED and has no default: this function is the one the route
+ *  test drives directly, and a default here would be a silent path back to a
+ *  CustomerService bound to the `prisma` singleton. The caller
+ *  (`finalizeCheckout`, itself fed from `cartRoutes`) owns the resolution.
  *  @internal */
 export async function cachePixDetailsForCustomer(
   customerId: string,
   data: { name?: string; email?: string; cpf?: string },
+  deps: Pick<CartRouteDeps, "customerService" | "redis">,
 ): Promise<void> {
   try {
-    const redis = await getRedisClient();
+    const redis: PixCacheWriteRedis = await deps.redis();
     const key = rk(`customer:pix:${customerId}`);
     const pipeline = redis.multi();
     if (data.name) pipeline.hSet(key, "name", data.name);
@@ -177,7 +417,7 @@ export async function cachePixDetailsForCustomer(
     // the DB write but keep the Redis cache (best-effort caching is the
     // existing semantics — a checkout that completed against Medusa is
     // already booked).
-    const svc = createCustomerService({ auditSink: getAuditSink() });
+    const svc = deps.customerService();
     const payload: CustomerPixDetailsSavePayload = {
       name: data.name ?? "",
       email: data.email ?? "",
@@ -228,16 +468,33 @@ const ACTIVE_CARTS_TTL = 48 * 60 * 60; // 48h — matches max session TTL (guest
  * Store {sessionType, lastActivity} so abandoned-cart-checker uses correct idle
  * threshold per session type.
  */
-async function trackCartId(cartId: string, sessionType: "guest" | "customer" = "guest"): Promise<void> {
-  const redis = await getRedisClient();
+async function trackCartId(
+  cartId: string,
+  sessionType: "guest" | "customer" = "guest",
+  deps: Pick<CartRouteDeps, "redis">,
+): Promise<void> {
+  // Resolved HERE, not hoisted to the handler: the POST /line-items handler
+  // already holds a client for its ownership check, and passing that one in
+  // would collapse two resolutions into one. `getRedisClient()` is memoized so
+  // the client is the same either way — but the resolution COUNT is observable
+  // (it is asserted in cart-routes.test.ts), and "byte-identical behaviour"
+  // includes that.
+  const redis: ActiveCartsRedis = await deps.redis();
   const data = JSON.stringify({ cartId, sessionType, lastActivity: Date.now() });
   await redis.hSet(rk("active:carts"), cartId, data);
   await redis.expire(rk("active:carts"), ACTIVE_CARTS_TTL);
 }
 
-/** Remove cartId from active:carts (called when order is placed). */
-export async function untrackCartId(cartId: string): Promise<void> {
-  const redis = await getRedisClient();
+/** Remove cartId from active:carts (called when order is placed).
+ *
+ *  `deps` is REQUIRED and has no default — the same rule the service members
+ *  follow: a default would be a silent path back to the process singleton on a
+ *  route whose client the caller has already chosen. @internal */
+export async function untrackCartId(
+  cartId: string,
+  deps: Pick<CartRouteDeps, "redis">,
+): Promise<void> {
+  const redis: UntrackCartRedis = await deps.redis();
   await redis.hDel(rk("active:carts"), cartId);
 }
 
@@ -249,7 +506,7 @@ export async function untrackCartId(cartId: string): Promise<void> {
 async function verifyCartOwnership(
   cartId: string,
   customerId: string | undefined,
-  redis: RedisClient,
+  redis: CartOwnershipRedis,
 ): Promise<boolean> {
   if (!customerId) return true; // Guest carts — no verification possible
   const ownerKey = rk(`cart:owner:${cartId}`);
@@ -266,8 +523,14 @@ async function verifyCartOwnership(
 }
 
 // Single-use store for parked large-ticket checkouts (REQUEST_CONFIRMATION).
-// Stateless — receipts live in Redis; one module instance is fine.
-const checkoutConfirmationStore = createCheckoutConfirmationStore();
+//
+// Stateless — the receipts live in Redis. It used to be a MODULE-scope const
+// ("one module instance is fine"); it is now built inside `cartRoutes` off
+// `deps.redis`, so the store's client is the family's client. Construction is
+// still free of IO (the store only resolves a client when a receipt is written
+// or consumed), so the move costs nothing at registration time and the
+// resolution point of each command is unchanged. The two helpers below that
+// need it take it as an ARGUMENT rather than closing over a module const.
 
 /**
  * R0a — customer-facing order-read authorization (closes the null-owner IDOR).
@@ -327,8 +590,10 @@ async function finalizeCheckout(args: {
    * the single-use receipt already prevents a double-confirm).
    */
   onFixableFailure?: () => Promise<void>;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: Pick<CartRouteDeps, "customerService" | "orderCommandService" | "redis">;
 }): Promise<FastifyReply> {
-  const { reply, result, cartId, paymentMethod, customerId, pixExtra, notes, onFixableFailure } = args;
+  const { reply, result, cartId, paymentMethod, customerId, pixExtra, notes, onFixableFailure, deps } = args;
 
   if (!result.success) {
     if (onFixableFailure) await onFixableFailure();
@@ -349,17 +614,21 @@ async function finalizeCheckout(args: {
 
   // Cache PIX details for authenticated customers on successful checkout
   if (paymentMethod === "pix" && customerId && pixExtra) {
-    void cachePixDetailsForCustomer(customerId, {
-      name: pixExtra.customerName,
-      email: pixExtra.customerEmail,
-      cpf: pixExtra.customerTaxId,
-    });
+    void cachePixDetailsForCustomer(
+      customerId,
+      {
+        name: pixExtra.customerName,
+        email: pixExtra.customerEmail,
+        cpf: pixExtra.customerTaxId,
+      },
+      deps,
+    );
   }
 
   // Untrack cart from abandoned-cart detection on successful checkout
   if (result.orderId) {
-    await untrackCartId(cartId);
-    const redis = await getRedisClient();
+    await untrackCartId(cartId, deps);
+    const redis: CartOwnerReleaseRedis = await deps.redis();
     await redis.del(rk(`cart:owner:${cartId}`));
   }
 
@@ -368,7 +637,7 @@ async function finalizeCheckout(args: {
   // is kernel-adjudicated and audit-emitted. The Wave-6 finding flagged the
   // direct prisma.orderNote.create as a parallel/duplicate surface bypass.
   if (notes && result.orderId) {
-    await persistCheckoutOrderNote({ notes, orderId: result.orderId, customerId, cartId });
+    await persistCheckoutOrderNote({ notes, orderId: result.orderId, customerId, cartId, deps });
   }
 
   // R0a — mint a signed per-order access token so a GUEST (null-owner order)
@@ -438,8 +707,10 @@ async function persistCheckoutOrderNote(args: {
   orderId: string;
   customerId: string | undefined;
   cartId: string;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: Pick<CartRouteDeps, "orderCommandService">;
 }): Promise<void> {
-  const { notes, orderId, customerId, cartId } = args;
+  const { notes, orderId, customerId, cartId, deps } = args;
   try {
     const displayIdMatch = /^IBX-(\d+)$/i.exec(orderId);
     if (!displayIdMatch) return;
@@ -484,9 +755,7 @@ async function persistCheckoutOrderNote(args: {
         totalInCentavos: projection.totalInCentavos,
       },
     };
-    const orderCmdSvc = createOrderCommandService(undefined, {
-      auditSink: getAuditSink(),
-    });
+    const orderCmdSvc = deps.orderCommandService();
     await orderCmdSvc.addNoteFromEnvelope(
       noteEnvelope,
       noteOrderState,
@@ -521,10 +790,11 @@ function mintOrderAccessToken(
  *  failure the cart is created as a guest cart. */
 async function resolveCustomerCartBody(
   customerId: string | undefined,
+  deps: Pick<CartRouteDeps, "customerLookupService">,
 ): Promise<Record<string, unknown>> {
   if (!customerId) return {};
   try {
-    const customerSvc = createCustomerService();
+    const customerSvc = deps.customerLookupService();
     const customer = await customerSvc.getById(customerId);
     if (customer.medusaId) {
       return { customer_id: customer.medusaId };
@@ -697,15 +967,18 @@ async function syncLocalCartForCheckout(args: {
   localItems: Array<{ variantId: string; quantity: number; productType?: string }>;
   customerId: string | undefined;
   log: RouteLog;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. `redis` is
+   *  reached only on the cart-REPLACEMENT arm, through `trackCartId`. */
+  deps: Pick<CartRouteDeps, "customerLookupService" | "redis">;
 }): Promise<{ cartId: string } | { rejection: CheckoutRejection }> {
-  const { localItems, customerId, log } = args;
+  const { localItems, customerId, log, deps } = args;
   let cartId = args.cartId;
 
   const needsNewCart = await checkoutCartNeedsReplacement({ cartId, customerId, log });
 
   if (needsNewCart) {
     // Bind customer to new cart so the order is linked to their account
-    const newCartBody = await resolveCustomerCartBody(customerId);
+    const newCartBody = await resolveCustomerCartBody(customerId, deps);
     const newCart = await medusaAdjudicated<Record<string, unknown>, { cart?: { id: string } }>({
       scope: "store",
       method: "POST",
@@ -727,7 +1000,7 @@ async function syncLocalCartForCheckout(args: {
       };
     }
     cartId = newCart.cart.id;
-    await trackCartId(cartId, customerId ? "customer" : "guest");
+    await trackCartId(cartId, customerId ? "customer" : "guest", deps);
   }
 
   // BKL-180 — replace the N per-line `medusa.cart.line_items.add` replay with ONE
@@ -914,11 +1187,15 @@ async function resolvePixBillingDetails(args: {
   pixEmail?: string;
   pixCpf?: string;
   customerId: string | undefined;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. `redis` is
+   *  here only because the cached-pre-fill arm below reaches
+   *  `loadCachedPixDetails`; the form-supplied arm reaches Redis never. */
+  deps: Pick<CartRouteDeps, "customerLookupService" | "redis">;
 }): Promise<
   | { rejection: CheckoutRejection }
   | { pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } }
 > {
-  const { pixName, pixEmail, pixCpf, customerId } = args;
+  const { pixName, pixEmail, pixCpf, customerId, deps } = args;
 
   // P1-DATA-CPF: validate the CPF checksum before it flows to Stripe + Prisma.
   let normalizedFormCpf: string | undefined;
@@ -943,7 +1220,7 @@ async function resolvePixBillingDetails(args: {
   // Try loading cached PIX details for authenticated customers
   let cached: { name?: string; email?: string; cpf?: string } | null = null;
   if (customerId) {
-    cached = await loadCachedPixDetails(customerId);
+    cached = await loadCachedPixDetails(customerId, deps);
   }
 
   return {
@@ -1018,17 +1295,26 @@ async function respondToCheckoutDecision(args: {
   pixExtra: { customerName?: string; customerEmail?: string; customerTaxId?: string } | undefined;
   notes: string | undefined;
   releaseGate: () => Promise<void>;
+  /**
+   * The registration-scoped confirmation store. Passed rather than closed over:
+   * the store is no longer a module const, because its Redis client now comes
+   * from `deps.redis` (see the block where it used to be constructed).
+   */
+  confirmationStore: CheckoutConfirmationStore;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: Pick<CartRouteDeps, "customerService" | "orderCommandService" | "redis">;
 }): Promise<FastifyReply> {
   const {
     reply, out, checkoutPayload, checkoutIdempotencyKey, cartId, sessionId,
     paymentMethod, customerId, userType, checkoutBody, pixExtra, notes, releaseGate,
+    confirmationStore, deps,
   } = args;
 
   // REQUEST_CONFIRMATION (large-ticket ≥ R$1.000) — park the prepared checkout
   // under a single-use receipt and enrich the 202 with the confirmationId.
   if (out.decision.kind === "REQUEST_CONFIRMATION") {
     const prompt = out.decision.prompt;
-    const parked = await checkoutConfirmationStore.create({
+    const parked = await confirmationStore.create({
       kind: "order.checkout.create",
       payload: checkoutPayload,
       idempotencyKey: checkoutIdempotencyKey,
@@ -1065,6 +1351,7 @@ async function respondToCheckoutDecision(args: {
     ...(pixExtra ? { pixExtra } : {}),
     ...(notes ? { notes } : {}),
     onFixableFailure: releaseGate,
+    deps,
   });
 }
 
@@ -1175,12 +1462,16 @@ async function computeOrderStatus(args: {
   accessToken: string | undefined;
   customerId: string | undefined;
   log: RouteLog;
+  /** Resolved by `cartRoutes` at registration — see CartRouteDeps. */
+  deps: Pick<CartRouteDeps, "orderQueryService" | "paymentQueryService">;
 }): Promise<StatusReadOutcome> {
-  const { orderId, orderIdParam, accessToken, customerId, log } = args;
+  const { orderId, orderIdParam, accessToken, customerId, log, deps } = args;
   try {
-    // Primary: read from projection
-    const { createOrderQueryService: createQS } = await import("@ibatexas/domain");
-    const querySvc = createQS();
+    // Primary: read from projection. R5-S5 hoisted the former
+    // `await import("@ibatexas/domain")` here into the static import block —
+    // the module is already statically imported by this file, so the dynamic
+    // form deferred nothing and only hid the factory from the seam.
+    const querySvc = deps.orderQueryService();
     const projection = await querySvc.getById(orderId);
 
     if (projection) {
@@ -1193,7 +1484,7 @@ async function computeOrderStatus(args: {
       })) {
         return { status: 404, body: { error: "Pedido não encontrado." }, noStore: false };
       }
-      const pqs = createPaymentQueryService();
+      const pqs = deps.paymentQueryService();
       const cp = await pqs.getActiveByOrderId(orderId).catch(() => null);
       return {
         status: 200,
@@ -1265,8 +1556,26 @@ async function computeOrderStatus(args: {
   }
 }
 
-export async function cartRoutes(server: FastifyInstance): Promise<void> {
+export async function cartRoutes(
+  server: FastifyInstance,
+  options?: CartRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so nothing is
+  // constructed here — see the CartRouteDeps block above.
+  //
+  // The two-phase STRUCTURE this preserves (R5-S5): everything in the REGISTER
+  // phase is pure — `resolveCartRouteDeps` merges two plain objects of
+  // functions, and `createCheckoutConfirmationStore` closes over one of them.
+  // Every construction and every Redis resolution happens in the READY phase,
+  // on the request that needs it. Adding `redis` did not move that line: the
+  // member is a factory returning a promise, so no connection is opened, no
+  // `getRedisClient()` is called, and `await app.ready()` still touches Redis
+  // exactly zero times.
+  const deps = resolveCartRouteDeps(options);
+  // Registration-scoped, IO-free at construction — see the block above where
+  // this used to be a module const.
+  const confirmationStore = createCheckoutConfirmationStore({ redis: deps.redis });
 
   // POST /api/cart — create cart
   app.post(
@@ -1281,7 +1590,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       let cartBody: Record<string, unknown> = {};
       if (request.customerId) {
         try {
-          const customerSvc = createCustomerService();
+          const customerSvc = deps.customerLookupService();
           const customer = await customerSvc.getById(request.customerId);
           if (customer.medusaId) {
             cartBody = { customer_id: customer.medusaId };
@@ -1306,7 +1615,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         });
 
         const cartId = (data as { cart?: { id: string } }).cart?.id;
-        if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest");
+        if (cartId) await trackCartId(cartId, request.customerId ? "customer" : "guest", deps);
 
         return reply.code(201).send(data);
       } catch (err) {
@@ -1343,13 +1652,13 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       // SEC: Verify cart ownership before mutation
-      const redis = await getRedisClient();
+      const redis: CartOwnershipRedis = await deps.redis();
       if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
 
       // Ensure cart is tracked for abandoned-cart detection
-      await trackCartId(request.params.id, request.customerId ? "customer" : "guest");
+      await trackCartId(request.params.id, request.customerId ? "customer" : "guest", deps);
 
       try {
         const data = await medusaAdjudicated<typeof request.body, unknown>({
@@ -1386,7 +1695,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       // SEC: Verify cart ownership before mutation
-      const redis = await getRedisClient();
+      const redis: CartOwnershipRedis = await deps.redis();
       if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
@@ -1425,7 +1734,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       // SEC: Verify cart ownership before mutation
-      const redis = await getRedisClient();
+      const redis: CartOwnershipRedis = await deps.redis();
       if (!(await verifyCartOwnership(request.params.id, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
@@ -1571,7 +1880,9 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       // SEC: Verify cart ownership before checkout
-      const redis = await getRedisClient();
+      // Resolved ONCE for this handler, exactly as before: this same client
+      // serves the ownership gate AND the checkout:idem SET/DEL below.
+      const redis = await deps.redis();
       if (!(await verifyCartOwnership(request.body.cartId, request.customerId, redis))) {
         return reply.status(403).send({ statusCode: 403, error: "Forbidden", message: "Carrinho pertence a outro usuário." });
       }
@@ -1606,8 +1917,22 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         typeof idemHeader === "string" && idemHeader.trim()
           ? idemHeader.trim()
           : request.body.cartId;
+      //
+      // F-21 (class rollout): the gate is a LOCK, so it is taken with a
+      // per-request UUID token and released through the ownership-checking Lua
+      // compare-and-delete — never a bare `del`. The pre-rollout form set the
+      // constant "1" and `releaseGate` did `redis.del(checkoutGateKey)`, which
+      // is the class defect at a money-adjacent site: request A acquires, its
+      // checkout runs slow past the 120s EX, the customer retries and request B
+      // claims the now-free gate, then A hits a fixable failure and its
+      // `releaseGate` destroys B's gate. A third submit then races B ON THE
+      // CHECKOUT PATH — past the single-flight defense that exists to stop
+      // exactly that. With the token, A's release is a no-op and B stays
+      // protected. Same key (`checkout:idem:<token>` — unchanged so mutual
+      // exclusion survives a rolling deploy), same 120s TTL, same 409.
       const checkoutGateKey = rk(`checkout:idem:${idemToken}`);
-      if (!(await redis.set(checkoutGateKey, "1", { NX: true, EX: 120 }))) {
+      const checkoutGate = await acquireLockAtKeyOn(redis, checkoutGateKey, 120);
+      if (!checkoutGate) {
         return reply.status(409).send({
           statusCode: 409,
           error: "Conflict",
@@ -1625,6 +1950,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           localItems,
           customerId: request.customerId,
           log: server.log,
+          deps,
         });
         if ("rejection" in syncResult) {
           return reply.status(syncResult.rejection.status).send(syncResult.rejection.body);
@@ -1640,6 +1966,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           pixEmail: request.body.pixEmail,
           pixCpf: request.body.pixCpf,
           customerId: request.customerId,
+          deps,
         });
         if ("rejection" in pixResult) {
           return reply.status(pixResult.rejection.status).send(pixResult.rejection.body);
@@ -1720,6 +2047,8 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         paymentMethod,
         customerId: request.customerId,
         userType: request.userType ?? "guest",
+        confirmationStore,
+        deps,
         checkoutBody: request.body as Record<string, unknown>,
         pixExtra,
         notes: request.body.notes,
@@ -1727,7 +2056,15 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
           // P0-PAY-3 — fixable failure: release the idempotency gate so the
           // customer can correct + retry immediately rather than waiting out
           // the 120s TTL.
-          await redis.del(checkoutGateKey);
+          //
+          // F-21: ownership-conditional. If this request's 120s TTL already
+          // lapsed and a retry claimed the gate, the compare-and-delete matches
+          // nothing and leaves the retry's gate standing — the release is a
+          // no-op instead of an attack on the live request. The SUCCESS path
+          // deliberately does not come through here at all: a completed
+          // checkout leaves the gate to expire, so a duplicate submit inside
+          // the window still gets its 409.
+          await checkoutGate.release();
         },
       });
     },
@@ -1756,10 +2093,10 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: optionalAuth,
     },
     async (request, reply) => {
-      const redis = await getRedisClient();
+      const redis = await deps.redis();
 
       // Single-use consume — unknown / expired / already-confirmed → 410 Gone.
-      const pending = await checkoutConfirmationStore.consume(
+      const pending = await confirmationStore.consume(
         request.body.confirmationId,
       );
       if (!pending) {
@@ -1877,6 +2214,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         cartId: pending.cartId,
         paymentMethod: pending.payload.paymentMethod,
         customerId: request.customerId,
+        deps,
         ...(pending.pixExtra ? { pixExtra: pending.pixExtra } : {}),
         ...(typeof pending.checkoutBody.notes === "string"
           ? { notes: pending.checkoutBody.notes }
@@ -1896,7 +2234,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       preHandler: requireAuth,
     },
     async (request, reply) => {
-      const cached = await loadCachedPixDetails(request.customerId!);
+      const cached = await loadCachedPixDetails(request.customerId!, deps);
       if (cached) {
         // Return full CPF — this is the customer's own data behind requireAuth,
         // and the checkout form needs the real value for Stripe PIX validation.
@@ -1968,7 +2306,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Medusa v2 returns prices in reais — convert to centavos for frontend
-      const pqs = createPaymentQueryService();
+      const pqs = deps.paymentQueryService();
       const cp = await pqs.getActiveByOrderId(order.id).catch(() => null);
 
       const orderResponse = {
@@ -2027,6 +2365,7 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
         accessToken,
         customerId: request.customerId,
         log: server.log,
+        deps,
       });
       if (outcome.noStore) {
         reply.header("Cache-Control", "no-store");
@@ -2060,71 +2399,26 @@ export async function cartRoutes(server: FastifyInstance): Promise<void> {
       // checkout 422 stays authoritative): target/buy rules, stackability, and the
       // per-attribute budget types (use_by_attribute / spend_by_attribute — those
       // need the customer attribute and MUST NOT over-reject here).
+      //
+      // LE2-019 — the REJECTION CLASSES themselves now live in the shared, PURE
+      // `evaluatePromotionRecord` (claustrum/promotion-validity.ts), because the
+      // grounded COUPON_VALID / COUPON_INVALID chat claim answers the SAME
+      // question and the two must never disagree. Behaviour here is UNCHANGED,
+      // byte for byte, including the catch below: the DISPLAY side deliberately
+      // collapses an errored lookup to `valid: false` (a UI that shows no discount
+      // is harmless), which is exactly why that collapse stayed OUT of the shared
+      // predicate — the claims runtime must degrade the same case to an honest
+      // UNKNOWN instead (Inv 7).
       try {
-        const data = await medusaAdmin(`/admin/promotions?code=${encodeURIComponent(request.body.code)}&limit=1`) as {
-          promotions?: Array<{
-            id: string;
-            code: string;
-            status?: "draft" | "active" | "inactive";
-            limit?: number | null;
-            used?: number;
-            campaign?: {
-              starts_at?: string | null;
-              ends_at?: string | null;
-              budget?: {
-                type?: "spend" | "usage" | "use_by_attribute" | "spend_by_attribute";
-                limit?: number | null;
-                used?: number;
-              } | null;
-            } | null;
-            application_method?: {
-              value?: number;
-              type?: string;
-            };
-          }>;
-        };
+        const data = (await medusaAdmin(
+          promotionByCodePath(request.body.code),
+        )) as PromotionListResponse;
 
         const promo = data.promotions?.[0];
-        if (!promo) return reply.send({ valid: false });
+        const validity = evaluatePromotionRecord(promo, Date.now());
+        if (!validity.usable) return reply.send({ valid: false });
 
-        // status: the v2 lifecycle flag. Absent (unexpected) ⇒ treat as not active
-        // (display-side fail-closed: never show a discount we cannot substantiate).
-        if (promo.status !== "active") return reply.send({ valid: false });
-
-        // Campaign window (only when bounds are present — absent bound ⇒ no bound).
-        const now = Date.now();
-        const startsAt = promo.campaign?.starts_at ? Date.parse(promo.campaign.starts_at) : undefined;
-        const endsAt = promo.campaign?.ends_at ? Date.parse(promo.campaign.ends_at) : undefined;
-        if (startsAt !== undefined && Number.isFinite(startsAt) && startsAt > now) {
-          return reply.send({ valid: false });
-        }
-        if (endsAt !== undefined && Number.isFinite(endsAt) && endsAt < now) {
-          return reply.send({ valid: false });
-        }
-
-        // Promotion-level usage budget (limit/used on the promotion itself).
-        if (
-          typeof promo.limit === "number" &&
-          typeof promo.used === "number" &&
-          promo.used >= promo.limit
-        ) {
-          return reply.send({ valid: false });
-        }
-
-        // Campaign budget — ONLY the globally-evaluable types. Per-attribute types
-        // are skipped (evaluating them without the attribute would over-reject).
-        const budget = promo.campaign?.budget;
-        if (
-          budget &&
-          (budget.type === "usage" || budget.type === "spend") &&
-          typeof budget.limit === "number" &&
-          typeof budget.used === "number" &&
-          budget.used >= budget.limit
-        ) {
-          return reply.send({ valid: false });
-        }
-
-        const discount = promo.application_method?.value ?? 0;
+        const discount = promo?.application_method?.value ?? 0;
         return reply.send({ valid: true, discount });
       } catch {
         // Display-side fail-closed (unchanged from the previous behavior): an

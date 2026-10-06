@@ -42,6 +42,12 @@ const mockGetRedisClient = vi.hoisted(() => vi.fn());
 const mockCreateSessionToken = vi.hoisted(() => vi.fn());
 const mockVerifySessionToken = vi.hoisted(() => vi.fn());
 
+// F-9 Phase B — the DURABLE session-owner read behind the `session:owner` key.
+// Mocked at the DOMAIN boundary rather than at `session-claim.js`, so the real
+// `decideSessionClaim` runs on every request this suite drives: the wall under
+// test is production's, not a stub's.
+const mockFindOwnerBySessionId = vi.hoisted(() => vi.fn());
+
 const mockHandleTurn = vi.hoisted(() => vi.fn());
 const mockGetConductor = vi.hoisted(() => vi.fn());
 const mockOpenCapsule = vi.hoisted(() => vi.fn());
@@ -145,7 +151,24 @@ vi.mock("../../incidents/incident-auto-close.js", () => ({
   closeIncidentOnDeliveredReply: mockCloseIncidentOnDeliveredReply,
 }));
 
+vi.mock("@ibatexas/domain", () => ({
+  createConversationService: () => ({ findOwnerBySessionId: mockFindOwnerBySessionId }),
+}));
+
 import { chatRoutes } from "../chat.js";
+// R4-S2 — the per-turn ambient contexts, read through their OWN APIs so the probes
+// below observe what the real route actually established (none of these three
+// modules is mocked in this suite).
+import { funnelTurnContext } from "../../claustrum/funnel-tier.js";
+import {
+  captureWireExchange,
+  claimWireExchanges,
+  sealWireCall,
+} from "../../claustrum/wire-capture.js";
+import {
+  currentWorkflowChannel,
+  currentWorkflowTurnId,
+} from "../../claustrum/workflow/workflow-turn.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -187,6 +210,10 @@ beforeEach(() => {
 
   mockCreateSessionToken.mockReturnValue("session-token-xyz");
   mockVerifySessionToken.mockReturnValue(null);
+
+  // F-9: no durable conversation record by default — the backstop finds nothing
+  // and every pre-existing case claims exactly as it did before.
+  mockFindOwnerBySessionId.mockResolvedValue(null);
 
   mockLoadSession.mockResolvedValue([]);
   mockAppendMessages.mockResolvedValue(undefined);
@@ -324,6 +351,144 @@ describe("POST /api/chat/messages — auth, ownership & lock guards", () => {
 
     expect(res.statusCode).toBe(403);
     expect(res.json().message).toBe("Sessão pertence a outro usuário.");
+    await app.close();
+  });
+
+  // ── F-9 Phase B — the claimed-once invariant, DRIVEN through the real route ──
+  //
+  // The fast-path cases above cover an owner key that is PRESENT. These cover the
+  // hole: the key is ABSENT (expired after 24h idle, or never written) and the
+  // pre-F-9 gate therefore ALLOWED the claim and handed the session over — along
+  // with its active cart, which is what a checkout buys.
+  //
+  // Every case here drives the production Fastify handler and the production
+  // `decideSessionClaim`; only Redis and the domain read are doubled. The three
+  // cases form a discriminating set on ONE axis (what the durable record says),
+  // with the request otherwise identical — so the refusal cannot pass by the
+  // suite being unable to produce a successful claim.
+
+  it("HIJACK: an expired owner key does NOT let a different customer claim the session (F-9)", async () => {
+    mockRedisGet.mockResolvedValue(null); // session:owner expired / absent
+    mockFindOwnerBySessionId.mockResolvedValue({ customerId: "cust_A" }); // durably A's
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_B" }, // …but B is asking
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    // Refused through the EXISTING mismatch path — same status, same pt-BR
+    // sentence a foreign-session customer has always seen. No new surface.
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toBe("Sessão pertence a outro usuário.");
+    // …and the claim did NOT stick: B must not own the key on the way out.
+    expect(mockRedisSet).not.toHaveBeenCalledWith(
+      "ibatexas:session:owner:" + SID,
+      "cust_B",
+      expect.anything(),
+    );
+    await app.close();
+  });
+
+  it("CONTROL: the session's OWN customer re-claims it after the key expired", async () => {
+    // MUST VALIDATE. This is how a returning customer reaches the backstop at
+    // all, and refusing it would lock people out of their own conversations —
+    // a worse failure than the one being fixed. Identical request to the hijack
+    // above except for WHO is asking.
+    mockRedisGet.mockResolvedValue(null);
+    mockFindOwnerBySessionId.mockResolvedValue({ customerId: "cust_A" });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_A" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "ibatexas:session:owner:" + SID,
+      "cust_A",
+      { EX: 86400 },
+    );
+    await app.close();
+  });
+
+  it("CONTROL: a guest-archived session stays claimable (first login after guest shopping)", async () => {
+    // MUST VALIDATE. `findOrCreateBySessionId` is create-only for `customerId`,
+    // so a session first archived as a guest is permanently `null` here — and
+    // that designed flow must keep working. Same absent key, same authenticated
+    // caller as the hijack; ONLY the record differs.
+    mockRedisGet.mockResolvedValue(null);
+    mockFindOwnerBySessionId.mockResolvedValue({ customerId: null });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_B" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      "ibatexas:session:owner:" + SID,
+      "cust_B",
+      { EX: 86400 },
+    );
+    await app.close();
+  });
+
+  it("an unreadable durable record FAILS OPEN — a DB hiccup never locks a customer out", async () => {
+    mockRedisGet.mockResolvedValue(null);
+    mockFindOwnerBySessionId.mockRejectedValue(new Error("db down"));
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_B" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("SLIDING REFRESH: an authenticated turn on an ALREADY-OWNED session re-asserts the TTL", async () => {
+    // The property that makes "owner key absent" mean "idle for 24h" rather than
+    // "claimed a day ago" — and therefore the reason the archiver's async write
+    // lag can never reach the backstop (inside the lag window this key was JUST
+    // written, so the fast path answers). Distinct from the first-claim case
+    // above, where the key was absent: here it is PRESENT and held by the same
+    // customer, which is the sliding half.
+    mockRedisGet.mockResolvedValue("cust_A"); // already owned, by the caller
+    // The durable read must not even be consulted on the fast path.
+    mockFindOwnerBySessionId.mockRejectedValue(new Error("must not be consulted"));
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      headers: { "x-test-customer-id": "cust_A" },
+      payload: { sessionId: SID, message: "oi", channel: "web" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    // Bounded, not exact: the assertion is that the key is re-written WITH a
+    // TTL on an already-owned session, not that the TTL is any given number.
+    const ownerWrites = mockRedisSet.mock.calls.filter(
+      (c) => c[0] === "ibatexas:session:owner:" + SID,
+    );
+    expect(ownerWrites.length).toBeGreaterThan(0);
+    for (const call of ownerWrites) {
+      expect(call[1]).toBe("cust_A");
+      expect(call[2]).toMatchObject({ EX: expect.any(Number) });
+      expect((call[2] as { EX: number }).EX).toBeGreaterThan(0);
+    }
     await app.close();
   });
 
@@ -828,6 +993,213 @@ describe("POST /api/chat/messages — W1 supersession (F1) & catch parity (F2)",
   });
 });
 
+// ── BKL-212: confirm-resume niceties on the customer WEB ingress ────────────
+// The web mirror of the OPS ingress patterns. Both branches act BEFORE
+// handleTurn, so the mocked handleTurn is exactly the right seam: the decisive
+// assertion on the two new paths is that the model turn NEVER runs, and on every
+// other input that it runs exactly as it does today.
+describe("POST /api/chat/messages — BKL-212 parked-confirmation niceties", () => {
+  const PARK_PROMPT = "cancelar o pedido 4242";
+  const INTENT_HASH = "abc123def456";
+  const mockUnpark = vi.fn();
+
+  /** Open the capsule with ONE parked confirmation (the customer-plane shape: no
+   *  `expiresAt` — web parks carry no confirm-freshness TTL). */
+  function withPark(): void {
+    mockOpenCapsule.mockResolvedValue({
+      id: "capsule-1",
+      turnId: "turn-1",
+      loadedSession: {
+        id: "web:guest:session",
+        pendingConfirmations: [
+          {
+            envelope: { kind: "order.cancel", intentHash: INTENT_HASH },
+            confirmationToken: "tok-1",
+            userPrompt: PARK_PROMPT,
+            parkedAt: new Date().toISOString(),
+          },
+        ],
+      },
+      session: { unpark: mockUnpark },
+    });
+  }
+
+  async function postGuest(message: string): Promise<void> {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message, channel: "web" },
+    });
+    expect(res.statusCode).toBe(200);
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+    await app.close();
+  }
+
+  /** The text of the single delivered text_delta frame, or undefined. */
+  function deliveredText(): string | undefined {
+    return mockPushChunk.mock.calls
+      .map(([, c]) => c as { type: string; delta?: { text?: string } })
+      .find((c) => c.type === "text_delta")?.delta?.text;
+  }
+
+  beforeEach(() => {
+    mockUnpark.mockReset();
+    mockUnpark.mockResolvedValue(undefined);
+  });
+
+  it("explicit negative (\"não\") → deterministic decline ACK, park unparked, model NEVER called", async () => {
+    withPark();
+    await postGuest("não");
+
+    // The whole point: no model turn — the negative text never reaches the planner
+    // (claustrum's own deny path would re-plan it as a fresh command, BKL-191).
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Unparked BEFORE the turn, keyed on the parked envelope's intentHash.
+    expect(mockUnpark).toHaveBeenCalledWith("web:guest:session", INTENT_HASH);
+    // pt-BR ACK delivered + persisted + terminal done.
+    expect(deliveredText()).toBe(
+      "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.",
+    );
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+    expect(assistantWasPersisted()).toBe(true);
+    // A deterministic ingress reply is not a drop.
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+    expect(mockCloseCapsule).toHaveBeenCalledTimes(1);
+  });
+
+  it("bare soft affirmative (\"ok\") → restates the parked prompt, park KEPT, model NEVER called", async () => {
+    withPark();
+    await postGuest("ok");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Money-safety: a soft affirmative must never execute AND must never unpark —
+    // the park survives so a follow-up "sim" still runs the adjudicated resume.
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(deliveredText()).toBe(
+      `Só confirmando — você quer que eu faça "${PARK_PROMPT}"? Responda "sim" para eu seguir.`,
+    );
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+    expect(assistantWasPersisted()).toBe(true);
+    expect(mockOpenIncidentInline).not.toHaveBeenCalled();
+  });
+
+  it.each(["pode", "beleza", "OK!"])(
+    "soft affirmative variant %j also restates without unparking",
+    async (text) => {
+      withPark();
+      await postGuest(text);
+      expect(mockHandleTurn).not.toHaveBeenCalled();
+      expect(mockUnpark).not.toHaveBeenCalled();
+      expect(deliveredText()).toContain("Só confirmando");
+    },
+  );
+
+  it("mixed soft affirmative + content (\"ok mas muda para 19h\") → NORMAL turn, park untouched", async () => {
+    withPark();
+    await postGuest("ok mas muda para 19h");
+
+    // The customer issued a NEW request; restating would drop it. Normal loop.
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(deliveredText()).toBe("Olá! Como posso ajudar?");
+  });
+
+  it("explicit confirm (\"sim\") → NORMAL turn (the adjudicated confirm-resume path is untouched)", async () => {
+    withPark();
+    await postGuest("sim");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled(); // the conductor owns the resume unpark
+    expect(deliveredText()).toBe("Olá! Como posso ajudar?");
+  });
+
+  it("mixed affirmative + negative (\"não, pode deixar\") → NORMAL turn, park KEPT (ambiguity is money-safe)", async () => {
+    withPark();
+    await postGuest("não, pode deixar");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled();
+  });
+
+  it.each(["não", "ok", "sim", "quero uma costela"])(
+    "NO park present: %j takes the normal path byte-identically",
+    async (text) => {
+      // Default capsule — no loadedSession at all (today's shape).
+      await postGuest(text);
+
+      expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+      expect(mockUnpark).not.toHaveBeenCalled();
+      expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+        type: "text_delta",
+        delta: mintRenderedReply("Olá! Como posso ajudar?"),
+      });
+      expect(mockPushChunk).toHaveBeenCalledWith(SID, { type: "done" });
+      expect(assistantWasPersisted()).toBe(true);
+    },
+  );
+
+  it("fail-honest: an unpark failure falls through to the normal loop instead of claiming a cancellation", async () => {
+    withPark();
+    mockUnpark.mockRejectedValue(new Error("redis down"));
+    await postGuest("não");
+
+    // The park did NOT clear, so we must not acknowledge a cancellation — run the
+    // normal loop (claustrum's own deny path still unparks there).
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(deliveredText()).toBe("Olá! Como posso ajudar?");
+  });
+
+  it("the decline ACK is branded on the wire exactly like a conductor reply", async () => {
+    withPark();
+    await postGuest("cancela");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(mockPushChunk).toHaveBeenCalledWith(SID, {
+      type: "text_delta",
+      delta: mintRenderedReply(
+        "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.",
+      ),
+    });
+  });
+
+  // ── F-3 · A SAFETY MARKER OUTRANKS THE DECLINE SHORT-CIRCUIT ──────────────
+  // The WEB customer surface has shipped the decline branch since BKL-212, so it
+  // carried the same defect as the WhatsApp surface: `isPureNegativeReplyText("não,
+  // sou celíaco")` is TRUE, and the ACK above answered a declared medical marker
+  // while §O#9 / BKL-184 never saw it. The owner's standing F-3 ruling (PR #515)
+  // is applied at the triage seam, so the turn now RUNS and the existing machinery
+  // routes. `mockHandleTurn` is the witness — the triage skips the turn, so "the
+  // model was never called" is what separates an intercepted reply from one that
+  // fell through.
+  it("F-3: a marker-bearing negative reaches handleTurn — the triage stands down and unparks NOTHING", async () => {
+    withPark();
+    await postGuest("não, sou celíaco");
+
+    // The turn RAN: the marker is now in front of the planner.
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    // The TRIAGE claimed no cancellation — it unparked nothing. (In production the
+    // conductor's own deny path owns the park from here; `handleTurn` is mocked.)
+    expect(mockUnpark).not.toHaveBeenCalled();
+    // No decline ACK on the wire; the turn's own reply is delivered.
+    expect(deliveredText()).toBe("Olá! Como posso ajudar?");
+  });
+
+  it("F-3 CONTROL: a marker-FREE negative of the same shape still declines byte-identically", async () => {
+    withPark();
+    // `vegetariano` is deliberately OUT of the diet net (BKL-214 preference vs
+    // restriction), so only the MARKER differs from the case above. Without this
+    // control, "handleTurn was called" would also pass against a deleted branch.
+    await postGuest("não, sou vegetariano");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(mockUnpark).toHaveBeenCalledWith("web:guest:session", INTENT_HASH);
+    expect(deliveredText()).toBe(
+      "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.",
+    );
+  });
+});
+
 // ── GET /api/chat/stream/:sessionId (hijacked SSE) ──────────────────────────
 
 describe("GET /api/chat/stream/:sessionId — access guards", () => {
@@ -948,5 +1320,123 @@ describe("GET /api/chat/stream/:sessionId — chunk delivery", () => {
     expect(res.payload).toContain('"type":"done"');
     expect(close).toHaveBeenCalled();
     await app.close();
+  });
+});
+
+// ── R4-S2 · the DECLARED per-turn context subset, observed at this ingress ──
+//
+// Before R4-S2 this ingress hand-assembled the funnel publish + the wire context +
+// the workflow binding, and NO suite at any of the five ingresses observed any of
+// them: the whole choreography could be deleted and every existing test stayed
+// green. These probes close that blind spot from the CONSUMER side — the real route
+// runs, and `handleTurn` (mocked here) reads the contexts' own APIs from inside the
+// turn, which is the only place they are meant to be visible.
+describe("POST /api/chat/messages — R4-S2 per-turn context subset (customer-full)", () => {
+  const TURN_ID = "turn-1";
+
+  interface Observed {
+    readonly funnel: { readonly confirmWindowOpen: boolean } | undefined;
+    readonly workflowTurnId: string | undefined;
+    readonly workflowChannel: string | undefined;
+    readonly wireExchanges: number;
+  }
+
+  /** Probe every context from INSIDE the turn, then answer like a normal turn. */
+  function probeInsideTurn(): { read: () => Observed | undefined } {
+    let observed: Observed | undefined;
+    mockHandleTurn.mockImplementation(async () => {
+      captureWireExchange({
+        model: "nemotron",
+        request: { messages: [] },
+        response: { choices: [] },
+        at: new Date().toISOString(),
+      });
+      sealWireCall(TURN_ID);
+      observed = {
+        funnel: funnelTurnContext(TURN_ID),
+        workflowTurnId: currentWorkflowTurnId(),
+        workflowChannel: currentWorkflowChannel(),
+        wireExchanges: claimWireExchanges(TURN_ID).length,
+      };
+      return { response: { text: "Olá! Como posso ajudar?" }, decision: { kind: "EXECUTE" } };
+    });
+    return { read: () => observed };
+  }
+
+  /** Open the capsule with `parks` pending confirmations (customer shape: no TTL). */
+  function withParks(parks: number): void {
+    mockOpenCapsule.mockResolvedValue({
+      id: "capsule-1",
+      turnId: TURN_ID,
+      loadedSession: {
+        id: "web:guest:session",
+        pendingConfirmations: Array.from({ length: parks }, (_unused, i) => ({
+          envelope: { kind: "order.cancel", intentHash: `hash${i}` },
+          confirmationToken: `tok-${i}`,
+          userPrompt: "cancelar o pedido 4242",
+          parkedAt: new Date().toISOString(),
+        })),
+      },
+      session: { unpark: vi.fn(async () => {}) },
+    });
+  }
+
+  async function postGuest(message: string): Promise<void> {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/chat/messages",
+      payload: { sessionId: SID, message, channel: "web" },
+    });
+    expect(res.statusCode).toBe(200);
+    await waitFor(() => mockReleaseLock.mock.calls.length > 0);
+    await app.close();
+  }
+
+  it("establishes ALL THREE contexts around the turn — wire, workflow binding, funnel", async () => {
+    const probe = probeInsideTurn();
+    await postGuest("oi");
+
+    expect(probe.read()).toEqual({
+      funnel: { confirmWindowOpen: false },
+      workflowTurnId: TURN_ID,
+      workflowChannel: "web",
+      wireExchanges: 1,
+    });
+  });
+
+  it("publishes confirmWindowOpen TRUE when the session holds a park (FE-D32)", async () => {
+    // A plain request — neither a soft affirmative nor a negative — so the
+    // park-reply triage falls THROUGH to the turn and the funnel gets published.
+    withParks(1);
+    const probe = probeInsideTurn();
+    await postGuest("quero uma picanha");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(probe.read()?.funnel).toEqual({ confirmWindowOpen: true });
+  });
+
+  it("publishes confirmWindowOpen FALSE on an EMPTY park list", async () => {
+    withParks(0);
+    const probe = probeInsideTurn();
+    await postGuest("quero uma picanha");
+
+    expect(probe.read()?.funnel).toEqual({ confirmWindowOpen: false });
+  });
+
+  it("drops the funnel context after the turn — and STILL drops it when the turn THROWS", async () => {
+    withParks(1);
+    mockHandleTurn.mockImplementation(async () => {
+      // Live inside the turn…
+      expect(funnelTurnContext(TURN_ID)).toEqual({ confirmWindowOpen: true });
+      throw new Error("planner exploded");
+    });
+    await postGuest("quero uma picanha");
+
+    // …and gone after it, via turn-context.ts's single `finally`. A leak here is a
+    // cross-turn hazard: the next turn on a park-free session would inherit an
+    // open confirm window and L0 would stand down for no reason.
+    expect(funnelTurnContext(TURN_ID)).toBeUndefined();
+    expect(currentWorkflowTurnId()).toBeUndefined();
   });
 });

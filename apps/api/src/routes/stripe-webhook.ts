@@ -59,12 +59,15 @@ import {
   type PaymentDisputeOpenPayload,
   createOrderEventLogService,
   type PaymentStatusReconcilePayload,
+  type OrderService,
+  type OrderEventLogService,
+  type PaymentCommandService,
+  type PaymentQueryService,
 } from "@ibatexas/domain";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { buildEnvelope } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import {
-  formatOrderId,
   PaymentStatus,
   type PaymentStatusChangedEvent,
 } from "@ibatexas/types";
@@ -91,6 +94,185 @@ type WebhookLogger = {
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
 };
+
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// This file's shape differs from every other route in the rollout, and the
+// difference is structural rather than stylistic. Elsewhere the plugin body
+// both resolves the deps AND owns the handlers that use them. Here it does
+// not: `stripeWebhookRoutes` only verifies the signature and ENQUEUES, then
+// hands `dispatchStripeWebhookEvent` to the BullMQ processor. The service
+// constructions all live under that exported dispatch entry point, on a job
+// worker, on the far side of a queue — so a dep set resolved in the plugin
+// body could never reach them by closure alone.
+//
+// So the seam is threaded through `dispatchStripeWebhookEvent` itself, whose
+// `deps` parameter is OPTIONAL and defaults to the production set. Two
+// consequences worth stating plainly:
+//
+//   • The plugin still owns the production composition: it resolves the set
+//     once per registration and closes over it in the callback it hands the
+//     processor, so a `server.register(stripeWebhookRoutes, { deps })` does
+//     reach the handlers for every event that arrives through the queue.
+//
+//   • The parameter is optional rather than required (the opposite of
+//     `cachePixDetailsForCustomer`'s no-fallback rule) because
+//     `dispatchStripeWebhookEvent` is a PUBLIC entry point with an existing
+//     3-argument contract — the processor calls it, and so do the route's
+//     tests. Making it required would be a test migration, which this slice
+//     deliberately does not do. The default is the same expression the
+//     handlers constructed inline, so the fallback is not a silent path to a
+//     different service; it is the identical one.
+//
+// Unlike the other files, three members take ARGUMENTS: these constructions
+// genuinely bind per-event values (the job's `logger`, and the Stripe event id
+// that stamps `buildWebhookOrderService`'s audit `sourceSubject`). They are
+// still factories — nothing is constructed until a handler calls one.
+
+// ── R5 rollout, webhook/chat family — the Redis client joins that seam ──────
+//
+// The two `getRedisClient()` calls this module made inline now resolve through
+// `StripeWebhookRouteDeps.redis`. They sit on OPPOSITE sides of the queue —
+// one in a dispatch handler on the job worker, one in the plugin's POST
+// handler — and the composition root above already spans both, which is why
+// this file needs no second seam: `stripeWebhookRoutes` resolves the set once
+// and closes over it for the processor, and `dispatchStripeWebhookEvent` takes
+// it as a parameter.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule) ─────────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream}. MEASURED for
+// this module: the downstream half is EMPTY. Every `redis` occurrence in the
+// file was read, not just the call sites — the client is bound to a
+// function-local `const` at each of the two sites and its commands are issued
+// on it directly. NO site passes `redis` to anything.
+//
+// ── The HAND-IT-TO read, and its three measured negatives ──────────────────
+//
+// Three collaborators on these paths could plausibly carry a client. None
+// does, and the reasons differ:
+//
+//   • `withLock(resource, fn, ttlSeconds)` — takes NO client and invokes
+//     `fn()` with NO arguments. Re-derived here rather than inherited: it
+//     resolves through `acquireLock` → `acquireLockAtKey` →
+//     `acquireLockAtKeyOn(singletonLockClient, …)`, and `singletonLockClient`
+//     calls `getRedisClient()` PER COMMAND. It genuinely DOES reach Lua
+//     (`redis.eval(RELEASE_LOCK_SCRIPT)`, Hard Rule #10) — but through its own
+//     singleton, never through anything this file hands it. That is the
+//     `order-actions.ts` boundary: a Lua-bearing callee left deliberately
+//     self-resolving is exactly what keeps the HOST file migratable. All four
+//     `withLock` sites here are therefore outside this Pick.
+//   • `enqueueStripeWebhookEvent(event, receivedAtMs)` — a two-argument
+//     signature with no client and no Redis command of its own (it adds to a
+//     BullMQ queue).
+//   • `markPixPaid(paymentIntentId, deps = {})` — the LATENT hand-off (F-42's
+//     shape). It ACCEPTS `deps.redis`, and this file's one call site passes
+//     ZERO arguments, so it resolves its own singleton and is NOT downstream
+//     of this Pick. Threading it later would stay Lua-free — its declared
+//     `PixPaidWriteRedis` is `Pick<…, "set">` — so the boundary is a SCOPE
+//     decision, taken deliberately here and left where it is.
+//
+//     It is the BENIGN variant of that shape, and the difference is worth
+//     recording: `invalidateDeliveryCache` (F-42's filed instance) declares no
+//     honest Pick and swallows every error in a bare catch, so a caller-derived
+//     Pick fails SILENTLY. `markPixPaid` declares a Pick that matches exactly
+//     the one command it issues, falls back with `deps.redis ?? await
+//     getRedisClient()` rather than assuming a member is present, and its call
+//     site here logs any rejection loudly via `.catch`. Whoever threads it
+//     inherits a declared contract, not a trap.
+//
+// No `eval` / `evalSha` / `multi` appears in this module's own text.
+//
+// ── Feature detection: MEASURED, none ─────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/jobs`, `apps/api/src/middleware` and `packages/tools/src`: the
+// only live probe in the repo is `adapters/park-redis-capabilities.ts`'s
+// `evalIncrCheck` detect, which is not on any path this file reaches.
+
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+/**
+ * The pending-orders cleanup in `handlePaymentSucceeded` — one `HDEL` of the
+ * settled PaymentIntent's field, inside a swallowing `try/catch` because the
+ * entry is bookkeeping the customer no longer needs.
+ */
+type WebhookPendingOrderCleanupRedis = Pick<RedisClient, "hDel">;
+
+/**
+ * The route's 7-day idempotency gate: `SET key "1" EX 604800 NX` claims the
+ * event, and `EXPIRE key 300` DOWNGRADES that claim when the enqueue fails so
+ * Stripe re-delivers instead of the event being lost forever.
+ *
+ * Both commands are load-bearing and they fail in OPPOSITE directions, which
+ * is why they are one type: without `set` every Stripe retry re-processes a
+ * paid order; without `expire` a queue outage strands the event behind a claim
+ * that suppresses redelivery for seven days.
+ */
+type WebhookIdempotencyRedis = Pick<RedisClient, "set" | "expire">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this module issues — the type
+ * `StripeWebhookRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived from the two per-consumer types
+ * above: a derived union can never disagree with its consumers, so it could
+ * not catch a consumer that grew a command nobody declared (F-14).
+ */
+export type StripeWebhookRedisClient = Pick<RedisClient, "hDel" | "set" | "expire">;
+
+/** The domain services `stripe-webhook.ts`'s handlers resolve through the seam. */
+export interface StripeWebhookRouteDeps {
+  /**
+   * Resolves the Redis client behind the idempotency gate and the
+   * pending-orders cleanup.
+   *
+   * A FACTORY returning a promise, not an instance, so the `await` stays
+   * exactly where it was — per EVENT, inside the handler. An instance would
+   * hoist resolution to registration and change when a Redis outage first
+   * surfaces (today: on the first webhook delivery — never at boot).
+   */
+  readonly redis: () => Promise<StripeWebhookRedisClient>;
+  /** Builds the PaymentQueryService behind the PI/order payment lookups. */
+  readonly paymentQueryService: () => PaymentQueryService;
+  /** Builds the audit-wired PaymentCommandService bound to the job's logger. */
+  readonly paymentCommandService: (logger: WebhookLogger) => PaymentCommandService;
+  /** Builds the OrderEventLogService for the reconcile audit trail. */
+  readonly orderEventLogService: (logger: WebhookLogger) => OrderEventLogService;
+  /**
+   * Builds the kernel-gated Medusa OrderService for the capture path. Takes
+   * the event because the adjudicated `sourceSubject` embeds `event.id`.
+   */
+  readonly orderService: (event: Stripe.Event, logger: WebhookLogger) => OrderService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface StripeWebhookRoutesOptions {
+  readonly deps?: Partial<StripeWebhookRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction this file did inline. */
+function defaultStripeWebhookRouteDeps(): StripeWebhookRouteDeps {
+  return {
+    redis: () => getRedisClient(),
+    paymentQueryService: () => createPaymentQueryService(),
+    paymentCommandService: (logger) =>
+      createPaymentCommandService(logger, { auditSink: getAuditSink() }),
+    orderEventLogService: (logger) => createOrderEventLogService(logger),
+    orderService: (event, logger) => buildWebhookOrderService(event, logger),
+  };
+}
+
+function resolveStripeWebhookRouteDeps(
+  options?: StripeWebhookRoutesOptions,
+): StripeWebhookRouteDeps {
+  return { ...defaultStripeWebhookRouteDeps(), ...(options?.deps ?? {}) };
+}
 
 // ── Reconcile payment status from Stripe event ──────────────────────────────
 
@@ -200,6 +382,18 @@ async function resolvePaymentForReconcile(
   return payment;
 }
 
+/**
+ * The privilege every reconcile-reaching handler needs, named once because the
+ * five callers below need it for the SAME reason: they all funnel into
+ * `reconcilePaymentFromStripe`. `orderService` is deliberately absent — only the
+ * capture path (`handlePaymentSucceeded`) holds it, so a reconcile-only handler
+ * that reached for it is a compile error rather than a review question.
+ */
+type ReconcileDeps = Pick<
+  StripeWebhookRouteDeps,
+  "paymentQueryService" | "paymentCommandService" | "orderEventLogService"
+>;
+
 async function reconcilePaymentFromStripe(
   stripePaymentIntentId: string,
   newStatus: (typeof PaymentStatus)[keyof typeof PaymentStatus],
@@ -216,12 +410,11 @@ async function reconcilePaymentFromStripe(
    * (the handler that already resolved an orderId); a payment that already
    * carries a DIFFERENT PI id is never adopted (stale/foreign PI).
    */
+  deps: ReconcileDeps,
   fallbackOrderId?: string,
 ): Promise<void> {
-  const paymentQuerySvc = createPaymentQueryService();
-  const paymentCmdSvc = createPaymentCommandService(logger, {
-    auditSink: getAuditSink(),
-  });
+  const paymentQuerySvc = deps.paymentQueryService();
+  const paymentCmdSvc = deps.paymentCommandService(logger);
 
   const payment = await resolvePaymentForReconcile(
     paymentQuerySvc,
@@ -341,7 +534,7 @@ async function reconcilePaymentFromStripe(
   } satisfies PaymentStatusChangedEvent & { eventType: string });
 
   // Audit trail
-  const eventLogSvc = createOrderEventLogService(logger);
+  const eventLogSvc = deps.orderEventLogService(logger);
   await eventLogSvc.append({
     orderId: payment.orderId,
     eventType: "payment.status_changed",
@@ -411,8 +604,9 @@ function handlePixCompletionError(
  * reconcile pattern). sourceSubject = "webhook:stripe:<event.id>" surfaces in
  * audit.
  *
- * Returns the resolved orderId (the original `orderId` when there is nothing to
- * complete). Throws on cart-complete lock contention so the BullMQ job retries.
+ * Returns the resolved RAW Medusa order id (the original `orderId` when there is
+ * nothing to complete). Throws on cart-complete lock contention so the BullMQ
+ * job retries.
  */
 async function completePixCartIfNeeded(
   paymentIntent: Stripe.PaymentIntent,
@@ -460,9 +654,18 @@ async function completePixCartIfNeeded(
       // throw AFTER the try so the governance catch below doesn't swallow it.
       contended = true;
     } else {
-      resolvedOrderId = completion.order?.display_id
-        ? formatOrderId(completion.order.display_id)
-        : completion.order?.id;
+      // BKL-230: the RAW Medusa order id — never the formatted IBX-#### form.
+      // Every consumer downstream of this return is machine-facing (admin
+      // GET /admin/orders/:id in capturePayment, the Payment row's orderId in
+      // reconcile's getActiveByOrderId, the order.placed payload, the
+      // medusaOrderId we stamp back onto the PI for later webhook legs to read).
+      // Formatting here made the admin GET 404, so capturePayment threw, the
+      // isolation catch below swallowed it, and the null result short-circuited
+      // to "already processed" BEFORE order.placed ever published — PIX orders
+      // silently never announced. Same raw-vs-display split the cash path keeps
+      // in packages/tools/src/cart/create-checkout.ts. No user-facing string is
+      // built on this leg, so the display form has no use here at all.
+      resolvedOrderId = completion.order?.id;
 
       if (resolvedOrderId) {
         // W8-V2 (NEW-W7-V2): persist orderId back to the PaymentIntent
@@ -532,6 +735,7 @@ async function handlePaymentSucceeded(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: StripeWebhookRouteDeps,
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const processingMs = Date.now() - startMs;
@@ -553,7 +757,7 @@ async function handlePaymentSucceeded(
     return;
   }
 
-  const svc = buildWebhookOrderService(event, logger);
+  const svc = deps.orderService(event, logger);
   // Serialize capture per order (P0-PAY-2). Two distinct payment_intent.succeeded
   // events for one order (realistic after amend_order/regenerate_pix mints a 2nd PI)
   // would otherwise both pass capturePayment's metadata guard and both capture +
@@ -585,7 +789,7 @@ async function handlePaymentSucceeded(
   if (!result) {
     logger.info({ event_id: event.id, order_id: orderId }, "Order already processed — no-op");
     // Still reconcile payment status even if order was already processed
-    await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, orderId);
+    await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, deps, orderId);
     return;
   }
 
@@ -610,22 +814,31 @@ async function handlePaymentSucceeded(
   });
 
   // Reconcile payment status → paid
-  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, orderId);
+  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAID, event, logger, deps, orderId);
 
   // Clean up pending-order entry now that the Medusa order exists
   const domainCustomerId = paymentIntent.metadata?.["customerId"];
   if (domainCustomerId) {
     try {
-      const redis = await getRedisClient();
+      const redis: WebhookPendingOrderCleanupRedis = await deps.redis();
       await redis.hDel(rk(`customer:pending-orders:${domainCustomerId}`), paymentIntent.id);
     } catch {
       // Non-critical cleanup
     }
   }
 
-  // Mark PIX as paid so expiry monitor skips reminders for this order
-  await markPixPaid(orderId).catch((err) => {
-    logger.warn({ error: String(err), order_id: orderId }, "[stripe.pix.mark_paid_failed]");
+  // Mark PIX as paid so the expiry monitor skips reminders for this attempt.
+  //
+  // BKL-241: keyed by the PaymentIntent id, NOT `orderId`. The monitor is
+  // scheduled at QR-mint time, when no Medusa order exists yet (the cart is
+  // completed by this very handler), so the `pi_…` id is the only id both sides
+  // hold. Marking under the order id wrote a key `isPixPaid` never reads, and
+  // the customer who had just paid still received "O PIX expirou".
+  await markPixPaid(paymentIntent.id).catch((err) => {
+    logger.warn(
+      { error: String(err), order_id: orderId, stripe_pi: paymentIntent.id },
+      "[stripe.pix.mark_paid_failed]",
+    );
   });
 
   logger.info(
@@ -638,6 +851,7 @@ async function handlePaymentFailed(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: ReconcileDeps,
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const orderId = paymentIntent.metadata?.["medusaOrderId"];
@@ -648,7 +862,7 @@ async function handlePaymentFailed(
   );
 
   // Reconcile payment status → payment_failed
-  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAYMENT_FAILED, event, logger);
+  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.PAYMENT_FAILED, event, logger, deps);
 
   if (orderId) {
     await publishNatsEvent("order.payment_failed", {
@@ -664,6 +878,7 @@ async function handleChargeRefunded(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: ReconcileDeps,
 ): Promise<void> {
   const charge = event.data.object as Stripe.Charge;
   const orderId = charge.metadata?.["medusaOrderId"];
@@ -683,7 +898,7 @@ async function handleChargeRefunded(
     ? charge.payment_intent
     : charge.payment_intent?.id;
   if (piId) {
-    await reconcilePaymentFromStripe(piId, targetStatus, event, logger);
+    await reconcilePaymentFromStripe(piId, targetStatus, event, logger, deps);
   }
 
   if (!orderId) {
@@ -720,8 +935,9 @@ async function escalateDisputeOpen(
   orderId: string | undefined,
   event: Stripe.Event,
   logger: WebhookLogger,
+  deps: Pick<StripeWebhookRouteDeps, "paymentQueryService" | "paymentCommandService">,
 ): Promise<void> {
-  const paymentQuerySvc = createPaymentQueryService();
+  const paymentQuerySvc = deps.paymentQueryService();
   const payment = await resolvePaymentForReconcile(
     paymentQuerySvc,
     piId,
@@ -740,9 +956,7 @@ async function escalateDisputeOpen(
     return;
   }
 
-  const paymentCmdSvc = createPaymentCommandService(logger, {
-    auditSink: getAuditSink(),
-  });
+  const paymentCmdSvc = deps.paymentCommandService(logger);
   const envelope = buildDisputeOpenEnvelope({
     paymentId: payment.id,
     disputeAmountCentavos: dispute.amount,
@@ -784,6 +998,7 @@ async function handleChargeDisputeCreated(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: ReconcileDeps,
 ): Promise<void> {
   const dispute = event.data.object as Stripe.Dispute;
   const orderId = dispute.metadata?.["medusaOrderId"];
@@ -799,12 +1014,12 @@ async function handleChargeDisputeCreated(
     ? dispute.payment_intent
     : dispute.payment_intent?.id;
   if (piId) {
-    await reconcilePaymentFromStripe(piId, PaymentStatus.DISPUTED, event, logger);
+    await reconcilePaymentFromStripe(piId, PaymentStatus.DISPUTED, event, logger, deps);
     // BKL-178 — governed dispute escalation: mint + adjudicate a system-actor
     // payment.dispute.open envelope (always ESCALATEs) and, on ESCALATE, surface
     // it to the owner escalation queue via support.handoff_requested. Runs after
     // the reconcile so the resolved Payment row is authoritative.
-    await escalateDisputeOpen(dispute, piId, orderId, event, logger);
+    await escalateDisputeOpen(dispute, piId, orderId, event, logger, deps);
   }
 
   await publishNatsEvent("order.disputed", {
@@ -825,6 +1040,7 @@ async function handlePaymentIntentCanceled(
   event: Stripe.Event,
   startMs: number,
   logger: WebhookLogger,
+  deps: ReconcileDeps,
 ): Promise<void> {
   const paymentIntent = event.data.object as Stripe.PaymentIntent;
   const orderId = paymentIntent.metadata?.["medusaOrderId"];
@@ -836,7 +1052,7 @@ async function handlePaymentIntentCanceled(
   );
 
   // Reconcile payment → canceled
-  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.CANCELED, event, logger);
+  await reconcilePaymentFromStripe(paymentIntent.id, PaymentStatus.CANCELED, event, logger, deps);
 
   if (!orderId) {
     logger.warn({ event_id: event.id }, "payment_intent.canceled missing medusaOrderId metadata");
@@ -869,22 +1085,30 @@ export async function dispatchStripeWebhookEvent(
   event: Stripe.Event,
   receivedAtMs: number,
   logger: WebhookLogger,
+  /**
+   * The resolved service set. OPTIONAL, defaulting to the production one —
+   * see the StripeWebhookRouteDeps block for why this entry point takes a
+   * default where `cachePixDetailsForCustomer` refuses one. `stripeWebhookRoutes`
+   * passes its registration-resolved set; a caller that omits it gets the same
+   * expressions the handlers used to construct inline.
+   */
+  deps: StripeWebhookRouteDeps = defaultStripeWebhookRouteDeps(),
 ): Promise<void> {
   switch (event.type) {
     case "payment_intent.succeeded":
-      await handlePaymentSucceeded(event, receivedAtMs, logger);
+      await handlePaymentSucceeded(event, receivedAtMs, logger, deps);
       break;
     case "payment_intent.payment_failed":
-      await handlePaymentFailed(event, receivedAtMs, logger);
+      await handlePaymentFailed(event, receivedAtMs, logger, deps);
       break;
     case "charge.refunded":
-      await handleChargeRefunded(event, receivedAtMs, logger);
+      await handleChargeRefunded(event, receivedAtMs, logger, deps);
       break;
     case "charge.dispute.created":
-      await handleChargeDisputeCreated(event, receivedAtMs, logger);
+      await handleChargeDisputeCreated(event, receivedAtMs, logger, deps);
       break;
     case "payment_intent.canceled":
-      await handlePaymentIntentCanceled(event, receivedAtMs, logger);
+      await handlePaymentIntentCanceled(event, receivedAtMs, logger, deps);
       break;
     default:
       logger.info({ event_id: event.id, type: event.type }, "Unhandled Stripe event type — ignoring");
@@ -893,7 +1117,16 @@ export async function dispatchStripeWebhookEvent(
 
 // ── Route registration ──────────────────────────────────────────────────────
 
-export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void> {
+export async function stripeWebhookRoutes(
+  server: FastifyInstance,
+  options?: StripeWebhookRoutesOptions,
+): Promise<void> {
+  // Resolved ONCE per registration. The members are factories, so nothing is
+  // constructed here — see the StripeWebhookRouteDeps block above. The
+  // processor callback below closes over this set, which is how a registration
+  // override reaches handlers that run on the job worker.
+  const deps = resolveStripeWebhookRouteDeps(options);
+
   // Self-register the durable processor so queued jobs drain on (re)start.
   // Guarded out of the UNIT-test env (no BullMQ/Redis worker in vitest); the
   // handlers themselves are exercised via dispatchStripeWebhookEvent.
@@ -904,7 +1137,11 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
   // it MUST drain webhook jobs or the signed paid-state fixture's events would
   // be acked-then-stranded. Mirrors apps/api/src/index.ts:133.
   if (process.env.NODE_ENV !== "test" || process.env.IBX_TEST_FINGERPRINT) {
-    startStripeWebhookProcessor(dispatchStripeWebhookEvent);
+    // Closure rather than a bare reference: this is what carries the
+    // registration-resolved dep set across the queue to the job worker.
+    startStripeWebhookProcessor((event, receivedAtMs, logger) =>
+      dispatchStripeWebhookEvent(event, receivedAtMs, logger, deps),
+    );
   }
 
   // Scope raw body parser to this route only (Fastify encapsulated plugin)
@@ -973,7 +1210,7 @@ export async function stripeWebhookRoutes(server: FastifyInstance): Promise<void
       }
 
       // Idempotency — 7 days covers Stripe's 3-day retry window with margin
-      const redis = await getRedisClient();
+      const redis: WebhookIdempotencyRedis = await deps.redis();
       const idempotencyKey = rk(`webhook:processed:${event.id}`);
       const wasSet = await redis.set(idempotencyKey, "1", { EX: 604800, NX: true });
       if (!wasSet) {

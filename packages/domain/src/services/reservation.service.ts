@@ -61,6 +61,14 @@ type TimeSlotRow = {
 // T-RESERVATIONDTO: compiler-checked relation shape via Prisma.ReservationGetPayload,
 // replacing the hand-maintained ReservationWithRelations type that was drift-prone
 // and required `as unknown as` escape hatches at every call site.
+//
+// Single source of truth in BOTH halves: it is the `typeof` source for
+// ReservationWithRelations below (the type half), and every query whose result
+// feeds `toDTO` spreads it rather than re-spelling the include (the value half).
+// The narrower `include: { timeSlot: true }` reads — cancel, transition's no_show
+// branch, findConfirmedForDate — deliberately do NOT use it: they never build a
+// ReservationDTO, so loading the tables relation would be dead work.
+// Pinned by reservation-relation-args-ssot.test.ts.
 const reservationWithRelationsArgs = {
   include: {
     timeSlot: true,
@@ -237,7 +245,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
     async getById(id: string, customerId?: string): Promise<ReservationDTO> {
       const reservation = await prisma.reservation.findUnique({
         where: { id },
-        include: { timeSlot: true, tables: { include: { table: true } } },
+        ...reservationWithRelationsArgs,
       })
 
       if (!reservation) throw new Error("Reserva não encontrada.")
@@ -273,7 +281,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
       const [reservations, total] = await Promise.all([
         prisma.reservation.findMany({
           where,
-          include: { timeSlot: true, tables: { include: { table: true } } },
+          ...reservationWithRelationsArgs,
           orderBy: [{ timeSlot: { date: "desc" } }, { timeSlot: { startTime: "desc" } }],
           take: options?.limit ?? 10,
         }),
@@ -297,7 +305,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
       const [reservations, total] = await Promise.all([
         prisma.reservation.findMany({
           where,
-          include: { timeSlot: true, tables: { include: { table: true } } },
+          ...reservationWithRelationsArgs,
           orderBy: [{ timeSlot: { date: "asc" } }, { timeSlot: { startTime: "asc" } }],
           take: pagination.limit,
           skip: pagination.offset,
@@ -352,7 +360,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
             timeSlotId: input.timeSlotId,
             tables: { create: tableIds.map((tableId) => ({ tableId })) },
           },
-          include: { timeSlot: true, tables: { include: { table: true } } },
+          ...reservationWithRelationsArgs,
         })
 
         // 5. Increment reservedCovers
@@ -382,7 +390,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
     ): Promise<ReservationDTO> {
       const existing = await prisma.reservation.findUnique({
         where: { id },
-        include: { timeSlot: true, tables: { include: { table: true } } },
+        ...reservationWithRelationsArgs,
       })
 
       if (!existing) throw new Error("Reserva não encontrada.")
@@ -438,7 +446,7 @@ export function createReservationService(options?: ReservationServiceOptions) {
             specialRequests: changes.specialRequests ?? existing.specialRequests ?? [],
             tables: { create: newTableIds.map((tableId) => ({ tableId })) },
           },
-          include: { timeSlot: true, tables: { include: { table: true } } },
+          ...reservationWithRelationsArgs,
         })
       })
 

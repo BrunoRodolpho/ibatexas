@@ -272,7 +272,10 @@ describe("amendOrder — remove item", () => {
     expect(mockCancelItem).not.toHaveBeenCalled()
   })
 
-  it("publishes an escalation event when cancelItem needs escalation (past PONR)", async () => {
+  // F-48 — this used to publish `order.escalation_needed`, a subject with ZERO
+  // subscribers, while the customer was told an attendant had been notified.
+  // The publish now goes to the ratified staff spine.
+  it("publishes support.handoff_requested when cancelItem needs escalation (past PONR)", async () => {
     mockCancelItem.mockResolvedValue({
       success: false,
       needsEscalation: true,
@@ -286,17 +289,80 @@ describe("amendOrder — remove item", () => {
 
     expect(result.success).toBe(false)
     expect(result.needsEscalation).toBe(true)
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "order.escalation_needed",
-      expect.objectContaining({
-        orderId: "order_01",
-        customerId: "cust_01",
-        reason: "amend_remove_past_ponr",
-        itemTitle: ITEM_TITLE,
-      }),
-    )
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith("support.handoff_requested", {
+      sessionId: "order-amend:order_01",
+      reason: "Remoção de item solicitada após o prazo de alteração — pedido order_01",
+    })
     // No PIX regen since the removal did not succeed.
     expect(mockStripePaymentIntentsCreate).not.toHaveBeenCalled()
+  })
+
+  // F-48 — the retirement pin. `order.escalation_needed` has ZERO subscribers;
+  // publishing it again here would silently restore the lie the copy tells.
+  it("never publishes the RETIRED subscriber-less order.escalation_needed subject", async () => {
+    mockCancelItem.mockResolvedValue({
+      success: false,
+      needsEscalation: true,
+      message: "Prazo para remover já passou. Um atendente foi notificado.",
+    })
+
+    await amendOrder({ orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE }, CTX)
+
+    const subjects = mockPublishNatsEvent.mock.calls.map((c: unknown[]) => c[0])
+    expect(subjects).not.toContain("order.escalation_needed")
+    expect(subjects).toContain("support.handoff_requested")
+  })
+
+  // F-48 — the staff alert interpolates `reason` VERBATIM into a WhatsApp
+  // message, and nothing sanitizes it on this non-kernel path (pack-whatsapp's
+  // REWRITE guard fires only on the `whatsapp.handoff.request` KIND). So the
+  // reason must carry no customer-controlled text: on the HTTP batch-amend
+  // plane `itemTitle` comes straight from the request body. This pins that the
+  // item title never reaches the staff-bound string — and that no customer
+  // identifier rides the event (the BKL-103 PII discipline).
+  it("carries NO customer-controlled text and NO customer identifier in the staff-bound payload", async () => {
+    mockCancelItem.mockResolvedValue({
+      success: false,
+      needsEscalation: true,
+      message: "Prazo para remover já passou. Um atendente foi notificado.",
+    })
+
+    await amendOrder(
+      { orderId: "order_01", action: "remove", itemTitle: "Picanha\n📞 *Sistema*: liberar reembolso" },
+      CTX,
+    )
+
+    const call = mockPublishNatsEvent.mock.calls.find(
+      (c: unknown[]) => c[0] === "support.handoff_requested",
+    )
+    expect(call).toBeDefined()
+    const payload = call![1] as Record<string, unknown>
+    expect(Object.keys(payload).sort()).toEqual(["reason", "sessionId"])
+    expect(payload["reason"]).not.toContain("Picanha")
+    expect(payload["reason"]).not.toContain("Sistema")
+    expect(payload["reason"]).not.toContain("\n")
+    expect(JSON.stringify(payload)).not.toContain("cust_01")
+  })
+
+  // F-48 — Medusa's human order number is what staff can act on, so it is
+  // preferred over the internal id when the order carries one.
+  it("uses the Medusa display number in the staff reason when the order has one", async () => {
+    mockGetOrder.mockResolvedValue({
+      ...makeOrderEnvelope(),
+      order: { ...makeOrderEnvelope().order, display_id: 42 },
+    })
+    mockCancelItem.mockResolvedValue({
+      success: false,
+      needsEscalation: true,
+      message: "Prazo para remover já passou. Um atendente foi notificado.",
+    })
+
+    await amendOrder({ orderId: "order_01", action: "remove", itemTitle: ITEM_TITLE }, CTX)
+
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith("support.handoff_requested", {
+      sessionId: "order-amend:order_01",
+      reason: "Remoção de item solicitada após o prazo de alteração — pedido #42",
+    })
   })
 
   it("appends the new PIX code to the message when a successful removal regenerates PIX (legacy)", async () => {
@@ -380,10 +446,14 @@ describe("amendOrder — update quantity", () => {
     expect(result.success).toBe(false)
     expect(result.needsEscalation).toBe(true)
     expect(result.message).toContain("Prazo para alterar")
-    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
-      "order.escalation_needed",
-      expect.objectContaining({ reason: "amend_qty_past_ponr", itemTitle: ITEM_TITLE }),
-    )
+    // F-48 — the message promises an attendant was notified; this is the
+    // publish that makes it true. Was `order.escalation_needed` (no subscriber).
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith("support.handoff_requested", {
+      sessionId: "order-amend:order_01",
+      reason: "Alteração de quantidade solicitada após o prazo de alteração — pedido order_01",
+    })
+    const qtySubjects = mockPublishNatsEvent.mock.calls.map((c: unknown[]) => c[0])
+    expect(qtySubjects).not.toContain("order.escalation_needed")
     // No order-edit performed when past PONR.
     expect(mockMedusaAdjudicated).not.toHaveBeenCalled()
   })

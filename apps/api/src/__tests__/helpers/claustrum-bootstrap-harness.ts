@@ -70,6 +70,30 @@ const TEST_ENV_DEFAULTS: Readonly<Record<string, string>> = {
   WEB_GATEWAY_SIGNING_KEY:
     "ibx-test-web-gateway-signing-key-0123456789abcdef0123456789abcdef",
   AUDIT_REDACT_SECRET: "ibx-test-audit-redact-secret",
+  // LE2-018 — the declared external references' config variables. The boot gate
+  // resolves every declared reference's key from config before it probes any
+  // store, so an unset variable refuses the boot exactly as a missing promotion
+  // does. These satisfy the config half; `TEST_EXTERNAL_REFERENCE_PROBES` below
+  // answers the store half.
+  WELCOME_CREDIT_COUPON_CODE: "TEST_WELCOME_CREDIT",
+  LOYALTY_REWARD_COUPON_CODE: "TEST_LOYALTY_REWARD",
+};
+
+/**
+ * Store probes for the LE2-018 boot gate, for suites that compose a REAL
+ * conductor without a live Medusa.
+ *
+ * This is a seam, not a switch. `bootstrapClaustrum` still runs the whole
+ * reconciliation — the real declaration table, the real config resolution, the
+ * real refusal on a miss; these functions only answer "does the store hold it".
+ * A suite that wants to prove the refusal passes probes that say `absent`.
+ *
+ * (`apps/api/src/__tests__/external-reference-boot-gate.test.ts` is where the
+ * refusal itself is proven, over the real table.)
+ */
+export const TEST_EXTERNAL_REFERENCE_PROBES = {
+  promotion: async () => ({ status: "present" }) as const,
+  "delivery-zone": async () => ({ status: "present" }) as const,
 };
 
 // ── kernel-migrate facade (computed dynamic import — see module header) ──────

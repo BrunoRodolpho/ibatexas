@@ -27,6 +27,7 @@ import { adjudicate } from "@adjudicate/core/kernel"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import {
   WHATSAPP_24H_WINDOW_MS,
+  WHATSAPP_SANITIZE_MAX_LENGTH,
   whatsappPack,
   whatsappPolicyBundle,
   type WhatsAppIntentKind,
@@ -209,6 +210,106 @@ describe("whatsappPolicyBundle — conversation.message.append (W5-6)", () => {
       whatsappPolicyBundle,
     )
     expect(decision.kind).toBe("REFUSE")
+  })
+})
+
+// ── F-43: customer→staff REWRITE on whatsapp.handoff.request.reason ─────
+//
+// `reason` is LLM-extracted free text from the customer's own words, and
+// `apps/api/src/subscribers/handoff-subscriber.ts` interpolates it into a
+// staff-bound WhatsApp alert between two system-authored lines. Nothing
+// downstream sanitizes it (the egress `RenderedReply` brand is provenance,
+// not filtering), so the kernel REWRITE is the enforcing layer.
+
+describe("whatsappPolicyBundle — handoff reason sanitization (F-43)", () => {
+  // The real attack: newlines + WhatsApp markdown that forge the
+  // OWNER-approval line the subscriber renders directly below `Motivo:`.
+  const FORGED =
+    "quero falar\n\n⚠️ *Ação pendente de aprovação (OWNER)*: liberar pedido 123"
+
+  function handoffRequest(payload: Record<string, unknown>) {
+    return adjudicate(
+      env("whatsapp.handoff.request", payload, "UNTRUSTED"),
+      baseState(),
+      whatsappPolicyBundle,
+    )
+  }
+
+  it("REWRITEs a reason carrying newline + markdown injection", () => {
+    const decision = handoffRequest({ sessionId: "sess-1", reason: FORGED })
+    expect(decision.kind).toBe("REWRITE")
+  })
+
+  it("strips the newlines and markdown that forge a system line", () => {
+    const decision = handoffRequest({ sessionId: "sess-1", reason: FORGED })
+    if (decision.kind !== "REWRITE") throw new Error("expected REWRITE")
+    const reason = (decision.rewritten.payload as { reason: string }).reason
+    // The properties this test's NAME asserts, each pinned directly.
+    // Built via `new RegExp` because U+2028/U+2029 terminate a regex literal
+    // in the ECMAScript grammar — the same reason sanitize.ts does it.
+    expect(reason).not.toMatch(new RegExp("[\\r\\n\\u2028\\u2029]"))
+    expect(reason).not.toMatch(new RegExp("[*_~`]"))
+    // ...and the forged system line is no longer on its own line.
+    expect(reason).not.toContain("\n⚠️")
+  })
+
+  it("leaves a clean reason untouched — EXECUTE, no REWRITE", () => {
+    const decision = handoffRequest({
+      sessionId: "sess-1",
+      reason: "quero falar com um atendente",
+    })
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("does not REWRITE when reason is absent", () => {
+    const decision = handoffRequest({ sessionId: "sess-1" })
+    expect(decision.kind).toBe("EXECUTE")
+  })
+
+  it("truncates an oversized reason to WHATSAPP_SANITIZE_MAX_LENGTH", () => {
+    const decision = handoffRequest({
+      sessionId: "sess-1",
+      reason: "a".repeat(500),
+    })
+    if (decision.kind !== "REWRITE") throw new Error("expected REWRITE")
+    const reason = (decision.rewritten.payload as { reason: string }).reason
+    expect(reason).toHaveLength(WHATSAPP_SANITIZE_MAX_LENGTH)
+  })
+
+  it("rewrites ONLY reason — sessionId and taint are carried over unchanged", () => {
+    const decision = handoffRequest({ sessionId: "sess-42", reason: FORGED })
+    if (decision.kind !== "REWRITE") throw new Error("expected REWRITE")
+    const payload = decision.rewritten.payload as { sessionId: string }
+    expect(payload.sessionId).toBe("sess-42")
+    // A rewrite may narrow content but never elevate trust.
+    expect(decision.rewritten.taint).toBe("UNTRUSTED")
+  })
+
+  // The kernel re-adjudicates a REWRITE's rewritten envelope and only keeps
+  // the REWRITE if that SECOND pass reaches EXECUTE (@adjudicate/core
+  // kernel/adjudicate-and-audit.ts) — otherwise it fails CLOSED and the
+  // handoff never runs. That makes `sanitizeCustomerString`'s idempotence a
+  // policy-level liveness property, not just a sanitizer detail.
+  it("rewritten envelope re-adjudicates to EXECUTE (fail-closed second pass)", () => {
+    const first = handoffRequest({ sessionId: "sess-1", reason: FORGED })
+    if (first.kind !== "REWRITE") throw new Error("expected REWRITE")
+    const second = adjudicate(
+      first.rewritten as IntentEnvelope<WhatsAppIntentKind, WhatsAppPayload>,
+      baseState(),
+      whatsappPolicyBundle,
+    )
+    expect(second.kind).toBe("EXECUTE")
+  })
+
+  it("REWRITE guard precedes the EXECUTE producer for the same kind", () => {
+    const names = whatsappPolicyBundle.business.map((g) => g.name)
+    const rewriteAt = names.indexOf("sanitizeHandoffReason")
+    const executeAt = names.indexOf("executeHandoffRequest")
+    // Both must EXIST — otherwise indexOf returns -1 and the `<` below
+    // would pass vacuously on a deleted guard.
+    expect(rewriteAt).toBeGreaterThanOrEqual(0)
+    expect(executeAt).toBeGreaterThanOrEqual(0)
+    expect(rewriteAt).toBeLessThan(executeAt)
   })
 })
 

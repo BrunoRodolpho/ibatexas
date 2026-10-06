@@ -46,61 +46,98 @@
 // Per the W1 brief, `@adjudicate/*` source is out of scope for this remediation
 // (those packages live in a separate repo). The wrapper lives adopter-side and
 // can be removed once the framework primitive gains NX semantics.
+//
+// # F-22 — no runtime branching on optional Redis features
+//
+// `redis` is a `ParkRedisCapabilities` (see `./park-redis-capabilities.ts`),
+// not a bare client: the composition root has already PROVEN the underlying
+// client can serve every command this path needs, so nothing below asks
+// whether a capability exists. Two consequences:
+//
+//   • The placeholder release is the Lua compare-and-delete, always. There is
+//     no feature detect and no `del` fallback — on a CAD failure the key is
+//     left to its TTL (see `releaseNxPlaceholder`).
+//   • `evalIncrCheck` is always present on the object handed to
+//     `parkDeferredIntent`, so the framework's own `typeof … === "function"`
+//     probe is deterministically TRUE here and its non-atomic
+//     INCR→EXPIRE→check→DECR fallback is dead code in this repo.
 
 import { randomUUID } from "node:crypto"
 import { deferCounterKey, deferParkKey, parkDeferredIntent } from "@adjudicate/runtime"
 import type {
   ParkDeferredIntentArgs,
   ParkDeferredIntentResult,
+  ParkLogger,
 } from "@adjudicate/runtime"
+import type { ParkRedisCapabilities } from "./park-redis-capabilities.js"
 
 /**
- * Lua compare-and-delete script for the NX placeholder. Only deletes
- * `parkKey` if the stored value still matches `placeholderValue` —
- * prevents this caller's on-throw cleanup from erasing a freshly-parked
- * legitimate envelope written by the framework's SET (between our SETNX
- * and our catch) OR by another caller that won an unusual race.
- * audit-2026-05-25 (I8) / CLAUDE.md rule #10.
+ * Arguments for {@link parkDeferredIntentWithNxGuard}.
+ *
+ * Identical to the framework's `ParkDeferredIntentArgs` except that `redis`
+ * is a {@link ParkRedisCapabilities} — the composition-root-validated surface
+ * whose atomic members (`compareAndDelete`, `evalIncrCheck`) are REQUIRED, not
+ * optional. Callers obtain one from `getParkRedisCapabilities()`; they cannot
+ * hand this function a client whose atomicity is a maybe. F-22.
  */
-const RELEASE_PLACEHOLDER_SCRIPT = `
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-else
-  return 0
-end
-`
+export type ParkDeferredIntentNxArgs = Omit<ParkDeferredIntentArgs, "redis"> & {
+  readonly redis: ParkRedisCapabilities
+}
 
 /**
- * Best-effort Lua CAD release of the NX placeholder. The `redis` param
- * is typed loosely because @adjudicate/runtime's `ParkRedis` interface
- * does not include `eval` — we feature-detect at call time. If the
- * client doesn't support eval, fall back to plain del (legacy
- * behavior). Errors are swallowed; TTL is the safety net.
+ * Release the NX placeholder — atomic compare-and-delete, ALWAYS.
+ *
+ * ── F-22: the failure-mode change ────────────────────────────────────────────
+ *
+ * This used to feature-detect `eval` and, on a detect-miss OR on the eval
+ * THROWING, fall through to an unconditional `del(parkKey)`. Both branches
+ * defeated the very mitigation the CAD exists to provide, and branch 2 did it
+ * in exactly the situation the mitigation was written for: both call sites
+ * below are ERROR paths (quota-exceeded, and the `catch` after a mid-flight
+ * park failure), and the most likely cause of a mid-flight park failure — a
+ * Redis blip — is also the most likely cause of the EVAL failing. So a blip
+ * skipped the ownership check and ran a blind DEL against a key another caller
+ * may by then own.
+ *
+ * Post-F-22 there is no detect and no fallback. `compareAndDelete` is a
+ * REQUIRED member of the composed surface, so the CAD always runs; and when it
+ * FAILS we deliberately do NOTHING to the key. Leaving the placeholder to its
+ * TTL is the safe direction — it costs this session one refused DEFER for at
+ * most `ttlSeconds` (surfaced to the user as the pt-BR collision refusal),
+ * where a blind DEL can destroy another owner's real parked envelope
+ * permanently. The TTL is, and has always been, the documented ultimate safety
+ * net; F-22 makes it the ONLY fallback.
+ *
+ * The failure is logged loudly (injected logger when present, `console.error`
+ * otherwise) because an operator seeing this needs to know a park slot is
+ * pinned until its TTL lapses.
  */
 async function releaseNxPlaceholder(
-  redis: unknown,
+  redis: ParkRedisCapabilities,
   parkKey: string,
   placeholderValue: string,
+  sessionId: string,
+  log: ParkLogger | undefined,
 ): Promise<void> {
-  const r = redis as {
-    eval?: (
-      script: string,
-      opts: { keys: string[]; arguments: string[] },
-    ) => Promise<unknown>
-    del?: (k: string) => Promise<unknown>
-  }
-  if (typeof r.eval === "function") {
-    try {
-      await r.eval(RELEASE_PLACEHOLDER_SCRIPT, {
-        keys: [parkKey],
-        arguments: [placeholderValue],
-      })
-      return
-    } catch {
-      // Fall through to plain del — TTL is the ultimate safety net.
+  try {
+    await redis.compareAndDelete(parkKey, placeholderValue)
+  } catch (err) {
+    const detail = {
+      sessionId,
+      parkKey,
+      err: String(err),
+    }
+    const message =
+      "[park-deferred-intent-nx] placeholder compare-and-delete FAILED — " +
+      "key deliberately LEFT to its TTL (F-22: never a blind DEL; the slot " +
+      "may already belong to another owner). This session's next DEFER will " +
+      "collide until the TTL lapses."
+    if (log?.warn) {
+      log.warn(detail, message)
+    } else {
+      console.error(message, detail)
     }
   }
-  await r.del?.(parkKey)?.catch(() => {})
 }
 
 // ── Injected metrics hook ────────────────────────────────────────────────────
@@ -188,7 +225,7 @@ export const PARK_COLLISION_REFUSAL_PT_BR =
  * envelope is the one preserved.
  */
 export async function parkDeferredIntentWithNxGuard(
-  args: ParkDeferredIntentArgs,
+  args: ParkDeferredIntentNxArgs,
 ): Promise<ParkDeferredIntentNxResult> {
   // W8-Q2: hoist envelope.actor.principal → top-level actorPrincipal AND
   // assert version/nonce/taint/origin are present at the top level. The
@@ -276,8 +313,15 @@ export async function parkDeferredIntentWithNxGuard(
       // audit-2026-05-25 (I8): use Lua compare-and-delete against the
       // placeholder's ownerToken so we never accidentally erase a real
       // envelope that another caller parked between our SETNX and this
-      // path. TTL is still the safety net.
-      await releaseNxPlaceholder(argsHoisted.redis, parkKey, placeholderValue)
+      // path. TTL is still the safety net — and after F-22 it is the ONLY
+      // fallback: a failed CAD leaves the key alone rather than DELeting it.
+      await releaseNxPlaceholder(
+        argsHoisted.redis,
+        parkKey,
+        placeholderValue,
+        sessionId,
+        argsHoisted.log,
+      )
       // W3-6 — bump kernel_defer_quota_exceeded_total{kind} per rejection.
       if (result.reason === "quota_exceeded") {
         await bumpDeferQuotaExceededMetric(argsHoisted.envelope.kind)
@@ -287,13 +331,21 @@ export async function parkDeferredIntentWithNxGuard(
   } catch (err) {
     // Park failed mid-flight. Release the slot so subsequent DEFERs can park.
     // audit-2026-05-25 (I8): Lua compare-and-delete — see comment above.
-    await releaseNxPlaceholder(argsHoisted.redis, parkKey, placeholderValue)
+    // F-22: this is THE path where the old `catch → plain del` fallback fired,
+    // because a Redis blip trips both the park and the release. It is gone.
+    await releaseNxPlaceholder(
+      argsHoisted.redis,
+      parkKey,
+      placeholderValue,
+      sessionId,
+      argsHoisted.log,
+    )
     // audit-2026-05-24 P1-8 — DECR the quota counter to undo any INCR the
     // framework may have performed before the throw. Best-effort; the
-    // counter's TTL is the safety net.
-    await (argsHoisted.redis as { decr?: (k: string) => Promise<unknown> })
-      .decr?.(counterKey)
-      ?.catch(() => {})
+    // counter's TTL is the safety net. F-22: `decr` is a REQUIRED member of
+    // the composed surface (and of the framework's own `ParkRedis`), so this
+    // is a direct call — no optional-member cast, no capability branch.
+    await argsHoisted.redis.decr(counterKey).catch(() => {})
     throw err
   }
 }
@@ -339,8 +391,8 @@ export class ParkVerificationFieldsMissingError extends Error {
 // top-level on a built IntentEnvelope, defaulting to DEFAULT_ORIGIN — so a
 // minimal park literal must copy `envelope.origin` up just like the others).
 function hoistAndValidateVerificationFields(
-  args: ParkDeferredIntentArgs,
-): ParkDeferredIntentArgs {
+  args: ParkDeferredIntentNxArgs,
+): ParkDeferredIntentNxArgs {
   const actor = args.envelope.actor as unknown as {
     sessionId: string
     principal?: string

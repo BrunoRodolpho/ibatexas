@@ -532,6 +532,200 @@ async function runJourneyExtractionAccuracy(opts: {
   }
 }
 
+// ── `ibx journey extraction-eval` (LE2-05, o HARD GATE) ─────────────────────
+// THIN registration: toda a composição vive em @ibatexas/journeys
+// (src/extraction/eval-cli.ts orquestra; eval-score.ts é o núcleo PURO;
+// eval-intake.ts lê os arquivos pinados). Mesmo idioma
+// --json/--verify-file/--waivers/--out dos comandos acima.
+//
+// OFFLINE SEMPRE: nenhum modelo, nenhum servidor, nenhum banco — o harness só
+// lê arquivos commitados (corpus de extração + corpus de recusa + fixtures de
+// artefato). Contraste com `extraction-accuracy`, que roda o modelo AO VIVO.
+// Determinismo é consequência do desenho: rodar duas vezes sobre os mesmos
+// arquivos produz relatórios byte-idênticos (nenhum timestamp no corpo).
+
+type EvalCliResult = Awaited<ReturnType<JourneysModule["runExtractionEvalCli"]>>
+type EvalReport = EvalCliResult["report"]
+
+function formatEvalTotalsLine(report: EvalReport): string {
+  const t = report.totals
+  return (
+    `${t.passing}/${t.scoreable} scoreable (${(t.ratio * 100).toFixed(1)}%), ` +
+    `${t.failing} failing, ${t.unscoreable} unscoreable de ${t.cases} caso(s)`
+  )
+}
+
+function renderEvalHuman(report: EvalReport): void {
+  const r = report.refusal
+  console.log(chalk.bold("recusa/irrelevância (categoria própria — nunca somada ao pass/fail):"))
+  console.log(
+    `  ${r.correctlyRefused} recusa(s) correta(s), ${r.leaked} vazamento(s), ` +
+      `${r.wronglyRefused} recusa(s) indevida(s) — precisão ${(r.precision * 100).toFixed(1)}%, ` +
+      `cobertura ${(r.recall * 100).toFixed(1)}% (${r.scored}/${r.cases} caso(s) ∅ com artefato)`,
+  )
+  for (const leak of r.leaksByCapability) {
+    console.log(chalk.yellow(`  ⚠ vazou para ${leak.capability}: ${leak.observations} observação(ões)`))
+  }
+
+  console.log()
+  console.log(chalk.bold("acurácia por capability (passing/scoreable):"))
+  for (const c of report.accuracy.byCapability) {
+    if (c.scoreable === 0) continue
+    console.log(
+      `  ${c.capability}: ${c.passing}/${c.scoreable} (${(c.scoreableRatio * 100).toFixed(1)}%)` +
+        (c.unscoreable > 0 ? chalk.dim(` [+${c.unscoreable} sem artefato]`) : ""),
+    )
+  }
+
+  console.log()
+  console.log(chalk.bold("sem artefato (UNSCOREABLE — contado, nunca ignorado em silêncio):"))
+  for (const row of report.unscoreable.byReason) {
+    console.log(`  ${row.reason}: ${row.cases} caso(s)`)
+  }
+
+  console.log()
+  console.log(chalk.bold("cobertura por fonte de artefato:"))
+  for (const s of report.sources) {
+    console.log(
+      `  ${s.source}: ${s.fixtures} fixture(s)${s.synthetic ? chalk.yellow(" [SINTÉTICO]") : ""}, ` +
+        `${s.artifacts} artefato(s), ${s.matchedArtifacts} casado(s), ` +
+        `${s.orphanArtifacts} órfão(s), ${s.casesCovered} caso(s) cobertos`,
+    )
+  }
+}
+
+async function writeEvalViews(report: EvalReport, outDir: string, json: boolean): Promise<void> {
+  await mkdir(outDir, { recursive: true })
+  await writeFile(join(outDir, "eval-report.json"), `${JSON.stringify(report, null, 2)}\n`)
+  await writeFile(
+    join(outDir, "eval-summary.json"),
+    `${JSON.stringify(
+      {
+        totals: report.totals,
+        refusal: report.refusal,
+        unscoreable: report.unscoreable,
+        sources: report.sources,
+        classification: report.classification,
+        byCapability: report.accuracy.byCapability,
+      },
+      null,
+      2,
+    )}\n`,
+  )
+  if (!json) {
+    console.log(chalk.dim(`views gravadas em ${outDir}/eval-report.json + eval-summary.json`))
+  }
+}
+
+async function verifyEvalCli(
+  report: EvalReport,
+  verifyFile: string,
+  totalsLine: string,
+  json: boolean,
+  deps: JourneysModule,
+): Promise<void> {
+  const verifyPath = resolveUserPath(verifyFile)
+  let baselineRaw: unknown
+  try {
+    baselineRaw = JSON.parse(await readFile(verifyPath, "utf-8"))
+  } catch {
+    console.error(chalk.red(`Baseline ilegível: ${verifyPath}`))
+    process.exitCode = 1
+    return
+  }
+  const baselineParsed = deps.AccuracyBaselineSchema.safeParse(baselineRaw)
+  if (!baselineParsed.success) {
+    console.error(chalk.red(`Baseline inválida (${verifyFile}): esperado {"passing": [...]}`))
+    process.exitCode = 1
+    return
+  }
+  const result = deps.verifyAccuracyBaseline(report.accuracy, baselineParsed.data)
+
+  if (json) {
+    console.log(JSON.stringify({ ...report, verify: { file: verifyFile, ...result } }, null, 2))
+  } else {
+    renderAccuracyVerifyHuman(result, totalsLine, verifyFile)
+  }
+  if (!result.ok) process.exitCode = 1
+}
+
+async function runJourneyExtractionEval(opts: {
+  json?: boolean
+  verifyFile?: string
+  corpusDir?: string
+  fixturesDir?: string
+  refusalCorpus?: string
+  waivers?: string
+  out?: string
+  quarantined?: string
+}): Promise<void> {
+  const deps = await import("@ibatexas/journeys")
+  const { runExtractionEvalCli, ExtractionEvalLoadError, ExtractionCorpusLoadError } = deps
+
+  const onProgress = (line: string): void => {
+    if (opts.json === true) process.stderr.write(`${line}\n`)
+    else console.log(chalk.dim(line))
+  }
+
+  try {
+    const { report } = await runExtractionEvalCli({
+      ...(opts.corpusDir === undefined ? {} : { corpusDir: resolveUserPath(opts.corpusDir) }),
+      ...(opts.fixturesDir === undefined ? {} : { fixturesDir: resolveUserPath(opts.fixturesDir) }),
+      ...(opts.refusalCorpus === undefined
+        ? {}
+        : { refusalCorpusPath: resolveUserPath(opts.refusalCorpus) }),
+      ...(opts.waivers === undefined ? {} : { waiversPath: resolveUserPath(opts.waivers) }),
+      ...(opts.quarantined === undefined ? {} : { quarantined: parseIdList(opts.quarantined) }),
+      onProgress,
+    })
+
+    if (!report.ok) {
+      if (opts.json === true) console.log(JSON.stringify(report, null, 2))
+      else {
+        for (const p of report.accuracy.problems) {
+          console.error(chalk.red(`✗ ${p.file}: ${p.code} — ${p.message}`))
+        }
+      }
+      process.exitCode = 1
+      return
+    }
+
+    if (opts.out !== undefined) {
+      await writeEvalViews(report, resolveUserPath(opts.out), opts.json === true)
+    }
+
+    const totalsLine = formatEvalTotalsLine(report)
+
+    if (opts.verifyFile !== undefined) {
+      await verifyEvalCli(report, opts.verifyFile, totalsLine, opts.json === true, deps)
+      return
+    }
+
+    if (opts.json === true) {
+      console.log(JSON.stringify(report, null, 2))
+      return
+    }
+
+    console.log(chalk.green(`✓ ${totalsLine}`))
+    console.log()
+    renderEvalHuman(report)
+    console.log()
+    console.log(
+      chalk.dim("baseline (packages/journeys/governance/extraction-eval-baseline.json):"),
+    )
+    console.log(JSON.stringify(deps.accuracyBaseline(report.accuracy), null, 2))
+  } catch (err) {
+    // O ÚNICO modo de falha de um replay offline é um arquivo commitado ruim
+    // — ambos os erros nomeados que podem carregá-lo.
+    if (err instanceof ExtractionEvalLoadError || err instanceof ExtractionCorpusLoadError) {
+      console.error(chalk.red(err.message))
+      process.exitCode = 1
+      return
+    }
+    throw err
+  }
+}
+
 // ── `ibx journey extraction-consistency` (FE-T08) ───────────────────────────
 // THIN registration: the CERTIFYING, per-commit, MODEL-FREE extraction gate
 // (contrast `extraction-accuracy`, which drives the LIVE model — this command
@@ -1414,6 +1608,55 @@ export function registerJourneyCommands(group: Command): void {
         resetCustomerTokenBudget?: boolean
       }) => {
         await runJourneyExtractionAccuracy(opts)
+      },
+    )
+
+  group
+    .command("extraction-eval")
+    .description(
+      "Harness de avaliação do parser (LE2-05 — o HARD GATE do programa: toda mudança que afeta o parser passa a entrar com um score antes/depois deste comando). OFFLINE: pontua estruturalmente os envelopes JÁ CAPTURADOS (packages/journeys/extraction-eval/fixtures/*.json — audit-gold do intent_audit e registros de wire do llm_wire) contra as 308 expectativas autoradas do corpus (packages/journeys/extraction-corpus/) mais o corpus de RECUSA (extraction-eval/refusal-corpus.yaml). Nunca roda modelo, servidor ou banco. Tolerante a ruído de formatação (caixa, NFC, espaços), intolerante a capability errada ou slot errado (disciplina payloadExactKeys). Reporta acurácia por capability, precisão/cobertura de RECUSA/irrelevância como categoria própria, e os casos SEM ARTEFATO como UNSCOREABLE (contados, nunca ignorados). --verify-file falha (exit 1) em regressão passing→not-passing contra a baseline; waivers em packages/journeys/governance/extraction-eval-waivers.json; quarentena via `ibx journey flake --ledger packages/journeys/governance/extraction-eval-flake-ledger.json --list-quarantined`.",
+    )
+    .option("--json", "Emite o relatório de avaliação em JSON")
+    .option(
+      "--verify-file <path>",
+      "Compara os casos passing contra a baseline commitada (CI gate; exit 1 em regressão)",
+    )
+    .option(
+      "--corpus-dir <path>",
+      "Diretório alternativo do corpus de extração (default: packages/journeys/extraction-corpus/)",
+    )
+    .option(
+      "--fixtures-dir <path>",
+      "Diretório alternativo de fixtures de artefato (default: packages/journeys/extraction-eval/fixtures/)",
+    )
+    .option(
+      "--refusal-corpus <path>",
+      "Arquivo alternativo do corpus de recusa (default: packages/journeys/extraction-eval/refusal-corpus.yaml)",
+    )
+    .option(
+      "--waivers <path>",
+      "Arquivo de waivers alternativo (default: packages/journeys/governance/extraction-eval-waivers.json)",
+    )
+    .option(
+      "--out <dir>",
+      "Grava as duas views (eval-report.json + eval-summary.json) no diretório",
+    )
+    .option(
+      "--quarantined <ids>",
+      "Case keys (<capability>:<caseId>) em quarentena, separados por vírgula (seam — o flake ledger é a fonte autoritativa)",
+    )
+    .action(
+      async (opts: {
+        json?: boolean
+        verifyFile?: string
+        corpusDir?: string
+        fixturesDir?: string
+        refusalCorpus?: string
+        waivers?: string
+        out?: string
+        quarantined?: string
+      }) => {
+        await runJourneyExtractionEval(opts)
       },
     )
 

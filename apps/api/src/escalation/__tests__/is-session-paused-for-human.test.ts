@@ -19,42 +19,34 @@ vi.mock("@ibatexas/tools", async () => {
   return { ...actual, getRedisClient: mockGetRedisClient };
 });
 
+import { createInMemoryRedis } from "@ibatexas/tools/testing";
 import {
   createEscalationStore,
   isSessionPausedForHuman,
   type EscalationRedis,
 } from "../escalation-store.js";
 
-function fakeRedis(): EscalationRedis & {
-  _kv: Map<string, string>;
-  _sets: Map<string, Set<string>>;
-} {
-  const kv = new Map<string, string>();
-  const sets = new Map<string, Set<string>>();
-  return {
-    _kv: kv,
-    _sets: sets,
-    async get(k) {
-      return kv.get(k) ?? null;
-    },
-    async set(k, v) {
-      kv.set(k, v);
-    },
-    async del(k) {
-      kv.delete(k);
-    },
-    async sAdd(k, m) {
-      const s = sets.get(k) ?? new Set<string>();
-      s.add(m);
-      sets.set(k, s);
-    },
-    async sRem(k, m) {
-      sets.get(k)?.delete(m);
-    },
-    async sMembers(k) {
-      return [...(sets.get(k) ?? [])];
-    },
-  };
+// R5-S7 — the canonical in-memory adapter replaces a hand-rolled EscalationRedis.
+// `rk()` was already running real here (the barrel mock spreads `actual`), so the
+// keys are unchanged; what changes is that sAdd/sRem/del now report real counts
+// instead of `undefined`.
+const fakeRedis = () => createInMemoryRedis().client;
+
+/**
+ * The adapter deliberately models a WORKING Redis — it has no failure-injection
+ * surface, and giving it one would let any test fake an outage. This test's
+ * SUBJECT is a failing read, so the failure is wrapped around the real client
+ * here, at the one seam that needs it, rather than built into the shared double.
+ */
+function withFailingGet(client: EscalationRedis): EscalationRedis {
+  return new Proxy(client, {
+    get: (target, prop) =>
+      prop === "get"
+        ? async () => {
+            throw new Error("GET failed");
+          }
+        : Reflect.get(target, prop),
+  }) as EscalationRedis;
 }
 
 describe("isSessionPausedForHuman — fail-CLOSED safety gate (D2, SDD Inv 7 / §E)", () => {
@@ -70,11 +62,7 @@ describe("isSessionPausedForHuman — fail-CLOSED safety gate (D2, SDD Inv 7 / �
 
   it("(a) a store read-error inside isPaused → returns true (PAUSED, fail-CLOSED)", async () => {
     // Client is reachable, but the GET throws (transient store error).
-    const redis = fakeRedis();
-    redis.get = vi.fn(async () => {
-      throw new Error("GET failed");
-    });
-    mockGetRedisClient.mockResolvedValue(redis);
+    mockGetRedisClient.mockResolvedValue(withFailingGet(fakeRedis()));
     expect(await isSessionPausedForHuman("sess-any")).toBe(true);
   });
 

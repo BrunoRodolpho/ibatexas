@@ -52,6 +52,23 @@ const envSchema = z.object({
         "TWILIO_WEBHOOK_URL must use https:// in production — the protocol is part of the signed URL and must match what Twilio posts byte-for-byte",
     })
     .optional(),
+  // LE2-030 — the delivery-status callback URL. Same D-AUTHURL contract as
+  // TWILIO_WEBHOOK_URL above (it is fed verbatim into the SAME
+  // twilio.validateRequest HMAC by routes/whatsapp-status-callback.ts), so it
+  // gets the same two startup backstops. OPTIONAL: unset simply means delivery
+  // confirmation is not wired — sends are unaffected and every reply reads
+  // "pending" in the RCA workbench.
+  TWILIO_STATUS_CALLBACK_URL: z
+    .url()
+    .refine((u) => !new URL(u).search, {
+      message:
+        "TWILIO_STATUS_CALLBACK_URL must not include a query string — Twilio signs the base URL; a ?query suffix breaks X-Twilio-Signature verification",
+    })
+    .refine((u) => process.env.NODE_ENV !== "production" || new URL(u).protocol === "https:", {
+      message:
+        "TWILIO_STATUS_CALLBACK_URL must use https:// in production — the protocol is part of the signed URL and must match what Twilio posts byte-for-byte",
+    })
+    .optional(),
 
   // Payments — Stripe
   STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),

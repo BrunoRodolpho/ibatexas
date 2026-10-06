@@ -41,11 +41,13 @@ import {
   buildPerTurnOwnsFromLedger,
   createPerTurnClaimsKernelDeps,
 } from "./ibatexas-claims-kernel-deps.js";
-import { createIbatexasInvestigator } from "./ibatexas-investigator.js";
 import {
-  localDateParts,
-  resolveQueriedScheduleDate,
-} from "./schedule-date-resolver.js";
+  createIbatexasInvestigator,
+  type TurnReadGatherer,
+} from "./ibatexas-investigator.js";
+import { CUSTOMER_CLAIM_SCOPE, type ClaimPlaneScope } from "./claim-registry.js";
+import { assertDietaryPostureDeclared } from "./dietary-posture.js";
+import type { Template } from "./slot-grammar.js";
 import type { ClaimAwarePlannerPort } from "./ibatexas-planner.js";
 
 /** Env flag that opts a boot into the claims pipeline (default off). */
@@ -68,16 +70,18 @@ export function claimsPipelineEnabled(
  * so a partial wiring can never render from an absent claim set.
  */
 /**
- * BKL-152-edge (ibatexas rider / @claustrum/core 0.8.0 `renderCarriersForTurn`
- * carrier seam) — thread the RESOLVED queried schedule date so the required-claim
- * decomposer's STORE_OPEN_NOW suppression is EXACT on `weekday == today` (see
- * `required-claim-decomposer.ts` `DateAnchorSignal`). `resolvedQueryDate` is
- * PRESENT ⟺ the request resolves to a CONFIRMED NON-TODAY day; a today/unresolvable
- * anchor OMITS it, and the decomposer — told the seam is ACTIVE via
- * `createIbatexasClaimsRenderer({ renderCarriersActive: true })` — reads
- * absent-under-active as "today → KEEP STORE_OPEN_NOW". Clock-pure boundary: THIS
- * callback owns the clock (`new Date()`) and the tz (`RESTAURANT_TIMEZONE`);
- * @claustrum/core threads the result verbatim (no clock/RNG/IO crosses the seam).
+ * The @claustrum/core `renderCarriersForTurn` carrier seam.
+ *
+ * F-12 REMOVED the `resolvedQueryDate` half of this carrier. It existed for ONE
+ * consumer — the required-claim decomposer's clock-aware weekday==today
+ * STORE_OPEN_NOW branch — and that branch is deleted, because it let the
+ * renderer's §O#15 gate require a companion the claim planner had already
+ * suppressed and so degraded an answerable hours turn once a week (see
+ * `required-claim-decomposer.ts`'s header). With the sole reader gone the field
+ * would have been dead data crossing a seam, and a dead input that once drove a
+ * decision is an invitation to re-wire it; the honest removal is the deletion.
+ * A welcome consequence: no clock reaches the render path from here any more,
+ * which is what `createIbatexasClaimsRenderer`'s purity contract already claimed.
  *
  * `disambiguationCandidates` (BKL-170/BKL-189) IS sourced here — via the per-turn
  * stash: the classify-only ambiguous branch cannot reach this ledger+text callback
@@ -96,20 +100,11 @@ export function createIbatexasRenderCarriersForTurn(
     ledger: EvidenceLedger,
   ) => readonly DisambiguationCandidate[] | undefined,
 ): RenderCarriersForTurn {
-  return ({ ledger, requestText }) => {
-    const tz = process.env.RESTAURANT_TIMEZONE ?? "America/Sao_Paulo";
-    const now = new Date();
-    const resolved = resolveQueriedScheduleDate(requestText, tz, now);
-    const dateCarrier =
-      resolved === null || resolved.isoDate === localDateParts(tz, now).isoDate
-        ? {}
-        : { resolvedQueryDate: resolved.isoDate };
+  return ({ ledger }) => {
     const candidates = readDisambiguationCandidates?.(ledger);
-    const candidateCarrier =
-      candidates !== undefined && candidates.length > 0
-        ? { disambiguationCandidates: candidates }
-        : {};
-    return { ...dateCarrier, ...candidateCarrier };
+    return candidates !== undefined && candidates.length > 0
+      ? { disambiguationCandidates: candidates }
+      : {};
   };
 }
 
@@ -124,6 +119,43 @@ export type ClaimsSeams = Pick<
   | "activeResourcesForTurn"
   | "renderCarriersForTurn"
 >;
+
+/**
+ * LE2-012 — the PLANE-SCOPED extension of the claims seams: everything a SECOND
+ * plane (ops) must swap in so its own claim TYPES are readable, proposable and
+ * renderable, WITHOUT any of them reaching the customer plane. One optional
+ * field on {@link BuildClaimsSeamsDeps} rather than four, so the LE2-011 skeleton
+ * gains exactly one extension point.
+ *
+ * Absent (customer / WhatsApp / managed-agent) ⟹ every seam is built exactly as
+ * before — byte-identical.
+ */
+export interface ClaimsPlaneExtension {
+  /**
+   * The plane's claim-type scope (enum + per-type schema). It is BOTH the
+   * `propose_claim` enum the plane's planner advertises AND the vocabulary the
+   * plane's render-drift gate quantifies over. The plane composition must pass the
+   * SAME scope to `createIbatexasPlanner({ claimScope })`.
+   */
+  readonly claimScope: ClaimPlaneScope;
+  /** The plane's validated render templates (customer ∪ plane). */
+  readonly templates: Readonly<Record<string, Template>>;
+  /** The plane's per-turn read gatherer (customer reads ∪ the plane's own). */
+  readonly gatherReads: TurnReadGatherer;
+  /**
+   * Does the §O#15 gate's CUSTOMER-SCOPED companion set apply on this plane? See
+   * `IbatexasClaimsRendererOptions.customerScopedCompanionsApply`. Omitted ⟹ yes.
+   */
+  readonly customerScopedCompanionsApply?: boolean;
+  /**
+   * The plane's FAIL-CLOSED inv.18 registry assertion — the plane-scoped twin of
+   * `assertClaimDefinitionRegistryValid`. Runs BEFORE any seam is constructed, so
+   * an unaligned plane row (a template slot with no §5-gated projection, a
+   * `falsifierComplete` type with no falsifiers, a dangling template) refuses to
+   * boot the plane's claims pipeline rather than serving it. Omitted ⟹ not run.
+   */
+  readonly assertRegistryValid?: () => void;
+}
 
 export interface BuildClaimsSeamsDeps {
   /**
@@ -169,6 +201,11 @@ export interface BuildClaimsSeamsDeps {
    * → no staff surface, render byte-identical.
    */
   readonly onSafetyEmergency?: (ctx: { readonly turnId?: string }) => void;
+  /**
+   * LE2-012 — the PLANE-SCOPED extension (see {@link ClaimsPlaneExtension}).
+   * Absent ⟹ the customer plane, byte-identical to the pre-LE2-012 seams.
+   */
+  readonly plane?: ClaimsPlaneExtension;
 }
 
 /**
@@ -244,6 +281,33 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
   // This is what makes a dangling template (a template with no backing
   // ClaimDefinition) mechanically impossible at load.
   assertClaimDefinitionRegistryValid();
+  // BKL-270 — the DIETARY-POSTURE gate, run with the same refuse-to-boot discipline
+  // immediately beside its sibling above (the `claimsRenderDriftProblems()` idiom a
+  // few lines below is the local precedent for an in-repo companion gate). It lives
+  // HERE rather than inside `assertClaimDefinitionRegistryValid` because that
+  // function validates `CLAIM_DEFINITIONS`, and `assembleClaimDefinition` is a LOSSY
+  // projection into the vendored `@adjudicate/core` `ClaimDefinition` type — it
+  // already drops `customerScoped`/`perResourceKey`, and would drop this too.
+  //
+  // Asserts every READ spec declares a posture, that the check was non-vacuous, and
+  // the two key-side soundness properties the read enforcement depends on. An
+  // undeclared read family is already a COMPILE error (the `ReadClaimSpec` union);
+  // this is the runtime backstop for the paths a compile check cannot reach — the
+  // GENERATED STORE_OPEN_NOW spec, and any spec built by a factory.
+  assertDietaryPostureDeclared(CUSTOMER_CLAIM_SCOPE, "customer");
+  // LE2-012 — the PLANE's own fail-closed inv.18 assertion, run with the SAME
+  // refuse-to-boot discipline immediately after the customer one (a plane registry
+  // is a registry: an unaligned ops row must not serve either). Absent on the
+  // customer plane ⟹ no-op.
+  deps.plane?.assertRegistryValid?.();
+  // BKL-270 — and the posture gate over THIS PLANE's scope. A plane scope is a
+  // SUPERSET of the customer one, so this re-proves the customer half too; what it
+  // ADDS is the ops-only rows, which bind at compile time through
+  // `OPS_REGISTRY_SPECS satisfies Record<OpsClaimType, RegistryClaimSpec>` and must
+  // therefore also be declared and key-sound.
+  if (deps.plane !== undefined) {
+    assertDietaryPostureDeclared(deps.plane.claimScope, "ops");
+  }
   // FE-3.3 (FE-T16) — the customer-plane advertised-⊆-renderable BOOT gate,
   // mirroring the ops plane's `opsPlaneDriftProblems` (ops-conductor.ts): every
   // PROPOSABLE customer claim type (CLAIM_REGISTRY) not in the deliberate
@@ -261,6 +325,23 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
         claimsRenderDrift.join("\n  "),
     );
   }
+  // LE2-012 — the SAME advertised-⊆-renderable gate, run over THIS PLANE's scope
+  // (its enum + its templates). Because a plane scope is a SUPERSET of the customer
+  // one, this single call also re-proves the customer half; the deliberate
+  // exception list (`KNOWN_CUSTOMER_UNRENDERABLE_TYPES`) is shared, so an ops type
+  // shipped without a template fails BOOT exactly like a customer one would.
+  if (deps.plane !== undefined) {
+    const planeDrift = claimsRenderDriftProblems({
+      proposable: deps.plane.claimScope.types,
+      renderable: new Set(Object.keys(deps.plane.templates)),
+    });
+    if (planeDrift.length > 0) {
+      throw new Error(
+        "[claims-pipeline] plane-scoped render drift check failed (LE2-012):\n  " +
+          planeDrift.join("\n  "),
+      );
+    }
+  }
   // F2 observability (RCA 2026-06-29): the pipeline is ENABLED — surface a loud
   // warning if the LINKED kernels are below the egress-brand floor, so the
   // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
@@ -276,7 +357,13 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     readonly DisambiguationCandidate[]
   >();
   return {
-    investigator: createIbatexasInvestigator(),
+    // LE2-012 — the PLANE's read gatherer, when it supplies one. The ops plane's
+    // gatherer is `customer reads ∪ ops reads` (its ops half resolves THROUGH the
+    // existing ops read roster), so the store-open-now chain LE2-011 proved on this
+    // plane is untouched. Absent ⟹ the default first-party gatherer, byte-identical.
+    investigator: createIbatexasInvestigator(
+      deps.plane === undefined ? {} : { gatherReads: deps.plane.gatherReads },
+    ),
     claimPlanner: createIbatexasClaimPlanner(deps.planner, {
       stashDisambiguationCandidates: (ledger, candidates) => {
         disambiguationStash.set(ledger, candidates);
@@ -318,11 +405,11 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // present-only IDOR filter as `buildPerTurnOwnsFromLedger`. Inert while the
     // flag is OFF (this whole seam set is only wired when ENABLE_CLAIMS_PIPELINE).
     activeResourcesForTurn: activeResourcesFromLedger,
-    // BKL-152-edge (@claustrum/core 0.8.0 carrier seam) — thread the resolved
-    // queried schedule date into `ClaimsRenderContext.resolvedQueryDate` so the
-    // decomposer's STORE_OPEN_NOW suppression is EXACT on weekday==today. Pure
-    // passthrough on claustrum's side; the clock lives in this callback. Absent
-    // (unwired) → the decomposer keeps its pure #301 rule (byte-identical).
+    // The @claustrum/core carrier seam. F-12 REMOVED this seam's date half: it
+    // used to thread a clock-resolved `resolvedQueryDate` for the decomposer's
+    // weekday==today STORE_OPEN_NOW branch, and that branch is gone (the required
+    // set no longer depends on a clock at all). What remains is the BKL-170/189
+    // `disambiguationCandidates` carrier. Pure passthrough on claustrum's side.
     renderCarriersForTurn: createIbatexasRenderCarriersForTurn((ledger) =>
       disambiguationStash.get(ledger),
     ),
@@ -334,17 +421,31 @@ export function buildClaimsSeams(deps: BuildClaimsSeamsDeps): ClaimsSeams {
     // falls back to the operational responder draft (never raw model prose as a
     // confident fact; never silence). Inert while the flag is COMMITTED OFF.
     claimsRenderer: createIbatexasClaimsRenderer({
-      renderCarriersActive: true,
       // BKL-209 — the emergency staff-surface sink (support.handoff_requested),
       // wired by the boot root; unset on the per-trigger factory → no surface.
       ...(deps.onSafetyEmergency === undefined
         ? {}
         : { onSafetyEmergency: deps.onSafetyEmergency }),
+      // LE2-012 — the PLANE's template table + §O#15 companion scoping. Absent ⟹
+      // the customer grammar and the full customer companion set (byte-identical).
+      ...(deps.plane === undefined
+        ? {}
+        : {
+            templates: deps.plane.templates,
+            ...(deps.plane.customerScopedCompanionsApply === undefined
+              ? {}
+              : {
+                  customerScopedCompanionsApply:
+                    deps.plane.customerScopedCompanionsApply,
+                }),
+          }),
     }),
     // BKL-155/153 (@claustrum/core 0.7.0) — the RENDER-vs-DRAFT precedence seam,
-    // PAIRED with `claimsRenderer` above so it is only consulted on the SAME
-    // claims-ON customer plane where the render runs (the OPS conductor keeps its
-    // own render path — BKL-149 — and is deliberately NOT given this seam). When
+    // PAIRED with `claimsRenderer` above so it is only consulted on a claims-ON
+    // plane where the render also runs. LE2 decision 6: the OPS conductor now takes
+    // this whole seam set too, and REPLACES this entry with the same factory carrying
+    // its per-turn deterministic-read signal (lattice rule 3c), so its BKL-100 /
+    // BKL-149 deterministic renders survive convergence. When
     // wired, handleTurn 6a asks the pure ibatexas lattice whether the claims render
     // supersedes the responder draft this turn (a spurious safe-degrade must not
     // hide a kernel REQUEST_CONFIRMATION prompt, nor a friendly statement reply).

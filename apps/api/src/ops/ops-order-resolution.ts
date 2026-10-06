@@ -169,6 +169,45 @@ export function orderReferenceAppearsInMessage(
   return refTokens.every((t) => messageTokens.has(t));
 }
 
+/** An order the CURRENT principal is known to own, reduced to the two fields the
+ *  in-message reference match needs. */
+export interface OwnedOrderRef {
+  readonly id: string;
+  readonly displayId: number;
+}
+
+/**
+ * BKL-203 / BKL-216 — the SINGLE owner-scoped "which of MY orders does this
+ * message name?" matcher, shared by both planes so there is exactly one matching
+ * heuristic in the codebase:
+ *   - the READ plane's `resolveNamedOwnedOrderSubject` (classify-only-reads.ts,
+ *     owned ids read off the authenticated owner-scoped evidence ledger);
+ *   - the MUTATION plane's `resolveAmendOrderReference` (resolve-and-assemble.ts,
+ *     owned rows read via the customer-scoped `listByCustomer`).
+ *
+ * OWNER-SCOPED / IDOR-safe BY CONSTRUCTION: it can only ever return ids drawn
+ * from `owned`, so a message naming SOMEONE ELSE's display number matches
+ * nothing — a foreign order is not merely rejected, it is unrepresentable here.
+ * Matching itself is {@link orderReferenceAppearsInMessage}'s whole-token check,
+ * so "933869" never matches a digit substring of a larger number.
+ *
+ * Returns EVERY match (the callers decide what one / several / none mean — one
+ * binds, several are an ambiguity to clarify, none falls back to the caller's own
+ * default). Pure.
+ */
+export function matchNamedOwnedOrders(
+  owned: readonly OwnedOrderRef[],
+  messageText: string,
+): OwnedOrderRef[] {
+  const text = messageText.trim();
+  if (text === "") return [];
+  return owned.filter(
+    (o) =>
+      typeof o.displayId === "number" &&
+      orderReferenceAppearsInMessage(String(o.displayId), text),
+  );
+}
+
 /** Keep only well-formed candidates (the read is first-party but its runtime
  *  shape is not guaranteed by the type system). */
 function validCandidates(

@@ -108,12 +108,34 @@ ibx svc health
 | Problem | Fix |
 |---------|-----|
 | `Docker daemon is not running` | Open Docker Desktop, wait for it to start, then retry |
-| `initialized by PostgreSQL 15, not compatible with 17` | `docker compose down -v && ibx bootstrap` (destroys local data) |
+| `initialized by PostgreSQL 15, not compatible with 17` | Postgres has no in-place major upgrade. **Keep your data:** point the postgres image back at the old major in `docker-compose.yml`, `docker compose up -d postgres`, then `pg_dump` and restore into the new major. **Only if the data is disposable:** [destructive last resort](#destructive-last-resort) |
 | `relation "X" does not exist` on startup | Migrations haven't run — run `ibx bootstrap`, or steps 2-5 manually |
 | Conductor boots but memory/grounding/audit fail | Kernel + claustrum schemas weren't provisioned (`DATABASE_URL` unset during bootstrap) — set it and run `ibx db provision` |
 | `MEDUSA_ADMIN_EMAIL not set` | Add `MEDUSA_ADMIN_EMAIL` and `MEDUSA_ADMIN_PASSWORD` to your `.env` |
 | Port conflicts | `ibx dev stop -f` to force-kill, then retry |
 | Seed fails | Non-fatal — review the error and run the specific seed command manually |
+
+### Destructive last resort
+
+> **`docker compose down -v` PERMANENTLY DELETES ALL LOCAL DATA.** The `-v`
+> removes the named volumes for **all four** core services — postgres, redis,
+> typesense *and* nats — not just the one you are debugging. Every local order,
+> customer, seeded product and stored conversation is gone and is **not
+> recoverable**. There is no undo and no backup.
+
+Try `ibx dev stop && ibx dev` first — it recreates the containers with the
+volumes intact. Use the destructive path only when the data is disposable:
+
+```bash
+docker compose down -v    # removes containers AND all four data volumes
+ibx bootstrap             # fresh setup — re-migrates and re-seeds from scratch
+```
+
+Note that `docker system prune -f` removes every *stopped* container, so running
+it after `ibx dev stop` deletes the core four outright (named volumes survive —
+recreate with `ibx dev`). And never add `--remove-orphans`: the core and
+observability stacks share the compose project name `ibatexas`, so that flag on
+*either* compose file removes the *other* file's running containers.
 
 ---
 

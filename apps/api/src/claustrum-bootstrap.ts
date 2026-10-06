@@ -38,7 +38,6 @@ import { randomBytes } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { Pool } from "pg";
 import {
-  createConductor,
   createToolRegistry,
   type Adjudicator,
   type AuditVerification,
@@ -51,7 +50,6 @@ import {
   type LLMTrace,
   type MemoryAccess,
   type ModelProvider,
-  type ResponderPort,
   type Session,
   type SessionPort,
   type TelemetryPort,
@@ -83,6 +81,7 @@ import type {
   AuditRecord,
   AuditSink,
   Decision,
+  IntentActor,
   IntentEnvelope,
   Ledger,
 } from "@adjudicate/core";
@@ -132,8 +131,25 @@ import {
   medusaAdjudicated,
   // BKL-034 — boot-time embeddings provider/dimension gate.
   assertEmbeddingProviderDimension,
+  // LE2-018 — boot-time external-reference reconciliation (refuse-to-start).
+  assertExternalReferencesReconcile,
+  type ExternalReferenceProbes,
 } from "@ibatexas/tools";
 import type { AgentContext, UserType } from "@ibatexas/types";
+// BKL-103 — the approved paid-cancel executor's terminal-payment test + the
+// shared cancel side-effect body it delegates to (no `order.cancel` re-mint).
+import { PaymentStatus } from "@ibatexas/types";
+import { executeOrderCancel } from "./routes/order-actions.js";
+import {
+  createApprovedOrderCancelExecutor,
+  type ApprovedCancelActivePayment,
+  type ApprovedCancelOrder,
+} from "./escalation/approved-cancel-executor.js";
+import {
+  createInnerRefundPaymentStateProjector,
+  createRefundPolicyResolver,
+  settleApprovedInnerRefund,
+} from "./escalation/approved-inner-refund.js";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 import { AGENT_REGISTRY } from "@ibatexas/agents";
 // Managed-agent plane (T3-9) — composed + started behind IBX_AGENTS_ENABLED.
@@ -152,6 +168,7 @@ import {
 import {
   getEscalationParkStore,
   buildEscalationParkInput,
+  escalationProposerStampFor,
   ESCALATION_RESUMABLE_KINDS,
 } from "./escalation/escalation-park-store.js";
 import {
@@ -172,6 +189,7 @@ import {
   agentsEnabled,
   startManagedAgentPlane,
 } from "./claustrum/managed-agent-plane.js";
+import { createTriggerDedupRedis } from "./claustrum/trigger-dedup-redis.js";
 import type { AgentPlane } from "./claustrum/agent-plane.js";
 import type { AgentKillSwitchManager } from "./claustrum/agent-kill-switch.js";
 import type { LiveAgentConductorDeps } from "./claustrum/live-agent-conductor.js";
@@ -236,11 +254,22 @@ import {
 // OpsPlaneDriftProblems input `forbiddenOpsKinds` doc for the full contract,
 // and docs/architecture/design/fe4-drift-gates.md for the full per-gate
 // classification table across all four boot drift gates.
+// LE2-015 — the capability names below came through the packs-composed
+// compatibility barrel until that barrel's re-exports were deleted; they now
+// come from `@ibatexas/catalog`, the one root that owns them, alongside
+// CATALOG_VERSION (LE2-014 — the version stamped into every turn's trace, see
+// `flushTurnTraces`). Dropping the barrel import does not weaken the
+// guard-resolution boot check: the barrel's eager self-check only ever fired
+// for whichever process happened to import it, which is precisely why
+// kernel-bootstrap.ts calls `assertCapabilityGuardRefsWired()` unconditionally
+// at boot — see its doc comment.
 import {
   CAPABILITY_DEFINITIONS,
+  CATALOG_VERSION,
+  WORKFLOW_DEFINITIONS,
   generateChatDrivableToolKinds,
   generateOpsForbiddenDestructiveKinds,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 import { paymentsPixPack } from "@adjudicate/pack-payments-pix";
 import { requireSecret } from "./utils/require-secret.js";
 import { requireEnv } from "./utils/require-env.js";
@@ -261,24 +290,36 @@ import {
   type SealablePackInput,
 } from "@adjudicate/conformance";
 import {
-  createIbatexasPlanner,
-  type ClaimAwarePlannerPort,
-} from "./claustrum/ibatexas-planner.js";
-import {
   buildClaimsSeams,
   claimsPipelineEnabled,
   warnOncePerMessage,
 } from "./claustrum/claims-pipeline.js";
-import { createIbatexasResponder } from "./claustrum/ibatexas-responder.js";
-import { renderCustomerActionAnswer } from "./claustrum/customer-action-render.js";
-// BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate (flag-gated in
-// buildResponder): the pure discriminator + the safe template render source.
-import { shouldDegradeToSafeUnknown } from "./claustrum/interrogative-discriminator.js";
+// R1-S1 — the CUSTOMER conductor plane's composition. This bootstrap is now one
+// ADAPTER of it (resolve infrastructure → one call); the e2e harness becomes the
+// second. Everything about how the customer plane is wired — the always-on
+// `readAnswer`, the ONE shared funnel instance, the hoisted planner the claims
+// seams wrap — lives there, so a harness can no longer hand-copy a drifting twin.
 import {
-  renderPropositionFreeText,
-  SAFE_TEMPLATES,
-} from "./claustrum/slot-grammar.js";
-import { asksAboutStoreState, closedHoursDisclosure } from "./claustrum/closed-hours.js";
+  composeCustomerConductor,
+  plannerCustomerIdFromState,
+  type CustomerConductorDeps,
+} from "./claustrum/compose-customer-conductor.js";
+// BKL-078 — the question-shape SAFE-UNKNOWN gate (flag-gated in buildResponder).
+// LE2 decision 6: the construction moved to `safe-unknown-gate.ts` so the ops
+// conductor composes the SAME object instead of forking one (D5 dissolved).
+import { createSafeUnknownGate } from "./claustrum/safe-unknown-gate.js";
+// LE2-007/009 — the parse funnel's tier seams (L0 social short-circuit + L1
+// exact-match parse memoization) + the per-turn stage store the once-per-turn
+// telemetry stamp reads for tier attribution.
+import { createParseFunnel, funnelStage } from "./claustrum/funnel-tier.js";
+import { createRedisParseCacheStore } from "./claustrum/parse-memo.js";
+// LE2-008 — the L2 tier's retriever over the catalog conversation projection.
+import {
+  createCapabilityRetriever,
+  createOllamaEmbedder,
+  resolveOllamaEmbedderConfig,
+  type EmbedderPort,
+} from "./claustrum/capability-retrieval.js";
 import { createIbatexasPromptComposer } from "./claustrum/prompts/ibatexas-prompts.js";
 import {
   closePromptOverridePool,
@@ -286,16 +327,35 @@ import {
   loadPromptOverrides,
 } from "./claustrum/prompts/prompt-overrides.js";
 import { closeRcaReadPool } from "./routes/qa-rca.js";
+// LE2-030 — the WhatsApp delivery-confirmation store (writer-owned DDL + its own
+// module-singleton pool, the prompt-overrides idiom).
+import {
+  closeWhatsAppDeliveryPool,
+  ensureWhatsAppDeliveryTable,
+} from "./whatsapp/delivery-store.js";
 import {
   createTurnTraceWriter,
   type TurnTraceWriter,
 } from "./claustrum/turn-trace-writer.js";
+import {
+  createLlmWireWriter,
+  flushWireExchanges,
+  type LlmWireWriter,
+} from "./claustrum/llm-wire-writer.js";
 import { createIbatexasResolver } from "./claustrum/ibatexas-resolver.js";
 import {
   sessionTokenKey,
+  loadCartCtx,
+  loadOrderCtx,
+  previousOrderCtxFields,
+  readSessionCartId,
   resolveAndAssemble,
   resolveCustomerOrderReference,
 } from "./claustrum/resolve-and-assemble.js";
+import { loadPreviousOrder } from "./claustrum/previous-order.js";
+// F-9 — the ONE owner of "which cart is this conversation working on?".
+import { resolveActiveCart } from "./claustrum/active-cart-resolution.js";
+import { projectCouponForOrder } from "./claustrum/coupon-price-projection.js";
 import {
   buildCustomerAuthority,
   customerPrincipalForSession,
@@ -321,6 +381,29 @@ import {
 // ── NEW-032 ops-actor conductor plane (slice B) ─────────────────────────────
 import type { StaffEnvelopeActor } from "./claustrum/ibatexas-planner.js";
 import { buildLanguageEngineAuditMetadata } from "./claustrum/language-engine/audit-metadata.js";
+import {
+  activityIdentityBase,
+  activitySessionArg,
+  actorIdentityBase,
+  CART_ID_ACTIVITY_KINDS,
+  ORDER_CTX_ACTIVITY_KINDS,
+  resolveActivityTool,
+  stampOrderActivityPayload,
+} from "./claustrum/workflow/workflow-composition.js";
+import { projectWorkflowFacts } from "./claustrum/workflow/workflow-facts.js";
+import type {
+  WorkflowParamValue,
+  WorkflowSlots,
+} from "./claustrum/workflow/workflow-params.js";
+import type { WorkflowFacts } from "./claustrum/workflow/workflow-predicates.js";
+import { registerWorkflowAnchorTools } from "./tools/register-workflow-anchor-tools.js";
+import { registerWorkflowScopedTools } from "./tools/register-workflow-scoped-tools.js";
+import {
+  createWorkflowRuntime,
+  type WorkflowRuntime,
+} from "./claustrum/workflow/workflow-runtime.js";
+import { installWorkflowRuntime } from "./claustrum/workflow/workflow-install.js";
+import { currentWorkflowChannel } from "./claustrum/workflow/workflow-turn.js";
 import {
   composeOpsConductor,
   opsPlaneDriftProblems,
@@ -610,8 +693,67 @@ export interface ClaustrumBootstrapOptions {
     | Promise<ScheduleSignal | undefined>
     | ScheduleSignal
     | undefined;
+  /**
+   * Store probes for the LE2-018 external-reference boot gate. Default: the
+   * real ones (Medusa admin for promotions, the delivery_zones table for
+   * zones).
+   *
+   * Injectable for the same reason `pgPool` and `modelProvider` are — an
+   * in-process suite that composes a real conductor has no live Medusa. Note
+   * what this does NOT do: it does not skip the gate. The reconciliation still
+   * runs over the real declaration table, still resolves every key from
+   * config, and still refuses the boot on a miss; only the "does the store
+   * hold it" question is answered by an injected function. There is no option,
+   * env var or flag anywhere that turns the gate off — see the call site.
+   */
+  readonly externalReferenceProbes?: ExternalReferenceProbes;
+  /**
+   * The embedder that backs the funnel's LE2-008 L2 capability retriever.
+   *
+   * Default: ABSENT ⟹ no retriever ⟹ the planner advertises the FULL roster,
+   * exactly as it did pre-L2. A composition must STATE its surface to get one.
+   *
+   * BKL-283 — this used to be `createOllamaEmbedder()` reading `process.env`
+   * from inside the library, so the funnel's L2 tier switched on for ANY process
+   * whose shell exported `OLLAMA_EMBED_URL` + `OLLAMA_EMBED_MODEL` (the repo's
+   * own `.env` carries them). Because L2 narrows the advertised tool roster,
+   * that made the TOOL SURFACE an ambient-environment variable: a content-keyed
+   * fixture suite recorded against one surface and replayed against another
+   * (BKL-279 / PR #450), and — silently — the BKL-275 emission factorial varied
+   * the surface between arms while reading rates across arms as fixed.
+   *
+   * Same kind of seam as `pgPool` / `modelProvider` / `externalReferenceProbes`
+   * above, with ONE deliberate difference: those default to a real client built
+   * from env, because env-derived defaults are correct for them. Here an
+   * env-derived default IS the defect, so the default is not-configured and the
+   * env read lives at the production composition root instead — see
+   * {@link productionCapabilityEmbedderOptions}, whose only caller is
+   * `apps/api/src/index.ts`.
+   */
+  readonly capabilityEmbedder?: EmbedderPort;
   // BKL-126 — resolveStoreHours / resolveHoursForDate options removed (values
   // bind from the investigator ledger at core stage 4b; no fresh re-read).
+}
+
+/**
+ * The PRODUCTION composition root's bootstrap options for the L2 embedder — the
+ * one place in the system that turns ambient environment into a funnel surface.
+ *
+ * `env` is a required parameter: this function reads the bag it is handed and
+ * nothing else, so `apps/api/src/index.ts` passing `process.env` is the single
+ * grep-able ambient read (BKL-283). Every other composition — suites, harnesses,
+ * the ops/agent plane — omits `capabilityEmbedder` and therefore gets the
+ * designed full-roster no-op, whatever the shell happens to export.
+ *
+ * Production behaviour is preserved exactly: with both variables set the wired
+ * retriever is the same Ollama-backed one, over the same URL and model, as
+ * before the seam existed.
+ */
+export function productionCapabilityEmbedderOptions(
+  env: NodeJS.ProcessEnv,
+): Pick<ClaustrumBootstrapOptions, "capabilityEmbedder"> {
+  const config = resolveOllamaEmbedderConfig(env);
+  return config === undefined ? {} : { capabilityEmbedder: createOllamaEmbedder(config) };
 }
 
 /**
@@ -730,6 +872,10 @@ export async function resetClaustrumForTests(): Promise<ClaustrumResetReport> {
   // Same class of leak for the dev-only RCA read routes' module-singleton pool
   // (lazily warmed on first /internal/qa/rca/* read, not owned by _pgPool).
   await closeRcaReadPool();
+
+  // LE2-030 — and for the WhatsApp delivery store's own module-singleton pool
+  // (warmed at boot by ensureWhatsAppDeliveryTable, not owned by _pgPool).
+  await closeWhatsAppDeliveryPool();
 
   __resetAuditSink();
   _resetMetricsSink();
@@ -1047,6 +1193,61 @@ export async function enrichResumeState(
   } catch {
     return state;
   }
+}
+
+/**
+ * BKL-103 — the channel the CUSTOMER-plane escalation resume re-projects under.
+ *
+ * The parked envelope does NOT carry the originating channel: the customer-plane
+ * planner stamps `actor = { principal: "llm", sessionId: conversationId }`
+ * (`plannerEnvelopeActor`) and the HTTP plane stamps
+ * `{ principal: "user", sessionId: customerId }` — neither has a channel slot, and
+ * `ParkedEscalationIntent` therefore has nothing to round-trip. Using a fixed
+ * customer channel is SOUND for the kinds wired here rather than merely
+ * convenient: no `order.cancel` guard in `@ibatexas/pack-orders` reads
+ * `state.ctx.channel` (the single `ctx.channel` read is `canCheckout`, which gates
+ * `order.checkout.create` only), so the cancel verdict is channel-invariant. A
+ * future resumable kind whose guards DO read the channel must thread the real one
+ * through the park record instead of reusing this constant.
+ */
+const ESCALATION_RESUME_CHANNEL = "web";
+
+/**
+ * BKL-103 — the SEED state `enrichResumeState` re-projects an escalation resume
+ * from, per plane.
+ *
+ * WHY THIS EXISTS. `enrichResumeState` has two branches: an `admin:`-keyed ops
+ * table, and a CUSTOMER branch that needs `{ customerId, channel }` on the state
+ * it is handed in order to re-run `resolveAndAssemble`. The escalation-approval
+ * engine used to hand it a bare `{ ctx: { exists: false } }`, which is exactly
+ * right for the ops-plane refund (whose parked `actor.sessionId` is
+ * `admin:<staffId>`, so the ops table serves it) but makes the CUSTOMER branch
+ * fall straight through and return the stub UNCHANGED. A customer-plane
+ * `order.cancel` resumed against that stub would adjudicate with no
+ * paymentStatus / total / fulfillmentStatus at all — `gatePaidCancel` would not
+ * even recognize it as paid, so the fresh-state re-verification BKL-103 depends on
+ * would silently not happen.
+ *
+ * The customer id is read through the kind's BKL-113 PROPOSER STAMP — the same
+ * `payload.actorId` the pack overlay's separation-of-duty gate compares against.
+ * That is deliberate and load-bearing: it is the ONLY authenticated customer
+ * identity that survives the park on BOTH customer planes (the conversational
+ * envelope's `actor.sessionId` is a CONVERSATION id, not a customer id), so one
+ * stamp serves both the self-approve comparand and the resume's ownership scope.
+ * An UNSTAMPED payload yields the stub ⇒ the pack guards see no order state ⇒
+ * REFUSE (fail-closed; nothing is cancelled off an unprojectable state).
+ *
+ * Ops-plane behaviour is BYTE-IDENTICAL to pre-BKL-103 (the `admin:` short-circuit
+ * returns the same stub the engine passed before).
+ */
+export function escalationResumeSeedState(envelope: IntentEnvelope): unknown {
+  const opsStub = { ctx: { exists: false } };
+  if (envelope.actor.sessionId.startsWith("admin:")) return opsStub;
+  const proposerId = escalationProposerStampFor(
+    String(envelope.kind),
+  )?.readProposerId((envelope.payload ?? {}) as Record<string, unknown>);
+  if (proposerId === null || proposerId === undefined) return opsStub;
+  return { customerId: proposerId, channel: ESCALATION_RESUME_CHANNEL };
 }
 
 /**
@@ -1669,6 +1870,331 @@ const IBATEXAS_POLICY_PACKS: ReadonlyArray<CapabilityPolicyPack> =
 const IBATEXAS_POLICY_ROUTER = composePolicyRouter(IBATEXAS_POLICY_PACKS);
 
 /**
+ * Build the production WORKFLOW RUNTIME (LE2-021 — the first composition that
+ * wires it; LE2-020 shipped the runtime with production wiring deliberately
+ * absent).
+ *
+ * ── WHY EVERY SEAM IS THE REAL ONE ──────────────────────────────────────────
+ *
+ * A workflow activity must be indistinguishable from a directly-parsed mutation
+ * once it reaches the kernel, or "each activity is adjudicated individually"
+ * would be a claim about a private code path rather than about the system. So:
+ *
+ *   - `adjudicateActivity` is `adjudicateAndAudit` over `IBATEXAS_POLICY_ROUTER`
+ *     — the SAME composed router every other envelope meets — writing to the
+ *     SAME audit sink with the SAME metadata provider. An operator reading
+ *     `intent_audit` cannot tell a workflow activity from a parsed one, which is
+ *     the point.
+ *   - The per-activity SystemState is projected by `loadCartCtx`, the same
+ *     assembly the conductor's resolver runs, so an activity meets the same
+ *     grounded state a direct request would rather than a stub the workflow
+ *     layer chose for itself.
+ *   - `dispatchActivity` resolves through the REAL tool registry.
+ *
+ * The registry is a genuine forward reference — `dispatchActivity` needs it, and
+ * the registry's workflow wiring needs the runtime — so a holder object breaks
+ * the cycle without a reassignable binding, exactly as the e2e harness does.
+ */
+function buildWorkflowRuntime(deps: {
+  readonly auditSink: AuditSink;
+  readonly toolsRef: { current?: ReturnType<typeof createToolRegistry> };
+}): WorkflowRuntime {
+  /**
+   * Project the grounded state ONE activity is adjudicated against.
+   *
+   * The identity half — which channel, which customer, whether authenticated —
+   * is `activityIdentityBase`, extracted to `workflow/workflow-composition.ts`
+   * because it is a DECISION with a wrong answer (a mis-read channel adjudicates
+   * a WhatsApp order against web rules) and was unreachable from a test in here.
+   * What remains is the glue: hand that identity to the same `loadCartCtx` the
+   * conductor's resolver runs, so an activity meets the grounded state a direct
+   * request would rather than a stub the workflow layer chose for itself.
+   */
+  const activityState = async (envelope: IntentEnvelope): Promise<unknown> => {
+    const identity = activityIdentityBase(
+      envelope,
+      // From the turn binding, NOT hardcoded — see the extracted function's
+      // doc for why a guess here would be a money-guard bug.
+      currentWorkflowChannel(),
+      process.env.KERNEL_TENANT_ID,
+    );
+
+    // LE2-023 — AN ORDER ACTIVITY IS ADJUDICATED AGAINST AN ORDER.
+    //
+    // `loadCartCtx` carries no `fulfillmentStatus`, no `paymentStatus` and no
+    // order total, which are precisely the three fields the cancel ladder reads
+    // (`requireCancellable`, `gatePaidCancel`). Routing a cancel through cart
+    // state would meet a money ladder with no money in it — every band silently
+    // unreachable and the guards green over an empty projection. Same
+    // OWNER-SCOPED `loadOrderCtx` the conductor's resolver runs for a directly
+    // parsed cancel, so the in-saga cancel meets exactly the state a direct one
+    // would. See `ORDER_CTX_ACTIVITY_KINDS`.
+    if (ORDER_CTX_ACTIVITY_KINDS.has(String(envelope.kind))) {
+      const payload = (envelope.payload ?? {}) as { orderId?: unknown };
+      const orderId = typeof payload.orderId === "string" ? payload.orderId : null;
+      // `loadOrderCtx` is owner-scoped: it returns a projection only when the
+      // order belongs to this customer, and stamps `resourceOwnerConfirmed`
+      // accordingly. An unauthenticated identity has no customer the read could
+      // mean, so it degrades to the empty projection and the guards REFUSE.
+      const ctx = await loadOrderCtx(
+        identity as never,
+        identity.customerId ?? "",
+        orderId,
+      );
+      return { ctx };
+    }
+
+    const ctx = await loadCartCtx(
+      identity as never,
+      // THE ACTIVITY'S OWN PAYLOAD — LE2-022. This was `{}`, which meant
+      // `buildCartCtx` projected `paymentMethod: null` and `fulfillment: null`
+      // for every workflow activity, and the guards that read those fields
+      // (`requireSlotsFilledForCheckout`) could never see what the activity was
+      // actually asking for. A directly-parsed request's state carries its
+      // resolved payload, so an activity's must too — "an activity meets the
+      // same grounded state a direct request would" is the contract, and an
+      // empty payload quietly broke half of it.
+      //
+      // It widens NOTHING: the payload is first-party by construction (authored
+      // constants, validated claims, customer slots — `WorkflowParamSource` has
+      // no other member), and `buildCartCtx` reads exactly two fields from it,
+      // both against closed literal sets.
+      (envelope.payload ?? {}) as never,
+      activitySessionArg(envelope),
+    );
+    return { ctx };
+  };
+
+  /**
+   * LE2-022 — project the GROUNDED FACTS a declared predicate reads.
+   *
+   * Deliberately the SAME two projections the guards are adjudicated against,
+   * composed: `loadCartCtx` (what `requireCartItemsForCheckout` and
+   * `confirmLargeTicket` read) plus `previousOrderCtxFields` over the same
+   * owner-scoped `loadPreviousOrder` that grounds `confirmReorderLast`'s confirm
+   * sentence. A workflow that branched on a second, separately-derived view of
+   * the customer could route one way while the guard governing that very step
+   * reasoned the other, and per-activity adjudication is the whole design.
+   *
+   * The previous-order read is AUTH-GATED for the same reason it is in
+   * `stampPreviousOrderCtx`, and not as an optimisation: an unauthenticated
+   * caller has no customer id an owner-scoped read could mean, so skipping it
+   * keeps "this read is owner-scoped" true of every call rather than
+   * true-because-the-filter-matched-nothing. The fact then reads ABSENT, the
+   * pre-check refuses, and the customer gets an honest sentence — which is the
+   * correct answer for a guest asking to repeat an order.
+   *
+   * BEST-EFFORT by construction: `loadCartCtx` and `loadPreviousOrder` already
+   * swallow their own IO failures and return nothing, so a store outage produces
+   * ABSENT facts rather than a thrown conversational turn. Absent facts fail
+   * closed (see `workflow-predicates.ts`).
+   */
+  const workflowFacts = async (
+    actor: IntentActor,
+    /**
+     * LE2-023 — the selecting turn's customer-authored slots. Only the coupon
+     * facts read them; every LE2-022 fact ignores them entirely.
+     */
+    slots: WorkflowSlots,
+  ): Promise<WorkflowFacts> => {
+    const identity = actorIdentityBase(
+      actor as { customerId?: string; sessionId?: string },
+      // From the turn binding, NOT hardcoded — a guessed channel would
+      // adjudicate a WhatsApp turn's facts against web rules.
+      currentWorkflowChannel(),
+      process.env.KERNEL_TENANT_ID,
+    );
+    const sessionId = (actor as { sessionId?: string }).sessionId;
+    const ctx = (await loadCartCtx(
+      identity as never,
+      {} as never,
+      sessionId === undefined ? {} : { sessionId },
+    )) as Record<string, unknown>;
+    const previous =
+      identity.customerId === null
+        ? null
+        : await loadPreviousOrder(identity.customerId);
+    const previousFields = previousOrderCtxFields(previous);
+
+    // LE2-023 — THE COUPON FACTS, from the SAME projection the anchor's own ctx
+    // stamp uses (`stampCouponSwapCtx` in resolve-and-assemble.ts) and priced
+    // against the SAME previous-order total the confirm sentence will quote.
+    //
+    // Sharing `projectCouponForOrder` between the two paths is the point rather
+    // than a convenience: the PRE-CHECK decides whether to OFFER the swap and
+    // the GUARD decides whether to allow it, and if those two asked different
+    // questions of the store a customer could be offered a route their own
+    // confirm then refuses. Same read, same predicate, same arithmetic.
+    //
+    // Best-effort like everything else here: the projection swallows its own IO
+    // failure and returns `{}`, so a Medusa outage leaves the coupon facts
+    // ABSENT, the pre-check refuses with its authored reason, and nothing
+    // destructive is offered.
+    const code = typeof slots["code"] === "string" ? slots["code"] : "";
+    const coupon =
+      code === ""
+        ? {}
+        : await projectCouponForOrder({
+            code,
+            orderTotalInCentavos: previousFields.previousOrderTotalInCentavos as
+              | number
+              | undefined,
+          });
+
+    return projectWorkflowFacts({ ...ctx, ...previousFields, ...coupon });
+  };
+
+  /**
+   * LE2-023 — resolve the payload fields no param source may carry.
+   *
+   * The READ half of `stampOrderActivityPayload`, which owns the decision and is
+   * pure. This is the glue: the same OWNER-SCOPED `loadPreviousOrder` that
+   * grounded the confirm sentence supplies the order id, so the saga cancels the
+   * order the customer was actually shown — not one the model named, and not one
+   * resolved from a second view of their history.
+   *
+   * The CART id is read from the session's active-cart key — the same key
+   * `loadCartCtx` reads and `order.reorder`'s handler now writes, so the coupon
+   * lands on the cart the route just rebuilt rather than on whatever the customer
+   * happened to have before. See `CART_ID_ACTIVITY_KINDS`.
+   */
+  const resolveActivityPayload = async (args: {
+    readonly capability: string;
+    readonly payload: Readonly<Record<string, WorkflowParamValue>>;
+    readonly actor: IntentActor;
+  }): Promise<Readonly<Record<string, WorkflowParamValue>>> => {
+    const identity = actorIdentityBase(
+      args.actor as { customerId?: string; sessionId?: string },
+      currentWorkflowChannel(),
+      process.env.KERNEL_TENANT_ID,
+    );
+
+    if (CART_ID_ACTIVITY_KINDS.has(args.capability)) {
+      const sessionId = (args.actor as { sessionId?: string }).sessionId;
+      return stampOrderActivityPayload({
+        capability: args.capability,
+        payload: args.payload,
+        customerId: identity.customerId,
+        orderId: undefined,
+        cartId: await readSessionCartId(sessionId),
+      }) as Readonly<Record<string, WorkflowParamValue>>;
+    }
+
+    if (!ORDER_CTX_ACTIVITY_KINDS.has(args.capability)) return args.payload;
+    const previous =
+      identity.customerId === null
+        ? null
+        : await loadPreviousOrder(identity.customerId);
+    return stampOrderActivityPayload({
+      capability: args.capability,
+      payload: args.payload,
+      customerId: identity.customerId,
+      orderId: previous?.orderId,
+    }) as Readonly<Record<string, WorkflowParamValue>>;
+  };
+
+  /**
+   * LE2-023 — the in-saga `order.cancel` WRITE PATH.
+   *
+   * ── WHY THE REGISTERED TOOL IS DISQUALIFIED ─────────────────────────────────
+   *
+   * `order.cancel`'s registered tool is `cancelOrder`
+   * (packages/tools/src/cart/cancel-order.ts), and it has NO PAID PATH: its
+   * `cancelActivePaymentForOrder` returns early for a settled payment
+   * (`PAID_STATUSES.includes(status) → return`), so a paid cancel routed through
+   * it cancels the ORDER and silently leaves the money where it is. No refund, no
+   * error, nothing in any log saying so — the customer's order is gone and they
+   * have not been paid back.
+   *
+   * `executeOrderCancel` is the shared body the HTTP cancel routes use, and it is
+   * refund-first by construction: it BUILDS AND ADJUDICATES a
+   * `payment.refund.issue` system envelope BEFORE any order transition, and
+   * throws `PaidCancelRefundNotSettledError` if that refund does not reach
+   * EXECUTE. So the FE-T03 magnitude bands stay live inside the saga, and
+   * no-half-apply cuts both ways: no settled refund ⟹ no cancel. The throw
+   * surfaces here as a step that did not execute, which stops the run and fires
+   * the declared compensators — an honest render rather than a half-cancelled
+   * order.
+   *
+   * ── AND WHY IT IS NOT REGISTERED IN THE TOOL REGISTRY ───────────────────────
+   *
+   * Because the registry is last-write-wins and keyed by capability, so
+   * registering a second `order.cancel` handler would replace the real one for
+   * EVERY plane — the HTTP routes and the direct conversational cancel included.
+   * A workflow-plane concern must not be able to redefine what a directly-parsed
+   * cancel does. Same reasoning that keeps the anchor handlers in
+   * `register-workflow-anchor-tools.ts` out of the LLM-callable roster.
+   */
+  const dispatchOrderCancel = async (envelope: IntentEnvelope): Promise<unknown> => {
+    const payload = (envelope.payload ?? {}) as {
+      orderId?: unknown;
+      actorId?: unknown;
+      reason?: unknown;
+    };
+    const orderId = typeof payload.orderId === "string" ? payload.orderId : "";
+    const customerId = typeof payload.actorId === "string" ? payload.actorId : "";
+    if (orderId === "" || customerId === "") {
+      // Unreachable behind the kernel — `requireOrderIdForMutation` REFUSEs a
+      // cancel with no order id, and this runs only on EXECUTE. It THROWS rather
+      // than returning a soft failure because the runtime records a step as
+      // executed unless the dispatch throws, and a soft failure here would put a
+      // successful cancel in the trace for a mutation that never happened.
+      throw new Error(
+        "[workflow] order.cancel activity reached dispatch without a resolved orderId/actorId",
+      );
+    }
+    const order = (await createOrderQueryService().getById(orderId, {
+      customerId,
+    })) as { fulfillmentStatus: string; displayId: number } | null;
+    if (order === null) {
+      throw new Error(`[workflow] order.cancel activity: order ${orderId} not readable`);
+    }
+    return executeOrderCancel({
+      orderId,
+      customerId,
+      reason:
+        typeof payload.reason === "string" && payload.reason !== ""
+          ? payload.reason
+          : "Cancelado para aplicar cupom",
+      order,
+      orderCmdSvc: createOrderCommandService(),
+      paymentCmdSvc: createPaymentCommandService(),
+      paymentQuerySvc: createPaymentQueryService(),
+      log: logger as unknown as Parameters<typeof executeOrderCancel>[0]["log"],
+    });
+  };
+
+  return createWorkflowRuntime({
+    workflows: WORKFLOW_DEFINITIONS,
+    projectFacts: async ({ actor, slots }) => workflowFacts(actor, slots),
+    resolveActivityPayload,
+    adjudicateActivity: async (envelope) =>
+      (
+        await adjudicateAndAudit(
+          envelope,
+          (await activityState(envelope)) as never,
+          IBATEXAS_POLICY_ROUTER as never,
+          { sink: deps.auditSink, metadataProvider: buildLanguageEngineAuditMetadata },
+        )
+      ).decision,
+    // `resolveActivityTool` asks the registry the same question the conductor's
+    // own dispatch asks (last-write-wins, not first-registered) and throws for a
+    // missing registry rather than reporting a phantom successful step. Both are
+    // decisions rather than glue, so both live — and are tested — next door.
+    dispatchActivity: async (envelope, ctx) =>
+      // LE2-023 — the ONE capability whose workflow-plane write path differs
+      // from its registered tool, and it differs because the registered tool is
+      // unsound for a paid order. See `dispatchOrderCancel`.
+      String(envelope.kind) === "order.cancel"
+        ? dispatchOrderCancel(envelope)
+        : resolveActivityTool(deps.toolsRef.current, envelope, ctx).execute(
+            envelope.payload,
+            ctx,
+          ),
+  });
+}
+
+/**
  * Resolve the concrete per-kind PolicyBundle for the explicit HTTP-route path
  * (RC-A1 Phase B). Routes that build their own `principal:"user"` envelope pass
  * the result to `runCustomerIntent`. Returns null for a kind no installed pack
@@ -1684,74 +2210,14 @@ export function policyForKind(
 // live alongside the pack list in @ibatexas/packs-composed
 // (IBATEXAS_COMPOSED_CAPABILITY_PLANNERS, imported above).
 
-/**
- * Map the claustrum CognitiveState onto the union (state, context) the pack
- * capability planners read. Each pack reads only its own `ctx` field
- * (orders/reservations: customerId; reservations: staffId; onboarding:
- * isAuthenticated; payments/whatsapp: none), so a union ctx satisfies all.
- *
- * WS3 — thread the real actor. The Capsule carries the authoritative actor, but
- * `PlannerPort.propose` (and therefore `deriveContext`) is handed only a
- * `CognitiveState`, never the Capsule. The faithful in-CognitiveState carrier of
- * the customer identity is `state.memory.customerId`: `handleTurn` assembles
- * `cognition.memory = capsule.memory.recall(capsule.customerId, …)` and
- * `MemorySnapshot.customerId` is exactly the Capsule's customerId. We derive the
- * customer/auth context from it so that AUTHENTICATED intent kinds
- * (`order.checkout.create`, `order.cancel`, `order.amend.request`,
- * `order.note.add`, every `reservation.*`, both `customer.*`) become proposable
- * when a real customer is present — previously hardcoded `customerId:null,
- * isAuthenticated:false` exposed only the unauthenticated subset.
- *
- * Guest convention mirrors `agentCtxFromCapsule` (register-ibatexas-tool-packs):
- * an empty or `guest:`/`anon:`-prefixed customerId is NOT a real customer — it
- * yields `customerId:null, isAuthenticated:false`. The kernel's authGuards remain
- * the authoritative auth check on the envelope; this only widens what the planner
- * is *willing to propose*. `staffId` stays null: a staff actor lives on the
- * Capsule's `actor.role`, which CognitiveState does not carry, so staff-only
- * reservation kinds (`reservation.checkin`/`.complete`) remain non-proposable via
- * the chat planner (they are staff-route only) — a documented follow-up if a
- * staff chat surface is ever wired.
- */
-function plannerCustomerIdFromState(state: CognitiveState): string | null {
-  const raw = (state.memory as { customerId?: unknown } | undefined)?.customerId;
-  if (typeof raw !== "string") return null;
-  const id = raw.trim();
-  // A guest/anon-marker or empty id is NOT a real customer → null. Reuses the
-  // exported guest-convention predicate from the tool registry (A3) so the
-  // planner's willingness-to-propose can never drift from the read-executor
-  // identity scope. `isGuestCustomerId` treats empty/whitespace as guest, so
-  // the prior explicit `id === ""` guard is subsumed.
-  if (isGuestCustomerId(id)) return null;
-  return id;
-}
-
-export function deriveIbatexasPlannerContext(state: CognitiveState): {
-  readonly state: unknown;
-  readonly context: unknown;
-} {
-  const customerId = plannerCustomerIdFromState(state);
-  const isAuthenticated = customerId !== null;
-  return {
-    state: {
-      ctx: {
-        // Single-tenant supply for the pack tenant-binding authGuard
-        // (AuthReviewer-009): the app names the request's tenant in state. The
-        // guard REFUSEs a mismatch; env-driven (Hard Rule #3).
-        tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
-        channel: state.perception.channel,
-        // Real actor, derived from the recalled memory snapshot (= Capsule
-        // customerId). orders/reservations read `customerId`; onboarding reads
-        // `isAuthenticated`.
-        customerId,
-        staffId: null,
-        isAuthenticated,
-        cartId: null,
-        orderId: null,
-      },
-    },
-    context: {},
-  };
-}
+// R1-S1 — the planner's CognitiveState→pack-context derivation (and the guest
+// convention helper it reads) MOVED to compose-customer-conductor.ts: they are
+// part of what "the customer planner" is, and the composer is where the planner is
+// built. RE-EXPORTED here so every existing importer of this module is unaffected;
+// `agentCtxFromState` below still reads the SAME `plannerCustomerIdFromState`, so
+// the planner's willingness-to-propose and the read executors' identity scope stay
+// mechanically incapable of drifting.
+export { deriveIbatexasPlannerContext } from "./claustrum/compose-customer-conductor.js";
 
 // ── BKL-027 (F2) — read-tool executor registry ────────────────────────────────
 //
@@ -1877,8 +2343,15 @@ export const IBATEXAS_READ_TOOL_EXECUTORS: Readonly<
   // writes/reads) and fetch only that; the model's `input.cartId` is ignored.
   get_cart: async (_input, state) => {
     const ctx = agentCtxFromState(state);
-    const redis = await getRedisClient();
-    const cartId = await redis.get(rk(`cart:active:session:${state.conversationId}`));
+    // Resolved through `active-cart-resolution.ts` — the ONE owner of the
+    // session→active-cart lookup. POSTURE: an UNAVAILABLE read RETHROWS, which is
+    // this site's pre-existing behaviour (the hand-copied read had no catch): the
+    // one-hop read loop turns a throw into an honest "(indisponível: …)" rather
+    // than the "nenhum carrinho ativo" note, and telling a customer they have no
+    // cart because Redis was down would be a confident wrong answer.
+    const resolution = await resolveActiveCart({ sessionId: state.conversationId });
+    if (resolution.outcome === "unavailable") throw resolution.error;
+    const cartId = resolution.outcome === "resolved" ? resolution.cartId : null;
     if (!cartId) {
       // No active cart for this session — never call Medusa on a model-chosen id.
       return { cart: null, note: "nenhum carrinho ativo nesta sessão" };
@@ -2227,13 +2700,35 @@ function redisSessionStore(): SessionPort {
  * keyed (turnId, callIndex); the writer redacts the completion. The trace
  * write is additive — token accounting stays separate (no double count).
  * Module-local helper extracted from emitTurn to keep its complexity bounded.
+ *
+ * LE2-014 — this is also where the CATALOG VERSION is stamped. It is the
+ * turn's single once-per-turn persistence seam, so it is the only honest place
+ * to record a per-turn fact: `turn_trace` is one row per model call and has no
+ * root row. The value is therefore repeated onto every row the turn writes,
+ * exactly as `conversationId` already is. Reading it back per turn is a
+ * `max(catalog_version)` over the turn's rows (see `routes/qa-rca.ts`).
+ *
+ * Read from the module-level `CATALOG_VERSION` import rather than threaded
+ * through as a parameter: it is a build-time constant of the deployed bundle,
+ * not turn state, and pretending otherwise would invite a future caller to
+ * pass a different one — which would corrupt replay, the exact thing the stamp
+ * exists to enable.
  */
 async function flushTurnTraces(
   record: TurnRecord,
   turnTrace: TurnTraceWriter | undefined,
   pendingTraces: Map<string, LLMTrace[]>,
+  llmWire?: LlmWireWriter,
 ): Promise<void> {
   if (turnTrace === undefined) return;
+  // Wire Truth — persist this turn's sealed wire exchanges (llm_wire)
+  // alongside the trace rows. Claim-and-write is fail-open and runs even if
+  // the trace writes below fail: the exchanges are already attributed
+  // (callIndex sealed at emit time), and an unclaimed buffer would only
+  // TTL-expire.
+  if (llmWire !== undefined) {
+    await flushWireExchanges(llmWire, record.turnId, record.conversationId);
+  }
   const traces = pendingTraces.get(record.turnId);
   pendingTraces.delete(record.turnId);
   if (traces === undefined || traces.length === 0) return;
@@ -2256,6 +2751,7 @@ async function flushTurnTraces(
           ...(t.schemaVersion === undefined
             ? {}
             : { schemaVersion: t.schemaVersion }),
+          catalogVersion: CATALOG_VERSION,
         }),
       ),
     );
@@ -2290,6 +2786,7 @@ function fastifyTelemetry(
   usageStore: TokenUsageStore,
   turnTrace?: TurnTraceWriter,
   tokenUsageSink?: TokenUsageSink,
+  llmWire?: LlmWireWriter,
 ): TelemetryPort {
   // C1/C2 — per-turn LLMTrace buffer. The planner/responder emit an LLMTrace
   // per model call DURING the turn (emitLLMTrace); that trace carries turnId but
@@ -2310,12 +2807,34 @@ function fastifyTelemetry(
       // is wired we OMIT the text rather than risk shipping raw PII to the store.
       const clip = (t: string | undefined): string | undefined =>
         t && turnTrace ? turnTrace.redactCompletion(t).slice(0, 280) : undefined;
+      // LE2-007 — FUNNEL TIER ATTRIBUTION on the trace (spec user story 31: "every
+      // turn stamped with its catalog version and funnel-tier attribution").
+      //
+      // WHY HERE and not on `turn_trace`: turn_trace is ONE ROW PER MODEL CALL, and a
+      // funnel-resolved L0 turn makes zero calls — it has no row to stamp, and
+      // fabricating one (model "none", 0 tokens) would put an exchange that never
+      // happened into the replay corpus. This log line is, by its own SIGNAL-2
+      // contract above, "the one guaranteed stream-tagged per-turn record", so it is
+      // the only surface where EVERY turn — including a zero-call one — can carry its
+      // tier. Additive and absent-by-default: a turn no tier claimed omits the key
+      // entirely rather than reporting a tier it does not have.
+      //
+      // WHEN A MODEL-CALLING TIER LANDS (L1 replay / L2 scoped parse) those turns DO
+      // write turn_trace rows, and the same stage record is the source for an additive
+      // nullable `funnel_tier` column following LE2-014's exact precedent (appended
+      // LAST, `ALTER TABLE … ADD COLUMN IF NOT EXISTS` catch-up, params-redaction pin
+      // intact). Not added now: a column no code path can write is dead surface, and
+      // naming today's full-roster path a "tier" would pre-empt ticket 09's design.
+      const funnelTier = funnelStage(record.turnId);
       logger.info(
         {
           component: "conductor",
           event: "turn",
           correlationId: record.turnId,
           turnId: record.turnId,
+          ...(funnelTier === undefined
+            ? {}
+            : { funnelTier: funnelTier.tier, funnelReason: funnelTier.reason }),
           conversationId: record.conversationId,
           channel: record.channel,
           customerId: record.customerId,
@@ -2437,7 +2956,7 @@ function fastifyTelemetry(
       }
       // C2 — flush this turn's buffered LLM-call traces to the REDACTED
       // turn_trace store, attaching the conversationId only available here.
-      await flushTurnTraces(record, turnTrace, pendingTraces);
+      await flushTurnTraces(record, turnTrace, pendingTraces, llmWire);
     },
     async emitLLMTrace(trace) {
       // C1 — buffer the per-model-call trace for the emitTurn flush (which
@@ -2821,6 +3340,12 @@ export async function bootstrapClaustrum(
   await ensurePromptOverrideTable();
   await loadPromptOverrides();
 
+  // LE2-030 — WhatsApp delivery confirmation (`whatsapp_delivery`): writer-owned
+  // DDL, created here so the send path never pays a DDL round-trip and a Twilio
+  // status callback always finds a table. Best-effort like the store above: on
+  // error delivery status degrades to "pending everywhere", never blocks boot.
+  await ensureWhatsAppDeliveryTable();
+
   const modelProvider = resolveModelProvider(options);
 
   // The chat model id stamped on each planner/responder CompletionRequest. The
@@ -2884,6 +3409,13 @@ export async function bootstrapClaustrum(
   // no registered tool fails the boot; registered-but-unadvertised kinds are
   // WARN-only (as of FE-D28 order.review.submit is advertised + resolver-wired,
   // so there is currently no such kind — the WARN path stays for future ones).
+  // LE2-021 does NOT change that, and the reason is worth stating because it
+  // looks like it should: `order.reorder.request` has a registered tool and no
+  // planner advertises it, but the tool is registered by
+  // `registerWorkflowAnchorTools` (below, corpus-derived) rather than into
+  // `IBATEXAS_TOOLS`, so `listIbatexasToolPacks()` — the roster this gate reads
+  // — never sees it. "Registered in the process" and "on the LLM-callable
+  // roster" are two different facts, and this gate is about the second.
   const toolRegistry = createToolRegistry();
   registerIbatexasToolPacks(toolRegistry);
   const rosterDrift = toolRosterDrift(
@@ -2932,12 +3464,83 @@ export async function bootstrapClaustrum(
     );
   }
 
+  // ── LE2-021 · THE WORKFLOW RUNTIME, WIRED IN PRODUCTION ─────────────────────
+  //
+  // LE2-020 landed the runtime and deliberately wired NOTHING here, shipping an
+  // empty corpus so the wire stayed byte-identical. This is the composition that
+  // turns it on. Three seams, and the ORDER of the first two is the installation
+  // mechanism rather than a style choice:
+  //
+  //   1. `registerWorkflowScopedTools` and `registerWorkflowAnchorTools` FIRST.
+  //      `installWorkflowRuntime` asserts that every anchor has a registered
+  //      tool and THROWS if one does not, and a workflow-scoped activity needs
+  //      its handler present before the runtime could ever dispatch it.
+  //      Registering both corpus-derived sets first is what makes those true at
+  //      once. Neither adds anything to the LLM-callable roster — see each
+  //      module's doc for why "registered" and "chat-drivable" are deliberately
+  //      two different facts.
+  //   2. `installWorkflowRuntime` AFTER `registerIbatexasToolPacks` (above). The
+  //      registry is last-write-wins per capability, so registering the anchor
+  //      wrapper after the base roster IS how the wrapper gets installed.
+  //   3. The adjudicator decorator, so the runtime can quote the kernel's own
+  //      confirm sentence instead of re-deriving money.
+  //
+  // Placed AFTER both roster-drift gates so those gates still evaluate the
+  // pristine roster, and before the conductor is composed.
+  //
+  // LE2-021 authored the first entry into `WORKFLOW_DEFINITIONS`, so this block
+  // is no longer inert: `advertise()` now returns the reorder-last workflow for
+  // any turn whose roster carries both its matchers, `buildToolSurface` adds the
+  // `start_workflow` tool, and the wire changes for those turns. The
+  // inert-on-empty-corpus property still holds structurally and is what a
+  // composition test asserts — it is the property that makes adding the SECOND
+  // workflow a data change rather than a plumbing change.
+  const workflowToolsRef: { current?: ReturnType<typeof createToolRegistry> } = {};
+  const workflowRuntime = buildWorkflowRuntime({
+    auditSink,
+    toolsRef: workflowToolsRef,
+  });
+  registerWorkflowScopedTools(toolRegistry, workflowRuntime.activityCapabilities());
+  registerWorkflowAnchorTools(toolRegistry, workflowRuntime.selectionAnchors());
+  installWorkflowRuntime(toolRegistry, workflowRuntime);
+  workflowToolsRef.current = toolRegistry;
+
   // BKL-034 — embeddings provider/dimension boot gate. A configured provider whose
   // probe vector length differs from EMBEDDING_DIMENSION would silently poison every
   // Typesense upsert (dimension-mismatched vectors) — fail LOUD at boot instead. No
   // provider configured → resolves cleanly (the keyword-only degrade stays legal on a
   // bare stack), so this gate never blocks a key-less box.
   await assertEmbeddingProviderDimension();
+
+  // LE2-018 — EXTERNAL-REFERENCE RECONCILIATION. Every reference @ibatexas/catalog
+  // declares (src/external-references.ts) must exist in its live store: the welcome
+  // and loyalty coupons in Medusa today, zones in the domain DB when one is declared.
+  // Any miss — the config var unset, the promotion absent, the store unreachable —
+  // REFUSES THE BOOT, naming the reference, its store, the config variable and the
+  // code sites that break. Same posture as toolRosterDrift() above, one gate later.
+  //
+  // Strict on purpose (LE2 Implementation Decision 16, owner-ratified): no flag, no
+  // dev-mode warning, no allowlist. This gate replaced a `// must be created in
+  // Medusa admin before going live` comment, and a bypassable version of it would be
+  // that comment with more steps. The mitigation for the blast radius is that the
+  // SAME check runs standalone — `ibx catalog check --live`, wired into the staging
+  // deploy pipeline — so a dangling reference surfaces when someone changes it
+  // rather than when something restarts.
+  //
+  // Placed after the roster gates and after config load, before the conductor is
+  // composed: nothing has taken traffic yet, so a refusal costs a failed boot rather
+  // than a half-live process handing customers a coupon Medusa will reject.
+  //
+  // `probes` is the SAME kind of seam as `pgPool` and `modelProvider` above: an
+  // in-process suite has no live Medusa, so it answers the store question itself.
+  // The gate still runs — real declaration table, real config resolution, real
+  // refusal on a miss. Omitted in production, where the defaults are the real
+  // clients. Nothing here reads a flag.
+  await assertExternalReferencesReconcile(
+    options.externalReferenceProbes === undefined
+      ? {}
+      : { probes: options.externalReferenceProbes },
+  );
 
   // The ibx prisma/redis are real clients that legitimately lack the memory
   // adapter's structural slices (the claustrum_memory_* delegates / setex+pipeline),
@@ -3002,6 +3605,12 @@ export async function bootstrapClaustrum(
   const promptComposer = createIbatexasPromptComposer();
   const turnTraceWriter: TurnTraceWriter = createTurnTraceWriter(pgPool);
   await turnTraceWriter.ensureTable(); // best-effort (writer swallows failures)
+  // Wire Truth — the durable llm_wire store (request/response per model call).
+  // Same pool, same fail-open posture, writer-owned DDL (the canonical
+  // turn_trace migration lives in the frozen audit-postgres package; llm_wire
+  // is an in-repo concern). Pinned in packages/cli's KERNEL_TABLES registry.
+  const llmWireWriter: LlmWireWriter = createLlmWireWriter(pgPool);
+  await llmWireWriter.ensureTable(); // best-effort
   // ERDS-059 — durable token→USD sink (llm_token_usage). Best-effort; the sink
   // swallows write failures so cost telemetry never breaks a turn.
   const tokenUsageSink = createPostgresTokenUsageSink(prisma);
@@ -3009,6 +3618,7 @@ export async function bootstrapClaustrum(
     tokenUsageStore,
     turnTraceWriter,
     tokenUsageSink,
+    llmWireWriter,
   );
   // fix B (Stage 1) — the per-turn structured closed-hours signal. Sourced from
   // the Redis read-through schedule cache (loadSchedule) + the env timezone, it
@@ -3058,118 +3668,44 @@ export async function bootstrapClaustrum(
   // (the reads turn-reads.ts already makes) — one schedule load per turn, no
   // divergence window. resolveScheduleSignal stays: it feeds ONLY the
   // closed-hours prompt note (prompt-side, not a C6 value source).
-  const buildPlanner = (model: ModelProvider): ClaimAwarePlannerPort =>
-    createIbatexasPlanner({
-      model,
-      modelId: chatModelId,
-      capabilityPlanners: IBATEXAS_COMPOSED_CAPABILITY_PLANNERS,
-      deriveContext: deriveIbatexasPlannerContext,
-      promptComposer,
-      telemetry,
-      resolveScheduleSignal,
-      // BKL-027 — activate the one-hop read-tool enrichment loop.
-      readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
-    });
-  const buildResponder = (model: ModelProvider): ResponderPort =>
-    createIbatexasResponder({
-      model,
-      modelId: chatModelId,
-      explainer: ibxExplainer,
-      promptComposer,
-      telemetry,
-      resolveScheduleSignal,
-      // BKL-215 — the CUSTOMER-plane deterministic mutation-success render. On a
-      // committed amend EXECUTE the reply states WHAT THE VERB DID from the
-      // executed envelope, never the model (which live-composed a FALSE FAILURE
-      // "houve um erro ao adicionar o item" on a real success). Returns undefined
-      // for every non-amend kind → the grounded model path below is byte-identical
-      // for them. The customer analog of the ops readAnswer.renderAction (BKL-149).
-      readAnswer: {
-        // No deterministic customer READ render here — customer reads flow
-        // through the claims pipeline, not this port (the ops-only read capture).
-        render: (_turnId: string) => undefined,
-        renderAction: (acted: unknown, _turnId: string) =>
-          renderCustomerActionAnswer(acted),
-      },
-      // BKL-078 — the customer-plane question-shape SAFE-UNKNOWN gate, wired ONLY
-      // when ENABLE_CLAIMS_PIPELINE is on (the SAME flag buildClaimsSeams reads).
-      // Closes the `prose_preserved` hallucination leak on the conversational
-      // fallback: a non-smalltalk info-question that produced no validated claim
-      // degrades to the deterministic proposition-free SAFE_UNKNOWN reply instead of
-      // a model-authored prose draft. The ops conductor NEVER wires this (D5,
-      // ops-conductor.ts). Flag-OFF → omitted → byte-identical.
-      ...(claimsPipelineEnabled()
-        ? {
-            safeUnknown: {
-              gate: (text: string) => shouldDegradeToSafeUnknown(text),
-              render: (
-                schedule: ScheduleSignal | undefined,
-                userText: string,
-              ): string => {
-                const base = renderPropositionFreeText(SAFE_TEMPLATES.unknown);
-                // D3 (relevance-gated) — append the closed-hours disclosure ONLY when
-                // the degraded question is about ordering / hours / availability. On a
-                // topically-unrelated question the scheduled-pickup offer is
-                // unsolicited noise, so the bare epistemic SAFE_UNKNOWN ships alone.
-                const orderingOrHours =
-                  asksAboutStoreState(userText) ||
-                  /\b(pedid|pedir|encomend|entreg|retirad|agend|compr|reserv|cardapio|card[aá]pio|menu)/i.test(
-                    userText,
-                  );
-                return schedule?.isClosed && orderingOrHours
-                  ? `${base} ${closedHoursDisclosure(schedule)}`
-                  : base;
-              },
-            },
-          }
-        : {}),
-    });
-
-  // B-PR1 — claims-runtime seams (SDD §M / §Q.6), FLAG DEFAULT-OFF. The planner
-  // is hoisted so the claim-planner adapter reuses the SAME claim-aware instance
-  // (its `proposeClaims`, Q6b). `buildClaimsSeams` returns {} when
-  // ENABLE_CLAIMS_PIPELINE is OFF (the default), so the spread below is a no-op
-  // and the Conductor is composed BYTE-IDENTICALLY to today (no INVESTIGATE /
-  // CLAIMS-VALIDATE stage runs). ON → the shadow claims path is injected
-  // (activation is a later PR). No `clock` is passed (not in the published
-  // ConductorOptions; the per-turn clock is PENDING R2a).
-  const planner = buildPlanner(modelProvider);
-  // F2 observability (RCA 2026-06-29): when the claims pipeline is ENABLED but the
-  // LINKED kernels are below the egress-brand floor, log a loud warning so the
-  // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
-  const claimsSeams = buildClaimsSeams({
-    planner,
-    warn: (message) => logger.warn(message),
-    // BKL-108 — unconditional boot marker (ENABLED/disabled), so the RUNNING
-    // process's claims-pipeline state is readable from the boot log (a stale-env
-    // tsx respawn is otherwise indistinguishable from an enabled boot).
-    info: (message) => logger.info({ component: "startup" }, message),
-    // BKL-209 — a medical-emergency §O#9 ESCALATE fires this best-effort sink to
-    // put the emergency on the staff surface (support.handoff_requested → the
-    // handoff-subscriber → Escalações + staff WhatsApp), so "vou avisar nossa
-    // equipe" is TRUE. Session-keyed by turnId so each emergency turn pages once
-    // (no cross-turn dedup — every reported emergency should reach staff). Fully
-    // fire-and-forget: swallow all errors; a publish failure never breaks the
-    // customer's (already-safe) render.
-    onSafetyEmergency: (ctx) => {
-      const sessionId = `safety-emergency:${ctx.turnId ?? "unknown"}`;
-      void publishNatsEvent("support.handoff_requested", {
-        sessionId,
-        reason: "EMERGÊNCIA MÉDICA relatada no chat — atenda imediatamente.",
-      }).then(
-        () =>
-          logger.warn(
-            { component: "safety", turnId: ctx.turnId },
-            "medical-emergency ESCALATE surfaced — support.handoff_requested published (BKL-209)",
-          ),
-        (err: unknown) =>
-          logger.error(
-            { component: "safety", turnId: ctx.turnId, err: String(err) },
-            "medical-emergency surfacing FAILED — escalation is render-only (BKL-209)",
-          ),
-      );
-    },
-  });
+  // LE2-007 — the parse funnel's tier seam, ONE instance shared by the customer
+  // planner + responder so both read the same stamped stage for a turn. The ops /
+  // agent planes deliberately do not wire it (their compositions omit `funnel`, so
+  // they are byte-identical): L0 is a customer-plane decision, and the ops plane's
+  // small-talk posture is its own ratified surface (LE2-013's `retireRawProse`).
+  // The seam is inert until a customer INGRESS publishes the turn's funnel context
+  // (routes/chat.ts, routes/whatsapp-webhook.ts) — see funnel-tier.ts's fail-closed
+  // `decideL0`.
+  // LE2-009 — the SAME funnel instance now also carries L1 (exact-match parse
+  // memoization) because a Redis-backed parse cache store is wired. The store is
+  // FAIL-OPEN by contract (parse-memo.ts): an unreachable Redis degrades every
+  // lookup to a miss and every write to a no-op, so the turn path is unchanged
+  // when the cache is down — it just costs a completion again.
+  const funnel = createParseFunnel({ parseCacheStore: createRedisParseCacheStore() });
+  // LE2-008 — the L2 retriever, wired ONLY when this composition DECLARED an
+  // embedder. Absent ⟹ no retriever ⟹ the planner advertises the full roster
+  // exactly as it did pre-L2. That is the honest degrade, not a flag: a stack
+  // with no embedder provisioned should keep today's coverage rather than scope
+  // on nothing. The retriever itself is fail-safe on top of that (see
+  // capability-retrieval.ts) — every error path, including an unreachable
+  // embedder mid-turn, returns the full roster.
+  //
+  // BKL-283 — the embedder ARRIVES here; it is never constructed here. This line
+  // used to be `createOllamaEmbedder()`, which read OLLAMA_EMBED_URL /
+  // OLLAMA_EMBED_MODEL straight off `process.env`, so any shell holding the pair
+  // silently rewired the advertised tool surface of every composition in the
+  // process — including fixture-recording suites and measurement harnesses that
+  // never asked for a retriever. Production reads the pair once, at the root
+  // (`productionCapabilityEmbedderOptions(process.env)` in index.ts).
+  const l2Embedder = options.capabilityEmbedder;
+  const capabilityRetriever =
+    l2Embedder === undefined ? undefined : createCapabilityRetriever({ embedder: l2Embedder });
+  if (capabilityRetriever === undefined) {
+    logger.info(
+      { component: "funnel", event: "funnel.l2.disabled" },
+      "funnel L2: no embedder declared by this composition — full-roster surface",
+    );
+  }
   // AUT-017 — the ESCALATE PARK deps shared by the customer + ops conductors.
   // On a resumable money-intent ESCALATE the HandoffPort parks the FULL envelope
   // (single-use, Redis-backed) so an OWNER can approve-and-execute it later. The
@@ -3186,33 +3722,88 @@ export async function bootstrapClaustrum(
       };
     },
   };
-  _conductor = createConductor({
+
+  // R1-S1 — the customer plane's ingredients, RESOLVED. Everything above is
+  // infrastructure (pools, clients, config, boot gates, the logger); everything the
+  // composition DOES with them is compose-customer-conductor.ts. This bag is the
+  // whole contract between the two, and the only reason this file still knows the
+  // customer plane exists.
+  const customerConductorDeps: CustomerConductorDeps = {
+    // UNWRAPPED on purpose — the composer applies `observeWorkflowDecisions` itself,
+    // so no adapter of it can compose a customer conductor that forgets the
+    // workflow decision observer.
     adjudicator,
+    workflowRuntime,
+    model: modelProvider,
+    chatModelId,
     memory,
     grounding,
-    planner,
-    responder: buildResponder(modelProvider),
-    explainer: ibxExplainer,
-    handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
+    channels,
     telemetry,
     session: redisSessionStore(),
     tools: toolRegistry,
-    channels,
     tenantResolver: resolveIbatexasTenantPolicy,
-    // F4 / conductor rich-state: the pre-adjudication resolve stage assembles the
-    // per-pack SystemState (real entity state + sessionTokensConsumed) so the
-    // kernel adjudicates commerce mutations correctly instead of panic-REFUSING
-    // against the stub tenant state. See claustrum/resolve-and-assemble.ts.
     resolver: createIbatexasResolver(),
-    // RC-R3 / Decision 1: without a distributed lock the conductor falls back to
-    // its in-process InMemorySessionLock, so two api replicas would adjudicate
-    // the same `${channel}:${customerId}` session concurrently (double-EXECUTE).
-    // Postgres advisory locks pin acquire/release to one pooled connection.
     sessionLock: new PostgresAdvisorySessionLock(pgPool),
-    // B-PR1 — OFF by default → {} (no-op spread, byte-identical). ON → the three
-    // optional claims seams (investigator / claimPlanner / claimsKernel).
-    ...claimsSeams,
-  });
+    handoff: natsHandoff(publishNatsEvent, escalationHandoffParkDeps),
+    promptComposer,
+    explainer: ibxExplainer,
+    resolveScheduleSignal,
+    funnel,
+    capabilityRetriever,
+    readToolExecutors: IBATEXAS_READ_TOOL_EXECUTORS,
+    // B-PR1 — the claims seams, as a factory over the planner the composer hoists
+    // (Q6b: the claim-planner adapter must wrap the SAME claim-aware instance the
+    // Conductor gets). The logger + NATS sinks below are exactly why this is a
+    // closure the adapter supplies rather than something the pure composer builds.
+    claimsSeamsFor: (planner) =>
+      // F2 observability (RCA 2026-06-29): when the claims pipeline is ENABLED but the
+      // LINKED kernels are below the egress-brand floor, log a loud warning so the
+      // kernel-version drop point (silent store-open → UNKNOWN) is visible at boot.
+      buildClaimsSeams({
+        planner,
+        warn: (message) => logger.warn(message),
+        // BKL-108 — unconditional boot marker (ENABLED/disabled), so the RUNNING
+        // process's claims-pipeline state is readable from the boot log (a stale-env
+        // tsx respawn is otherwise indistinguishable from an enabled boot).
+        info: (message) => logger.info({ component: "startup" }, message),
+        // BKL-209 — a medical-emergency §O#9 ESCALATE fires this best-effort sink to
+        // put the emergency on the staff surface (support.handoff_requested → the
+        // handoff-subscriber → Escalações + staff WhatsApp), so "vou avisar nossa
+        // equipe" is TRUE. Session-keyed by turnId so each emergency turn pages once
+        // (no cross-turn dedup — every reported emergency should reach staff). Fully
+        // fire-and-forget: swallow all errors; a publish failure never breaks the
+        // customer's (already-safe) render.
+        onSafetyEmergency: (ctx) => {
+          const sessionId = `safety-emergency:${ctx.turnId ?? "unknown"}`;
+          void publishNatsEvent("support.handoff_requested", {
+            sessionId,
+            reason: "EMERGÊNCIA MÉDICA relatada no chat — atenda imediatamente.",
+          }).then(
+            () =>
+              logger.warn(
+                { component: "safety", turnId: ctx.turnId },
+                "medical-emergency ESCALATE surfaced — support.handoff_requested published (BKL-209)",
+              ),
+            (err: unknown) =>
+              logger.error(
+                { component: "safety", turnId: ctx.turnId, err: String(err) },
+                "medical-emergency surfacing FAILED — escalation is render-only (BKL-209)",
+              ),
+          );
+        },
+      }),
+    // BKL-078 — the flag read stays in the adapter (Hard Rule #3: config comes from
+    // the composition root). A FACTORY, not a gate object, so the composer invokes
+    // it at responder-construction time — byte-identical to the inline
+    // `claimsPipelineEnabled() ? { safeUnknown: createSafeUnknownGate() } : {}`.
+    safeUnknownGateFor: () =>
+      claimsPipelineEnabled() ? createSafeUnknownGate() : undefined,
+  };
+  // ONE call. `buildPlanner`/`buildResponder` come back out because the
+  // managed-agent plane (below) recomposes them over its per-trigger capped model.
+  const composedCustomer = composeCustomerConductor(customerConductorDeps);
+  _conductor = composedCustomer.conductor;
 
   // ── NEW-032 ops-actor conductor plane (slice B) — ALWAYS composed ───────────
   // The ops plane is a SECOND conductor composition recomposed PER REQUEST by
@@ -3274,11 +3865,14 @@ export async function bootstrapClaustrum(
   // BKL-085 — the ops-plane refund audit event log (parity with the admin
   // route's admin.refund.executed row). Shared instance; append is best-effort.
   const opsRefundEventLogSvc = createOrderEventLogService(logger);
-  // BKL-088 — the ops-alert + incident SYSTEM-write services, constructed WITH
-  // the audit sink (exactly like the admin ops-alerts / incidents resolve
-  // routes) so the SECOND (SYSTEM) governed layer's adjudication is audited.
-  // Shared singletons reused per turn (the resolver's by-id reads AND the tool
-  // executors' resolve/close writes both go through these).
+  // BKL-088 — the ops-alert + incident services. Shared singletons reused per
+  // turn (the resolver's by-id reads AND the tool executors' resolve/close writes
+  // both go through these). Still constructed WITH the audit sink, exactly like
+  // the admin ops-alerts / incidents resolve routes: BKL-260 moved the ops
+  // executors onto the non-adjudicating `writeAdjudicated*` methods, so the sink
+  // is currently unused on this path — but it stays so that any caller reaching
+  // for a `*FromEnvelope` method through this instance is audited by default
+  // rather than silently blind.
   const opsAlertSvc = createOpsAlertService({ auditSink });
   const opsIncidentSvc = createIncidentService({ auditSink });
   // The ops registry's governed side-effect deps (injected for testability).
@@ -3303,9 +3897,10 @@ export async function bootstrapClaustrum(
     // BKL-085 — the ops refund POST-adjudication ledger write (writeAdjudicatedRefund
     // does NO adjudication; the composed router already produced the Decision).
     paymentCmdSvc: createPaymentCommandService(),
-    // BKL-088 — the alert-resolve + incident-close SYSTEM-write layers (the D10
-    // second governed layer). The executors build the SYSTEM envelope + call
-    // these, exactly like the admin ops-alerts / incidents resolve routes.
+    // BKL-088/BKL-260 — the alert-resolve + incident-close POST-adjudication
+    // writes. The executors call `writeAdjudicated*` under the Decision the
+    // composed ops router already produced; they no longer mint a SYSTEM envelope
+    // and adjudicate a second time.
     opsAlertSvc,
     incidentSvc: opsIncidentSvc,
     // SCN-127 — the schedule-override write path. Reuses the SAME
@@ -3351,8 +3946,15 @@ export async function bootstrapClaustrum(
   _escalationApprovalGateway = createEscalationApprovalEngine({
     get: (token) => getEscalationParkStore().get(token),
     consume: (token) => getEscalationParkStore().consume(token),
+    // BKL-103 — the seed is now PER-PLANE (`escalationResumeSeedState`): the
+    // ops-plane refund still re-projects through the `admin:`-keyed OPS_RESUME_TABLE
+    // off the identical `{ ctx: { exists: false } }` stub, while a customer-plane
+    // `order.cancel` seeds `{ customerId, channel }` so the CUSTOMER branch actually
+    // re-runs `resolveAndAssemble` and the cancel re-adjudicates against FRESH order
+    // state. See that function's doc for why the customer id comes off the BKL-113
+    // proposer stamp.
     rebuildState: (envelope) =>
-      enrichResumeState(envelope, { ctx: { exists: false } }),
+      enrichResumeState(envelope, escalationResumeSeedState(envelope)),
     policyFor: (kind) => {
       const policy = policyForKind(kind);
       if (policy === null) {
@@ -3371,6 +3973,64 @@ export async function bootstrapClaustrum(
           approverStaffId,
         );
       },
+      // BKL-103 — the approved >=R$1.000 PAID-cancel executor. The ordering
+      // rationale (refund settled as a POST-DECISION write BEFORE the shared
+      // cancel body, so `executeOrderCancel`'s BKL-130 inner refund — which would
+      // itself ESCALATE at this amount — is skipped) lives in
+      // escalation/approved-cancel-executor.ts. Extracted there so the e2e drives
+      // the REAL executor instead of a hand-rolled mirror of it.
+      "order.cancel": createApprovedOrderCancelExecutor({
+        getOrder: (orderId, customerId) =>
+          createOrderQueryService().getById(orderId, {
+            customerId,
+          }) as Promise<ApprovedCancelOrder | null>,
+        findActivePayment: (orderId) =>
+          createPaymentCommandService().findActiveByOrderId(
+            orderId,
+          ) as Promise<ApprovedCancelActivePayment | null>,
+        getPayment: (paymentId) => createPaymentQueryService().getById(paymentId),
+        isPaidStatus: (status) => status === PaymentStatus.PAID,
+        // BKL-103 — the implied refund is settled THROUGH THE AUDITED KERNEL on the
+        // approver's authority (marker + receipt against the COMPOSED router, which
+        // is the only bundle carrying the AUT-017 overlay), and only then persisted
+        // via the same BKL-085 trio the approved-refund executor uses. Never a raw
+        // write: every centavo keeps its own kernel decision + audit row.
+        settleInnerRefund: (args) =>
+          settleApprovedInnerRefund(
+            {
+              projectPaymentState: createInnerRefundPaymentStateProjector({
+                getPayment: (paymentId) =>
+                  createPaymentQueryService().getById(paymentId),
+                buildRefundState: buildOpsRefundResumeState,
+                tenantId: process.env.KERNEL_TENANT_ID ?? "ibatexas",
+              }),
+              policyForRefund: createRefundPolicyResolver(policyForKind),
+              adjudicate: async ({ envelope, state, policy, receipt }) =>
+                (
+                  await adjudicateAndAudit(envelope, state as never, policy as never, {
+                    sink: { emit: (record) => getAuditSink().emit(record) },
+                    ledger,
+                    confirmationReceipt: receipt,
+                  })
+                ).decision,
+              writeRefund: (refundPayload, approverStaffId) =>
+                executeRefund(opsRegistryDeps, refundPayload, approverStaffId),
+              now: () => new Date().toISOString(),
+            },
+            args,
+          ),
+        runCancel: ({ orderId, customerId, reason, order }) =>
+          executeOrderCancel({
+            orderId,
+            customerId,
+            reason,
+            order,
+            orderCmdSvc: createOrderCommandService(),
+            paymentCmdSvc: createPaymentCommandService(),
+            paymentQuerySvc: createPaymentQueryService(),
+            log: logger as unknown as Parameters<typeof executeOrderCancel>[0]["log"],
+          }),
+      }),
     },
     markIntentResolved: async (sessionId, intentHash, status, resolvedBy, at) => {
       const store = await getEscalationStore();
@@ -3692,8 +4352,8 @@ export async function bootstrapClaustrum(
         modelProvider,
         // Same DRY factories the conductor uses — the per-trigger capped model is
         // passed in by the live runner (H1). Wiring BOTH points is now one call.
-        buildPlanner,
-        buildResponder,
+        buildPlanner: composedCustomer.buildPlanner,
+        buildResponder: composedCustomer.buildResponder,
         // BKL-003 — B-PR1 claims seams for the managed-agent plane, FLAG
         // DEFAULT-OFF. Per-trigger factory (NOT a boot singleton): the live
         // conductor is recomposed per trigger with a fresh planner, and the
@@ -3723,6 +4383,12 @@ export async function bootstrapClaustrum(
         // learning.event.v1 (fail-open; the leaf no-ops if Redis+NATS are absent).
         learningSink: getLearningSink(),
         redis: ledgerClient,
+        // F-21: the dedup claims are released with an ownership-checked Lua
+        // compare-and-delete, so this surface is composed from the RAW client
+        // (which can `eval`) rather than from `ledgerClient` (set/get/del only).
+        // It used to be the same object behind an `as unknown as` cast that
+        // would have thrown on the first failed agent turn.
+        dedupRedis: createTriggerDedupRedis(redis),
         pubsub,
         approvals: agentApprovals,
         // Proactive per-agent/per-window refund money breaker (bounds the FIRST

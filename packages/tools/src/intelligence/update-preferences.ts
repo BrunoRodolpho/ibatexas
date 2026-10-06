@@ -3,29 +3,39 @@
 // and Redis profile hash. Allergens must always be an explicit array — never
 // inferred (CLAUDE.md hard rule).
 //
-// ── Kernel routing ──────────────────────────────────────────────────────────
+// ── BKL-242 — this tool is dispatch-only, and dispatch is post-decision ───
 //
-// Previously this tool invoked `svc.updatePreferences(...)` directly,
-// bypassing the adjudicate kernel even though
-// `pack-customer-onboarding.customer.preferences.update` + the service-side
-// `updatePreferencesFromEnvelope` wrapper already existed. Per CLAUDE.md
-// rule #9 every mutating tool dispatch must flow through an IntentEnvelope.
+// The claustrum tool registry (apps/api/src/tools/register-ibatexas-tool-packs.ts)
+// is this handler's ONLY caller. The REST profile route (apps/api/src/routes/me.ts)
+// does NOT reach it — it calls the domain service's `updatePreferences` itself —
+// so there is no second caller to keep a self-adjudicating entry point for, and
+// the tool is converted in place rather than split into a twin the way
+// `reservation.cancel` was. Registry dispatch runs on a kernel EXECUTE the
+// Conductor has ALREADY adjudicated and ledger-claimed.
 //
-// We now build a `customer.preferences.update` envelope (UNTRUSTED,
-// principal="llm") and route via `updatePreferencesFromEnvelope`, which:
-//   - Adjudicates against `customerOnboardingPolicyBundle`
-//   - Enforces the allergen-explicit-array safety guard (CLAUDE.md rule #1)
-//   - Emits a governance audit record via the configured AuditSink
-//   - Delegates to the existing `updatePreferences()` for the Prisma write
+// Pre-fix this handler minted a SECOND `customer.preferences.update` envelope
+// (`nonce: randomUUID()`) and re-adjudicated it via
+// `updatePreferencesFromEnvelope`. That second adjudication was AUDIT-BLIND:
+// `createCustomerService()` was called with no `auditSink`, so the inner run
+// emitted NO governance record (live: conductor EXECUTE `intent_audit` 6172 with
+// no second row behind it).
+//
+// Removing the inner run strictly TIGHTENS governance rather than relaxing it.
+// The inner run adjudicated against the RAW `customerOnboardingPolicyBundle`;
+// the Conductor adjudicates against the COMPOSED router, which is that same
+// bundle PLUS the adopter guards — including `refuseAllergenMentionGuard`
+// (apps/api/src/claustrum/compose-policy-packs.ts). That guard fires on
+// `state.ctx.allergenMentionDetected`, a flag the RESOLVER stamps and this tool
+// never set in the state it projected below, so the inner run could reach
+// EXECUTE on an allergen-shaped ask that the composed router REFUSEs. The inner
+// bundle was therefore a strict subset of the outer one: deleting it removes an
+// unaudited decision without removing any guard coverage.
+//
+// The tool-boundary fail-closed allergen check below is NOT a kernel guard and
+// is unchanged — it still runs on every call, before the write.
 
-import { randomUUID } from "node:crypto"
 import { UpdatePreferencesInputSchema, NonRetryableError, type UpdatePreferencesInput, type AgentContext } from "@ibatexas/types"
 import { createCustomerService } from "@ibatexas/domain"
-import { buildEnvelope } from "@adjudicate/core"
-import type {
-  CustomerPreferencesUpdatePayload,
-  CustomerOnboardingState,
-} from "@ibatexas/pack-customer-onboarding"
 import { getRedisClient } from "../redis/client.js"
 import { rk } from "../redis/key.js"
 import { PROFILE_TTL_SECONDS } from "./types.js"
@@ -59,59 +69,21 @@ export async function updatePreferences(
   }
   const allergenExclusions = parsed.allergenExclusions
 
-  const payload: CustomerPreferencesUpdatePayload = {
+  // ── Write under the Conductor's decision ────────────────────────────
+  // BKL-242: no envelope is minted here and no second adjudication runs. The
+  // registry dispatched this handler because the kernel already returned
+  // EXECUTE for this `customer.preferences.update` intent and claimed its
+  // execution-ledger key.
+  const svc = createCustomerService()
+  const prefs = await svc.updatePreferences(ctx.customerId, {
     allergenExclusions,
     ...(parsed.dietaryRestrictions === undefined
       ? {}
-      : { dietaryFlags: parsed.dietaryRestrictions }),
+      : { dietaryRestrictions: parsed.dietaryRestrictions }),
     ...(parsed.favoriteCategories === undefined
       ? {}
       : { favoriteCategories: parsed.favoriteCategories }),
-  }
-
-  // ── Project state for the pack policies ────────────────────────────
-  // The pack's auth + state guards check `customerExists` + `isAuthenticated`.
-  // We have a verified `ctx.customerId` (auth check above), so both are true.
-  // The allergen safety guard is the LLM-relevant one; `now` lets future
-  // rate-limit-style guards work without re-wiring this call site.
-  const state: CustomerOnboardingState = {
-    ctx: {
-      actor: { principal: "user", id: ctx.customerId },
-      customerId: ctx.customerId,
-      customerExists: true,
-      isAuthenticated: true,
-      otpFresh: false,
-      hasParkedAnonymize: false,
-      now: new Date(),
-    },
-  }
-
-  const envelope = buildEnvelope<"customer.preferences.update", CustomerPreferencesUpdatePayload>({
-    kind: "customer.preferences.update",
-    payload,
-    nonce: randomUUID(),
-    actor: {
-      principal: "llm",
-      sessionId: `customer:${ctx.customerId}`,
-    },
-    taint: "UNTRUSTED",
   })
-
-  const svc = createCustomerService()
-  const outcome = await svc.updatePreferencesFromEnvelope(envelope, state, {
-    customerId: ctx.customerId,
-  })
-
-  if (outcome.decision.kind !== "EXECUTE" && outcome.decision.kind !== "REWRITE") {
-    // Surface the kernel's pt-BR refusal copy. The mutation did NOT run.
-    const message =
-      outcome.decision.kind === "REFUSE"
-        ? outcome.decision.refusal.userFacing
-        : "Não foi possível atualizar suas preferências no momento."
-    throw new NonRetryableError(message)
-  }
-
-  const prefs = outcome.result!
 
   // Update Redis profile hash + reset TTL (cache layer — stays in tools)
   const redis = await getRedisClient()

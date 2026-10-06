@@ -122,8 +122,11 @@ const RESERVATION_STATUS_LABELS_PTBR: Readonly<Record<string, string>> = {
   no_show: "não compareceu",
 };
 
-/** Map a reservation status to its pt-BR label, or the raw status if unmapped. */
-function reservationStatusLabel(status: string): string {
+/** Map a reservation status to its pt-BR label, or the raw status if unmapped.
+ *  Exported (LE2-012) so the ops CLAIM resolvers compose their reservations scalar
+ *  in the SAME pt-BR vocabulary this panorama render already uses — one label map,
+ *  no drift between the deterministic read render and the claims render. */
+export function reservationStatusLabel(status: string): string {
   return RESERVATION_STATUS_LABELS_PTBR[status] ?? status;
 }
 
@@ -141,8 +144,11 @@ function isStrArray(x: unknown): x is string[] {
   return Array.isArray(x) && x.every((s) => typeof s === "string");
 }
 
-/** Structural guard for {@link OpsSnapshot} — every field the template reads. */
-function isOpsSnapshot(x: unknown): x is OpsSnapshot {
+/** Structural guard for {@link OpsSnapshot} — every field the template reads.
+ *  Exported (LE2-012) so the ops CLAIM resolvers narrow the captured `unknown`
+ *  through the SAME single guard (a shape this rejects must fail CLOSED as a read
+ *  ERROR, never become a fabricated zero). */
+export function isOpsSnapshot(x: unknown): x is OpsSnapshot {
   if (!isRecord(x) || typeof x.now !== "string" || !isStrArray(x.degraded)) {
     return false;
   }
@@ -181,8 +187,9 @@ function isOpsSnapshot(x: unknown): x is OpsSnapshot {
   );
 }
 
-/** Structural guard for {@link SalesAnalytics} — every field the template reads. */
-function isSalesAnalytics(x: unknown): x is SalesAnalytics {
+/** Structural guard for {@link SalesAnalytics} — every field the template reads.
+ *  Exported (LE2-012) — see {@link isOpsSnapshot}. */
+export function isSalesAnalytics(x: unknown): x is SalesAnalytics {
   if (!isRecord(x) || typeof x.now !== "string" || !isStrArray(x.degraded)) {
     return false;
   }

@@ -15,7 +15,8 @@
 //
 // update / remove are ROW-OR-NULL (mirror ingredient.service): a findUnique existence
 // check, then updateMany / deleteMany, so a missing id is `null` (the route 404s)
-// rather than a P2025 throw.
+// rather than a P2025 throw. `null` also covers the row VANISHING between those two
+// statements — update honors updateMany's `{count}` (BKL-265).
 
 import { prisma } from "../client.js"
 // TYPE-ONLY import (erased at runtime) — safe in this index-eagerly-loaded service;
@@ -63,6 +64,13 @@ export function createDailySpecialService() {
    * for the loaded row. A missing id is `null` (no throw). Merges the patch onto the
    * loaded row for the return (same idiom as ingredient.service — the return reflects
    * the write without a second round-trip).
+   *
+   * BKL-265 — the WRITE's `count` is authoritative, not the read's. A row deleted
+   * between the findUnique and the updateMany matches nothing, and the merged object
+   * would then report a patch no row carries (`executeMenuSpecialSet` renders success
+   * off a truthy specialId). `count === 0` is therefore `null`, same as a missing id.
+   * Both models carry `@updatedAt`, so Prisma always writes a column and an empty
+   * patch still counts the matched row.
    */
   async function mutateOrNull(
     id: string,
@@ -71,7 +79,8 @@ export function createDailySpecialService() {
     const existing = await prisma.dailySpecial.findUnique({ where: { id } })
     if (!existing) return null
     const patch = compute(existing)
-    await prisma.dailySpecial.updateMany({ where: { id }, data: patch })
+    const { count } = await prisma.dailySpecial.updateMany({ where: { id }, data: patch })
+    if (count === 0) return null
     return { ...existing, ...patch }
   }
 
@@ -93,7 +102,8 @@ export function createDailySpecialService() {
      * Patch an existing daily special. Only the DEFINED fields of `patch` are written
      * (an omitted field is left untouched — never overwritten). An explicit `null` on
      * promoPriceCentavos / headline is a DEFINED value → clears it. Row-or-null: returns
-     * `null` when no special with that id exists.
+     * `null` when no special with that id exists — or when the row vanished before the
+     * write landed (BKL-265).
      */
     async update(id: string, patch: UpdateDailySpecialPatch) {
       // Strip undefined so an omitted field is left untouched (not nulled); an explicit

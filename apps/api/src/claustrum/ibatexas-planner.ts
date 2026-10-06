@@ -71,20 +71,26 @@ import type {
 } from "@claustrum/core";
 import { logger } from "../lib/logger.js";
 import {
-  CLAIM_REGISTRY,
-  canonicalizeRegistryType,
+  CUSTOMER_CLAIM_SCOPE,
+  canonicalizeScopedClaimType,
   checkCompleteness,
   constrainClaimGeneration,
   deriveCandidateValues,
   hasUnmappedSpan,
   ownerScopedBaseKey,
   routeSafety,
+  type ClaimPlaneScope,
   type ProposedClaim,
   type RequestSpan,
   type SafetyRoutingInput,
   type SpanCompleteness,
 } from "./claim-registry.js";
-import { detectMedicalEmergencyMarkers } from "./required-claim-decomposer.js";
+import {
+  carriesSafetyMarker,
+  detectMedicalEmergencyMarkers,
+  isDietQualifiedAsk,
+  isMedicalEmergencyAsk,
+} from "./required-claim-decomposer.js";
 import {
   CLAIM_PLANNER_PERSONA,
   EXPRESS_INTENT_TOOL,
@@ -100,8 +106,32 @@ import {
   closedHoursPromptNote,
   type ScheduleSignal,
 } from "./closed-hours.js";
+import type {
+  FunnelAliasSeam,
+  FunnelParseMemoSeam,
+  FunnelPlannerSeam,
+  FunnelScopeSeam,
+} from "./funnel-tier.js";
+// BKL-276 — the one "does this tier answer the turn itself?" predicate.
+import { tierAuthorsOwnReply } from "./funnel-tier.js";
+import { canonicalizeAliases } from "./alias-canonicalization.js";
+import {
+  L2_SURFACE_VERSION,
+  type CapabilityRetriever,
+  type ScopeDecision,
+} from "./capability-retrieval.js";
+import {
+  buildParseCacheKey,
+  canonicalizeUtterance,
+  isCacheableParse,
+  isSilentParse,
+  type MemoizedParse,
+} from "./parse-memo.js";
 import { resolveQueriedScheduleDate } from "./schedule-date-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
+import { resolveDeliveryCoverage } from "./delivery-coverage-resolver.js";
+import { resolveCouponValidity } from "./coupon-validity-resolver.js";
+import { resolvePairings } from "./pairing-resolver.js";
 import {
   resolveMenuItem,
   resolveMenuOverviewText,
@@ -116,14 +146,25 @@ import {
   PINNED_COMPLETION_TEMPERATURE,
 } from "./model-call-defaults.js";
 import { completeWithResilience, isEmptyCompletion } from "./complete-with-retry.js";
-import {
-  EXTRACTION_SCHEMAS_BY_CAPABILITY,
-  ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY,
-} from "./language-engine/wire-schemas.js";
+import { ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY } from "./language-engine/wire-schemas.js";
 import {
   READ_TOOL_SCHEMAS_BY_NAME,
   sanitizeReadToolInput,
 } from "./language-engine/read-tool-schemas.js";
+import type { AdvertisedWorkflow, WorkflowRuntime } from "./workflow/workflow-runtime.js";
+import {
+  isWorkflowScopedKind,
+  withoutWorkflowScopedKinds,
+} from "./workflow/workflow-access.js";
+import { feasibilityActor } from "./workflow/workflow-composition.js";
+import {
+  isStartWorkflowInput,
+  resolveWorkflowName,
+  sanitizeWorkflowSlots,
+  START_WORKFLOW_TOOL,
+  startWorkflowToolDefinition,
+  WORKFLOW_INSTANCE_PAYLOAD_KEY,
+} from "./workflow/workflow-surface.js";
 
 // Re-export so existing importers (tests, registry) keep their import site.
 export { EXPRESS_INTENT_TOOL };
@@ -184,6 +225,9 @@ type ExtractionFailureReason = "malformed_tool_call" | "empty_completion" | "com
 /** Marker `translateToolCalls` pushes to `dropped` for a malformed
  *  `express_intent` call — checked below to decide whether to REFUSE. */
 const MALFORMED_EXPRESS_INTENT_MARKER = `${EXPRESS_INTENT_TOOL}(malformed)`;
+
+/** LE2-020 — the `start_workflow` twin of the marker above. */
+const MALFORMED_START_WORKFLOW_MARKER = `${START_WORKFLOW_TOOL}(malformed)`;
 
 function buildExtractionFailureEnvelope(
   reason: ExtractionFailureReason,
@@ -322,6 +366,48 @@ export interface IbatexasPlannerDeps {
   readonly staffEnvelopeActor?: StaffEnvelopeActor;
   /** Override the system prompt (defaults to the pt-BR semantic-parser prompt). */
   readonly system?: string;
+  /**
+   * Override the CLAIM-path system prompt ONLY (`proposeClaims`, Q6b), leaving the
+   * intent-path `system` untouched. Defaults to `system`, then to the catalog
+   * `ibatexas/claim-planner.persona` — so every existing composition (customer,
+   * WhatsApp, tests that set `system`) is BYTE-IDENTICAL.
+   *
+   * LE2 decision 6 (ops convergence) is why this exists. The two paths are
+   * DIFFERENT JOBS on the same planner instance: `propose` extracts an intent,
+   * `proposeClaims` selects a registry claim TYPE. The ops conductor injects the
+   * staff PLANNER persona as its whole `system` ("sua única função é
+   * express_intent"-shaped), and that persona demonstrably SUPPRESSES the
+   * `propose_claim` call on a 4B (the exact failure {@link CLAIM_PLANNER_PERSONA}
+   * documents for the customer intent persona). Without a separate claim-path
+   * prompt the converged ops plane would propose ZERO claims and silently fall
+   * back to prose — the opposite of the convergence. The ops composition therefore
+   * passes the claim-planner persona here explicitly.
+   */
+  readonly claimPlannerSystem?: string;
+  /**
+   * LE2-012 — the PLANE's claim-type scope for the CLAIM path (`proposeClaims`,
+   * Q6b): the closed enum advertised on the `propose_claim` tool AND the schema
+   * the deterministic walls parameterize. Defaults to
+   * {@link CUSTOMER_CLAIM_SCOPE}, so every existing composition (customer,
+   * WhatsApp, managed-agent, tests) is BYTE-IDENTICAL.
+   *
+   * The ops conductor passes its own SUPERSET scope (customer types ∪ the
+   * store-level ops types). Because the enum, the constrained-generation wall and
+   * the P4 completeness wall all read the SAME scope, an ops-scoped type is
+   * simultaneously (a) advertised to the ops claim planner and (b) unreachable
+   * from the customer planner — the plane boundary is the wall itself, not a
+   * second mechanism.
+   */
+  readonly claimScope?: ClaimPlaneScope;
+  /**
+   * Wire Truth — the prompt-catalog id of an injected `system` (the ops plane
+   * bypasses the fragment graph with a raw persona string, which used to leave
+   * the trace's prompt manifest empty — the workbench's `persona ?`). When both
+   * are set, the trace carries this id as a single-tag manifest (bare — the
+   * catalog owns it, not the fragment graph). Absent → the pre-existing empty
+   * manifest, byte-identical.
+   */
+  readonly systemPromptId?: string;
   readonly maxTokens?: number;
   /**
    * Per-envelope nonce source (T3-2). The nonce is the kernel's replay key:
@@ -383,6 +469,65 @@ export interface IbatexasPlannerDeps {
   readonly readToolExecutors?: Readonly<
     Record<string, (input: unknown, state: CognitiveState) => Promise<unknown>>
   >;
+  /**
+   * LE2-007 — the parse funnel's tier seam. When present, `propose` asks it FIRST
+   * whether a tier resolves this turn without the model; an L0 (social-only) claim
+   * returns the respond-only plan with ZERO completions on the wire, and
+   * `proposeClaims` stays off the wire for the same turn.
+   *
+   * ABSENT ⟹ byte-identical to the pre-funnel planner — which is how the ops plane,
+   * the agent plane and every unit test opt out. The seam itself is fail-closed: it
+   * only claims a turn whose ingress published a funnel context (see
+   * `funnel-tier.ts`'s `decideL0`), so a composition that wires the seam but an
+   * ingress that does not publish simply never reaches L0.
+   */
+  readonly funnel?: FunnelPlannerSeam;
+  /**
+   * LE2-009 — the funnel's L1 tier: exact-match parse memoization. The SAME
+   * funnel instance the `funnel` option gets (`createParseFunnel` returns both
+   * seams), passed separately because the two run at different points in
+   * `propose`: L0 decides BEFORE any surface exists, L1 needs the composed system
+   * prompt and tool surface because they ARE its cache key (parse-memo.ts).
+   *
+   * Absent ⟹ no lookup, no store, no counters — the planner is byte-identical to
+   * its pre-L1 behaviour, which is how the ops/agent planes and every unit suite
+   * opt out.
+   */
+  readonly parseMemo?: FunnelParseMemoSeam;
+  /**
+   * LE2-008 — the funnel's L2 tier: scoped parse. The retriever narrows this
+   * turn's advertised roster to the K most plausible capabilities, or stands
+   * down to the full roster when retrieval is not confident.
+   *
+   * Absent ⟹ no retrieval, no scoping, no stamp — the planner advertises the
+   * full roster exactly as it did pre-L2, which is how the ops/agent planes and
+   * every unit suite opt out.
+   */
+  readonly retriever?: CapabilityRetriever;
+  /** LE2-008 — the seam that stamps this turn's scope decision on the trace. The
+   *  SAME funnel instance the other seams come from. */
+  readonly scopeSeam?: FunnelScopeSeam;
+  /**
+   * LE2-025b — the alias layer's seam: files resolutions for the trace, and stamps
+   * the CLARIFY short-circuit when a declared-ambiguous surface has no context.
+   * Absent ⟹ no canonicalization at all ⟹ byte-identical to the pre-alias planner.
+   */
+  readonly aliasSeam?: FunnelAliasSeam;
+  /**
+   * LE2-020 — the WORKFLOW RUNTIME. Supplies this turn's closed workflow
+   * surface (`advertise`) and instantiates the one the parser selects
+   * (`select`). Absent ⟹ no workflow is ever advertised and a `start_workflow`
+   * call is dropped like any unknown tool ⟹ byte-identical to the pre-workflow
+   * planner, which is how the ops plane, the agent plane and every existing
+   * unit test opt out without a flag.
+   *
+   * NOTE the runtime does NOT carry the access class: that is subtracted from
+   * the roster unconditionally (`workflow/workflow-access.ts`), because a
+   * composition WITHOUT a workflow runtime must still refuse to emit a
+   * workflow-scoped kind — otherwise opting out of workflows would opt into
+   * reaching their private capabilities.
+   */
+  readonly workflowRuntime?: WorkflowRuntime;
 }
 
 /**
@@ -425,20 +570,20 @@ function isExpressIntentInput(input: unknown): input is ExpressIntentInput {
 /**
  * FE-T11 (plan-time payload filter — the PARSE-seam enforcement half).
  *
- * `EXTRACTION_SCHEMAS_BY_CAPABILITY` (wire-schemas.ts) only narrows what is
- * ADVERTISED to the model — `buildToolSurface`, above, embeds each authored
- * capability's narrowed `payload` JSON-Schema into the `express_intent` tool
- * definition. Nothing previously validated the model's ACTUAL tool-call
- * `payload` against that schema before it became `IntentEnvelope.payload`:
- * this stack has no grammar-constrained decoding (a completion's tool-call
- * arguments are not enforced against `inputSchema` at the model layer), so a
- * completion can freely emit a key its capability's authored schema never
- * declared — e.g. a hallucinated `orderId` for `payment.pix.regenerate`,
- * whose schema declares ZERO fields. Unfiltered, that key reached
- * `resolveOrderId` (`resolve-and-assemble.ts`) and was read as an EXPLICIT
- * customer reference, silently bypassing the auto-resolve confirm gate — the
- * advertised schema alone did NOT close this; this filter is the missing
- * enforcement half.
+ * Since BKL-255(a) this is the ONLY half: the authored per-capability schemas
+ * are no longer advertised to the model at all (`buildToolSurface`, above,
+ * dropped the `allOf` narrowing the engine silently discarded at decode —
+ * LE2-004). Nothing validated the model's ACTUAL tool-call `payload` against
+ * those schemas before it became `IntentEnvelope.payload`: this stack has no
+ * grammar-constrained decoding (a completion's tool-call arguments are not
+ * enforced against `inputSchema` at the model layer), so a completion can
+ * freely emit a key its capability's authored schema never declared — e.g. a
+ * hallucinated `orderId` for `payment.pix.regenerate`, whose schema declares
+ * ZERO fields. Unfiltered, that key reached `resolveOrderId`
+ * (`resolve-and-assemble.ts`) and was read as an EXPLICIT customer reference,
+ * silently bypassing the auto-resolve confirm gate. Advertising the schema
+ * never closed this even when we believed the model saw it; this filter is
+ * what actually does.
  *
  * Name-level strip ONLY — no type coercion, no repair; that stays the
  * resolver's job (P3, one transformation per seam). A capability absent from
@@ -599,6 +744,7 @@ function unionPlans(
 function buildToolSurface(
   plan: CapabilityPlan,
   includeReads = true,
+  workflows: readonly AdvertisedWorkflow[] = [],
 ): CompletionRequest["tools"] {
   const tools: Array<{
     name: string;
@@ -607,21 +753,26 @@ function buildToolSurface(
   }> = [];
 
   if (plan.allowedIntents.length > 0) {
-    // FE-1.1/FE-1.4 — per-capability extraction schema on the wire. For each
-    // allowed intent that has an AUTHORED extraction schema
-    // (EXTRACTION_SCHEMAS_BY_CAPABILITY), narrow the `payload` shape the
-    // model sees via a `capability`-discriminated `if/then` clause — additive
-    // over the existing generic `payload:{type:"object"}` shape (kept as the
-    // base/fallback for every capability without an authored schema yet, so
-    // this is byte-identical for every turn that doesn't propose a capability
-    // in the registry).
-    const perCapabilitySchemas = plan.allowedIntents
-      .map((kind) => {
-        const payloadSchema = EXTRACTION_SCHEMAS_BY_CAPABILITY.get(kind);
-        return payloadSchema === undefined ? null : { kind, payloadSchema };
-      })
-      .filter((x): x is { kind: string; payloadSchema: Record<string, unknown> } => x !== null);
-
+    // BKL-255(a) — the per-capability `allOf`/`if-then` payload narrowing that
+    // FE-1.1/FE-1.4 composed here is GONE: this engine never saw it.
+    //
+    // LE2-004 (wire-proven) established that Ollama decodes a tool's JSON-Schema
+    // into a CLOSED Go struct that silently DROPS `allOf` — the constraint never
+    // reaches the model, and (like every unsupported constraint on this engine)
+    // it never errors, so its deadness was invisible from the status code.
+    // Re-confirmed within-epoch on 2026-07-26 against nemotron-3-nano:4b: the
+    // production 13-tool surface sent with and without the 20 `allOf` clauses,
+    // interleaved A/B/A/B/A/B at temperature 0, returned BYTE-IDENTICAL
+    // completions on 8/8 utterances (48 exchanges) — 10,010 bytes of the 17,987-
+    // byte body were dead wire.
+    //
+    // The authored schemas themselves are NOT dead and stay in wire-schemas.ts:
+    // they are the live source of `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY`,
+    // which `stripUnauthoredPayloadFields` (below) enforces at the PARSE seam —
+    // the half that actually bounds the model's payload. Re-expressing the
+    // narrowing in a form this engine DOES decode (under `properties.payload`)
+    // is BKL-255(b), deliberately not done here: it is a real change to what the
+    // model sees and needs its own A/B, not a refactor.
     tools.push({
       name: EXPRESS_INTENT_TOOL,
       description:
@@ -642,17 +793,18 @@ function buildToolSurface(
         },
         required: ["capability", "payload"],
         additionalProperties: false,
-        ...(perCapabilitySchemas.length > 0
-          ? {
-              allOf: perCapabilitySchemas.map(({ kind, payloadSchema }) => ({
-                if: { properties: { capability: { const: kind } } },
-                then: { properties: { payload: payloadSchema } },
-              })),
-            }
-          : {}),
       },
     });
   }
+
+  // LE2-020 — the WORKFLOW SELECTION SURFACE. Deliberately built HERE, in the
+  // same array as `express_intent`, because this array is exactly what
+  // `buildParseCacheKey` digests: putting the offered workflows inside it is
+  // what makes a parse cached while a workflow was offered unreachable from a
+  // turn where it was not. Absent workflows ⟹ nothing is pushed ⟹ the wire is
+  // byte-identical to pre-LE2-020.
+  const workflowTool = startWorkflowToolDefinition(workflows);
+  if (workflowTool !== undefined) tools.push(workflowTool as (typeof tools)[number]);
 
   if (includeReads) {
     // FE-T13 — per-read-tool extraction schema on the wire. Mirrors the
@@ -740,6 +892,110 @@ function plannerEnvelopeActor(
 }
 
 /**
+ * Turn ONE in-plan `express_intent` call into an envelope, or report why it was
+ * dropped.
+ *
+ * Extracted from {@link translateToolCalls} (LE2-020) because that function now
+ * dispatches over THREE tool shapes, and the per-shape admission rules are the
+ * part a reviewer actually needs to read. Behaviour is unchanged: the same
+ * structural check, the same allowlist check, the same payload filter, the same
+ * `buildEnvelope` arguments, in the same order.
+ */
+function admitExpressIntent(args: {
+  readonly input: unknown;
+  readonly allowed: ReadonlySet<string>;
+  readonly state: CognitiveState;
+  readonly actor: IntentActor;
+  /** LAZY: a dropped call must not consume a nonce, exactly as before the
+   *  extraction (`deriveNonce` is injectable and may be a counting double). */
+  readonly nonce: () => string;
+}): { readonly envelope: IntentEnvelope; readonly capability: string } | { readonly dropped: string } {
+  if (!isExpressIntentInput(args.input)) {
+    // FE-T01 (NIT-1) — the SAME constant the extraction-failure REFUSE check
+    // reads, so producer and consumer cannot drift apart.
+    return { dropped: MALFORMED_EXPRESS_INTENT_MARKER };
+  }
+  const { capability, payload } = args.input;
+  // Defense in depth: never build an envelope for a capability the pack
+  // planners did not authorize this turn, even if the model (or a compromised
+  // prompt) emits one.
+  if (!args.allowed.has(capability)) return { dropped: capability };
+
+  // FE-T11 — the plan-time payload filter (see stripUnauthoredPayloadFields's
+  // doc): the ENFORCEMENT half of the authored extraction schemas, closing the
+  // class of bug where a smuggled key rode the wire unfiltered straight into
+  // buildEnvelope. Runs BEFORE buildEnvelope, unconditionally, for every
+  // capability — a no-op for any capability with no authored schema.
+  const { filtered: filteredPayload, stripped } = stripUnauthoredPayloadFields(
+    capability,
+    payload ?? {},
+  );
+  if (stripped.length > 0) {
+    // SIGNAL — names only, NEVER values (the stripped value could be arbitrary
+    // model-generated text/PII).
+    logger.warn(
+      {
+        component: "planner",
+        event: "express_intent.payload_fields_stripped",
+        turnId: args.state.turnId,
+        capability,
+        strippedFields: stripped,
+      },
+      `planner stripped ${stripped.length} unauthored payload field(s) for "${capability}"`,
+    );
+  }
+  return {
+    envelope: buildEnvelope({
+      kind: capability,
+      payload: filteredPayload ?? {},
+      // Per-turn constant (customer plane: llm/conversation; ops plane:
+      // user/admin:<staffId>/role). `payload` above is the ONLY thing the model
+      // influences — never `actor`.
+      actor: args.actor,
+      taint: "UNTRUSTED",
+      nonce: args.nonce(),
+    }),
+    capability,
+  };
+}
+
+/**
+ * Turn ONE `start_workflow` call into the workflow's ANCHOR envelope, or report
+ * why it was dropped (LE2-020).
+ *
+ * Treated with exactly the suspicion an `express_intent` call gets: structurally
+ * validated, then checked against the CLOSED surface this turn actually offered
+ * (inside `selectWorkflow`), then turned into an ordinary IntentEnvelope so the
+ * kernel adjudicates the selection like any other proposed mutation. Selecting a
+ * workflow grants nothing on its own.
+ */
+function admitWorkflowSelection(args: {
+  readonly input: unknown;
+  readonly selectWorkflow:
+    | ((workflowId: string, slots: unknown) => { readonly kind: string; readonly payload: unknown } | undefined)
+    | undefined;
+  readonly actor: IntentActor;
+  /** LAZY — see {@link admitExpressIntent}. */
+  readonly nonce: () => string;
+}): { readonly envelope: IntentEnvelope; readonly capability: string } | { readonly dropped: string } {
+  if (!isStartWorkflowInput(args.input)) {
+    return { dropped: MALFORMED_START_WORKFLOW_MARKER };
+  }
+  const selected = args.selectWorkflow?.(args.input.workflow, args.input.slots);
+  if (selected === undefined) return { dropped: args.input.workflow };
+  return {
+    envelope: buildEnvelope({
+      kind: selected.kind,
+      payload: selected.payload ?? {},
+      actor: args.actor,
+      taint: "UNTRUSTED",
+      nonce: args.nonce(),
+    }),
+    capability: selected.kind,
+  };
+}
+
+/**
  * Translate the model's tool calls into the planner's outputs (RC-A1): each
  * in-plan `express_intent` becomes an `IntentEnvelope`; a visible read tool is
  * recorded in `readToolCalls`; a malformed/out-of-plan/unknown call is dropped
@@ -762,6 +1018,18 @@ function translateToolCalls(args: {
    */
   readonly actor: IntentActor;
   readonly deriveNonce: (state: CognitiveState, envelopeIndex: number) => string;
+  /**
+   * LE2-020 — instantiate a workflow the model selected, returning the ANCHOR
+   * envelope's kind and payload, or `undefined` when the id is not on this
+   * turn's closed surface (the workflow twin of the `allowed.has(capability)`
+   * check below). Injected rather than reached for, so this function stays a
+   * pure translation over the model's calls plus the turn's allowlists.
+   * Absent ⟹ a `start_workflow` call is dropped like any unknown tool.
+   */
+  readonly selectWorkflow?: (
+    workflowId: string,
+    slots: unknown,
+  ) => { readonly kind: string; readonly payload: unknown } | undefined;
 }): {
   envelopes: IntentEnvelope[];
   capabilities: string[];
@@ -774,65 +1042,37 @@ function translateToolCalls(args: {
   const dropped: string[] = [];
 
   for (const call of args.toolCalls ?? []) {
-    if (call.name === EXPRESS_INTENT_TOOL) {
-      if (!isExpressIntentInput(call.input)) {
-        // FE-T01 (NIT-1) — the SAME constant the extraction-failure REFUSE
-        // check below reads, so producer and consumer cannot drift apart.
-        dropped.push(MALFORMED_EXPRESS_INTENT_MARKER);
-        continue;
+    if (call.name !== EXPRESS_INTENT_TOOL && call.name !== START_WORKFLOW_TOOL) {
+      if (args.visibleReadTools.includes(call.name)) {
+        readToolCalls.push({ name: call.name, input: call.input });
+      } else {
+        dropped.push(call.name);
       }
-      const { capability, payload } = call.input;
-      // Defense in depth: never build an envelope for a capability the
-      // pack planners did not authorize this turn, even if the model
-      // (or a compromised prompt) emits one.
-      if (!args.allowed.has(capability)) {
-        dropped.push(capability);
-        continue;
-      }
-      // FE-T11 — the plan-time payload filter (see stripUnauthoredPayload
-      // Fields's doc): the ENFORCEMENT half of the authored extraction
-      // schemas, closing the class of bug where a smuggled key (e.g. a
-      // hallucinated orderId) rode the wire unfiltered straight into
-      // buildEnvelope. Runs BEFORE buildEnvelope, unconditionally, for every
-      // capability — a no-op for any capability with no authored schema.
-      const { filtered: filteredPayload, stripped } = stripUnauthoredPayloadFields(
-        capability,
-        payload ?? {},
-      );
-      if (stripped.length > 0) {
-        // SIGNAL — names only, NEVER values (the stripped value could be
-        // arbitrary model-generated text/PII): observability for how often a
-        // completion attempts to smuggle an unauthored field past a capability's
-        // narrowed wire schema.
-        logger.warn(
-          {
-            component: "planner",
-            event: "express_intent.payload_fields_stripped",
-            turnId: args.state.turnId,
-            capability,
-            strippedFields: stripped,
-          },
-          `planner stripped ${stripped.length} unauthored payload field(s) for "${capability}"`,
-        );
-      }
-      envelopes.push(
-        buildEnvelope({
-          kind: capability,
-          payload: filteredPayload ?? {},
-          // Per-turn constant (customer plane: llm/conversation; ops plane:
-          // user/admin:<staffId>/role). `payload` above is the ONLY thing the
-          // model influences — never `actor`.
-          actor: args.actor,
-          taint: "UNTRUSTED",
-          nonce: args.deriveNonce(args.state, envelopes.length),
-        }),
-      );
-      capabilities.push(capability);
-    } else if (args.visibleReadTools.includes(call.name)) {
-      readToolCalls.push({ name: call.name, input: call.input });
-    } else {
-      dropped.push(call.name);
+      continue;
     }
+
+    const admitted =
+      call.name === EXPRESS_INTENT_TOOL
+        ? admitExpressIntent({
+            input: call.input,
+            allowed: args.allowed,
+            state: args.state,
+            actor: args.actor,
+            nonce: () => args.deriveNonce(args.state, envelopes.length),
+          })
+        : admitWorkflowSelection({
+            input: call.input,
+            selectWorkflow: args.selectWorkflow,
+            actor: args.actor,
+            nonce: () => args.deriveNonce(args.state, envelopes.length),
+          });
+
+    if ("dropped" in admitted) {
+      dropped.push(admitted.dropped);
+      continue;
+    }
+    envelopes.push(admitted.envelope);
+    capabilities.push(admitted.capability);
   }
 
   return { envelopes, capabilities, readToolCalls, dropped };
@@ -861,15 +1101,29 @@ function translateToolCalls(args: {
  *  - `ownedByBaseKey`   — the owner-scoped resource ids that resolved PRESENT this
  *    turn, grouped by base key (`ownedResourceIdsByBaseKey`). The ONLY admissible
  *    subjects for an owner-scoped candidate (FIX 2): exactly one → bind it; many →
- *    CLARIFY; none → no resolution (degrade SAFE to UNKNOWN — never the model's id).
+ *    the NAMED resolution below, else CLARIFY; none → no resolution (degrade SAFE to
+ *    UNKNOWN — never the model's id).
+ *  - `namedOwnedSubjectByBaseKey` — F-19 / BKL-203: for a base key whose ≥2-owned set
+ *    is ambiguous, the ONE owned id THIS message explicitly NAMES by display number,
+ *    already resolved by the read plane's own `resolveNamedOwnedOrderSubject`
+ *    (classify-only-reads.ts) against the SAME turn's ledger. It is a RESULT, not an
+ *    input to a second resolver: this planner never parses a display number itself,
+ *    so there is exactly one such heuristic in the codebase (BKL-216's
+ *    `matchNamedOwnedOrders`, which that function delegates to). Owner-scoped /
+ *    IDOR-safe by construction — the resolver can only ever return an id drawn from
+ *    the authenticated owned set, and 0-or-≥2 matches yield NO entry (the ambiguity
+ *    CLARIFY stands — never a guess).
  *
- * Both OPTIONAL: absent (unit tests / a non-owner-scoped turn) ⟹ the planner keeps
+ * All OPTIONAL: absent (unit tests / a non-owner-scoped turn) ⟹ the planner keeps
  * the model's subject and stamps an `"unauthenticated"` actor that owns nothing
  * (fail-closed), so a missing auth context can never validate an owner-scoped claim.
+ * An absent `namedOwnedSubjectByBaseKey` is byte-identical to the pre-F-19 planner
+ * (the ≥2-owned branch falls straight through to CLARIFY).
  */
 export interface ClaimAuthContext {
   readonly customerId?: string;
   readonly ownedByBaseKey?: ReadonlyMap<string, readonly string[]>;
+  readonly namedOwnedSubjectByBaseKey?: ReadonlyMap<string, string>;
 }
 
 export interface ClaimAwarePlannerPort extends PlannerPort {
@@ -911,19 +1165,226 @@ export function createIbatexasPlanner(
 
   return {
     async propose(state: CognitiveState): Promise<Plan> {
+      // ── LE2-007 · L0 · THE FUNNEL'S FIRST QUESTION ─────────────────────────
+      // Asked BEFORE the tool surface is built and before any completion: does a
+      // funnel tier resolve this turn with no model call? An L0 claim (a social-only
+      // utterance, outside any confirm window — see funnel-tier.ts) means the answer
+      // is a deterministic pt-BR template the responder renders off the SAME stamped
+      // stage record, so the correct plan here is the respond-only plan the
+      // "nothing proposable" branch below already produces: zero envelopes, nothing
+      // to adjudicate, and — the point of the tier — zero bytes on the wire.
+      //
+      // The plan shape is deliberately IDENTICAL to that branch's (envelopes: [],
+      // capabilities: [], readToolCalls: []) so every downstream consumer (SUBMIT's
+      // adjudicatePlan([]), the responder's REFUSE-on-empty-plan branch, the
+      // extraction corpus's ∅ class) sees exactly the shape a no-capability turn has
+      // always had; only the `rationale` (trace-only, never user-facing) names the
+      // tier. Absent seam ⟹ this whole block is skipped ⟹ byte-identical planner.
+      const l0Stage = deps.funnel?.claim(state);
+      if (l0Stage !== undefined) {
+        return {
+          envelopes: [],
+          rationale: `ibatexas-planner: funnel ${l0Stage.tier} (${l0Stage.reason}) — no model call`,
+          capabilities: [],
+          readToolCalls: [],
+        };
+      }
+      // ── LE2-025b · ALIAS CANONICALIZATION · AT PARSE ENTRY ─────────────────
+      // Runs before ANYTHING reads the utterance: before retrieval builds its
+      // query, before the L1 key is digested, and before the message is composed
+      // for the model. All three must see the SAME text or L1's contract breaks
+      // (its key must digest every input the parse is a function of).
+      //
+      // `state.perception.text` is deliberately NOT mutated — the responder reads
+      // that field for prose synthesis, so rewriting it would let a canonical
+      // handle reach a customer-facing sentence. The canonical form is
+      // planner-local; the customer's own words survive everywhere else.
+      const aliasSeam = deps.aliasSeam;
+      const aliasResult =
+        aliasSeam === undefined ? undefined : canonicalizeAliases(state.perception.text);
+      // ── F-3 · A SAFETY MARKER OUTRANKS AMBIGUITY ───────────────────────────
+      //
+      // The short-circuit below is a TIER CLAIM: `stampAliasClarify` stamps ALIAS,
+      // `tierAuthorsOwnReply("ALIAS")` is TRUE, and `proposeClaims` therefore
+      // returns the EMPTY claim plan for the turn. That suppresses the whole claim
+      // plane — including the §O#9 closed-taxonomy safety router and the P4
+      // completeness wall — on a turn that is NOT span-free. (The safety argument
+      // written above the L0 gates is scoped to L0, whose utterances have no
+      // content span at all; it does not transfer to ALIAS, and reading it as
+      // though it did is what left this open.)
+      //
+      // MEASURED consequence before this gate: `"a costela tem amendoim?"` — a
+      // direct allergen question, Hard Rule #1 territory — proposed ZERO claims and
+      // answered with the bare catalog disambiguation. Same for a declared medical
+      // marker ("sou celíaco, …"). The owner RULED (2026-08-04) that a safety marker
+      // outranks the ambiguity: safety routing runs, and the ambiguity is resolved
+      // INSIDE that flow rather than ahead of it.
+      //
+      // WHAT THIS GATES, PRECISELY: only whether the turn SHORT-CIRCUITS.
+      // `canonicalizeAliases` still runs, unchanged, above; `parseText` below is
+      // still `aliasResult.text` — which the canonicalizer returns BYTE-IDENTICAL to
+      // the customer's words on the ambiguous branch, by construction ("return the
+      // ORIGINAL text in that case rather than a half-rewritten one"). So the text
+      // the parser sees, the retrieval query and the L1 key digest are all exactly
+      // what they would have been; no funnel key-surface component changes.
+      //
+      // WHY THE MARKER TEST IS `carriesSafetyMarker` AND NOT A LOCAL REGEX: it is
+      // the union of the two deterministic nets the safety path ITSELF consumes
+      // (the BKL-209 emergency net behind `routeSafety`'s §O#9 ESCALATE, and the
+      // BKL-270 diet net behind the investigator's read suppression and the BKL-184
+      // abstain copy). A weaker net here would be a SECOND safety authority that
+      // could route a turn into a flow the enforcement then declines to treat as a
+      // safety turn — see the predicate's own docblock.
+      //
+      // WHERE THE AMBIGUITY GOES ON THE DEFERRED TURN — it is SUBSUMED, not lost.
+      // Both in-scope classes reach a terminal that is INVARIANT over which reading
+      // the customer meant, so no disambiguation is needed to reach the safe
+      // outcome: a distress marker forces the §O#9 ESCALATE (asking "a bovina ou a
+      // congelada?" of someone who cannot breathe is the failure, not the fix), and
+      // a diet-qualified ask has its `abstain` reads suppressed for EVERY candidate
+      // reading alike, landing on the ratified BKL-184 proposition-free abstain +
+      // human-handoff offer. Voicing the two candidate products INSIDE that safe
+      // reply is a customer-facing COPY decision (a new rendered pt-BR surface, and
+      // a carrier so non-customer planes stay byte-identical); it is deliberately
+      // NOT taken here — see the PR body.
+      const safetyOutranksAmbiguity =
+        aliasResult !== undefined &&
+        aliasResult.ambiguous.length > 0 &&
+        carriesSafetyMarker(state.perception.text);
+      if (safetyOutranksAmbiguity) {
+        // TRACE-ONLY. Skipping the stamp means the ALIAS tier never claims this
+        // turn, so the funnel's own `funnel.tier` line is never written for it and
+        // the ambiguity would otherwise be invisible to RCA. This line is the
+        // deferral record: it names the surface, its candidates and WHICH net
+        // outranked it, and it changes no control flow.
+        logger.info(
+          {
+            component: "planner",
+            event: "planner.alias_ambiguity_deferred_to_safety",
+            turnId: state.turnId,
+            surface: aliasResult.ambiguous[0]?.surface ?? "",
+            candidates: aliasResult.ambiguous[0]?.candidates ?? [],
+            ambiguousSurfaces: aliasResult.ambiguous.length,
+            medicalEmergency: isMedicalEmergencyAsk(state.perception.text),
+            dietQualified: isDietQualifiedAsk(state.perception.text),
+          },
+          "planner: F-3 — safety marker outranks alias ambiguity; §O#9 routing runs instead of the catalog clarify",
+        );
+      }
+      if (
+        aliasSeam !== undefined &&
+        aliasResult !== undefined &&
+        aliasResult.ambiguous.length > 0 &&
+        !safetyOutranksAmbiguity
+      ) {
+        // A declared-ambiguous surface with nothing in the utterance to choose.
+        // CLARIFY — never a nearest neighbour. The compile gate (LE2-025a) is what
+        // guarantees we can always RECOGNISE this case: a multi-entity surface
+        // whose edges declare no `disambiguatedBy` fails the build, so an
+        // unanswerable question can never reach here unlabelled.
+        const stage = aliasSeam.stampAliasClarify(state.turnId, aliasResult.ambiguous);
+        logger.info(
+          {
+            component: "planner",
+            event: "intents.proposed",
+            turnId: state.turnId,
+            envelopeCount: 0,
+            capabilities: [],
+            droppedOutOfPlan: [],
+            readToolCalls: [],
+            funnelTier: stage.tier,
+          },
+          "planner: alias ambiguity — clarifying instead of guessing; no model call",
+        );
+        // The SAME respond-only plan shape L0 returns, so every downstream consumer
+        // (SUBMIT's adjudicatePlan([]), the responder's funnel branch) sees a shape
+        // it already handles.
+        return {
+          envelopes: [],
+          rationale: `ibatexas-planner: funnel ALIAS (${stage.reason}) — clarifying "${aliasResult.ambiguous[0]?.surface ?? ""}", no model call`,
+          capabilities: [],
+          readToolCalls: [],
+        };
+      }
+      if (aliasResult !== undefined && aliasResult.resolutions.length > 0) {
+        aliasSeam?.recordAliases(state.turnId, aliasResult.resolutions);
+      }
+      /** The text the PARSE is a function of — canonical when aliases resolved,
+       *  byte-identical to the customer's words otherwise. */
+      const parseText = aliasResult?.text ?? state.perception.text;
+
       const derived = deps.deriveContext?.(state) ?? {
         state: { tenantId: state.tenantId, locale: state.locale },
         context: {},
       };
-      const plan = unionPlans(
+      const authorized = unionPlans(
         deps.capabilityPlanners,
         derived.state,
         derived.context,
       );
 
+      // ── LE2-020 · THE WORKFLOW-SCOPED ACCESS CLASS · ONE SUBTRACTION ───────
+      // Immediately after the capability planners decide what this turn may
+      // propose, and BEFORE anything reads that roster. Both halves of the
+      // access class fall out of this single edit, because everything
+      // downstream derives from `plan.allowedIntents`:
+      //
+      //   NEVER ADVERTISED — `buildToolSurface` builds the `capability` enum
+      //                      from it (via `scopedPlan`), so the kind is not on
+      //                      the wire and the model is never invited to propose
+      //                      it.
+      //   NEVER ACCEPTED   — `allowed` (below) is built from it, so
+      //                      `translateToolCalls` drops the kind even if a
+      //                      completion emits it anyway — which is the half
+      //                      that actually holds, since "the model cannot see
+      //                      it" is a property of a prompt, not a boundary.
+      //
+      // Upstream of L2's retriever on purpose: retrieval can only narrow what
+      // it is given, so a workflow-scoped kind cannot re-enter through a stale
+      // retrieval index. See `workflow/workflow-access.ts`.
+      const plan: CapabilityPlan = {
+        ...authorized,
+        allowedIntents: [...withoutWorkflowScopedKinds(authorized.allowedIntents)],
+      };
+
+      // The workflows this turn OFFERS, gated on the roster above — so a
+      // workflow can only ever be offered to someone who could already have
+      // asked for its anchor capability directly. Computed from `authorized`
+      // (pre-subtraction) is deliberately NOT done: a matcher gated on a
+      // workflow-scoped kind can never hold, which the compiler rejects
+      // (`workflow-scoped-reference-unreachable`) rather than papering over.
+      const offeredWorkflows: readonly AdvertisedWorkflow[] =
+        deps.workflowRuntime?.advertise(plan.allowedIntents) ?? [];
+
+      // ── LE2-008 · L2 · THE FUNNEL'S THIRD QUESTION ─────────────────────────
+      // Asked AFTER the capability planners have decided what this turn is even
+      // ALLOWED to propose, and BEFORE the surface is built: of that authorized
+      // roster, which K capabilities is the utterance plausibly about?
+      //
+      // ORDERING IS LOAD-BEARING, TWICE OVER.
+      //  1. Retrieval runs DOWNSTREAM of `unionPlans`, so it can only ever narrow
+      //     what the planners already authorized — auth level, cart state and the
+      //     ops boundary all stay strictly upstream of the retriever, and a stale
+      //     index cannot widen the surface.
+      //  2. It runs UPSTREAM of `buildToolSurface`, so the scoped roster is what
+      //     goes on the wire AND what L1 keys its cache on (parse-memo.ts digests
+      //     the tool surface) — a parse made against a scoped surface can never be
+      //     replayed onto a full-roster turn.
+      //
+      // The DECISION is taken here; the trace STAMP happens after L1 misses (see
+      // below), so exactly one tier is ever attributed to a turn.
+      const scopeDecision: ScopeDecision | undefined =
+        deps.retriever === undefined
+          ? undefined
+          : await deps.retriever.scopeFor(parseText, plan.allowedIntents);
+      const scopedPlan: CapabilityPlan =
+        scopeDecision?.scoped === true
+          ? { ...plan, allowedIntents: [...scopeDecision.selected] }
+          : plan;
+
       // Nothing proposable and nothing to read → skip the LLM entirely; the
       // response phase still runs (envelopes:[] is a valid "respond-only" plan).
-      const tools = buildToolSurface(plan);
+      const tools = buildToolSurface(scopedPlan, true, offeredWorkflows);
       if (tools === undefined || tools.length === 0) {
         // SIGNAL-5: the "respond-only" (small-talk / informational) path — no
         // proposable intents. debug (this fires on every small-talk turn).
@@ -944,7 +1405,10 @@ export function createIbatexasPlanner(
       // DEFAULT_SYSTEM_PROMPT, so the recorded golden surfaces stay green; the
       // composed fragmentManifest (id@hash) feeds the turn trace.
       let system = deps.system ?? DEFAULT_SYSTEM_PROMPT;
-      let fragmentManifest: ReadonlyArray<string> = [];
+      let fragmentManifest: ReadonlyArray<string> =
+        deps.system !== undefined && deps.systemPromptId !== undefined
+          ? [deps.systemPromptId]
+          : [];
       if (deps.system === undefined && deps.promptComposer !== undefined) {
         const composed = await deps.promptComposer.composer.compose(
           { cognition: state, extra: { surface: PLANNER_SURFACE } },
@@ -967,12 +1431,213 @@ export function createIbatexasPlanner(
       system += closedHoursPromptNote(scheduleSignal, state.perception.text);
 
       const allowed = new Set(plan.allowedIntents);
+
+      // LE2-020 — instantiate a selected workflow. Closes over THIS turn's
+      // offered surface, so the closed-set check inside `select` is against
+      // what this turn actually advertised rather than the whole corpus. The
+      // slots are stripped to the workflow's DECLARED names first — the same
+      // treatment `stripUnauthoredPayloadFields` gives a capability payload,
+      // one level up.
+      const selectWorkflow = (
+        namedWorkflow: string,
+        rawSlots: unknown,
+      ): { readonly kind: string; readonly payload: unknown } | undefined => {
+        const runtime = deps.workflowRuntime;
+        if (runtime === undefined) return undefined;
+        // BKL-275 — THE NAME ADMISSION SEAM. `start_workflow.workflow` is
+        // advertised with a closed `enum`, but this engine does not bind enums at
+        // decode (LE2-004), so what arrives is whatever the model wrote. Measured
+        // on epoch 54cf4353d5a32564: of 12 `start_workflow` calls, 8 carried the
+        // full declared id and 2 carried the BARE SUFFIX `orders.paid-cancel` —
+        // which this lookup refused, so a paid-cancel ask reached no route at all.
+        //
+        // Resolution is against THIS TURN'S OFFERED surface, which is the
+        // catalogue the model was actually shown, so it can only ever resolve to
+        // something already advertised — it cannot widen the surface by one
+        // workflow. `resolveWorkflowName` requires an EXACT match or an
+        // UNAMBIGUOUS dot-bounded suffix, and returns the name unchanged
+        // otherwise, which lands it in the `undefined` refusal below exactly as
+        // before. The runtime's own `select` re-resolves against the DECLARED
+        // corpus as defense in depth; that call is a no-op on an exact id.
+        const { id: workflowId, normalizedFrom } = resolveWorkflowName(
+          namedWorkflow,
+          offeredWorkflows.map((w) => w.id),
+        );
+        const offered = offeredWorkflows.find((w) => w.id === workflowId);
+        if (offered === undefined) return undefined;
+        if (normalizedFrom !== undefined) {
+          logger.info(
+            {
+              component: "planner",
+              event: "start_workflow.name_normalized",
+              turnId: state.turnId,
+              named: normalizedFrom,
+              workflowId,
+            },
+            "planner: a workflow selection named an unambiguous suffix — resolved to the declared id",
+          );
+        }
+        const { slots, dropped: droppedSlots } = sanitizeWorkflowSlots(
+          rawSlots,
+          new Set(offered.slots),
+        );
+        if (droppedSlots.length > 0) {
+          // NAMES only, never values — the dropped value is arbitrary
+          // model-generated text and may carry anything the customer typed.
+          logger.warn(
+            {
+              component: "planner",
+              event: "start_workflow.slots_stripped",
+              turnId: state.turnId,
+              workflowId,
+              strippedSlots: droppedSlots,
+            },
+            `planner stripped ${droppedSlots.length} undeclared slot(s) from a workflow selection`,
+          );
+        }
+        const instance = runtime.select({
+          turnId: state.turnId,
+          workflowId,
+          slots,
+          allowedIntents: plan.allowedIntents,
+        });
+        if (instance === undefined) return undefined;
+        return {
+          // The ANCHOR capability: a real, pack-owned kind whose guards decide
+          // whether this workflow may run at all.
+          kind: instance.definition.selection.capability,
+          // The instance id rides the payload so it survives the PARK: a
+          // confirm flow spans two turns with two different turn ids, and the
+          // parked envelope is the only thing that crosses between them. It is
+          // a lookup handle, never an authority — every activity is still
+          // adjudicated individually when the id comes back.
+          payload: { ...slots, [WORKFLOW_INSTANCE_PAYLOAD_KEY]: instance.instanceId },
+        };
+      };
       // NEW-032 slice A — the per-turn envelope actor. Computed ONCE from the
       // composition-time `staffEnvelopeActor` option (absent ⇒ the llm/
       // conversation actor, byte-identical to today), reused for every envelope
       // in BOTH passes so it is a genuine per-turn constant the model can never
       // touch.
       const envelopeActor = plannerEnvelopeActor(deps.staffEnvelopeActor, state);
+
+      // ── LE2-009 · L1 · THE FUNNEL'S SECOND QUESTION ────────────────────────
+      // Asked AFTER the surface exists (it is the key) and BEFORE the completion
+      // (which is the cost): have we already parsed this exact utterance under
+      // this exact system prompt, tool surface, model and catalog version? At the
+      // pinned temperature the extraction call is a deterministic function of
+      // precisely those inputs, so a hit replays a parse rather than re-deriving
+      // one. See parse-memo.ts for the key, the doctrine, and the two parse shapes
+      // that are deliberately never cached.
+      const memo = deps.parseMemo;
+      const memoKey =
+        memo === undefined
+          ? undefined
+          : buildParseCacheKey({
+              utterance: parseText,
+              modelId: deps.modelId,
+              // The COMPOSED prompt, closed-hours note included — so a parse made
+              // while the store was closed can never be served while it is open.
+              system,
+              toolSurface: tools,
+              // LE2-008 — the reserved slot, now NAMED. Changing it makes every
+              // parse cached under the pre-L2 full-roster regime unreachable in
+              // one move, which is the purge LE2-009 designed the component for.
+              // Applied on EVERY turn, scoped and fallback alike: the tier's
+              // presence changes what a cached parse means, not just its surface.
+              surfaceVersion: L2_SURFACE_VERSION,
+            });
+      if (memo !== undefined && memoKey !== undefined) {
+        const cached = await memo.lookupParse(
+          memoKey,
+          canonicalizeUtterance(parseText),
+        );
+        if (cached !== undefined) {
+          // RE-MINT, NEVER REPLAY (parse-memo.ts's central hazard note): the cached
+          // parse carries only `{kind, payload}`. Each envelope is rebuilt here with
+          // THIS turn's actor and a FRESH nonce, so its `intentHash` is new and the
+          // always-on fail-closed execution ledger sees a genuinely new dispatch
+          // instead of deduping the customer's second request against their first.
+          // LE2-020 — the L1 replay is the THIRD kind-admission site, and the
+          // only one that mints an envelope from a string the live parse seam
+          // never saw. It is bounded implicitly (a workflow-scoped kind is
+          // never advertised, so it can never be in a surface whose digest
+          // matches this key) — but "implicitly" is an argument about the cache
+          // key, not an enforcement, and it would stop holding the moment
+          // anything else could write an entry. Re-check explicitly here: a
+          // poisoned or stale entry naming a workflow-scoped kind is DROPPED,
+          // not re-minted.
+          //
+          // Deliberately narrower than pass 1's `allowed.has(...)`: replay is
+          // already stricter than live admission (bounded by the ADVERTISED
+          // set, not the admitted one — see the unscoped-vs-scoped asymmetry
+          // above), and re-checking against `allowed` here would silently
+          // widen replay to the unscoped roster. This checks the one thing that
+          // must never be admitted from any source at all.
+          const poisoned = cached.proposals.filter((p) =>
+            isWorkflowScopedKind(p.kind),
+          );
+          if (poisoned.length > 0) {
+            logger.warn(
+              {
+                component: "planner",
+                event: "parse_cache.workflow_scoped_kind_dropped",
+                turnId: state.turnId,
+                kinds: poisoned.map((p) => p.kind),
+              },
+              "planner: a cached parse named a workflow-scoped kind — dropped, never re-minted",
+            );
+          }
+          const replayable = cached.proposals.filter(
+            (p) => !isWorkflowScopedKind(p.kind),
+          );
+          const replayed = replayable.map((proposal, index) =>
+            buildEnvelope({
+              kind: proposal.kind,
+              payload: proposal.payload ?? {},
+              actor: envelopeActor,
+              taint: "UNTRUSTED",
+              nonce: deriveNonce(state, index),
+            }),
+          );
+          const stage = memo.stampMemoHit(state.turnId, memoKey, replayed.length);
+          logger.info(
+            {
+              component: "planner",
+              event: "intents.proposed",
+              turnId: state.turnId,
+              envelopeCount: replayed.length,
+              capabilities: replayable.map((p) => p.kind),
+              droppedOutOfPlan: cached.dropped,
+              readToolCalls: cached.readToolCalls.map((c) => c.name),
+              funnelTier: stage.tier,
+            },
+            `planner proposed ${replayed.length} intent(s) from the L1 parse cache`,
+          );
+          // No `usage`: this turn spent ZERO planner tokens, and reporting the
+          // ORIGINAL parse's token cost again would double-bill the session counter
+          // for a completion that never happened.
+          return {
+            envelopes: replayed,
+            rationale: `ibatexas-planner: funnel L1 (${stage.reason}) — ${replayed.length} envelope(s) replayed, no extraction call`,
+            capabilities: [...replayable.map((p) => p.kind)],
+            readToolCalls: [...cached.readToolCalls],
+          };
+        }
+      }
+
+      // ── LE2-008 · the L2 STAMP ─────────────────────────────────────────────
+      // Deliberately here and not at the decision site above: had L1 hit, the turn
+      // is an L1 turn and stamping L2 as well would put two tier attributions on
+      // one turn and make the trace's tier counts double-count. L1 returns before
+      // reaching this line, so a stamp here means "L1 did not resolve this turn,
+      // and here is the surface L2 chose for the model call about to happen" —
+      // including the FALLBACK case, which is how the fallback RATE becomes
+      // visible in the trace rather than being inferred from an absence.
+      if (scopeDecision !== undefined && deps.scopeSeam !== undefined) {
+        deps.scopeSeam.stampScope(state.turnId, scopeDecision);
+      }
+
       const startedAt = Date.now();
       // FE-T01 (D3/D4) — pin temperature (deterministic wire) and wrap the
       // call in the bounded empty-completion repair idiom, scoped to a
@@ -989,7 +1654,7 @@ export function createIbatexasPlanner(
           deps.model.complete({
             model: deps.modelId,
             system,
-            messages: [{ role: "user", content: state.perception.text }],
+            messages: [{ role: "user", content: parseText }],
             tools,
             maxTokens,
             temperature: PINNED_COMPLETION_TEMPERATURE,
@@ -1121,6 +1786,7 @@ export function createIbatexasPlanner(
           state,
           actor: envelopeActor,
           deriveNonce,
+          selectWorkflow,
         });
 
       // ── BKL-027 (F2): one-hop read-tool enrichment loop ────────────────────
@@ -1140,6 +1806,12 @@ export function createIbatexasPlanner(
       // BEST-EFFORT (a read throw is captured, never crashes the turn). Gated on
       // readToolExecutors so unit tests + golden fixtures without it are byte-identical.
       let readLoopUsage = { inputTokens: 0, outputTokens: 0 };
+      // LE2-009 — set when the one-hop enrichment ran. A read-enriched parse is
+      // conditioned on LIVE READ RESULTS, so it is not a function of the prompt
+      // alone and must never be memoized (parse-memo.ts's `isCacheableParse`):
+      // caching it would smuggle store state into every future repeat, which is
+      // precisely the "cache the parse, never the answer" line.
+      let readEnriched = false;
       const executors = deps.readToolExecutors;
       const executableReadCalls =
         executors === undefined
@@ -1227,7 +1899,7 @@ export function createIbatexasPlanner(
           "pedido original do cliente, proponha a ação apropriada ou apenas responda.";
         // FIX B4 — hop 2 offers express_intent ONLY (no read tools): the loop runs
         // exactly one hop, so a hop-2 read would be traced-but-never-executed.
-        const pass2Tools = buildToolSurface(plan, false);
+        const pass2Tools = buildToolSurface(scopedPlan, false, offeredWorkflows);
         const startedAt2 = Date.now();
         // BKL-162 — the read-loop re-prompt is the OTHER completion boundary that
         // can throw on the read-tool surface (the malformed-XML 500 was live-
@@ -1240,7 +1912,7 @@ export function createIbatexasPlanner(
               model: deps.modelId,
               system,
               messages: [
-                { role: "user", content: state.perception.text },
+                { role: "user", content: parseText },
                 { role: "assistant", content: assistantTurn },
                 { role: "user", content: enrichmentPrompt },
               ],
@@ -1325,11 +1997,74 @@ export function createIbatexasPlanner(
           state,
           actor: envelopeActor,
           deriveNonce,
+          selectWorkflow,
         });
         envelopes = second.envelopes;
         capabilities = second.capabilities;
         dropped = [...dropped, ...second.dropped];
         readToolCalls = [...readToolCalls, ...second.readToolCalls];
+        readEnriched = true;
+      }
+
+      // ── LE2-022 · FEASIBILITY, BEFORE THE ANCHOR ENVELOPE LEAVES ──────────
+      // A workflow whose declared pre-checks do not hold over this turn's
+      // GROUNDED facts is refused HERE — which is before the envelope is
+      // returned, therefore before the kernel adjudicates it, therefore before a
+      // CONFIRM can park. That ordering is the whole acceptance criterion: the
+      // anchor's own guards would also refuse an impossible workflow, but they
+      // would do it AFTER the customer had been asked to approve it and said
+      // yes, and "I asked, you agreed, now I am telling you it was never
+      // possible" is the exchange this gate exists to delete.
+      //
+      // The envelopes are DROPPED, giving the same respond-only plan shape L0
+      // and the alias CLARIFY short-circuit already return, so every downstream
+      // consumer sees a shape it handles. The customer-facing sentence is the
+      // pre-check's OWN authored reason, read back by the responder's
+      // `workflowNotice` seam — never model prose, and never a generic refusal
+      // that leaves them guessing which thing was missing.
+      //
+      // Absent runtime, or a turn that selected no workflow, or one whose
+      // workflow declares no pre-check ⟹ `undefined` ⟹ byte-identical to
+      // pre-LE2-022.
+      //
+      // The actor is `feasibilityActor`, NOT `envelopeActor`: an envelope's
+      // actor carries no customerId (it describes who PROPOSED, and the
+      // authenticated identity reaches a real envelope through the conductor's
+      // RESOLVE stage instead), while a pre-check projection has no resolver in
+      // front of it — so handing it the bare envelope actor made every
+      // auth-gated fact unreachable and refused the workflow for everybody. See
+      // that function's doc for the full failure and why this widens nothing.
+      const infeasible = await deps.workflowRuntime?.checkFeasibility({
+        turnId: state.turnId,
+        actor: feasibilityActor(envelopeActor, derived.state),
+      });
+      if (infeasible !== undefined) {
+        logger.info(
+          {
+            component: "planner",
+            event: "intents.proposed",
+            turnId: state.turnId,
+            envelopeCount: 0,
+            capabilities: [],
+            droppedOutOfPlan: dropped,
+            readToolCalls: readToolCalls.map((c) => c.name),
+            workflowId: infeasible.workflowId,
+            precheckId: infeasible.precheckId,
+          },
+          `planner: workflow ${infeasible.workflowId} failed its ${infeasible.precheckId} pre-check — refusing before any confirm`,
+        );
+        return {
+          envelopes: [],
+          rationale:
+            `ibatexas-planner: workflow ${infeasible.workflowId} is infeasible ` +
+            `(${infeasible.precheckId}) — no confirm shown`,
+          capabilities: [],
+          readToolCalls,
+          usage: {
+            inputTokens: completion.inputTokens + readLoopUsage.inputTokens,
+            outputTokens: completion.outputTokens + readLoopUsage.outputTokens,
+          },
+        };
       }
 
       // FE-T01 (D3) — a malformed `express_intent` call (the frozen provider's
@@ -1389,6 +2124,70 @@ export function createIbatexasPlanner(
         `planner proposed ${envelopes.length} intent(s)`,
       );
 
+      // LE2-009 — MEMOIZE THIS PARSE (the miss path's other half). Stores the
+      // model's SELECTION only — capability + payload, never the built envelope
+      // (whose nonce is single-use) and never a resolver-hydrated id. A
+      // read-enriched parse is refused here and counted as a bypass instead.
+      //
+      // Awaited deliberately rather than fire-and-forget: the store is fail-open
+      // (every fault degrades to a no-op inside the port), so awaiting costs one
+      // bounded Redis round-trip and buys a deterministic suite — a test can assert
+      // the entry exists immediately after the turn instead of racing a dangling
+      // promise. Nothing here can throw into the turn.
+      if (memo !== undefined && memoKey !== undefined) {
+        const parse: MemoizedParse = {
+          proposals: envelopes.map((envelope) => ({
+            kind: envelope.kind,
+            // The FILTERED payload as it went onto the envelope — i.e. after
+            // FE-T11's `stripUnauthoredPayloadFields` — so a replay can never
+            // reintroduce a smuggled field the live path had already stripped.
+            payload: (envelope as { payload?: unknown }).payload ?? {},
+          })),
+          readToolCalls: readToolCalls.map((c) => ({ name: c.name, input: c.input })),
+          dropped: [...dropped],
+          keyVersion: memoKey.keyVersion,
+        };
+        // BKL-274 — THE SILENCE REFUSAL, computed from the very object about to
+        // be written so the predicate and the payload cannot drift.
+        //
+        // The model returned well-formed prose and selected NOTHING: no intent,
+        // no read tool, not even an out-of-plan call for the wall to drop.
+        // Storing that pins the silence to this utterance for the full TTL, and
+        // the repeat — the customer's only self-service remedy — then replays it
+        // with no model call at all. See parse-memo.ts's header for why this is
+        // the one entry shape that caches the ANSWER rather than the parse.
+        const silent = isSilentParse(parse);
+        if (silent) {
+          logger.warn(
+            {
+              component: "planner",
+              event: "parse_cache.silent_parse_not_memoized",
+              turnId: state.turnId,
+              // The whole point of the line: this turn produced no artifact, so
+              // there is nothing else in the trace to join a repeat against.
+              // Names/counts only — never the utterance.
+              envelopeCount: 0,
+              readToolCalls: 0,
+              droppedOutOfPlan: 0,
+              funnelKeyDigest: memoKey.digest.slice(0, 12),
+            },
+            "planner: parse emitted nothing — NOT memoized, so a repeat re-parses instead of replaying the silence",
+          );
+        }
+        await memo.rememberParse(
+          memoKey,
+          parse,
+          // `extractionFailed` is a provable literal here, not an assumption:
+          // EVERY extraction-failure path returns above this line — the
+          // completion error, the genuinely-empty completion that survived
+          // repair, and the malformed tool-call JSON. A wire fault can never
+          // reach this call. What the flag never covered — and what BKL-274
+          // added — is the failure that looks exactly like a success on the
+          // wire: a 200 with text and no selection.
+          isCacheableParse({ readEnriched, extractionFailed: false, silent }),
+        );
+      }
+
       // F4 / cost accounting: report this turn's planning-model token usage so
       // the loop folds it onto the TurnRecord (emitTurn → per-session counter).
       return {
@@ -1411,6 +2210,43 @@ export function createIbatexasPlanner(
       state: CognitiveState,
       auth?: ClaimAuthContext,
     ): Promise<ClaimPlan> {
+      // ── LE2-007 · L0 · the CLAIM path stays off the wire too ───────────────
+      // `propose` already stamped this turn's stage (handleTurn runs PLAN before
+      // CLAIMS-VALIDATE), so an L0 turn is known here — and a second completion for
+      // it would defeat the whole tier. Return the EMPTY claim plan: an empty
+      // candidate set with no forced terminal is exactly what @claustrum/core's
+      // CLAIMS-VALIDATE reads as "nothing to claim" (claims-validate.ts case (a)) →
+      // no claims result → step 6a never supersedes the L0 template. This is also
+      // the shape that closed BKL-110, where the 4B OVER-proposed a schedule claim
+      // on "oi, tudo bem?" and the UNKNOWN terminal clobbered the greeting; L0
+      // removes the over-proposal at its source instead of filtering it after.
+      //
+      // SAFETY (why skipping the §O#9 router is sound here, not just cheap): the
+      // §O#9 closed-taxonomy safety net and the P4 completeness wall both act on
+      // REQUEST SPANS, and an L0 turn has none — every token of a social-only
+      // utterance is in the closed social/neutral lexicon, so a medical-emergency
+      // marker ("passando mal", "alergia") or any other content span is a residual
+      // token that makes `classifySocialOnly` return null and L0 never fire. There
+      // is no span here for a wall to be denied.
+      // BKL-276 — the discriminator is the TIER, not the mere presence of a stamp.
+      // `stageFor` returns the stage record ANY tier stamped, and L2 stamps EVERY
+      // turn it scopes (`stampScope`, called on every non-L1 turn once a retriever
+      // is wired). A bare `!== undefined` therefore skipped the claim plane on the
+      // funnel's PRIMARY path the moment OLLAMA_EMBED_URL was configured: a
+      // grounded "qual o horário de funcionamento?" silently degraded to a REFUSE,
+      // with the `propose_claim` tool never reaching the wire at all. Only the tiers
+      // that ANSWER the turn themselves may skip claims — L1/L2 still parse, and
+      // their reply is produced downstream exactly as on a miss, where claims run.
+      const funnelStageForTurn = deps.funnel?.stageFor(state.turnId);
+      if (funnelStageForTurn !== undefined && tierAuthorsOwnReply(funnelStageForTurn.tier)) {
+        return { candidates: [], completeness: [], droppedClaimTypes: [] };
+      }
+      // LE2-012 — THIS plane's claim-type scope. The enum below, the
+      // constrained-generation wall, the owner-scope subject resolution and the P4
+      // completeness wall all read this ONE object, so a plane can never advertise
+      // a type its walls would then drop (or vice versa). Absent ⟹ the customer
+      // scope ⟹ byte-identical to the pre-LE2-012 planner.
+      const claimScope = deps.claimScope ?? CUSTOMER_CLAIM_SCOPE;
       // PRE-planning wall, part 1 (SDD §H/§P3): the model's `propose_claim` tool
       // exposes `type` as an `enum` over the registry — the model can only
       // SELECT an in-enum type, never type a free string into the schema. The
@@ -1435,7 +2271,7 @@ export function createIbatexasPlanner(
           properties: {
             type: {
               type: "string",
-              enum: [...CLAIM_REGISTRY],
+              enum: [...claimScope.types],
               description: "O tipo de claim do registro a ser proposto.",
             },
             subject: { type: "string", description: "Chave do recurso/assunto." },
@@ -1466,7 +2302,13 @@ export function createIbatexasPlanner(
       // the intent persona (DEFAULT_SYSTEM_PROMPT) — the intent persona's "sua
       // única função é express_intent" SUPPRESSES the propose_claim call on a 4B
       // (verified live on nemotron-3-nano:4b). `deps.system` still overrides (tests).
-      const system = deps.system ?? resolvePrompt("ibatexas/claim-planner.persona", CLAIM_PLANNER_PERSONA);
+      // LE2 decision 6 — `claimPlannerSystem` overrides the CLAIM path alone (the
+      // ops plane's staff intent persona would otherwise suppress `propose_claim`);
+      // unset ⇒ the pre-existing `deps.system ?? catalog persona` chain, byte-identical.
+      const system =
+        deps.claimPlannerSystem ??
+        deps.system ??
+        resolvePrompt("ibatexas/claim-planner.persona", CLAIM_PLANNER_PERSONA);
       // F2 observability: time the claim-planner completion so its LLMTrace
       // (emitted below) carries a real duration, like the intent `propose` path.
       const claimStartedAt = Date.now();
@@ -1504,6 +2346,12 @@ export function createIbatexasPlanner(
       // to a SINGLE owned resource because the authenticated customer owns ≥2
       // relevant ones → CLARIFY (ask which), never a guess.
       let ownerScopedAmbiguous = false;
+      // F-20 — the PUBLIC per-item twin of the flag above: a public per-item claim
+      // whose deterministic derivation found ≥2 admissible subjects (today reachable
+      // only for MENU_DIETARY, whose text can name two diets) is DROPPED and the turn
+      // CLARIFYs. The same disposition `buildClassifyOnlyCandidates`'s `publicAmbiguity`
+      // has always had for the ≥2-present case — never a guess between two items.
+      let publicPerItemAmbiguous = false;
       // BKL-209 — the safety markers are the UNION of (a) what the 4B flagged via
       // `propose_claim.safetyMarkers` (a bounded probabilistic §O#8 input) and (b) a
       // DETERMINISTIC medical-emergency net over the request text. Relying on (a)
@@ -1531,9 +2379,11 @@ export function createIbatexasPlanner(
         // `auth.ownedByBaseKey` (the owner-scoped reads that resolved PRESENT this
         // turn — IDOR-safe). A model-supplied id is honored ONLY if it is itself an
         // OWNED resource; otherwise it is discarded.
-        const canonicalType = canonicalizeRegistryType(input.type);
+        const canonicalType = canonicalizeScopedClaimType(input.type, claimScope);
         const baseKey =
-          canonicalType !== undefined ? ownerScopedBaseKey(canonicalType) : undefined;
+          canonicalType !== undefined
+            ? ownerScopedBaseKey(canonicalType, claimScope)
+            : undefined;
         let subject = input.subject ?? "";
         if (baseKey !== undefined) {
           const owned = auth?.ownedByBaseKey?.get(baseKey) ?? [];
@@ -1547,10 +2397,37 @@ export function createIbatexasPlanner(
             // customer owns exactly ONE relevant resource → bind it (FIX 2).
             subject = owned[0] as string;
           } else if (owned.length > 1) {
-            // ≥2 owned relevant resources and no unambiguous model match → CLARIFY,
-            // never guess. Drop this owner-scoped proposal (no candidate emitted).
-            ownerScopedAmbiguous = true;
-            continue;
+            // F-19 (BKL-203 on the model route) — before dropping to the ≥2-owned
+            // CLARIFY, honor an EXPLICITLY-NAMED owned order, exactly as the
+            // classify-only route does. The model can only ever emit the DISPLAY
+            // number it read in the text ("933869"), which is never an internal
+            // resource id, so `owned.includes(modelSubject)` above is always false
+            // for a named order and a multi-order customer dead-ended here — the
+            // very dead-end BKL-203 exists to remove, but only ever removed on the
+            // deterministic route (recorded as R7 residual 1).
+            //
+            // The resolution is NOT re-spelled here: `auth.namedOwnedSubjectByBaseKey`
+            // carries the RESULT of the read plane's own `resolveNamedOwnedOrderSubject`
+            // (classify-only-reads.ts), computed by the claim-planner adapter off the
+            // SAME turn ledger + text it hands the classify-only route. So both routes
+            // run ONE matcher (BKL-216's `matchNamedOwnedOrders`) over one input, and
+            // the ambiguity contract is inherited rather than re-implemented: 0 or ≥2
+            // matched owned orders → no entry → the CLARIFY below stands, never a guess.
+            //
+            // IDOR-safe by construction: the map's values are drawn from the
+            // authenticated owner-scoped PRESENT set, so a message naming SOMEONE
+            // ELSE's display number is unrepresentable here. The re-check against
+            // `owned` is defense-in-depth for a future caller that builds the map
+            // from a wider set than this base key's owned ids.
+            const named = auth?.namedOwnedSubjectByBaseKey?.get(baseKey);
+            if (named !== undefined && owned.includes(named)) {
+              subject = named;
+            } else {
+              // ≥2 owned relevant resources and no unambiguous model or NAMED match →
+              // CLARIFY, never guess. Drop this owner-scoped proposal (no candidate).
+              ownerScopedAmbiguous = true;
+              continue;
+            }
           } else {
             // 0 owned → no admissible subject. Keep the model's id; the kernel's
             // owner-scoped `owns` refuses it → honest UNKNOWN/REFUSED, never a leak.
@@ -1589,6 +2466,33 @@ export function createIbatexasPlanner(
           );
           if (resolvedItem === undefined) continue;
           subject = resolvedItem.id;
+        } else if (canonicalType === "MENU_DIETARY") {
+          // F-20 (subject) — the dietary claim's SUBJECT is the requested dietary TAG,
+          // detected DETERMINISTICALLY from the request text via the SHARED
+          // `detectDietaryPreferenceTags` — the SAME pure function the investigator
+          // keys its `menu:dietary:{tag}` read by, so the candidate subject == the
+          // ledger key suffix by construction (exactly the BKL-142 menu-item and
+          // BKL-138 date shapes above).
+          //
+          // MENU_DIETARY joined the public per-item class in BKL-214 with a
+          // classify-only subject derivation and an in-planner VALUE deriver, but
+          // WITHOUT this branch — so it was the ONE public per-item type whose
+          // model-route subject was model-AUTHORED (`menu:dietary:{whatever the 4B
+          // said}`). Fail-safe (an unrecognised tag keys nothing recorded → ABSENT →
+          // honest UNKNOWN) but not sound-by-construction, and recorded as R7
+          // residual 2. The model now only CLASSIFIES; the detector disposes.
+          //
+          // NO recognised tag → DROP the proposal (no candidate), the same honest
+          // degrade the two branches above take when their resolver finds nothing —
+          // never the model's string. ≥2 recognised tags ("vegetariano ou vegano?")
+          // → DROP + CLARIFY, mirroring the classify-only route's ≥2-present public
+          // ambiguity: ask which diet, never silently answer about one of the two.
+          const tags = detectDietaryPreferenceTags(state.perception.text);
+          if (tags.length !== 1) {
+            if (tags.length > 1) publicPerItemAmbiguous = true;
+            continue;
+          }
+          subject = tags[0] as string;
         }
 
         proposals.push({
@@ -1626,7 +2530,7 @@ export function createIbatexasPlanner(
 
       // PRE-planning wall, part 2 (SDD §H/§P3 — defense in depth): only in-enum
       // types become typed `CandidateClaim`s; out-of-enum proposals are dropped.
-      const { candidates, dropped } = constrainClaimGeneration(proposals);
+      const { candidates, dropped } = constrainClaimGeneration(proposals, claimScope);
 
       // tag-then-derive (STEP 2 — value derivation, PRE-kernel): OVERWRITE each
       // bound candidate's `value` from the SAME first-party read the investigator
@@ -1673,7 +2577,9 @@ export function createIbatexasPlanner(
           menuItemPrice[resolvedItem.id] = {
             priceText: composeMenuPriceText(resolvedItem),
           };
-          const contentsText = composeMenuContentsText(resolvedItem);
+          // BKL-273 — the SAME request text the investigator passes, so the guard
+          // decides identically on both sides and the C6 values stay byte-equal.
+          const contentsText = composeMenuContentsText(resolvedItem, state.perception.text);
           if (contentsText !== undefined) {
             menuItemContents[resolvedItem.id] = { contentsText };
           }
@@ -1685,11 +2591,15 @@ export function createIbatexasPlanner(
       // (C6 passes by construction). Empty/unreadable catalog → undefined → C6 ABSTAIN.
       let menuOverview: { overviewText: string } | undefined;
       if (menuCandidateTypes.has("MENU_OVERVIEW")) {
-        const overviewText = await resolveMenuOverviewText(state.turnId, {
-          channel: state.perception.channel,
-          sessionId: state.conversationId,
-          customerId: authPrincipal,
-        });
+        const overviewText = await resolveMenuOverviewText(
+          state.turnId,
+          state.perception.text,
+          {
+            channel: state.perception.channel,
+            sessionId: state.conversationId,
+            customerId: authPrincipal,
+          },
+        );
         if (overviewText !== undefined) menuOverview = { overviewText };
       }
       // BKL-214 — MENU_DIETARY derivation read (per-TAG): the SAME per-tag `dietaryText`
@@ -1699,11 +2609,16 @@ export function createIbatexasPlanner(
       const menuDietary: Record<string, { dietaryText: string }> = {};
       if (menuCandidateTypes.has("MENU_DIETARY")) {
         for (const tag of detectDietaryPreferenceTags(state.perception.text)) {
-          const dietaryText = await resolveDietaryOptionsText(state.turnId, tag, {
-            channel: state.perception.channel,
-            sessionId: state.conversationId,
-            customerId: authPrincipal,
-          });
+          const dietaryText = await resolveDietaryOptionsText(
+            state.turnId,
+            tag,
+            state.perception.text,
+            {
+              channel: state.perception.channel,
+              sessionId: state.conversationId,
+              customerId: authPrincipal,
+            },
+          );
           if (dietaryText !== undefined) menuDietary[tag] = { dietaryText };
         }
       }
@@ -1716,17 +2631,91 @@ export function createIbatexasPlanner(
         const infoText = await resolveStoreInfoText(state.turnId);
         if (infoText !== undefined) storeInfo = { infoText };
       }
+      // LE2-002 / NEW-007 — DELIVERY_COVERAGE / DELIVERY_NO_COVERAGE derivation
+      // reads (FIXED subject): the SAME scalars the investigator records under
+      // `delivery:coverage` / `delivery:no_coverage`, memoized on turnId+text so
+      // this REUSES the investigator's ONE zone/estimation read → byte-equal value
+      // (C6 passes by construction). The resolver returns at most one of the two, so
+      // at most one is bound here; the other keeps `value: undefined` → C6 ABSTAINs
+      // → honest UNKNOWN, and the §D filter drops it. A needs-CEP or unreadable
+      // resolution binds NEITHER — never a fabricated fee, ETA, or "não entregamos".
+      let deliveryCoverage: { coverageText: string } | undefined;
+      let deliveryNoCoverage: { noCoverageText: string } | undefined;
+      if (
+        menuCandidateTypes.has("DELIVERY_COVERAGE") ||
+        menuCandidateTypes.has("DELIVERY_NO_COVERAGE")
+      ) {
+        const coverage = await resolveDeliveryCoverage(state.turnId, state.perception.text);
+        if (coverage.kind === "covered") {
+          deliveryCoverage = { coverageText: coverage.coverageText };
+        } else if (coverage.kind === "not_covered") {
+          deliveryNoCoverage = { noCoverageText: coverage.noCoverageText };
+        }
+      }
+      // LE2-019 — COUPON_VALID / COUPON_INVALID derivation reads (FIXED subject):
+      // the SAME scalars the investigator records under `coupon:valid` /
+      // `coupon:invalid`, memoized on turnId+text so this REUSES the investigator's
+      // ONE promotion lookup → byte-equal value (C6 passes by construction) AND the
+      // SAME clock reading for the campaign window. The resolver returns at most one
+      // of the two, so at most one is bound here; the other keeps `value: undefined`
+      // → C6 ABSTAINs → honest UNKNOWN, and the §D filter drops it. A needs-code or
+      // unreadable resolution binds NEITHER — never a fabricated discount, and never
+      // a wrongly-confident "não está válido".
+      let couponValid: { validityText: string } | undefined;
+      let couponInvalid: { invalidityText: string } | undefined;
+      if (
+        menuCandidateTypes.has("COUPON_VALID") ||
+        menuCandidateTypes.has("COUPON_INVALID")
+      ) {
+        const coupon = await resolveCouponValidity(state.turnId, state.perception.text);
+        if (coupon.kind === "valid") {
+          couponValid = { validityText: coupon.validityText };
+        } else if (coupon.kind === "invalid") {
+          couponInvalid = { invalidityText: coupon.invalidityText };
+        }
+      }
+      // LE2-029 — MENU_PAIRINGS / MENU_SUBSTITUTIONS derivation reads (FIXED
+      // subject): the SAME scalars the investigator records under `menu:pairings` /
+      // `menu:substitutions`, memoized on turnId+text so this REUSES the
+      // investigator's ONE graph walk and its catalog title reads → byte-equal
+      // value (C6 passes by construction). The resolver returns at most one of the
+      // two, so at most one is bound here; the other keeps `value: undefined` → C6
+      // ABSTAINs → honest UNKNOWN, and the §D filter drops it. An unknown item or
+      // an empty graph binds NEITHER — never an invented suggestion.
+      let menuPairings: { suggestionsText: string } | undefined;
+      let menuSubstitutions: { substitutionsText: string } | undefined;
+      if (
+        menuCandidateTypes.has("MENU_PAIRINGS") ||
+        menuCandidateTypes.has("MENU_SUBSTITUTIONS")
+      ) {
+        const pairing = await resolvePairings(state.turnId, state.perception.text, {
+          channel: state.perception.channel,
+          sessionId: state.conversationId,
+          customerId: authPrincipal,
+        });
+        if (pairing.kind === "pairings") {
+          menuPairings = { suggestionsText: pairing.suggestionsText };
+        } else if (pairing.kind === "substitutions") {
+          menuSubstitutions = { substitutionsText: pairing.substitutionsText };
+        }
+      }
       const derivedCandidates = deriveCandidateValues(candidates, {
         menuItemPrice,
         menuItemContents,
         ...(Object.keys(menuDietary).length > 0 ? { menuDietary } : {}),
         ...(menuOverview !== undefined ? { menuOverview } : {}),
         ...(storeInfo !== undefined ? { storeInfo } : {}),
+        ...(deliveryCoverage !== undefined ? { deliveryCoverage } : {}),
+        ...(deliveryNoCoverage !== undefined ? { deliveryNoCoverage } : {}),
+        ...(couponValid !== undefined ? { couponValid } : {}),
+        ...(couponInvalid !== undefined ? { couponInvalid } : {}),
+        ...(menuPairings !== undefined ? { menuPairings } : {}),
+        ...(menuSubstitutions !== undefined ? { menuSubstitutions } : {}),
       });
 
       // POST-planning wall (SDD §C P4 / §J.8): every span gets a disposition; an
       // unmapped span is surfaced as CLARIFY, never silently dropped.
-      const completeness = checkCompleteness(spans);
+      const completeness = checkCompleteness(spans, claimScope);
 
       // SAFETY routing (SDD §O#9): an unrecognized — or any — safety marker
       // forces ESCALATE (the generic safe terminal); ESCALATE outranks a P4
@@ -1735,9 +2724,13 @@ export function createIbatexasPlanner(
       // FIX 2 — an owner-scoped claim the authenticated customer owns ≥2 relevant
       // resources for forces CLARIFY (ask which order), exactly like an unmapped P4
       // span: never a guess. §O#9 ESCALATE still outranks it (safety > clarify).
+      // F-20 — a ≥2-subject PUBLIC per-item ambiguity joins it on the same footing
+      // (ask which diet), the classify-only route's `publicAmbiguity` disposition.
       const forcedTerminal: Extract<TurnTerminal, "ESCALATE" | "CLARIFY"> | undefined =
         safetyTerminal ??
-        (hasUnmappedSpan(completeness) || ownerScopedAmbiguous ? "CLARIFY" : undefined);
+        (hasUnmappedSpan(completeness) || ownerScopedAmbiguous || publicPerItemAmbiguous
+          ? "CLARIFY"
+          : undefined);
 
       // F2 observability (claim-planner visibility): the Q6b `proposeClaims`
       // model call was previously INVISIBLE in `turn_trace` (only the intent
@@ -1775,6 +2768,25 @@ export function createIbatexasPlanner(
           temperature: PINNED_COMPLETION_TEMPERATURE,
         });
       }
+
+      // RCA-legibility — the same summary the trace above encodes, but as a
+      // structured VL event that SURVIVES the audit-redactor's 500-char cap on
+      // `turn_trace.completion` (the trace JSON usually exceeds it, so the
+      // out-of-enum drops and the forced terminal were unreadable downstream).
+      // Types only — never claim values or model text. Arrays pre-stringified
+      // so the value crosses VictoriaLogs and the qa-rca field coercer as ONE
+      // string field regardless of how the log sink treats arrays.
+      logger.info(
+        {
+          component: "claim-planner",
+          event: "claim_planner.proposal_summary",
+          turnId: state.turnId,
+          candidateTypes: JSON.stringify(derivedCandidates.map((c) => c.type)),
+          droppedClaimTypes: JSON.stringify(dropped),
+          ...(forcedTerminal === undefined ? {} : { forcedTerminal }),
+        },
+        `claim-planner proposal: ${derivedCandidates.length} candidate(s), ${dropped.length} out-of-enum drop(s)`,
+      );
 
       return {
         candidates: derivedCandidates,

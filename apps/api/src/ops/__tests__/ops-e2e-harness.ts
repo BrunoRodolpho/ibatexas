@@ -370,8 +370,8 @@ export interface OpsToolSpies {
   writeAdjudicatedRefund: ReturnType<typeof vi.fn>;
   publishPaymentStatusChanged: ReturnType<typeof vi.fn>;
   appendRefundEventLog: ReturnType<typeof vi.fn>;
-  resolveAlertFromEnvelope: ReturnType<typeof vi.fn>;
-  closeIncidentFromEnvelope: ReturnType<typeof vi.fn>;
+  writeAdjudicatedAlertResolve: ReturnType<typeof vi.fn>;
+  writeAdjudicatedIncidentClose: ReturnType<typeof vi.fn>;
   upsertOverride: ReturnType<typeof vi.fn>;
   invalidateScheduleCache: ReturnType<typeof vi.fn>;
 }
@@ -416,12 +416,12 @@ export function buildOpsTools(
     publishPaymentStatusChanged:
       overrides.publishPaymentStatusChanged ?? vi.fn(),
     appendRefundEventLog: overrides.appendRefundEventLog ?? vi.fn(),
-    resolveAlertFromEnvelope:
-      overrides.resolveAlertFromEnvelope ??
-      vi.fn(async () => ({ result: { status: "RESOLVED" } })),
-    closeIncidentFromEnvelope:
-      overrides.closeIncidentFromEnvelope ??
-      vi.fn(async () => ({ result: { status: "RESOLVED" } })),
+    writeAdjudicatedAlertResolve:
+      overrides.writeAdjudicatedAlertResolve ??
+      vi.fn(async () => ({ status: "RESOLVED" })),
+    writeAdjudicatedIncidentClose:
+      overrides.writeAdjudicatedIncidentClose ??
+      vi.fn(async () => ({ status: "RESOLVED" })),
     upsertOverride:
       overrides.upsertOverride ??
       vi.fn(async (date: string, data: { isOpen: boolean }) => ({
@@ -448,8 +448,8 @@ export function buildOpsTools(
     paymentCmdSvc: { writeAdjudicatedRefund: spies.writeAdjudicatedRefund },
     publishPaymentStatusChanged: spies.publishPaymentStatusChanged,
     appendRefundEventLog: spies.appendRefundEventLog,
-    opsAlertSvc: { resolveAlertFromEnvelope: spies.resolveAlertFromEnvelope },
-    incidentSvc: { closeIncidentFromEnvelope: spies.closeIncidentFromEnvelope },
+    opsAlertSvc: { writeAdjudicatedAlertResolve: spies.writeAdjudicatedAlertResolve },
+    incidentSvc: { writeAdjudicatedIncidentClose: spies.writeAdjudicatedIncidentClose },
     scheduleSvc: { upsertOverride: spies.upsertOverride as never },
     invalidateScheduleCache: spies.invalidateScheduleCache as never,
   });

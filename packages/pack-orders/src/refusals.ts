@@ -66,6 +66,92 @@ export function refuseNoOrderToMutate(): Refusal {
   )
 }
 
+/**
+ * LE2-021 — "repete meu último pedido" from a customer who has never ordered.
+ *
+ * Its own code and its own sentence rather than `refuseDefault()`, and the
+ * difference is not cosmetic: the default deny says *"Operação não permitida"*,
+ * which tells a first-time customer they lack PERMISSION to do something they
+ * are in fact perfectly entitled to do. The true fact is that there is nothing
+ * to repeat yet. Ticket 21's fourth acceptance criterion asks for an HONEST
+ * render on the no-history path, and a permission frame over a state fact is
+ * exactly the kind of plausible-but-wrong sentence the whole claims runtime
+ * exists to prevent — so the honest sentence gets a code, and the code goes in
+ * `ordersPack.basisCodes` where the AaC drift gate can see it.
+ *
+ * `order.not_found` above was the near-miss and is genuinely a different fact:
+ * it means the customer HAS orders but none is in a mutable state. Reusing it
+ * here would tell someone with an empty history that their nonexistent order is
+ * merely closed.
+ */
+export function refuseNoPreviousOrder(): Refusal {
+  return refuse(
+    "STATE",
+    "order.reorder.no_history",
+    "Ainda não encontrei nenhum pedido anterior seu pra repetir. Quer montar um novo?",
+  )
+}
+
+/**
+ * LE2-024 — "cancela meu pedido" from a customer who has no order to cancel.
+ *
+ * Its OWN sentence rather than {@link refuseNoPreviousOrder}'s, under the same
+ * warrant that gave that one its own code. Both are the no-history fact, but
+ * they are read by customers who asked opposite questions, and the reorder
+ * sentence ends *"pra repetir. Quer montar um novo?"* — an offer to BUILD
+ * something, cheerfully proposed to somebody who just asked to DESTROY
+ * something. A customer who believes they have an order they want gone, being
+ * told about a new one, will read it as the system having misunderstood them at
+ * best and as an upsell at worst.
+ *
+ * It reuses the `order.reorder.no_history` CODE deliberately: the underlying
+ * state fact is identical (no owner-scoped previous order), and a second code
+ * for one fact would split the basis-code surface — and every drift gate over
+ * it — on a difference that is purely about which sentence a reader needs. The
+ * code is what an operator groups by; the text is what a customer reads.
+ */
+export function refuseNoOrderToCancel(): Refusal {
+  return refuse(
+    "STATE",
+    "order.reorder.no_history",
+    "Ainda não encontrei nenhum pedido seu pra cancelar. Se você fez um pedido agora há pouco, me chama que eu procuro de novo.",
+  )
+}
+
+/** Max candidate order numbers voiced inline before summarising the remainder. */
+const MAX_AMBIGUOUS_ORDERS_SHOWN = 6
+
+/**
+ * BKL-216 — a specific "which order?" refusal for a message that named ≥2 of the
+ * customer's OWN orders ("tira a coca do 933869 e do 933870"). The amend resolver
+ * (`resolveAmendOrderReference`) declines to guess between them and stamps
+ * `orderReferenceAmbiguousCount` + `orderReferenceAmbiguousDisplayIds`. This voices
+ * the numbers INSTEAD of the bare `refuseNoOrderToMutate` (the orders WERE found;
+ * the resolver just would not pick one). The display numbers are the customer's own
+ * first-party order data — never model-authored — so the refusal asserts no
+ * unbacked fact. Mirrors `refuseReservationAmbiguous` (pack-reservations).
+ */
+export function refuseAmbiguousOrderReference(
+  displayIds: readonly number[],
+): Refusal {
+  const shown = displayIds
+    .slice(0, MAX_AMBIGUOUS_ORDERS_SHOWN)
+    .map((d) => `#${d}`)
+    .join(", ")
+  const more =
+    displayIds.length > MAX_AMBIGUOUS_ORDERS_SHOWN ? ", entre outros" : ""
+  const userFacing =
+    shown === ""
+      ? "Você citou mais de um pedido. Em qual deles?"
+      : `Você citou mais de um pedido: ${shown}${more}. Em qual deles?`
+  return refuse(
+    "STATE",
+    "order.ambiguous_reference",
+    userFacing,
+    `count=${displayIds.length}`,
+  )
+}
+
 export function refuseOrderAlreadyCancelled(): Refusal {
   return refuse(
     "STATE",
@@ -95,6 +181,61 @@ export function refuseOwnershipDenied(): Refusal {
     "SECURITY",
     "order.ownership_denied",
     "Esse pedido não pertence à sua conta.",
+  )
+}
+
+/**
+ * LE2-023 — the swap-for-coupon ask for a coupon that is not usable, or that we
+ * could not check at all.
+ *
+ * ── WHY ONE SENTENCE FOR TWO DIFFERENT FACTS ────────────────────────────────
+ *
+ * `couponIsValid: false` means the store told us this code is not usable;
+ * ABSENT means the lookup never completed. Those are genuinely different facts
+ * (Inv 7, and `coupon-price-projection.ts` keeps them apart precisely so this
+ * Pack never claims the first when only the second is true) — but they are not
+ * different SENTENCES, because the only honest thing this text may assert is
+ * what we could establish about OURSELVES, not about the coupon. "Não consegui
+ * confirmar esse cupom" is true in both worlds; "esse cupom é inválido" is a
+ * claim about the store that is only true in one of them, and it is the one a
+ * customer would act on by throwing away a coupon that works.
+ *
+ * So the distinction lives where it can be acted on — in the projection, in the
+ * facts, and in the workflow's own pre-check templates, which speak before any
+ * envelope exists — and this guard-level refusal, which is the FAIL-SAFE for a
+ * coupon that went bad between the confirm and the customer's "sim", says only
+ * what it can stand behind.
+ */
+export function refuseCouponNotUsable(): Refusal {
+  return refuse(
+    "STATE",
+    "order.coupon.not_usable",
+    "Não consegui confirmar esse cupom agora, então não cancelei nada. Quer tentar outro código?",
+  )
+}
+
+/**
+ * LE2-023 — the coupon is usable and this system still cannot say what the
+ * rebuilt basket would cost.
+ *
+ * A REAL state, not a defensive stub: a `buyget` promotion, one carrying
+ * targeting rules, and a fixed amount in a non-BRL currency are all perfectly
+ * valid coupons whose whole-basket arithmetic "total − desconto" simply does not
+ * compute (see `couponDiscountInCentavos`). Its own code and sentence because
+ * the customer's next move differs from every other refusal here: nothing is
+ * wrong with their coupon, and the thing that cannot be done is the SWAP, so
+ * pointing them at checkout — where the store itself applies the promotion
+ * correctly — is the useful answer rather than a dead end.
+ *
+ * Kept apart from `order.coupon.not_usable` above for exactly the reason that
+ * one merges its two inputs: there the sentences would have been the same, here
+ * they are not.
+ */
+export function refuseSwapTotalUnknown(): Refusal {
+  return refuse(
+    "STATE",
+    "order.coupon.swap.total_unknown",
+    "Esse cupom é válido, mas não consigo calcular o total do pedido novo com ele — então não cancelei nada. Dá pra aplicar ele na hora de finalizar um pedido novo.",
   )
 }
 
@@ -214,6 +355,37 @@ export function refuseInvalidQuantity(quantity: unknown): Refusal {
   )
 }
 
+/**
+ * UNCONSUMED BY DESIGN-GAP, RETAINED DELIBERATELY (F-57). No guard calls
+ * this, and none ever has: a per-revision invocation census over every
+ * commit that touches the token (`git log -G`, not `-S`, which misses two)
+ * counts ZERO call sites in ALL of them — including inside the legacy
+ * `@ibatexas/llm-provider` brain, where the same builder lived in
+ * `refusal-taxonomy.ts` and was likewise only ever defined + barrel-exported
+ * until the package was deleted wholesale (`d945a0c7`). The token count went
+ * 4 → 2 there because a duplicate PAIR vanished with the package, never
+ * because a call site was lost. So this is BORN UNUSED, not the fossil of a
+ * dropped guard — the two verdicts are different and only the census tells
+ * them apart.
+ *
+ * It is kept because it is not decoration either: it NAMES a decision the
+ * Pack is missing. `clampUpdateToStockCap` clamps rather than refuses, and
+ * at `stockCap: 0` that clamp produces `quantity: 0` — a payload
+ * `validateQuantity` itself calls invalid (see that guard's KNOWN HOLE
+ * note). A REFUSE is the right decision at a zero cap, and this is the
+ * refusal it takes. Deleting the builder would erase the last
+ * machine-checkable trace of that gap at the same moment F-57 rewrote away
+ * the prose trace — the F-43 mistake exactly.
+ *
+ * Its code is declared in the Pack's `basisCodes` vocabulary, which is a
+ * SEALED surface (ERDS-056): removing it moves the config-seal digest and
+ * reopens the `packVersion` question tracked as F-44. Wire it only as part
+ * of the ruling that closes the zero-cap hole, never to tidy the vocabulary.
+ *
+ * Why nothing caught this: AC-004 checks basis-vocabulary PURITY in one
+ * direction only (every code EMITTED is declared). A code declared and
+ * never emitted is invisible to it.
+ */
 export function refuseQuantityOverLimit(
   requested: number,
   max: number,

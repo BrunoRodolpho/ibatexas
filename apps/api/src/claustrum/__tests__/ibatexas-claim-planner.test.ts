@@ -570,13 +570,22 @@ describe("ibatexas-claim-planner — BKL-110 demote-only relevance filter", () =
     // "que horas fecham?" maps to STORE_OPEN_NOW_Q (required = {STORE_OPEN_NOW}); the
     // Triad closure names only STORE_OPEN_NOW, so the alias keeps a STORE_HOURS
     // candidate on this turn — a legit hours answer is never demoted (no regression).
+    //
+    // BKL-289 — the assertion now names BOTH types. This test's SUBJECT is unchanged
+    // and still pinned: STORE_HOURS survives the demote filter (it is first in the
+    // set, exactly as the model proposed it). What is NEW is the second member:
+    // STORE_OPEN_NOW is the §O#15 REQUIRED type this model OMITTED, and the
+    // never-omit-required union now appends it deterministically — the whole point of
+    // BKL-289, since a required companion left absent is what degraded the live turn.
+    // Kept as an exact-set assertion rather than a `toContain` so the union cannot
+    // silently start adding anything else.
     const adapter = createIbatexasClaimPlanner(
       plannerOver([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
     );
     const candidates = await proposeCandidates(adapter,
       adapterInput("que horas vocês fecham?"),
     );
-    expect(candidates.map((c) => c.type)).toEqual(["STORE_HOURS"]);
+    expect(candidates.map((c) => c.type)).toEqual(["STORE_HOURS", "STORE_OPEN_NOW"]);
   });
 
   it("keeps a net-matching STATEMENT's over-proposal — the bounded residual (BKL-078, not worsened)", async () => {
@@ -879,5 +888,132 @@ describe("ibatexas-claim-planner — BKL-077 forcedTerminal emission", () => {
     } finally {
       infoSpy.mockRestore();
     }
+  });
+});
+
+// ── BKL-289 — the §O#15 never-omit-required UNION + its eligibility table ─────
+//
+// The union deterministically adds every REQUIRED type the model omitted, and ONLY
+// those it can parameterize WITHOUT guessing. The three eligibility classes are
+// derived from the REGISTRY (`perResourceKey` + ownership), never a hand-kept list:
+//
+//   1. FIXED-SUBJECT (keys not `:{subject}`-parameterized) → unioned with the
+//      authenticated principal as a key-irrelevant placeholder.
+//   2. PUBLIC PER-ITEM → unioned ONLY when THIS turn's ledger names exactly one
+//      present `{base}:{id}` (the classify-only `presentPublicItemIds` derivation).
+//   3. OWNER-SCOPED PER-RESOURCE → INELIGIBLE by design (the subject must be an
+//      owned resource id; guessing one is what FIX 2 / BKL-189 exist to prevent).
+
+describe("BKL-289 — never-omit-required union", () => {
+  it("CLASS 1 (fixed-subject): unions the required STORE_OPEN_NOW the model omitted", async () => {
+    // The exact live shape: the 4B proposes only STORE_HOURS on a bare hours ask.
+    // STORE_HOURS is in NO closure row, so {STORE_OPEN_NOW} is required-but-absent.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+    );
+
+    const candidates = await proposeCandidates(
+      adapter,
+      adapterInput("qual o horário de funcionamento?"),
+    );
+
+    expect(candidates.map((c) => c.type)).toEqual(["STORE_HOURS", "STORE_OPEN_NOW"]);
+    // The union NEVER authors a value — the model is not a value source and C6 must
+    // still decide. (`bindValueFromLedger` fills it from a first-party read later.)
+    const unioned = candidates.find((c) => c.type === "STORE_OPEN_NOW");
+    expect(unioned?.value).toBeUndefined();
+  });
+
+  it("CLASS 3 (owner-scoped): does NOT union ORDER_FULFILLMENT_STAGE / PAYMENT_STATUS", async () => {
+    // "qual o status?" requires BOTH order+payment types; the model covers only
+    // PAYMENT_STATUS. Both are owner-scoped per-resource, so the union DECLINES
+    // rather than binding a placeholder that would parameterize an absent key.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "PAYMENT_STATUS", subject: "order-1" })]),
+    );
+
+    const candidates = await proposeCandidates(
+      adapter,
+      adapterInput("qual o status do meu pedido e do meu pagamento?"),
+    );
+
+    expect(candidates.map((c) => c.type)).not.toContain("ORDER_FULFILLMENT_STAGE");
+  });
+
+  it("CLASS 2 (public per-item): does NOT union when the ledger names NO subject", async () => {
+    // MENU_DIETARY is `perResourceKey` (keyed by the dietary TAG). With no present
+    // `menu:dietary:{tag}` entry there is no deterministic subject, so the union
+    // declines — it never invents a tag from the span text.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "MENU_OVERVIEW", subject: "cardapio" })]),
+    );
+
+    const candidates = await proposeCandidates(adapter, {
+      cognition: cognition("o que tem no cardápio? tem opção vegana?"),
+      plan: emptyPlan,
+      ledger: new EvidenceLedger("turn-no-dietary-read"),
+    });
+
+    expect(candidates.map((c) => c.type)).not.toContain("MENU_DIETARY");
+  });
+
+  it("CLASS 2 (public per-item): DOES union when the ledger names exactly one subject", async () => {
+    // Same utterance, but the investigator recorded its own deterministic tag read.
+    // The LEDGER — never the model — names the admissible subject, so the union can
+    // parameterize the required MENU_DIETARY deterministically.
+    const ledger = new EvidenceLedger("turn-dietary-read");
+    ledger.record({
+      key: "menu:dietary:vegano",
+      value: { dietaryText: "Salada da casa" },
+      source: "menu.readDietary",
+      fetchedAt: KERNEL_NOW,
+      sourceMode: "live",
+      taint: "TRUSTED",
+      originProvenance: "FIRST_PARTY",
+    });
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "MENU_OVERVIEW", subject: "cardapio" })]),
+    );
+
+    const candidates = await proposeCandidates(adapter, {
+      cognition: cognition("o que tem no cardápio? tem opção vegana?"),
+      plan: emptyPlan,
+      ledger,
+    });
+
+    const dietary = candidates.find((c) => c.type === "MENU_DIETARY");
+    expect(dietary).toBeDefined();
+    // Subject came from the LEDGER key suffix, not from the model or the span text.
+    expect(dietary?.subject).toBe("vegano");
+  });
+
+  it("never unions a type the decomposer did NOT require (registry-bound, not free-generated)", async () => {
+    // A bare hours ask requires ONLY STORE_OPEN_NOW. Nothing else may appear.
+    const adapter = createIbatexasClaimPlanner(
+      plannerOver([claimCall({ type: "STORE_HOURS", subject: "loja" })]),
+    );
+
+    const candidates = await proposeCandidates(
+      adapter,
+      adapterInput("qual o horário de funcionamento?"),
+    );
+
+    for (const c of candidates) {
+      expect(["STORE_HOURS", "STORE_OPEN_NOW"]).toContain(c.type);
+    }
+  });
+
+  it("does NOT union into an EMPTY successful proposal (prose gate preserved)", async () => {
+    // The §O#15 gate only runs on a non-empty set, so an empty proposal has no
+    // degrade to fix — unioning here would promote a statement into the claims path
+    // (the live BKL-110 smalltalk defect). BKL-078's gap stays exactly as documented.
+    const adapter = createIbatexasClaimPlanner(plannerOver([]));
+
+    const candidates = await proposeCandidates(
+      adapter,
+      adapterInput("qual o horário de funcionamento?"),
+    );
+
+    expect(candidates).toHaveLength(0);
   });
 });

@@ -50,6 +50,7 @@ import {
   RUN_BOOTSTRAP_HARNESS,
   setupClaustrumBootstrapHarness,
   type ClaustrumBootstrapTestHarness,
+  TEST_EXTERNAL_REFERENCE_PROBES,
 } from "../helpers/claustrum-bootstrap-harness.js";
 import {
   createScriptedModelProvider,
@@ -130,9 +131,29 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
     let assertPool: pg.Pool;
     let fixtures: GoldenConversationFixture[];
     let checkResult: ConformanceResult;
+    /**
+     * BKL-281 — the golden run's call log, FROZEN at the end of `beforeAll`.
+     *
+     * `provider.calls` keeps accumulating for the whole file, so a count taken
+     * off it is cumulative and silently assumes which tests ran first. The
+     * re-drive case below adds two calls of its own, and under
+     * `--sequence.shuffle` it can run BEFORE the count case — which then read
+     * 5 where the golden run made 3 and failed. Snapshotting here gives every
+     * test an absolute view of the drive `beforeAll` performed, whatever order
+     * the file runs in; `beforeAll` itself always runs first, so this is state
+     * the tests own rather than inherit from each other.
+     */
+    let goldenRunCalls: ScriptedModelProvider["calls"] = [];
 
     // Seeded per run; bound to {{ORDER_ID}} at fixture load.
     const ORDER_ID = `t26b-order-${randomUUID()}`;
+    // LE2-024 — the `cancel-confirm-gate` GOLDEN was retired with the ad-hoc
+    // paid-cancel route (its coverage moved to
+    // `apps/api/src/__tests__/paid-cancel-parity.e2e.test.ts`). The seeded
+    // customer + order stay: they are the only entity state in this suite, the
+    // audit-namespace assertions read them, and an unrelated fixture keying off
+    // them would otherwise have no order to resolve. The id keeps its old label
+    // so the seeded rows remain traceable to the run that created them.
     const CANCEL_CUSTOMER_ID = cc006CustomerId("cancel-confirm-gate");
     const substitutions = { ORDER_ID } as const;
 
@@ -143,6 +164,39 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
           // exercise its fail-open path against a connection refusal, never
           // accidentally publish into a developer's live dev-stack broker.
           NATS_URL: "nats://127.0.0.1:1",
+          // BKL-279 / BKL-283 — pin the local embedder pair OFF for this suite.
+          //
+          // WHAT THIS NO LONGER GUARDS. BKL-279 added this pin because
+          // `bootstrapClaustrum` called `createOllamaEmbedder()`, which read the
+          // pair straight off `process.env`: a developer whose shell carried it
+          // — it is in the repo's own `.env` — silently wired the funnel's L2
+          // tier, the planner advertised a RETRIEVED SUBSET instead of the full
+          // roster, this suite's `{system, messages, tools}` content keys missed
+          // every fixture, and `order.item.add` became
+          // `system.extraction_failure`. BKL-283 closed that STRUCTURALLY: the
+          // embedder is now an injected port (`ClaustrumBootstrapOptions.
+          // capabilityEmbedder`), production reads env once at the composition
+          // root, and a composition that declares nothing — like this one — gets
+          // the designed full-roster no-op whatever the shell exports. Verified:
+          // this suite passes 4/4 with the pair exported and pointed at a
+          // REACHABLE embedder that logs every request, and that embedder
+          // receives ZERO requests.
+          //
+          // WHY IT STAYS ANYWAY. The pair has a SECOND, independent consumer
+          // that BKL-283 did not touch: `@ibatexas/tools`' product-search
+          // `generateEmbedding` (BKL-034), which the resolve stage reaches when
+          // it maps NL → product id. That one is gated on
+          // `EMBEDDINGS_PROVIDER=ollama` rather than on this pair alone, so it
+          // is a narrower hazard — but it is still a live network call out of a
+          // suite whose contract is "no I/O outside the throwaway containers",
+          // and pinning the pair off closes it for any shell.
+          //
+          // Empty string is the DECLARED "not configured" value in
+          // `resolveOllamaEmbedderConfig()` (it tests `=== ""` alongside
+          // `undefined`). The harness restores both variables verbatim on
+          // teardown, so a suite that DOES want an embedder is unaffected.
+          OLLAMA_EMBED_URL: "",
+          OLLAMA_EMBED_MODEL: "",
         },
       });
 
@@ -212,6 +266,9 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       conductor = await bootstrapClaustrum({
         modelProvider: provider,
         resolveScheduleSignal: () => undefined,
+        // LE2-018 boot gate — no live Medusa in this suite; the gate still runs
+        // over the real declaration table (see the harness helper's note).
+        externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
       });
 
       // Drive every fixture ONCE up front (the check is the canonical
@@ -220,6 +277,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
         conductor,
         { fixturesDir: FIXTURES_DIR },
       );
+      goldenRunCalls = [...provider.calls];
     }, 420_000);
 
     afterAll(async () => {
@@ -237,7 +295,7 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
         throw new Error(checkResult.details);
       }
       expect(checkResult.passed).toBe(true);
-      expect(checkResult.details).toMatch(/Verified 3 golden conversation/);
+      expect(checkResult.details).toMatch(/Verified 2 golden conversation/);
     });
 
     it("audit ledger: each adjudicated turn lands in intent_audit under its HASHED session namespace (D-012); the empty-plan turn audits nothing", async () => {
@@ -276,13 +334,19 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // ONLY for the empty-plan/small-talk turn. The decision-aware responder
       // (Phase A) is MODEL-FREE on a real REFUSE (renders the explainer) and on
       // REQUEST_CONFIRMATION (returns decision.prompt), so cart-intent-refused
-      // and cancel-confirm-gate make NO responder model call. Total: 3 + 1 = 4.
-      const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes).toHaveLength(4);
+      // makes NO responder model call.
+      //
+      // LE2-024 — 3 conversations → 2 (cancel-confirm-gate retired with the
+      // ad-hoc paid-cancel route), so 2 planner + 1 responder = 3.
+      // Read off the FROZEN golden-run log (BKL-281), not the live one: this
+      // case is about what the golden drive cost, and the live log also
+      // carries whatever a re-drive case has added by now.
+      const completes = goldenRunCalls.filter((c) => c.method === "complete");
+      expect(completes).toHaveLength(3);
       // Content-keyed, never positional: every call resolved to a labeled
       // fixture (an unknown key would have thrown the turn).
       expect(completes.every((c) => c.label !== null)).toBe(true);
-      expect(new Set(completes.map((c) => c.label)).size).toBe(4);
+      expect(new Set(completes.map((c) => c.label)).size).toBe(3);
       // DEF-005: grounding is opt-in (CLAUSTRUM_GROUNDING_ENABLED) and runs as a
       // DESIGNED no-op by default, so the grounding port never calls embed in this
       // golden run — zero embed calls, not a swallowed throw. (With the flag on AND
@@ -299,6 +363,12 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       // The upstream InMemoryModelProvider failure mode (plan v2 ledger #13)
       // is a modulo cursor: a repeated call rotates the script. Re-drive the
       // smalltalk turn — same content key → same completion → same reply.
+      // BKL-281 — this case owns its own arithmetic: it measures the calls IT
+      // adds, from a baseline read at its own start, instead of assuming the
+      // file is at the golden run's count when it begins.
+      const completesBefore = provider.calls.filter(
+        (c) => c.method === "complete",
+      ).length;
       const customerId = cc006CustomerId("smalltalk-noop");
       const conversationId = cc006ConversationId("smalltalk-noop");
       const inbound = {
@@ -321,13 +391,42 @@ describe.skipIf(!RUN_BOOTSTRAP_HARNESS)(
       expect(result.response.text).toBe(
         "Olá! Tudo ótimo por aqui. Como posso ajudar?",
       );
-      // 4 from the IBX-GC-006 run above + 2 from this re-drive (small-talk calls
-      // both planner and responder each turn; the model-free fixtures do not).
+      // The baseline this case started from + 2 from this re-drive (in the
+      // file's declaration order that baseline is the golden run's 3).
+      //
+      // THE COUNT'S HISTORY, because it has moved twice for opposite reasons.
+      // Pre-funnel it was 5. LE2-009 took it to 4: L1 memoized this turn's parse,
+      // so the re-drive replayed it and bought no second extraction completion.
+      // BKL-274 takes it back to 5, and that is the fix working as designed.
+      //
+      // WHY. This turn's parse is SILENT — the model returns prose and selects
+      // nothing (`result.plan.envelopes` is empty above). BKL-274 makes a silent
+      // parse non-cacheable, because at the memoize seam it is indistinguishable
+      // from a failed parse of a real order, and replaying one caches the ANSWER
+      // rather than the parse. So the re-drive buys its own extraction call.
+      //
+      // AND WHY THAT COSTS PRODUCTION NOTHING HERE. "Oi, tudo bem?" is social, and
+      // in production the funnel's L0 tier claims it for ZERO model calls before
+      // L1 is ever consulted. It only reaches the model in this test because
+      // `handleTurn` is called directly rather than through an ingress, and
+      // `decideL0` is fail-closed on the missing funnel context. The extra call is
+      // an artifact of the L0-less drive path, not a production regression.
+      //
+      // The test keeps its teeth, and they were never the planner count. Its
+      // purpose is to pin that the scripted provider resolves by CONTENT rather
+      // than rotating a cursor (plan v2 ledger #13) — still proven twice over: the
+      // RESPONDER is called on both drives and returns the same completion for the
+      // same content key, and the re-driven reply text asserted above is identical.
+      // If anything the anti-cursor proof is now STRONGER, since the planner is
+      // also called twice and also resolves the same key both times.
       const completes = provider.calls.filter((c) => c.method === "complete");
-      expect(completes).toHaveLength(6);
+      expect(completes).toHaveLength(completesBefore + 2);
+      // TWO planner calls, same content key — neither drive replayed a cached
+      // silence, and the second resolved the same fixture as the first.
       expect(
         completes.filter((c) => c.label === "planner:smalltalk-noop"),
       ).toHaveLength(2);
+      // TWO responder calls, same content key, same reply — the anti-cursor proof.
       expect(
         completes.filter((c) => c.label === "responder:smalltalk-noop"),
       ).toHaveLength(2);

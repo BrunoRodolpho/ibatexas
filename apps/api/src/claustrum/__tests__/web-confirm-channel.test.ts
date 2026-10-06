@@ -9,7 +9,12 @@
 
 import { describe, expect, it } from "vitest";
 import type { ChannelMessage, ParkedEnvelope, Session } from "@claustrum/core";
-import { WebConfirmChannel } from "../web-confirm-channel.js";
+import {
+  WEB_NEGATIVE_DECLINE_ACK_PTBR,
+  WebConfirmChannel,
+  webNegativeDeclineTarget,
+  webSoftAffirmativeRestateNotice,
+} from "../web-confirm-channel.js";
 
 function driver(): WebConfirmChannel {
   return new WebConfirmChannel({
@@ -106,5 +111,105 @@ describe("WebConfirmChannel.matchToParked — customer confirm-resume (BKL-033)"
     expect(
       driver().matchToParked(evt("qual o horário de vocês?"), session([P1])),
     ).toBeNull();
+  });
+});
+
+// ── BKL-212: the customer-web ingress niceties (PURE halves) ─────────────────
+// These are the surfaces the SSE ingress consumes BEFORE handleTurn. They are
+// deliberately the STRICT complement of `matchToParked` above: every reply the
+// matcher resolves (explicit confirm / #hash / defer / mixed) must fall through
+// here, so the two can never both claim the same turn.
+
+describe("webNegativeDeclineTarget — a pure negative declines the park (BKL-212)", () => {
+  it("a bare 'não' targets the MOST RECENT park", () => {
+    expect(webNegativeDeclineTarget("não", [P1, P2])).toBe(P2);
+  });
+
+  it.each(["nao", "cancela", "cancelar", "não quero", "pare"])(
+    "%j is a pure negative",
+    (text) => {
+      expect(webNegativeDeclineTarget(text, [P1])).toBe(P1);
+    },
+  );
+
+  it("MONEY-SAFETY — a MIXED reply ('não, pode deixar') declines NOTHING (ambiguous; the park survives)", () => {
+    expect(webNegativeDeclineTarget("não, pode deixar", [P1])).toBeUndefined();
+  });
+
+  it.each([
+    ["an explicit confirm", "sim"],
+    ["a soft affirmative", "ok"],
+    ["a #hash reply", "#a4b8c1 não"],
+    ["a defer phrase", "não, amanhã"],
+    ["an ordinary utterance", "qual o horário de vocês?"],
+    ["empty text", ""],
+  ])("%s (%j) declines nothing — the normal loop owns it", (_label, text) => {
+    expect(webNegativeDeclineTarget(text, [P1, P2])).toBeUndefined();
+  });
+
+  it("no park present → undefined for every input (today's path is untouched)", () => {
+    expect(webNegativeDeclineTarget("não", [])).toBeUndefined();
+    expect(webNegativeDeclineTarget("não", undefined)).toBeUndefined();
+  });
+
+  it("the ACK is pt-BR, states that nothing changed, and never claims an execution", () => {
+    expect(WEB_NEGATIVE_DECLINE_ACK_PTBR).toBe(
+      "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.",
+    );
+  });
+});
+
+describe("webSoftAffirmativeRestateNotice — a bare soft yes restates (BKL-212)", () => {
+  it("restates the MOST RECENT park's stored prompt and asks for an explicit confirm", () => {
+    expect(webSoftAffirmativeRestateNotice("ok", [P1, P2])).toBe(
+      `Só confirmando — você quer que eu faça "${P2.userPrompt}"? Responda "sim" para eu seguir.`,
+    );
+  });
+
+  it.each(["ok", "okay", "pode", "claro", "beleza", "manda", "isso", "OK!", "ok ok"])(
+    "%j is a bare soft affirmative",
+    (text) => {
+      expect(webSoftAffirmativeRestateNotice(text, [P1])).toContain("Só confirmando");
+    },
+  );
+
+  it.each([
+    ["a soft yes carrying a NEW request", "ok mas muda para 19h"],
+    ["a soft yes carrying content", "pode mandar o cardápio"],
+    ["an explicit confirm", "sim"],
+    ["an explicit confirm with a soft token", "sim, pode"],
+    ["a negative", "não"],
+    ["a mixed reply", "ok, cancela"],
+    ["a #hash reply", "#a4b8c1 ok"],
+    ["a defer phrase", "ok, amanhã"],
+    ["an ordinary utterance", "quero uma costela"],
+    ["empty text", ""],
+  ])("%s (%j) restates nothing — the normal loop owns it", (_label, text) => {
+    expect(webSoftAffirmativeRestateNotice(text, [P1, P2])).toBeUndefined();
+  });
+
+  it("no park present → undefined (nothing to restate)", () => {
+    expect(webSoftAffirmativeRestateNotice("ok", [])).toBeUndefined();
+    expect(webSoftAffirmativeRestateNotice("ok", undefined)).toBeUndefined();
+  });
+
+  it("COMPLEMENT — every reply the matcher RESOLVES is refused by both niceties", () => {
+    // If a reply both resolved to a ParkedMatch AND triggered a nicety, the
+    // ingress and the conductor would disagree about who owns the turn.
+    for (const text of ["sim", "confirmo", "#a4b8c1", "amanhã", "não, pode deixar"]) {
+      const resolved = driver().matchToParked(evt(text), session([P1, P2])) !== null;
+      const nicety =
+        webNegativeDeclineTarget(text, [P1, P2]) !== undefined ||
+        webSoftAffirmativeRestateNotice(text, [P1, P2]) !== undefined;
+      expect(resolved && nicety).toBe(false);
+    }
+  });
+
+  it("COMPLEMENT — a bare soft yes and a pure negative are mutually exclusive", () => {
+    for (const text of ["ok", "não", "cancela", "beleza"]) {
+      const decline = webNegativeDeclineTarget(text, [P1]) !== undefined;
+      const restate = webSoftAffirmativeRestateNotice(text, [P1]) !== undefined;
+      expect(decline && restate).toBe(false);
+    }
   });
 });

@@ -37,14 +37,39 @@ import {
   CAPABILITY_DEFINITIONS,
   generatePackIntents,
   type CapabilityPackId,
-} from "../capability-definitions/index.js"
+} from "@ibatexas/catalog"
 
 /** The sentinel markers `regenerate-intent-kinds.ts` splices between.
  *  Exported so the freshness test can locate the same region in the
  *  committed file without duplicating the literal marker strings. */
 export const GENERATED_BEGIN =
-  "// ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/packs-composed/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══"
+  "// ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══"
 export const GENERATED_END = "// ═══ END GENERATED REGION ═══"
+
+/**
+ * Slice a committed file's GENERATED region out, markers included — the read
+ * side of the splice `regenerate-intent-kinds.ts` performs. Shared by the
+ * write-side script and BOTH freshness gates (this file's region and the six
+ * pack `intents[]` regions) so there is one definition of "the region",
+ * whatever file it lives in. `label` names the file in the throw, because a
+ * missing marker is always a hand-edit report, never an internal error.
+ *
+ * Leading indentation is deliberately NOT part of the returned text: the
+ * markers are located by `indexOf` on their own comment text, so the same
+ * region machinery works at column 0 (intent-kinds) and nested inside an
+ * object literal (a pack's `intents: [`).
+ */
+export function extractGeneratedRegion(fileText: string, label: string): string {
+  const beginIdx = fileText.indexOf(GENERATED_BEGIN)
+  const endIdx = fileText.indexOf(GENERATED_END)
+  if (beginIdx === -1 || endIdx === -1) {
+    throw new Error(
+      `GENERATED_BEGIN/GENERATED_END markers not found in ${label} — ` +
+        "has the sentinel-comment structure been edited by hand? Restore the markers before regenerating.",
+    )
+  }
+  return fileText.slice(beginIdx, endIdx + GENERATED_END.length)
+}
 
 interface PackSpec {
   readonly packId: CapabilityPackId

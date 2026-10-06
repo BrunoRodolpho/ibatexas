@@ -115,13 +115,43 @@ const Q3_POLAR_MODAL =
   /\b(tem|aceita|aceitam|posso|consigo|pode|podem|funciona|da pra|da para|e possivel|sera que|tem como)\b|\bvoces? (sao|estao|tem|fazem|faz|aceitam?)\b/;
 
 /**
- * Q4 — a NARROW info-imperative. Deliberately narrow so ACTION imperatives ("cancela
- * meu pedido", "quero um X-burguer") keep taking the intent path: only "me diz/fala/
- * informa/explica/conta …", "quero/queria/gostaria … saber", and "confere/verifica/
- * vê se …" count as asking for information.
+ * Q4 — a NARROW info-imperative, carried by FOUR component nets (Q4a..Q4d below)
+ * whose UNION is the Q4 marker; {@link hasInfoQuestion} ORs them. They are separate
+ * literals only because the fused one scored 35 on Sonar's regex-complexity budget
+ * of 20 (S5843) — the matched-string set is unchanged, one alternative per family.
+ * Deliberately narrow so ACTION imperatives ("cancela meu pedido", "quero um
+ * X-burguer") keep taking the intent path: only "me diz/fala/informa/explica/conta …"
+ * (Q4a), "me passa/manda/envia/dá/repassa …" (Q4b, BKL-250), "quero/queria/gostaria …
+ * saber" (Q4c), and "confere/verifica/vê se …" (Q4d) count as asking for information.
+ *
+ * BKL-250 — the HAND-IT-OVER family ("me passa o endereço do cliente", "me manda o
+ * telefone dele") is the same speech act as "me diz …" with a different verb, and it
+ * is the phrasing a PII probe actually uses. Its absence meant those turns matched no
+ * Q1..Q4 marker (no '?', no WH word, no polar opener), `hasInfoQuestion` returned
+ * false, the gate stayed shut, and the turn shipped MODEL FREE PROSE — the hole the
+ * SCN-109 security probe rode. Adding the verbs shrinks that ungoverned surface;
+ * because this is a POSITIVE net feeding a DEMOTE-ONLY gate, an addition can only
+ * ever move a turn prose→SAFE_UNKNOWN, never the reverse, and `isSmalltalkOnly` still
+ * wins ahead of it.
+ *
+ * Written UNACCENTED ("me da", not "me dá") because every predicate here runs over
+ * {@link normalize}'s output, which strips combining marks — the file's local
+ * convention, same as `\bcade\b` / `da pra` / `e possivel` above. Both the indicative
+ * and the subjunctive-imperative form are listed for each verb, mirroring the
+ * existing diz|diga / informa|informe / conta|conte pairing.
  */
-const Q4_INFO_IMPERATIVE =
-  /\bme (diz|diga|fala|informa|informe|explica|explique|conta|conte)\b|\b(quero|queria|gostaria)\s+(de\s+)?saber\b|\b(confere|conferir|verifica|verificar|ve se)\b/;
+const Q4A_TELL_ME =
+  /\bme (diz|diga|fala|informa|informe|explica|explique|conta|conte)\b/;
+
+/** Q4b — the BKL-250 HAND-IT-OVER family. See the {@link Q4A_TELL_ME} block above. */
+const Q4B_HAND_IT_OVER =
+  /\bme (passa|passe|manda|mande|envia|envie|da|repassa|repasse)\b/;
+
+/** Q4c — the "quero/queria/gostaria (de) saber" family. */
+const Q4C_WANT_TO_KNOW = /\b(quero|queria|gostaria)\s+(de\s+)?saber\b/;
+
+/** Q4d — the "confere/verifica/vê se …" family. */
+const Q4D_CHECK_WHETHER = /\b(confere|conferir|verifica|verificar|ve se)\b/;
 
 /**
  * D2 — the minimal English honesty net. An English question must degrade honestly
@@ -142,7 +172,10 @@ export function hasInfoQuestion(text: string): boolean {
     Q1_QUESTION_MARK.test(t) ||
     Q2_WH.test(t) ||
     Q3_POLAR_MODAL.test(t) ||
-    Q4_INFO_IMPERATIVE.test(t) ||
+    Q4A_TELL_ME.test(t) ||
+    Q4B_HAND_IT_OVER.test(t) ||
+    Q4C_WANT_TO_KNOW.test(t) ||
+    Q4D_CHECK_WHETHER.test(t) ||
     D2_ENGLISH.test(t)
   );
 }
@@ -155,4 +188,41 @@ export function hasInfoQuestion(text: string): boolean {
  */
 export function shouldDegradeToSafeUnknown(text: string): boolean {
   return !isSmalltalkOnly(text) && hasInfoQuestion(text);
+}
+
+/**
+ * LE2-013 — the RAW-PROSE RETIREMENT gate: DEGRADE iff the message is NOT
+ * smalltalk-only. The strictly-stronger sibling of
+ * {@link shouldDegradeToSafeUnknown}, and the whole of ticket 13's first
+ * acceptance criterion.
+ *
+ * ── Why the positive net is not enough ───────────────────────────────────────
+ * {@link hasInfoQuestion} is a POSITIVE net (Q1..Q4 + the D2 English net), so its
+ * MISSES are exactly the hole this ticket closes: an information-bearing turn that
+ * matches no marker ("me passa o faturamento da semana", "preciso do total de
+ * ontem", "confirmação do fornecedor pra amanhã") is neither smalltalk nor a
+ * recognised question, so the responder's empty-plan branch shipped model prose —
+ * a digit-free factual assertion that the ops digit clamp
+ * (`clampUngroundedOpsFact`) cannot see, because the clamp only demotes ungrounded
+ * NUMBERS. Widening the positive net indefinitely is a losing game; INVERTING the
+ * default is not. So on the ops plane the question becomes "is this small talk?"
+ * — the ONE discriminator that is a closed, enumerated lexicon
+ * ({@link SMALLTALK_TOKENS} + {@link SMALLTALK_PHRASES}, the BKL-110 0/15 corpus)
+ * rather than an open-ended net — and everything else terminates at the
+ * deterministic SAFE_UNKNOWN render.
+ *
+ * ── Still DEMOTE-ONLY, still sound ───────────────────────────────────────────
+ * A `true` can only ever move a turn prose→SAFE_UNKNOWN. It never promotes, never
+ * touches the render or claim-proposal paths, and it is reached only AFTER the
+ * deterministic read render and BEFORE any model call (see the responder's
+ * REFUSE/empty-plan branch), so a genuinely VALIDATED claim still supersedes it at
+ * handle-turn §6a. Over-including a token in the smalltalk lexicon is the ONLY
+ * failure direction, and it merely keeps a turn on the (clamped) prose path.
+ *
+ * PURE. Deliberately plane-agnostic: the PLANE choice lives in
+ * `safe-unknown-gate.ts` (`SafeUnknownGateOptions.retireRawProse`), because the
+ * customer plane's own retirement is a separate, spec-level decision.
+ */
+export function shouldRetireRawProse(text: string): boolean {
+  return !isSmalltalkOnly(text);
 }

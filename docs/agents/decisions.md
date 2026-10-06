@@ -48,6 +48,14 @@ acceptance tests (P0-1, P0-2, P0-9) run against it; `testcontainers@^12` was alr
 already has an env-gated real-Redis test idiom (`REDIS_TEST_URL` skip-guards) alongside testcontainers —
 agents may use either pattern where the plan says "real-Redis test".
 
+> **The second sentence is SUPERSEDED as of M0 (2026-08-04).** The `REDIS_TEST_URL` idiom is the
+> silent-skip class: `REDIS_TEST_URL` is unset in CI, so those `describe.skipIf` blocks skipped and the
+> files still printed a ✓ — measured on dev @ `2f5c4979`, five files, twelve real-Redis cases, green.
+> All five are on `setupRedisTestContainer` now and the env var appears nowhere in the test tree. Use the
+> shared harness; the only real-Redis knob is `IBX_SKIP_REAL_REDIS=1` (local dev). New real-Redis suites
+> must be added to the roll call in `scripts/check-real-redis-suites.mjs` — the gate fails on any
+> un-enumerated one. See `docs/architecture/redis-lua-testing-decision.md` (Q1).
+
 ## D-008 — Phase 0 outcomes: assumptions adopted from the implementing agents (2026-06-12)
 
 All 10 workflow tasks `done`; commits 7b82f8e (P0-1), 83d2c8c (P0-2), d93dc89 (P0-6), 2a1deaf (P0-8),
@@ -71,7 +79,7 @@ f96246a (P0-7), 1dc2364 (P0-9), a32392f + adjudicate 99ec4dd (P0-5), 3bee5e5 (P0
 - **ANTHROPIC_MODEL + EMBEDDING_MODEL_ID** are now fail-fast required at boot (first statements of
   bootstrapClaustrum) — the T1a-11a env contract must set both; .env.example documents both as REQUIRED.
 - **packs-composed surface (P0-8)**: exports `IBATEXAS_COMPOSED_PACKS`,
-  `IBATEXAS_COMPOSED_CAPABILITY_PLANNERS`, `composedIntentKinds()` (59-kind dedup union; `pix.*`/
+  `IBATEXAS_COMPOSED_CAPABILITY_PLANNERS`, `composedIntentKinds()` (62-kind dedup union; `pix.*`/
   `loyalty.*` deliberately excluded — those live in @ibatexas/intent-kinds). @adjudicate/pack-payments-pix
   is NOT in the composed list (platform pack, not first-party). T1a-2's lint gate imports this package.
 - **Roster drift (P0-7)**: `toolRosterDrift(tools, intents, {planners, contexts, onWarn})` — context legs
@@ -203,7 +211,29 @@ coverage, QA viewer build+test, scripted-pipeline suite, full pnpm test — all 
   fails); reconcile PI-lookup gained an orderId fallback (adopts the order's single ACTIVE payment via
   the SUT's own metadata.medusaOrderId stamp; never adopts a payment carrying a different PI). Worker
   gate re-keyed to prod-parity (NODE_ENV test gating stranded jobs — same class as D-014 item 3).
-  Remaining recorded gap: webhook PIX leg passes FORMATTED IBX-#### ids (vs cash flow's raw ids).
+  Recorded gap **CLOSED (BKL-230)**: the webhook PIX leg passed FORMATTED IBX-#### ids (vs cash flow's
+  raw ids). It was not cosmetic — `capturePayment`'s `GET /admin/orders/IBX-0230` 404'd, the throw hit
+  the capture-leg isolation catch above, `result` stayed null and the "already processed" early return
+  fired BEFORE the `order.placed` publish, so PIX orders were completed but never announced (cash was,
+  keeping `rawOrderId` for NATS and formatting only the user-facing string). The leg now returns
+  `completion.order?.id` and the raw id flows to `capturePayment`, the `metadata.medusaOrderId` stamped
+  back onto the PaymentIntent (which later webhook legs read), the reconcile fallback lookup, the
+  `order.placed` payload and `markPixPaid`; nothing on this leg is user-facing, so `formatOrderId` is
+  gone from the route entirely. Pinned by the BKL-230 suite in `stripe-webhook-route.test.ts`, whose
+  id-strict `capturePayment` test reproduces the 404 → swallow → no-publish chain (the older PIX suites
+  stubbed `capturePayment` to `null`, which masked it).
+- **EIGHTH SUT bug class — chat-plane PIX checkout, CLOSED (BKL-230)**: `createCheckout`'s PIX branch
+  (create-checkout.ts:598-605) requires `extra.customerName || extra.customerEmail` because Stripe's PIX
+  confirm needs a payer, and the conversational tool-pack executor passed no third argument at all — so
+  every chat/WhatsApp PIX checkout was structurally unsatisfiable ("Nome e email são obrigatórios para
+  pagamento PIX.", no QR, no `metadata.cartId`, hence no `payment_intent.succeeded` and no order), while
+  the HTTP route was unaffected because it resolves its own `pixExtra` and calls `createCheckout`
+  directly. The identity is now wired server-side in the executor from the session's authenticated
+  customerId — precedence per field: explicit saved PIX details (`customer:pix:<customerId>`, incl.
+  taxId) over the `Customer.name/email/cpf` profile fallback — leaving the PII posture untouched: name/
+  email/CPF are still never on the model wire (`order-checkout-create.schema.ts` declares no
+  `pixDetails`, and the payload's is ignored on this plane), a guest still gets the existing honest
+  failure, and identity is resolved only from the session so no argument can select another customer's.
 - **Journeys 010–016 all ACTIVE and live-verified** (010 reservation lifecycle w/ staff-HTTP checkin/
   complete cells — no waiver, per DR-5; 011 reorder-from-history; 012 LGPD export+erasure; 013
   order-note + review-unadvertised negative; 014 executable PIX slice; 015 paid-state flow via the
@@ -313,6 +343,16 @@ Engineering decisions / assumptions adopted (most-logical, per the goal directiv
   FIRST in the AUTH phase, reading a late-bound holder (`setAgentKillStateReader`) that defaults to
   never-killed (inert for the pure CLI/manifest exporter; pointed at the live manager in the live wiring).
   Host-side pre-openCapsule check consults `manager.isKilled` in the runner (live wiring).
+  **F-51 (2026-08-05)**: the "pointed at the live manager in the live wiring" half was aspirational for the
+  whole life of T3-5 — the holder had ZERO production callers, so the kernel leg read constant-false in
+  every running process while its only test stayed green by calling the setter itself. The wiring now lives
+  in `startManagedAgentPlane` (managed-agent-plane.ts), beside the host-side leg and over the SAME manager
+  binding. Scope, stated exactly: the host leg stops the NEXT trigger; the kernel leg stops the MUTATION of
+  a turn already past openCapsule AND the agent-approvals resume (a killed agent's parked money envelope
+  now REFUSEs on a manager's accept instead of executing). Neither leg cancels an in-flight turn — its
+  model calls, read tools and reply still run. Proven end-to-end through the production wiring by
+  `apps/api/src/__tests__/agent-kill-switch-production-wiring.test.ts`, which deliberately never names the
+  setter; `agent-kill-switch.test.ts` remains the guard-body unit test.
 
 - **T3-6 (Stage-0 shadow)**: REDACTOR CHANGE (D-017) landed — `audit-redactor.ts` keeps a strict
   `agent:<kebab>@<x.y.z>:entity:<id>` sessionId UNHASHED (operational id, not PII; a forged shape is

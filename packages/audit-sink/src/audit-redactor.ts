@@ -551,6 +551,34 @@ export const PII_FREE_KIND_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "order.address.change", // address.{street,number,...} covered by global HASH_FIELDS
   "order.type.switch", // orderId + newType: closed enum + optional httpVocab enum
   "order.reorder", // previousOrderId + paymentMethod: closed enum
+  // LE2-021 — the reorder-last workflow's anchor. The strongest member of this
+  // list: its payload has NO authored fields at all. The only key that ever
+  // rides it is the runtime-written `_workflowInstanceId` (a UUID the workflow
+  // runtime mints), and the workflow declares zero slots, so the parse seam's
+  // `sanitizeWorkflowSlots` drops every key the model tries to attach — there is
+  // no free-form string slot for PII to reach, smuggled or otherwise.
+  "order.reorder.request",
+  // LE2-023 — the swap-for-coupon anchor. `code` + the runtime-written
+  // `_workflowInstanceId` (a UUID) and nothing else; `code` is the same short
+  // opaque promo handle `order.coupon.apply` above carries, and it reaches the
+  // payload only through the workflow's CLOSED slot surface, so
+  // `sanitizeWorkflowSlots` drops every other key the model tries to attach.
+  "order.coupon.swap.request",
+  // LE2-024 — the paid-cancel anchor, and as PII-free as `order.reorder.request`
+  // above and for the same structural reason: the workflow declares ZERO slots,
+  // so `sanitizeWorkflowSlots` drops every key the model tries to attach, and the
+  // only key that ever rides the payload is the runtime-written
+  // `_workflowInstanceId` (a UUID the workflow runtime mints). There is no
+  // free-form string slot for PII to reach, smuggled or otherwise. The order id
+  // this route acts on never touches this envelope at all — it is stamped
+  // host-side onto the `order.cancel` ACTIVITY, which is classified separately.
+  "order.cancel.request",
+  // LE2-023 — same `code` + cartId/orderId shape as the two coupon kinds above.
+  // In practice its payload never reaches an audit row at all: the kind has no
+  // EXECUTE path, so every envelope of it is REFUSEd. Classified anyway, because
+  // the conformance corpus requires every Pack kind to be classified and an
+  // unclassified one trips the F-5 sentinel.
+  "order.coupon.adjust",
   "order.projection.create", // customerId covered by global HASH_FIELDS
   "order.status.reconcile", // orderId/newStatus(short status enum)/source: closed enum
   "order.fiscal.emit", // NEW-014 — orderId only (customerTaxId lives in the PR2 provider input, never on the envelope)
@@ -707,8 +735,10 @@ export function createAuditRedactor(
       //
       // Threat: when the kernel decides REWRITE, the decision carries a
       // post-rewrite envelope at `decision.rewritten`. Adopters wire
-      // sanitizers like pack-whatsapp's `sanitizeCustomerString` into
-      // the REWRITE path — but those sanitizers do NOT do PII
+      // sanitizers into the REWRITE path — e.g. pack-whatsapp's
+      // `sanitizeHandoffReason` guard, which pipes
+      // `whatsapp.handoff.request.reason` through `sanitizeCustomerString`
+      // — but those sanitizers do NOT do PII
       // detection (see pack-whatsapp/src/sanitize.ts header). The
       // post-rewrite payload therefore still carries CPF/email/phone
       // typed by the customer, and the pre-2026-05-24 redactor's
@@ -854,11 +884,13 @@ export function createAuditRedactor(
 // without modification.
 //
 // Why redact REWRITE's rewritten payload at all? Adopters (pack-whatsapp's
-// REWRITE guard via `sanitizeCustomerString`) sanitize template-injection
-// shapes but DO NOT do PII detection — see the file-level comment in
-// pack-whatsapp/src/sanitize.ts. A customer who types
-// `meu cpf é 123.456.789-00` produces a rewritten payload whose `body` still
-// carries the CPF. Pre-fix, that field reached NATS unredacted.
+// `sanitizeHandoffReason` guard, via `sanitizeCustomerString`) sanitize
+// template-injection shapes but DO NOT do PII detection — see the
+// file-level comment in pack-whatsapp/src/sanitize.ts. A customer who types
+// `meu cpf é 123.456.789-00` produces a rewritten payload whose `reason`
+// still carries the CPF. Pre-fix, that field reached NATS unredacted.
+// (The `whatsapp.handoff.request: ["reason"]` kind rule above is what
+// scrubs it; this walk is what makes that rule reach the REWRITTEN copy.)
 //
 // Returns a fresh Decision object. Non-REWRITE decisions are returned
 // unchanged — they carry no envelope payload at the decision level.

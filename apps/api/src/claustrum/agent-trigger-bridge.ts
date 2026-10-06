@@ -39,6 +39,7 @@
 // check-bypass leg 8) and takes the turn runner as an injected dependency — the
 // real Conductor wiring lands in T3-6/T3-9, tests inject a stub.
 
+import { randomUUID } from "node:crypto";
 import {
   AGENT_SESSION_NAMESPACE,
   agentSessionId,
@@ -59,9 +60,16 @@ import { triggerExternalId, type TriggerEvent } from "./system-channel.js";
  * Minimal Redis surface the dedup stack uses: `SET key value [EX s] [NX]` —
  * with `NX` it returns `"OK"` on claim and `null` if the key already exists;
  * without `NX` it overwrites and returns `"OK"` (used to promote a claim's TTL,
- * mirroring `markProcessed` in subscribers/dedup.ts). Plus `del` to release an
- * in-flight claim on failure. `getRedisClient()` from `@ibatexas/tools` satisfies
- * this; tests inject an in-memory fake.
+ * mirroring `markProcessed` in subscribers/dedup.ts). Plus the F-21
+ * ownership-conditional release, {@link TriggerDedupRedis.compareAndDelete}.
+ *
+ * A value of this type is obtained from `createTriggerDedupRedis()` in
+ * `trigger-dedup-redis.ts` — the composition root that proves a client can
+ * serve it. Tests inject an in-memory fake through the same factory shape.
+ *
+ * NOTE the absent member: there is no `del`. After F-21 nothing on this path
+ * releases a claim unconditionally, and leaving `del` on the contract would
+ * leave the defect one keystroke away.
  */
 export interface TriggerDedupRedis {
   set(
@@ -69,7 +77,19 @@ export interface TriggerDedupRedis {
     value: string,
     opts: { EX?: number; NX?: true },
   ): Promise<string | null>;
-  del(key: string): Promise<unknown>;
+  /**
+   * REQUIRED, never optional. Delete `key` only while its value is still
+   * `expectedValue`; returns 1 when deleted and 0 when it no longer matches
+   * (someone else owns the claim — leave it alone).
+   *
+   * Declared REQUIRED on purpose, following the F-22 `ParkRedisCapabilities`
+   * precedent: an optional atomicity member is silently SKIPPED by a client
+   * that omits it, which is how a lock release becomes a no-op — or worse, how
+   * a caller "helpfully" falls back to an unconditional `del`. A client that
+   * cannot compare-and-delete cannot serve this path, and `tsc` says so at the
+   * composition root rather than Redis saying so at 3am.
+   */
+  compareAndDelete(key: string, expectedValue: string): Promise<number>;
 }
 
 // ── Turn runner (injected — T3-6/T3-9 wire the real composition) ─────────────
@@ -142,9 +162,55 @@ export interface ProcessTriggerJobDeps {
 }
 
 /** Redelivery in-flight claim lifetime before the turn confirms (5 min). */
-const REDELIVERY_INFLIGHT_TTL_S = 300;
+export const REDELIVERY_INFLIGHT_TTL_S = 300;
 /** Redelivery full-window after a confirmed turn (7 days, matches NATS dedup). */
 const REDELIVERY_DONE_TTL_S = 604_800;
+
+/**
+ * The value a PROMOTED (decided) seen-key carries.
+ *
+ * Deliberately a CONSTANT, not a token — a decided event is terminal and owned
+ * by no one, which is precisely why nothing may release it. See
+ * PROMOTE-OVERWRITE below.
+ */
+const DONE_MARKER = "1";
+
+// ── PROMOTE-OVERWRITE — measured, and deliberately NOT converted ──────────────
+//
+// The two `set(seenKey, DONE_MARKER, { EX: REDELIVERY_DONE_TTL_S })` promotes
+// overwrite the in-flight claim without checking who owns it. F-21 asks whether
+// that is the same defect as the release path. It is not, for two reasons — one
+// measured, one semantic.
+//
+// MEASURED — the dangerous interleaving is unreachable. An ownership-blind
+// overwrite only harms anyone if THIS invocation's claim can lapse while the
+// invocation is still running, letting a second delivery re-claim the carrier
+// before this one writes. It cannot:
+//
+//     REDELIVERY_INFLIGHT_TTL_S              = 300_000 ms (5 min)
+//     max(budgets.wallClockMsPerTrigger)     =  60_000 ms (1 min)
+//         — AGENT_REGISTRY's only agent, packages/agents/src/registry.ts:45
+//
+// and `runWithWallClock` does not merely observe that cap, it REJECTS at it
+// (a `Promise.race` against a rejecting deadline timer), so a turn that would
+// outlive its claim goes to the CATCH path — the ownership-conditional one —
+// rather than to a promote. The confirm promote is reachable only when the
+// runner RESOLVED, bounded by 60s; the cooldown promote is reachable a few
+// round trips after the claim. Both sit 5x inside the window.
+//
+// That is a budget-dependent premise, not a structural one, so it is PINNED:
+// `agent-trigger-promote-window.unit.test.ts` fails if any agent's wall-clock
+// budget grows to within the in-flight TTL. Raising that budget past 300s
+// re-opens this and must re-open this decision with it.
+//
+// SEMANTIC — a conditional promote would be WORSE. A promote means "this event
+// is decided; do not reprocess it for 7 days". Under a compare-and-delete-style
+// guard the promote could FAIL and leave the 5-minute in-flight claim in place;
+// that claim then lapses and a redelivery genuinely re-runs an event that was
+// already decided — the double-remediation the dedup exists to prevent. The
+// release path wants ownership because releasing early is the hazard; the
+// promote path wants unconditional write because NOT marking is the hazard.
+// Opposite failure directions, opposite mechanisms.
 
 function redeliveryKey(agentId: string, externalId: string): string {
   return rk(`agent:trigger:seen:${agentId}:${externalId}`);
@@ -193,9 +259,16 @@ export async function processTriggerJob(
   }
 
   // 2. Redelivery dedup — two-phase claim on the deterministic carrier.
+  //
+  // F-21: the in-flight claims carry a per-invocation UUID rather than the
+  // constant "1", because the catch path below RELEASES them and a release
+  // without an ownership token is how one delivery destroys another's claim.
+  // One token covers both claims: they are acquired and released together, by
+  // the same invocation, so a second UUID would add ceremony and no isolation.
+  const claimToken = randomUUID();
   const seenKey = redeliveryKey(agent.id, externalId);
   const cdKey = cooldownKey(agent.id, event.entityRef);
-  const claimed = await deps.redis.set(seenKey, "1", {
+  const claimed = await deps.redis.set(seenKey, claimToken, {
     EX: REDELIVERY_INFLIGHT_TTL_S,
     NX: true,
   });
@@ -206,7 +279,7 @@ export async function processTriggerJob(
   try {
     // 3. Per-entity cooldown — at most one remediation per entity per window.
     if (agent.budgets.cooldownSeconds > 0) {
-      const cooled = await deps.redis.set(cdKey, "1", {
+      const cooled = await deps.redis.set(cdKey, claimToken, {
         EX: agent.budgets.cooldownSeconds,
         NX: true,
       });
@@ -214,7 +287,8 @@ export async function processTriggerJob(
         // Decided (suppressed by cooldown): promote the seen-key (plain SET,
         // overwriting the in-flight TTL) so a later redelivery of THIS event
         // short-circuits at step 2 rather than re-walking the cooldown.
-        await deps.redis.set(seenKey, "1", { EX: REDELIVERY_DONE_TTL_S });
+        // Ownership-blind BY DESIGN — see PROMOTE-OVERWRITE below.
+        await deps.redis.set(seenKey, DONE_MARKER, { EX: REDELIVERY_DONE_TTL_S });
         return record({ status: "suppressed", reason: "cooldown" });
       }
     }
@@ -223,8 +297,9 @@ export async function processTriggerJob(
     const result = await runWithWallClock(agent, () => deps.runner, event, deps.now);
 
     // Confirm: promote the redelivery claim to the full window (plain SET,
-    // overwriting the short in-flight TTL).
-    await deps.redis.set(seenKey, "1", { EX: REDELIVERY_DONE_TTL_S });
+    // overwriting the short in-flight TTL). Ownership-blind BY DESIGN — see
+    // PROMOTE-OVERWRITE below.
+    await deps.redis.set(seenKey, DONE_MARKER, { EX: REDELIVERY_DONE_TTL_S });
     return record({
       status: "ran",
       decisionKind: result.decisionKind,
@@ -236,9 +311,21 @@ export async function processTriggerJob(
     // reprocesses (at-least-once) rather than being short-circuited as a
     // redelivery or a cooldown hit. Best-effort — the short in-flight TTL
     // bounds the redelivery claim regardless.
+    //
+    // F-21: ownership-CONDITIONAL. The pre-rollout form was
+    // `del(seenKey); del(cdKey)`, which destroys whatever is at those keys NOW.
+    // If this invocation's in-flight claim had already lapsed and a later
+    // delivery re-claimed the carrier, this catch deleted the LIVE claim of a
+    // turn that was still running, plus a cooldown that delivery had just
+    // established — waking the agent twice on one entity, past the very
+    // cooldown that bounds remediation attempts. With the token the release is
+    // a no-op in that interleaving and the other delivery keeps its claims;
+    // the comment above already names the in-flight TTL as the backstop, and
+    // leave-to-TTL is exactly what a non-owner should fall back to (F-22's
+    // failure direction: never a blind DEL without ownership proof).
     try {
-      await deps.redis.del(seenKey);
-      await deps.redis.del(cdKey);
+      await deps.redis.compareAndDelete(seenKey, claimToken);
+      await deps.redis.compareAndDelete(cdKey, claimToken);
     } catch {
       /* in-flight TTL guarantees eventual expiry */
     }

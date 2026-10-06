@@ -30,7 +30,7 @@ import { composedIntentKinds } from "@ibatexas/packs-composed";
 import {
   CAPABILITY_DEFINITIONS,
   generateOpsForbiddenDestructiveKinds,
-} from "@ibatexas/packs-composed/capability-definitions";
+} from "@ibatexas/catalog";
 
 import { opsPlaneDriftProblems } from "../ops-conductor.js";
 import { forbiddenOpsVerbProblems } from "../ops-verb-scope.js";
@@ -76,10 +76,10 @@ const REGISTRY_DEPS: OpsToolRegistryDeps = {
   publishPaymentStatusChanged: async () => {},
   appendRefundEventLog: async () => {},
   opsAlertSvc: {
-    resolveAlertFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
+    writeAdjudicatedAlertResolve: async () => ({ status: "RESOLVED" }),
   },
   incidentSvc: {
-    closeIncidentFromEnvelope: async () => ({ result: { status: "RESOLVED" } }),
+    writeAdjudicatedIncidentClose: async () => ({ status: "RESOLVED" }),
   },
   scheduleSvc: { upsertOverride: async () => ({ date: "2026-07-10", isOpen: false }) },
   invalidateScheduleCache: async () => ({ ok: true }),

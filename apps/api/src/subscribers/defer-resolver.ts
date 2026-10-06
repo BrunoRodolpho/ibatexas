@@ -35,6 +35,7 @@
 
 import { subscribeNatsEvent } from "@ibatexas/nats-client"
 import { getRedisClient, rk } from "@ibatexas/tools"
+import type { RedisClientType } from "redis"
 import type { PaymentStatusChangedEvent } from "@ibatexas/types"
 import { PIX_CONFIRMATION_SIGNAL } from "@adjudicate/pack-payments-pix"
 import {
@@ -155,8 +156,9 @@ export async function resumeDeferredIntent(
   sessionId: string,
   signal: string,
   log?: FastifyBaseLogger,
+  client?: DeferResolverRedis,
 ): Promise<DeferResumeResult> {
-  const redis = await getRedisClient()
+  const redis = client ?? (await getRedisClient())
   return resumeDeferredIntentImpl({ sessionId, signal, redis, rk, log })
 }
 
@@ -220,6 +222,12 @@ export interface ResolveDeferredSessionArgs {
   readonly signal: string
   readonly event: PaymentStatusChangedEvent
   readonly log?: FastifyBaseLogger
+  /**
+   * Redis client to run this resume against. Omitted in production, where the
+   * process singleton is resolved lazily at the same point it always was — the
+   * first statement of the function body, per delivery, never at module load.
+   */
+  readonly redis?: DeferResolverRedis
 }
 
 export type ResolveResult =
@@ -336,7 +344,25 @@ function deferResumingKey(intentHash: string, signal: string): string {
   return `defer:resuming:${deferResumeHash(intentHash, signal)}`
 }
 
-type RedisClient = Awaited<ReturnType<typeof getRedisClient>>
+/**
+ * The declared subset this module issues on its Redis client, directly or
+ * through the helpers it hands the client to.
+ *
+ * `get`/`set`/`del`/`incr`/`decr`/`expire` are the runtime's `DeferRedis`
+ * contract (`@adjudicate/runtime`), which `resumeDeferredIntent` receives —
+ * `incr` gates the resume-cycle cap, `decr` the per-session park counter and
+ * `expire` the counter's TTL, and the runtime SILENTLY SKIPS each one when it
+ * is absent, so all three have to be named here or threading a client would
+ * quietly disable them. `scanIterator` is the parked-key sweep; `eval` is the
+ * compare-and-delete release this module delegates to
+ * `lib/defer-resuming-lock.ts`.
+ */
+export type DeferResolverRedis = Pick<
+  RedisClientType,
+  "get" | "set" | "del" | "incr" | "decr" | "expire" | "scanIterator" | "eval"
+>
+
+type RedisClient = DeferResolverRedis
 
 // ── resolveDeferredSession helpers (extracted to bound cognitive complexity) ──
 //
@@ -593,7 +619,7 @@ async function incrementResumeCycleOrRelease(args: {
       )
       // Clear the resuming marker so the next attempt isn't blocked by it
       // even though this attempt is refused.
-      await releaseDeferResumingLock(resumingKey, resumingLockValue)
+      await releaseDeferResumingLock(resumingKey, resumingLockValue, redis)
       return { kind: "cycle_cap_exceeded", intentHash }
     }
     return null
@@ -602,7 +628,7 @@ async function incrementResumeCycleOrRelease(args: {
       { sessionId, signal, intentHash, err: (err as Error).message },
       "[defer-resolver] cycle counter INCR failed — releasing resuming slot",
     )
-    await releaseDeferResumingLock(resumingKey, resumingLockValue)
+    await releaseDeferResumingLock(resumingKey, resumingLockValue, redis)
     return { kind: "resume_failed", reason: "cycle_counter_failed" }
   }
 }
@@ -800,7 +826,7 @@ export async function resolveDeferredSession(
   args: ResolveDeferredSessionArgs,
 ): Promise<ResolveResult> {
   const { sessionId, signal, event, log } = args
-  const redis = await getRedisClient()
+  const redis = args.redis ?? (await getRedisClient())
 
   // Pre-flight load + tamper check. We read the raw blob ourselves so we can
   // DLQ a tampered envelope before claiming a resuming slot. P1-D — the helper
@@ -878,6 +904,7 @@ export async function resolveDeferredSession(
     resumingKey,
     DEFER_RESUMING_TTL_SECONDS,
     "resolver",
+    redis,
   )
   if (!resuming.acquired) {
     log?.debug(
@@ -913,7 +940,7 @@ export async function resolveDeferredSession(
       sessionId,
       log,
     })
-    await releaseDeferResumingLock(resumingKey, resumingLockValue)
+    await releaseDeferResumingLock(resumingKey, resumingLockValue, redis)
     return { kind: "park_missing_after_lock", intentHash }
   }
   if (parkRecheck.kind === "error") {
@@ -926,7 +953,7 @@ export async function resolveDeferredSession(
       },
       "[defer-resolver] parkKey re-check failed — releasing resuming slot and returning transient_error",
     )
-    await releaseDeferResumingLock(resumingKey, resumingLockValue)
+    await releaseDeferResumingLock(resumingKey, resumingLockValue, redis)
     return {
       kind: "transient_error",
       reason: `redis_get_park_recheck_failed: ${
@@ -974,7 +1001,7 @@ export async function resolveDeferredSession(
       log,
     )
     // Release the resuming claim so retry can re-enter; leave pending intact.
-    await releaseDeferResumingLock(resumingKey, resumingLockValue)
+    await releaseDeferResumingLock(resumingKey, resumingLockValue, redis)
     return { kind: "resume_failed", reason: "adjudicate_threw" }
   }
 
@@ -1012,7 +1039,7 @@ export async function resolveDeferredSession(
     // counter increment from above is retained — a dispatch failure still
     // counts as one cycle for cap accounting (the alternative is a DECR
     // that's vulnerable to its own race conditions).
-    await releaseDeferResumingLock(resumingKey, resumingLockValue)
+    await releaseDeferResumingLock(resumingKey, resumingLockValue, redis)
     return { kind: "resume_failed", reason: "dispatcher_failed" }
   }
 
@@ -1051,7 +1078,7 @@ export async function resolveDeferredSession(
     })
   await redis.del(rawKey).catch(() => {})
   await redis.decr(rk(`defer:count:${sessionId}`)).catch(() => {})
-  await releaseDeferResumingLock(resumingKey, resumingLockValue)
+  await releaseDeferResumingLock(resumingKey, resumingLockValue, redis)
 
   return {
     kind: "re_adjudicated",
@@ -1084,6 +1111,13 @@ export async function resolveDeferredSession(
  */
 export interface StartDeferResolverSubscriberOptions {
   readonly dispatcher?: ResumeIntentDispatcher
+  /**
+   * Redis client the resume sweep runs against, threaded down into every
+   * `resolveDeferredSession` it drives. Omitted in production: the singleton is
+   * still resolved inside the wire callback, per delivery, so a Redis that is
+   * down at boot but up by the first event behaves exactly as it does today.
+   */
+  readonly redis?: DeferResolverRedis
 }
 
 export async function startDeferResolverSubscriber(
@@ -1106,9 +1140,9 @@ export async function startDeferResolverSubscriber(
       return
     }
 
-    let redis: Awaited<ReturnType<typeof getRedisClient>>
+    let redis: DeferResolverRedis
     try {
-      redis = await getRedisClient()
+      redis = options?.redis ?? (await getRedisClient())
     } catch (err) {
       log?.error(
         { err: (err as Error).message },
@@ -1150,6 +1184,7 @@ export async function startDeferResolverSubscriber(
           signal: PIX_CONFIRMATION_SIGNAL,
           event,
           log,
+          redis,
         })
 
         logResolveResult(result, { sessionId, paymentId, orderId, log })

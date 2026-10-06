@@ -94,6 +94,57 @@ interface ExportResult {
   readonly artifactName: string
   readonly build: (packs: GovernancePackLike[]) => Promise<Record<string, unknown>>
   readonly summary: (m: Record<string, unknown>) => string
+  /**
+   * BKL-268: the artifact's OWN verdict, independent of drift. A gate that
+   * only byte-compares against the baseline reports green on a red artifact
+   * whenever the baseline was regenerated while the analyzers were failing —
+   * a real failure exiting 0. Return a reason string to fail the gate.
+   */
+  readonly selfVerdict?: (m: Record<string, unknown>) => string | undefined
+}
+
+/**
+ * BKL-268 — VERDICT ON STDOUT.
+ *
+ * The report and the exit code must never disagree. Before this, every failure
+ * path wrote only to STDERR while the green path wrote to STDOUT, so the
+ * "report" an operator captures (`gate > report.txt`, or a stdout diff) was
+ * all-green — or empty — while the process exited 1. The exit code was honest;
+ * the report was the liar.
+ *
+ * Both verdicts now land on STDOUT so the report alone determines pass/fail:
+ *   green verdict line ⟺ exit 0   ·   red verdict line ⟺ exit 1
+ * Human-readable DETAIL stays on stderr; the verdict itself never does.
+ */
+function verdictPass(line: string): void {
+  console.log(chalk.green(`✓ ${line}`))
+}
+
+function verdictFail(line: string, detail?: string): void {
+  console.log(chalk.red(`✗ ${line}`))
+  if (detail !== undefined) console.error(chalk.dim(detail))
+  process.exitCode = 1
+}
+
+/**
+ * The baseline matched byte-for-byte. Drift is only HALF the verdict: the
+ * artifact may itself carry analyzer errors (a baseline regenerated while the
+ * packs were failing bakes a red report into the "no drift" green path). Ask
+ * the artifact for its own verdict before declaring the gate green.
+ */
+function reportNoDrift(
+  cfg: ExportResult,
+  manifest: Record<string, unknown>,
+): void {
+  const selfFailure = cfg.selfVerdict?.(manifest)
+  if (selfFailure !== undefined) {
+    verdictFail(
+      `${cfg.artifactName}: sem drift, mas o artefato REPROVA — ${selfFailure}.`,
+      cfg.summary(manifest),
+    )
+    return
+  }
+  verdictPass(`${cfg.artifactName} sem drift — confere com a baseline.`)
 }
 
 async function runExport(
@@ -103,10 +154,9 @@ async function runExport(
   const packs = await loadPacksForGovernance(opts.pack)
   if (packs.length === 0) {
     const scope = opts.pack ? ` para ${opts.pack}` : ""
-    console.error(
-      chalk.red(`Nenhum pack encontrado${scope}.`),
+    verdictFail(
+      `${cfg.artifactName}: nenhum pack encontrado${scope} — verificação NÃO realizada.`,
     )
-    process.exitCode = 1
     return
   }
   const manifest = await cfg.build(packs)
@@ -116,15 +166,14 @@ async function runExport(
   if (opts.verifyFile !== undefined) {
     const vf = resolveOut(opts.verifyFile)
     if (!fs.existsSync(vf)) {
-      console.error(chalk.red(`✗ baseline não encontrada: ${opts.verifyFile}`))
-      process.exitCode = 1
+      verdictFail(
+        `${cfg.artifactName}: baseline não encontrada: ${opts.verifyFile} — verificação NÃO realizada.`,
+      )
       return
     }
     const committed = fs.readFileSync(vf, "utf8")
     if (committed === json) {
-      console.log(
-        chalk.green(`✓ ${cfg.artifactName} sem drift — confere com a baseline.`),
-      )
+      reportNoDrift(cfg, manifest)
       return
     }
     // Re-serialize the committed copy through the same elision so a stray
@@ -140,18 +189,13 @@ async function runExport(
       // Non-JSON / unparseable committed file → treat as drift.
     }
     if (normalizedCommitted === json) {
-      console.log(
-        chalk.green(`✓ ${cfg.artifactName} sem drift — confere com a baseline.`),
-      )
+      reportNoDrift(cfg, manifest)
       return
     }
-    console.error(
-      chalk.red(
-        `✗ ${cfg.artifactName}: drift detectado vs ${opts.verifyFile} (re-gere com 'export --out').`,
-      ),
+    verdictFail(
+      `${cfg.artifactName}: drift detectado vs ${opts.verifyFile} (re-gere com 'export --out').`,
+      cfg.summary(manifest),
     )
-    console.error(chalk.dim(cfg.summary(manifest)))
-    process.exitCode = 1
     return
   }
 
@@ -207,8 +251,12 @@ export function registerAibomCommands(group: Command): void {
             opts,
           )
         } catch (err) {
-          console.error(chalk.red(`✗ ${(err as Error).message}`))
-          process.exitCode = 1
+          // BKL-268: the verdict belongs in the REPORT (stdout), never only on
+          // stderr — otherwise a crashed gate reads as a clean report + exit 1.
+          verdictFail(
+            `verificação ABORTOU: ${(err as Error).message}`,
+            (err as Error).stack,
+          )
         }
       },
     )
@@ -245,14 +293,42 @@ export function registerSealCommands(group: Command): void {
             opts,
           )
         } catch (err) {
-          console.error(chalk.red(`✗ ${(err as Error).message}`))
-          process.exitCode = 1
+          // BKL-268: the verdict belongs in the REPORT (stdout), never only on
+          // stderr — otherwise a crashed gate reads as a clean report + exit 1.
+          verdictFail(
+            `verificação ABORTOU: ${(err as Error).message}`,
+            (err as Error).stack,
+          )
         }
       },
     )
 }
 
 // ── ibx coherence ────────────────────────────────────────────────────────────
+
+/**
+ * BKL-268 (reverse inversion) — a coherence artifact carries its OWN pass/fail,
+ * so drift-equality alone is not a verdict. A baseline regenerated with
+ * `export --out` while the Tier-1 analyzers were RED bakes a failing report
+ * into the "sem drift" green path: measured pre-fix at the real seam with a
+ * planted AJD-105 error — `totals.error: 23`, `passed: false`, gate exit 0.
+ *
+ * Warnings are intentional and never fail, mirroring `ibx kernel analyze`
+ * ("we gate on summary.error only"). Reads defensively: an absent or
+ * wrong-typed field must never FALSE-fail a green artifact.
+ *
+ * Exported for direct testing — the branch is unreachable from a unit test
+ * through `runExport`, since any artifact edited to reprove also drifts.
+ */
+export function coherenceSelfVerdict(
+  manifest: Record<string, unknown>,
+): string | undefined {
+  const totals = (manifest.totals ?? {}) as Record<string, unknown>
+  const errors = typeof totals.error === "number" ? totals.error : 0
+  if (errors > 0) return `${errors} erro(s) de coerência Tier-1`
+  if (manifest.passed === false) return "o relatório reprova (passed=false)"
+  return undefined
+}
 
 export function registerCoherenceCommands(group: Command): void {
   group
@@ -281,12 +357,17 @@ export function registerCoherenceCommands(group: Command): void {
                 const t = (m.totals ?? {}) as Record<string, number>
                 return `${(m.packs as unknown[] | undefined)?.length ?? 0} packs · ${t.error ?? 0} erros · ${t.warning ?? 0} avisos`
               },
+              selfVerdict: coherenceSelfVerdict,
             },
             opts,
           )
         } catch (err) {
-          console.error(chalk.red(`✗ ${(err as Error).message}`))
-          process.exitCode = 1
+          // BKL-268: the verdict belongs in the REPORT (stdout), never only on
+          // stderr — otherwise a crashed gate reads as a clean report + exit 1.
+          verdictFail(
+            `verificação ABORTOU: ${(err as Error).message}`,
+            (err as Error).stack,
+          )
         }
       },
     )

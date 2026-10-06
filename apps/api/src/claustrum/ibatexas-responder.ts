@@ -43,6 +43,9 @@ import {
   RESPONDER_GROUNDED_SURFACE,
   type IbatexasPromptComposer,
 } from "./prompts/ibatexas-prompts.js";
+// BKL-262 Stage 2 — the SAME turn-shape net the Stage-1 write-twin rescue uses, so
+// the two stages never disagree about whether a turn is a question or a mutation.
+import { hasMutationImperative } from "./required-claim-decomposer.js";
 import { emitModelCallTrace } from "./llm-trace.js";
 import { completeWithEmptyRetry } from "./complete-with-retry.js";
 import { PINNED_COMPLETION_TEMPERATURE } from "./model-call-defaults.js";
@@ -53,6 +56,7 @@ import {
   closedHoursScheduledConfirmation,
   type ScheduleSignal,
 } from "./closed-hours.js";
+import type { FunnelStageRecord } from "./funnel-tier.js";
 
 // Re-export so existing importers (tests) keep their import site.
 export {
@@ -120,6 +124,28 @@ export interface IbatexasResponderDeps {
     readonly escalate?: string;
   };
   /**
+   * Wire Truth — prompt-catalog ids for the persona overrides above, so a
+   * branch that runs on an injected persona still emits a truthful (single-tag)
+   * prompt manifest instead of `[]` (the workbench's `persona ?`). Bare ids are
+   * passed through `manifestWithHashes` unhashed — the fragment graph does not
+   * own these prompts, the catalog does. Absent → the pre-existing empty
+   * manifest, byte-identical.
+   */
+  readonly personaIds?: {
+    readonly conversational?: string;
+    readonly grounded?: string;
+  };
+  /**
+   * Wire Truth — ops-plane REFUSE conversational recovery. When true, a kernel
+   * REFUSE of a PROPOSED command (non-empty plan) routes through the same
+   * conversational synthesis branch the empty-plan path uses — with the
+   * refusal context and the operator's original inbound in the system — so a
+   * refused misparse still yields a helpful reply. Empty synthesis falls back
+   * to the deterministic explainer line (never silent). NEVER set on the
+   * customer plane: customer-facing refusals stay model-free by doctrine.
+   */
+  readonly conversationalRefusal?: boolean;
+  /**
    * BKL-100 — the ops-plane read-answer governor. Injected ONLY on the ops
    * conductor (the customer / WhatsApp planes never pass it, so their behavior is
    * BYTE-IDENTICAL — pinned by the responder-personas regression bar). It gives
@@ -172,10 +198,52 @@ export interface IbatexasResponderDeps {
     ): string;
   };
   /**
-   * BKL-078 — the customer-plane QUESTION-SHAPE SAFE-UNKNOWN gate. Injected ONLY on
-   * the CUSTOMER conductor when ENABLE_CLAIMS_PIPELINE is on (the ops conductor
-   * NEVER passes it — pinned by a composition test; customer / WhatsApp with the
-   * flag OFF never construct it → BYTE-IDENTICAL, pinned by the personas regression
+   * LE2-021 — the WHOLE-WORKFLOW confirm sentence for this turn, or `undefined`
+   * when the turn selected no workflow (or when the workflow runtime declines to
+   * render one — see `renderConfirm`'s unresolved-param guard).
+   *
+   * Structural sibling of `readAnswer.render` above and injected the same way:
+   * the responder cannot reach the workflow runtime, so the composition root
+   * hands it a closure over `renderConfirm`. Consulted ONLY on the
+   * REQUEST_CONFIRMATION branch, and only ever as a preference over
+   * `decision.prompt` — never as a source of new facts. The string it returns is
+   * the workflow's AUTHORED template with the kernel's own grounded sentence
+   * interpolated into it, so no model authored any part of it.
+   *
+   * KNOWN, ACCEPTED DIVERGENCE: the PARK's `userPrompt` is written by
+   * `@claustrum/core` from `decision.prompt` and cannot follow this, so the
+   * BKL-212 soft-affirmative restatement quotes the kernel sentence while the
+   * reply quotes the template. That is benign only because the authoring rule
+   * makes the template strictly ADDITIVE around `{confirmation}` — the restated
+   * sentence is then a subset of what the customer already read, never a
+   * contradiction. Unifying them would mean substituting the decision itself,
+   * and `observeWorkflowDecisions` is observe-only by construction.
+   */
+  readonly workflowConfirm?: (turnId: string) => string | undefined;
+  /**
+   * LE2-022 — the AUTHORED reason a workflow's FEASIBILITY PRE-CHECK refused
+   * this turn, or `undefined` when none did.
+   *
+   * Structural sibling of {@link workflowConfirm} and injected the same way, but
+   * consulted on the opposite branch: the planner dropped the anchor envelope,
+   * so the turn arrives here as a REFUSE on an EMPTY plan — the same
+   * respond-only shape a social turn takes. Without this seam that turn would
+   * fall through to a model completion and the customer would be told, in prose
+   * the model authored, why a multi-step route they asked for is not happening.
+   * That is precisely a proposition the model has no grounds for: the reason
+   * lives in a projection it never saw.
+   *
+   * The string is the pre-check's own template, rendered from grounded values —
+   * so it names WHAT is missing rather than saying no in general, which is the
+   * only version of this sentence a customer can act on.
+   */
+  readonly workflowNotice?: (turnId: string) => string | undefined;
+  /**
+   * BKL-078 — the QUESTION-SHAPE SAFE-UNKNOWN gate. Injected on BOTH conversational
+   * conductors when ENABLE_CLAIMS_PIPELINE is on (LE2 Implementation Decision 6
+   * dissolved D5, under which only the CUSTOMER conductor passed it; both planes now
+   * compose the one `createSafeUnknownGate` — pinned by a composition test per plane.
+   * Flag OFF never constructs it → BYTE-IDENTICAL, pinned by the personas regression
    * bar). It closes the `prose_preserved` hallucination leak on the conversational
    * (REFUSE-empty-plan) branch — reached only when NO claim survived to render
    * (runClaimsValidate returned undefined ⟺ empty candidate set; loop §6a therefore
@@ -196,6 +264,22 @@ export interface IbatexasResponderDeps {
   readonly safeUnknown?: {
     gate(text: string): boolean;
     render(schedule: ScheduleSignal | undefined, userText: string): string;
+  };
+  /**
+   * LE2-007 — the parse funnel's tier seam, the RESPONDER half. The planner stamped
+   * this turn's stage record (handleTurn runs PLAN before SYNTHESIZE), so the
+   * responder does not re-classify anything: it reads the stamp and, for a tier that
+   * authors its own reply (L0 today), returns that deterministic pt-BR template with
+   * NO model call. Together with the planner + claim-path short-circuits that is the
+   * whole zero-completions guarantee for a social turn.
+   *
+   * ABSENT ⟹ byte-identical to the pre-funnel responder (ops plane, agent plane, unit
+   * tests). Wired on the customer plane only, from the same `createL0Funnel()`
+   * instance the planner got, so the two can never disagree about a turn.
+   */
+  readonly funnel?: {
+    stageFor(turnId: string): FunnelStageRecord | undefined;
+    reply(stage: FunnelStageRecord): string | undefined;
   };
 }
 
@@ -502,12 +586,34 @@ function executedKinds(acted: unknown): ReadonlySet<string> {
 
 /**
  * Whether the runtime ACCEPTED a scheduled-pickup order this turn (F6). True ONLY
- * when a checkout genuinely COMMITTED (`order.checkout.create` ∈ executedKinds — an
- * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER) AND the checkout output
- * flagged `scheduledPickup === true`. That flag is set ONLY for pickup (no
- * deliveryCep) placed while closed, so a delivery/immediate order accepted while
- * closed (the kernel does NOT gate closed-hours) is `accepted === false` and keeps
- * the SAFE closed-hours degrade — never a false pickup confirmation.
+ * when a checkout was DISPATCHED (`order.checkout.create` ∈ executedKinds — an
+ * EXECUTE/REWRITE that actually ran, never a REFUSE/DEFER), the executor did NOT
+ * REPORT failure (BKL-239), AND the checkout output flagged `scheduledPickup ===
+ * true`. That flag is set ONLY for pickup (no deliveryCep) placed while closed, so a
+ * delivery/immediate order accepted while closed (the kernel does NOT gate
+ * closed-hours) is `accepted === false` and keeps the SAFE closed-hours degrade —
+ * never a false pickup confirmation.
+ *
+ * BKL-239 — membership in `executedKinds` is DISPATCH MECHANICS, not a business
+ * outcome: @claustrum's dispatcher decides `executed` vs `failed` purely on whether
+ * `tool.execute` THREW (execution/dispatch.js — it never inspects the returned
+ * value), and `createCheckout` RETURNS `success:false` rather than throwing on its
+ * PIX legs (packages/tools/src/cart/create-checkout.ts:133 no QR data on the
+ * confirmed PaymentIntent, :188 the catch-all that converts EVERY throw in
+ * `confirmPixAndGetQrCode` into a returned failure) — and :611 spreads
+ * `scheduledPickup` ONTO that failure (`{ ...pixResult, scheduledPickup }`). So a
+ * FAILED closed-hours scheduled PIX checkout arrived here as fully `executed`
+ * carrying `{ success:false, paymentMethod:"pix", scheduledPickup:true }` and voiced
+ * `closedHoursScheduledConfirmation(..., true)` — telling a customer their order was
+ * registered and only the PIX payment was outstanding when NOTHING was placed. The
+ * same false-claim class BKL-230/BKL-247 killed on the action-render seam.
+ *
+ * Gated on `success !== false` — render UNLESS failure was REPORTED (the polarity
+ * ratified in BKL-247): an absent/non-boolean `success` keeps today's behaviour, so
+ * no committed fixture silently stops confirming. On THIS seam the two polarities
+ * coincide on any real result anyway (`CheckoutResult.success` is a REQUIRED boolean
+ * — create-checkout.ts:25 — and only `createCheckout` ever stamps `scheduledPickup`),
+ * so `!== false` misses no real failure while keeping both seams uniform.
  *
  * `awaitingPixPayment` reflects the QR-first-then-confirm PIX flow: a scheduled PIX
  * pickup EXECUTEs + generates the QR but payment is still pending. (A re-entry while
@@ -521,9 +627,12 @@ function acceptedScheduledPickup(
     return { accepted: false, awaitingPixPayment: false };
   }
   const result = summarizeActed(acted)?.result as
-    | { scheduledPickup?: unknown; paymentMethod?: unknown }
+    | { scheduledPickup?: unknown; paymentMethod?: unknown; success?: unknown }
     | undefined;
-  const accepted = result?.scheduledPickup === true;
+  // BKL-239 — the executor's OWN outcome gates the confirmation. A reported failure
+  // falls through to `accepted:false`, i.e. the SAFE closed-hours degrade the
+  // delivery/immediate path already takes (offer/disclosure), never a confirmation.
+  const accepted = result?.success !== false && result?.scheduledPickup === true;
   return { accepted, awaitingPixPayment: accepted && result?.paymentMethod === "pix" };
 }
 
@@ -958,6 +1067,34 @@ export function statesUngroundedMoney(
 export const CUSTOMER_UNGROUNDED_MONEY_FALLBACK_PTBR =
   "Prefiro confirmar esse valor antes de te passar um número. Posso verificar para você?";
 
+/** Wire Truth — the REFUSE-recovery success lexicon. On a kernel-refused plan
+ *  NOTHING executed, so a completion assertion is a false success even when it
+ *  names no customer-domain noun — the 11-class mirror (customer-plane-tuned,
+ *  noun-anchored) deliberately does not catch it. Review-hardened: bare
+ *  done-words PLUS the ops action verbs (past/participle), with the negation
+ *  exemption scoped to a WINDOW directly before the match ("não foi alterado"
+ *  passes; "entendi, não posso — mas alterei o horário" is still clamped),
+ *  not sentence-wide — a sentence-wide `não` was a bypass. A false positive
+ *  merely degrades to the deterministic refusal line, so the lexicon errs
+ *  broad. */
+const REFUSAL_RECOVERY_SUCCESS_RE =
+  /\b(feito|prontinho|pronto|resolvido|concluid[oa]|executad[oa]|alterad[oa]|atualizad[oa]|marcad[oa]|registrad[oa]|cadastrad[oa]|removid[oa]|apliquei|alterei|atualizei|marquei|registrei|executei|cadastrei|removi|fiz)\b/g;
+
+export function refusalRecoveryClaimsSuccess(text: string): boolean {
+  if (typeof text !== "string") return false;
+  for (const sent of sentencesOf(normalizePtBr(text))) {
+    if (sent.question) continue;
+    const re = new RegExp(REFUSAL_RECOVERY_SUCCESS_RE.source, "g");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sent.text)) !== null) {
+      const before = sent.text.slice(Math.max(0, m.index - 24), m.index);
+      if (/\b(nao|nem|sem)\b/.test(before)) continue; // negated → honest report
+      return true;
+    }
+  }
+  return false;
+}
+
 export function createIbatexasResponder(
   deps: IbatexasResponderDeps,
 ): ResponderPort {
@@ -974,9 +1111,12 @@ export function createIbatexasResponder(
     cognition: unknown,
     capabilities: ReadonlyArray<string>,
     override?: string,
+    overrideId?: string,
   ): Promise<{ system: string; fragmentManifest: ReadonlyArray<string> }> {
     if (override !== undefined) {
-      return { system: override, fragmentManifest: [] };
+      // Wire Truth — a persona override carries its catalog id (when provided)
+      // as a single-tag manifest, so ops trace rows name their persona.
+      return { system: override, fragmentManifest: overrideId === undefined ? [] : [overrideId] };
     }
     if (deps.promptComposer === undefined) {
       return { system: fallback, fragmentManifest: [] };
@@ -1001,6 +1141,11 @@ export function createIbatexasResponder(
     userText: string;
     turnId: string;
     intentHash?: string;
+    /** Wire Truth — branches with a good deterministic fallback (the REFUSE
+     *  recovery) pass 1: an empty completion there should fall back, not burn
+     *  2 more full model calls (the F6 retry exists because the CUSTOMER
+     *  fallback ghosts; the refusal line does not). */
+    maxAttempts?: number;
   }): Promise<DraftResponse> {
     const startedAt = Date.now();
     // F6 (BKL-031): regenerate-on-empty — a single empty 4B completion ghosts
@@ -1018,7 +1163,7 @@ export function createIbatexasResponder(
           // default (temperature was never sent before this).
           temperature: PINNED_COMPLETION_TEMPERATURE,
         }),
-      { maxAttempts: EMPTY_COMPLETION_MAX_ATTEMPTS },
+      { maxAttempts: args.maxAttempts ?? EMPTY_COMPLETION_MAX_ATTEMPTS },
     );
     const durationMs = Date.now() - startedAt;
     if (attempts > 1) {
@@ -1146,7 +1291,60 @@ export function createIbatexasResponder(
             if (rendered !== undefined) {
               return { text: rendered };
             }
-            // BKL-078 — the customer-plane QUESTION-SHAPE gate. This branch is the
+            // ── LE2-022 · the WORKFLOW FEASIBILITY notice ─────────────────────
+            // The planner refused a selected workflow before minting its anchor
+            // envelope, so this turn is a REFUSE on an empty plan carrying an
+            // AUTHORED pt-BR reason. Return it verbatim, with no model call: the
+            // reason is read off a grounded projection the model never saw, so a
+            // completion here could only paraphrase or invent it.
+            //
+            // FIRST among the template branches because it is the most SPECIFIC
+            // fact about this turn — the customer asked for a named route and
+            // there is an authored sentence about that route. The overlap with
+            // L0 below is empty in practice (an L0 turn short-circuits before
+            // the model call, so it can select no workflow), which makes this a
+            // statement of precedence rather than a live contest.
+            const workflowNotice = deps.workflowNotice?.(turnId);
+            if (workflowNotice !== undefined) {
+              return { text: workflowNotice };
+            }
+            // ── LE2-007 · L0 · the template reply, zero model calls ────────────
+            // The planner stamped this turn L0 (a social-only utterance, no confirm
+            // window) and skipped its extraction completion; the claim path skipped
+            // its own, so nothing validated and loop §6a cannot supersede this text.
+            // Render the deterministic pt-BR template and return — this is the third
+            // and last completion the tier removes.
+            //
+            // PLACEMENT: after the deterministic read render (a captured first-party
+            // read is strictly more informative than a template, and on an L0 turn
+            // there is none — so this ordering is a no-op today and the right
+            // precedence tomorrow), and BEFORE the SAFE_UNKNOWN gate + the raw-prose
+            // branch, which are the two model-facing paths this replaces.
+            //
+            // GUARDS: the text is a compile-time constant pinned by tests, not model
+            // output, so the model-text guards (`observedGuardDraft`'s unearned-success
+            // net, `clampUngroundedConversational`'s money clamp) have nothing to
+            // police — the template states no success and carries no digits. The
+            // closed-hours guard DOES run: it is the one guard that reads the
+            // STRUCTURED schedule signal rather than the draft's provenance, and
+            // running it makes "closed-hours behaviour preserved exactly" true BY
+            // CONSTRUCTION instead of by omission (the template asserts nothing about
+            // open/closed, so `closedHoursBackstop` is a proven no-op and the reply is
+            // byte-identical open or closed — pinned in the L0 e2e suite).
+            const funnelStage = deps.funnel?.stageFor(turnId);
+            const funnelReply =
+              funnelStage === undefined ? undefined : deps.funnel?.reply(funnelStage);
+            if (funnelReply !== undefined) {
+              return closedHoursDeliveryGuard(
+                { text: funnelReply },
+                scheduleSignal,
+                scheduled,
+              );
+            }
+            // BKL-078 — the QUESTION-SHAPE gate (BOTH planes since LE2 decision 6;
+            // on the ops plane the deterministic `readAnswer.render` above still runs
+            // FIRST, so this is reached only when NO staff read was captured either).
+            // This branch is the
             // `prose_preserved` seam: it is reached only when NO claim survived to
             // render (runClaimsValidate returned undefined ⟺ empty candidate set, so
             // handle-turn §6a cannot supersede this text — see the PR body's BKL-111
@@ -1157,8 +1355,8 @@ export function createIbatexasResponder(
             // no prose leaks — and emit ONE PII-free `claims.terminal` (posture
             // safe_degraded). SOUNDNESS-MONOTONIC: it only moves a turn
             // prose→SAFE_UNKNOWN, never the reverse, and never touches the render or
-            // claim-proposal paths. Absent dep (ops plane / flag-OFF) → this whole
-            // block is skipped → byte-identical to the model completion below.
+            // claim-proposal paths. Absent dep (flag-OFF) → this whole block is
+            // skipped → byte-identical to the model completion below.
             if (deps.safeUnknown?.gate(userText) === true) {
               logger.info(
                 {
@@ -1172,12 +1370,39 @@ export function createIbatexasResponder(
               );
               return { text: deps.safeUnknown.render(scheduleSignal, userText) };
             }
+            // ── THE SURVIVING RAW-PROSE BRANCH (LE2-013) ────────────────────────
+            // Everything below this line is model-authored text that reaches a user
+            // without passing the three-valued claims gate — which CLAUDE.SDD.md §R
+            // lists as a hard compile error ("any pathway where a plain string
+            // reaches a (mock) user WITHOUT passing the three-valued Claims gate and
+            // the renderer-from-claims"). LE2 Implementation Decision 6 deliberately
+            // KEEPS it, for small talk: "raw prose survives only for small talk"
+            // (and user story 23 — governance must never make the assistant stilted).
+            // The two are in STANDING CONFLICT and this code does not resolve it.
+            //
+            // What LE2-013 did is NARROW it, and the narrowing is the whole ticket:
+            //   · on the OPS plane the gate above is `!isSmalltalkOnly`
+            //     (SafeUnknownGateOptions.retireRawProse), so the ONLY way to reach
+            //     this branch is a message whose every token is in the CLOSED phatic
+            //     lexicon — a set that asserts no world fact by construction;
+            //   · on the CUSTOMER plane the gate is still the positive
+            //     info-question net, so this branch is still reachable by an
+            //     unrecognised info-bearing turn. That residual is NOT this ticket's
+            //     to close (LE2-013 is ops-scoped) and is left visible on purpose.
+            // Reconciling the remainder — does small talk itself become a claims
+            // terminal, or does §R take an explicit smalltalk carve-out? — is the
+            // OWNER's call. Do not silently resolve it here.
+            //
+            // Defense beneath the gate (belt-and-suspenders, retained not promoted):
+            // `clampUngroundedConversational` below still demotes an ungrounded
+            // domain number the model authored even on a smalltalk turn.
             const { system: base, fragmentManifest } = await composeSystem(
               RESPONDER_CONVERSATIONAL_SURFACE,
               RESPONDER_PERSONA_PTBR,
               input.cognition,
               [],
               deps.personas?.conversational,
+              deps.personaIds?.conversational,
             );
             const system = base + closedNote;
             return clampUngroundedConversational(
@@ -1195,14 +1420,130 @@ export function createIbatexasResponder(
               [userText, closedNote],
             );
           }
+          // Wire Truth — ops-plane conversational recovery: a refused PROPOSED
+          // command (often a planner misparse — an hours QUESTION planned as a
+          // schedule-override WRITE, BKL-233) still deserves a reply to the
+          // operator's actual message. Review-hardened posture:
+          //  - SECURITY *and* AUTH refusals stay model-free: tamper lines and
+          //    the deliberately role-OPAQUE permission copy must render
+          //    verbatim, never be paraphrased by the 4B.
+          //  - The prompt carries the EXPLAINER-rendered line (locale registry
+          //    + the ops staff overlay), never the raw userFacing, and never
+          //    an internal capability kind (Hard Rule #9).
+          //  - ONE attempt, no empty-retry (the deterministic refusal line is
+          //    a good fallback — unlike the customer plane, nothing ghosts).
+          //  - If ANY guard rewrote the draft, or it claims success, or the
+          //    synthesis throws or returns empty → the deterministic line.
+          //    A guard substitution here would ship customer-voiced copy to
+          //    staff (the no-authority clamp's truth anchor does not hold on
+          //    a REFUSE turn), so a rewrite means fallback, not substitution.
+          const explained = deps.explainer.render(decision.refusal);
+          if (
+            deps.conversationalRefusal === true &&
+            decision.refusal.kind !== "SECURITY" &&
+            decision.refusal.kind !== "AUTH"
+          ) {
+            // ── BKL-262 STAGE 2 · GROUNDED RECOVERY (owner ruling: option (c)) ──
+            //
+            // This branch used to SYNTHESISE the recovery reply with the model,
+            // gated only by the false-SUCCESS lexicon below. That gate is a
+            // LEXICON, so it catches "pronto, alterei" and lets a fabricated
+            // statement of FACT through clean — which is exactly how "Funcionamos
+            // todos os dias das 10h às 22h!" and a false coverage denial reached
+            // operators (BKL-262's two live proofs). Stage 1 fixed the RANKING for
+            // the write-twin case; everything that still falls through to here —
+            // an un-twinned refused kind, a twin whose read span never fired, a
+            // turn whose claims degraded to UNKNOWN, and the genuine refused
+            // MUTATION — was still answered by model prose.
+            //
+            // The recovery reply is now COMPOSED, never authored. There is no
+            // model call on this path at all, so "Store closes at 10 PM" cannot
+            // appear unless a real read produced it:
+            //
+            //   1. `explained` — the deterministic, single-sourced pt-BR refusal,
+            //      ALWAYS first. It is the load-bearing sentence: the action did
+            //      NOT happen, and the operator must be told that before anything
+            //      else. This is also why the composition can never mask a real
+            //      refusal the way an unguarded validated render would.
+            //   2. The BKL-100 deterministic READ render for this turn, when a
+            //      staff read was actually captured — grounded in the read RESULT,
+            //      no model call and no authored number. This is the "renders only
+            //      validated facts" half.
+            //   3. Otherwise, when the turn was question-SHAPED, the proposition-
+            //      free epistemic self-report (the BKL-184 abstain+offer shape,
+            //      the SAME `safeUnknown` seam the empty-plan branch above uses).
+            //      It asserts nothing about the world.
+            //
+            // A turn with none of the above simply gets the refusal alone, which
+            // is itself an honest self-report.
+            //
+            // SECURITY/AUTH are untouched above and still skip this entirely —
+            // tamper lines and the role-OPAQUE permission copy render verbatim.
+            const recovery: string[] = [explained];
+            const groundedRead = deps.readAnswer?.render(turnId);
+            if (groundedRead !== undefined) {
+              recovery.push(groundedRead);
+            } else if (
+              // The abstention answers a QUESTION. On a MUTATION-shaped turn the
+              // operator asked for an ACTION, so "não localizei essa informação"
+              // answers something nobody asked and reads as a non-sequitur — the
+              // refusal alone is already the complete, honest reply.
+              //
+              // This guard is REQUIRED rather than implied by the safe-unknown gate:
+              // since LE2-013 that gate is the COMPLEMENT OF SMALL TALK, so it fires
+              // on "fecha a loja amanhã" just as readily as on a real question. The
+              // net reused here is the SAME `hasMutationImperative` the BKL-262
+              // Stage-1 write-twin rescue turns on, so the two stages classify turn
+              // shape identically instead of drifting apart.
+              !hasMutationImperative(userText) &&
+              deps.safeUnknown?.gate(userText) === true
+            ) {
+              recovery.push(deps.safeUnknown.render(scheduleSignal, userText));
+            }
+            const composed = recovery.join("\n\n");
+            // The lexicon SURVIVES — repurposed from a gate on model prose into a
+            // fail-closed TRIPWIRE on deterministic copy. Nothing here is model
+            // output, so it should never fire; if it ever does, an authored refusal
+            // string or a render template has drifted into claiming the refused
+            // action succeeded, and the narrowest honest reply is the bare refusal.
+            // Keeping it costs one regex on a rare path and removing it would delete
+            // the only assertion that this composition never states a false success.
+            if (refusalRecoveryClaimsSuccess(composed)) {
+              logger.warn(
+                {
+                  component: "responder",
+                  event: "success_guard.clamp",
+                  turnId,
+                  guard: "refusal_recovery_composed",
+                },
+                "composed refusal recovery claims success — deterministic refusal line applies",
+              );
+              return { text: explained };
+            }
+            return { text: composed };
+          }
           // A real action refusal: render the pt-BR refusal VERBATIM (model-free,
-          // single-sourced, SECURITY-safe). This is the bug fix.
-          return { text: deps.explainer.render(decision.refusal) };
+          // single-sourced, SECURITY-safe). This is the bug fix — and the
+          // fallback for every recovery degradation above.
+          return { text: explained };
         }
 
-        case "REQUEST_CONFIRMATION":
+        case "REQUEST_CONFIRMATION": {
+          // LE2-021 — a WORKFLOW confirm is the whole-workflow question, and its
+          // authored template is the only place that framing exists. Absent the
+          // dep, or on any turn that selected no workflow, this is `undefined`
+          // and the branch is byte-identical to what it always was.
+          //
+          // The template QUOTES the kernel's own sentence through
+          // `{confirmation}` and may only ADD framing around it — see the
+          // workflow corpus's authoring rule — so this never replaces the
+          // grounded question, it surrounds it. And `renderConfirm` returns
+          // `undefined` rather than render a template with an unresolved param,
+          // so a literal `{placeholder}` can never reach a customer here.
+          const authored = deps.workflowConfirm?.(turnId);
           // The guard already authored the confirm question; surface it verbatim.
-          return { text: decision.prompt };
+          return { text: authored ?? decision.prompt };
+        }
 
         case "ESCALATE":
           return {
@@ -1240,6 +1581,7 @@ export function createIbatexasResponder(
             input.cognition,
             capabilities,
             deps.personas?.grounded,
+            deps.personaIds?.grounded,
           );
           // ② capability-id leak: the model-visible grounding context must NOT carry
           // raw internal capability KIND strings — the weak 4B parrots them into the
@@ -1303,6 +1645,7 @@ export function createIbatexasResponder(
             input.cognition,
             [],
             deps.personas?.conversational,
+            deps.personaIds?.conversational,
           );
           const system = base + closedNote;
           return clampUngroundedConversational(

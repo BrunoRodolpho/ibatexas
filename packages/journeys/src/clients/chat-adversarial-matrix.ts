@@ -105,12 +105,19 @@ function classify(category: string, decisions: Array<{ kind: string; code?: stri
   }
 }
 
-async function http(method: string, p: string, body: unknown, cookie?: string): Promise<{ status: number; json: any }> {
+// The slice of the cart/checkout API's JSON body this matrix actually reads.
+// Optional throughout: the driver hits the LIVE api and must stay standing on
+// an error body (it records `status` and the stringified blob instead).
+interface ApiBody {
+  cart?: { id?: string }
+}
+
+async function http(method: string, p: string, body: unknown, cookie?: string): Promise<{ status: number; json: ApiBody | null }> {
   // Pin the request to API_BASE: only a relative path (leading "/", no scheme/host) is allowed,
   // so a tainted `p` can never redirect the call to a foreign origin.
   if (!/^\/[^\s:]*$/.test(p)) throw new Error(`http(): refusing non-relative path ${oneLine(p)}`)
   const r = await fetch(`${API_BASE}${p}`, { method, headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
-  let json: any = null; try { json = await r.json() } catch { /* */ }
+  let json: ApiBody | null = null; try { json = (await r.json()) as ApiBody } catch { /* */ }
   return { status: r.status, json }
 }
 
@@ -229,7 +236,7 @@ async function pass2DrivePaid(cash: { id: string | null }): Promise<void> {
   try {
     const total = (await pool.query(`SELECT total_in_centavos t FROM ibx_domain.order_projections WHERE id=$1`, [cash.id])).rows[0]?.t ?? 0
     await firePaidStateWebhook({ baseUrl: API_BASE, webhookSecret: need(env, "STRIPE_WEBHOOK_SECRET"), orderId: cash.id, amountInCentavos: total, customerId })
-    const paid = await awaitPaidState(domain as any, cash.id, { timeoutMs: 30000 }).catch((e) => ({ status: `not-paid (${(e as Error).name})` }))
+    const paid = await awaitPaidState(domain, cash.id, { timeoutMs: 30000 }).catch((e) => ({ status: `not-paid (${(e as Error).name})` }))
     await say(`  [H1b] signed webhook → payment ${("status" in paid ? paid.status : "paid")} (kernel payment.status.reconcile)`)
     results.push({ id: "H1b-payment-paid", pass: 2, principal: "system", category: "payment", says: ["(signed Stripe webhook)"], reply: "", decisions: [], outcome: ("status" in paid && paid.status !== "paid") ? String(paid.status) : "EXECUTE (payment→paid)", rootCause: "by-design (kernel-routed reconcile via signed webhook; cash order stays pending — confirms at handoff)", note: "payment plane", ok: true })
   } catch (e) { await say(`  [H1b] webhook error: ${(e as Error).message.slice(0, 160)}`) }

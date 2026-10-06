@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest"
 
+import { CAPABILITY_DEFINITIONS } from "@ibatexas/catalog"
+import type { CapabilityDefinition, ChatCapabilityDefinition } from "@ibatexas/catalog"
+
 import {
-  CAPABILITY_DEFINITIONS,
   buildGuardResolutionMap,
   assertGuardRefsResolve,
   GuardRefResolutionError,
 } from "../capability-definitions/index.js"
-import type { CapabilityDefinition, ChatCapabilityDefinition } from "../capability-definitions/index.js"
 
 /** Narrow a `CapabilityDefinition` to its chat-tier variant, or fail the
  *  test loudly — every helper below expects a `guardRefs`-bearing def. */
@@ -20,9 +21,9 @@ function assertChatTier(def: CapabilityDefinition): ChatCapabilityDefinition {
 describe("capability-definitions — guard-ref boot assertion (FE-4.3)", () => {
   it("importing the module does not throw — the eager boot self-check passed", () => {
     // If `assertGuardRefsResolve` (called at module top-level in
-    // `capability-definitions/index.ts`) had found a dangling guard-ref, the
-    // import in this file's header would already have thrown before any
-    // test body ran. Reaching this line IS the passing assertion.
+    // `capability-definitions/index.ts`) had found a dangling guard-ref, this
+    // file's header import of that module would already have thrown before
+    // any test body ran. Reaching this line IS the passing assertion.
     expect(CAPABILITY_DEFINITIONS.length).toBeGreaterThan(0)
   })
 

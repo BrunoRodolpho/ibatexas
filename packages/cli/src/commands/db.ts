@@ -87,6 +87,28 @@ async function runMigrateDomain(opts: { name?: string } = {}) {
   }
 }
 
+/**
+ * BKL-263 — the DECLARED external-reference promotions (LE2-018's coupons).
+ *
+ * Separate from `runSeed` and never folded into it: the api REFUSES TO BOOT
+ * without these, so the ephemeral test stack has to create them BEFORE the api
+ * starts (process-compose.test.yaml gates `api` on this step), while
+ * `ibx db seed` runs long after boot as ordinary sample data.
+ */
+async function runSeedPromotions() {
+  const spinner = ora("Seeding declared promotion references…").start()
+  try {
+    await execa("pnpm", ["--filter", "@ibatexas/commerce", "db:seed:promotions"], {
+      cwd: ROOT,
+      stdio: "inherit",
+    })
+    spinner.succeed(chalk.green("Declared promotions reconciled"))
+  } catch {
+    spinner.fail(chalk.red("Promotion seed failed — the api will refuse to boot (LE2-018)"))
+    process.exit(1)
+  }
+}
+
 async function runSeedDomain() {
   const spinner = ora("Seeding domain tables (Table + TimeSlots)…").start()
   try {
@@ -1016,6 +1038,12 @@ export function registerDbCommands(program: Command) {
   db.command("seed")
     .description("Run the Medusa seed file (Medusa must be running)")
     .action(runSeed)
+
+  db.command("seed:promotions")
+    .description(
+      "Create the DECLARED external-reference promotions the api refuses to boot without (idempotent; Medusa must be running)",
+    )
+    .action(runSeedPromotions)
 
   db.command("seed:domain")
     .description("Seed restaurant Tables and TimeSlots via Prisma")

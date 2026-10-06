@@ -17,6 +17,16 @@
 //     calls `evaluateExpectPayload`, and produces the `AccuracyCaseResult[]`
 //     this module consumes.
 //
+// PRODUCERS of `AccuracyCaseResult` (this module is schema-agnostic — it
+// scores whatever produces the unit):
+//   1. `accuracy-runner.ts`     — the LIVE mutating-extraction drive (FE-T07).
+//   2. `read-tool-corpus/score.ts` — the read-tool adapter (FE-D22).
+//   3. `eval-score.ts`          — LE2-05's OFFLINE structural scorer over
+//      pinned parse artifacts (audit-gold + captured wire records). It is the
+//      only producer that can mark a case `unscoreable` (no artifact) and the
+//      only one that also emits a refusal/irrelevance category alongside the
+//      report — see `eval-score.ts`'s header.
+//
 // Quarantine (FE-2.4: "a single stochastic miss is tolerated via the
 // EXISTING retry/quarantine ledger") — deliberately NOT reinvented: this
 // module accepts a `quarantined` case-key list (same seam shape as
@@ -80,6 +90,18 @@ export interface AccuracyCaseResult {
   failures: readonly string[]
   /** Wall-clock for the drive (diagnostic; absent for scripted fixtures). */
   durationMs?: number
+  /**
+   * LE2-05 (the THIRD producer — `eval-score.ts`): no parse artifact exists
+   * for this case, so it can be neither passed nor failed. A case marked
+   * here lands in state `"unscoreable"` — a FIRST-CLASS reported outcome,
+   * never a silent skip and never a fabricated pass. `failures` carries the
+   * human-readable reason.
+   *
+   * ADDITIVE: absent (both pre-LE2 producers — `accuracy-runner.ts` and
+   * `read-tool-corpus/score.ts`) ≙ `false`, so their reports are
+   * byte-identical to before.
+   */
+  unscoreable?: boolean
 }
 
 /** Stable case identity: `<capability>:<caseId>` (the baseline unit). */
@@ -87,7 +109,12 @@ export function accuracyCaseKey(capability: string, caseId: string): string {
   return `${capability}:${caseId}`
 }
 
-export type AccuracyCaseState = "passing" | "failing" | AccuracyWaiverCategory
+/**
+ * `"unscoreable"` (LE2-05) is ADDITIVE: no pre-LE2 producer can ever emit it
+ * (it requires `AccuracyCaseResult.unscoreable === true`), so every existing
+ * report keeps exactly the three states it had.
+ */
+export type AccuracyCaseState = "passing" | "failing" | "unscoreable" | AccuracyWaiverCategory
 
 export interface AccuracyCase {
   key: string
@@ -106,6 +133,20 @@ export interface CapabilityAccuracy {
   passing: number
   /** `passing / total`, `0` when `total === 0` (never NaN). */
   ratio: number
+  /**
+   * LE2-05 — cases with NO parse artifact (state `"unscoreable"`): neither
+   * passed nor failed. Always `0` for both pre-LE2 producers, so `total`,
+   * `passing` and `ratio` keep their exact pre-LE2 values there.
+   */
+  unscoreable: number
+  /** `total - unscoreable` — the cases that actually had something to score. */
+  scoreable: number
+  /**
+   * `passing / scoreable` (`0` when `scoreable === 0`) — the HONEST accuracy
+   * over cases an artifact existed for. Equals `ratio` whenever
+   * `unscoreable === 0` (i.e. always, for both pre-LE2 producers).
+   */
+  scoreableRatio: number
 }
 
 export type AccuracyProblemCode =
@@ -194,12 +235,19 @@ async function loadAccuracyWaivers(
   }
 }
 
-/** Assign one case's final state: quarantined ▸ file waiver ▸ passing/failing. */
+/** Assign one case's final state: unscoreable ▸ quarantined ▸ file waiver ▸ passing/failing. */
 function applyCaseState(
-  entry: { ok: boolean; key: string },
+  entry: { ok: boolean; key: string; unscoreable?: boolean },
   quarantinedKeys: ReadonlySet<string>,
   waiver: AccuracyWaiver | undefined,
 ): { state: AccuracyCaseState; waiver: AccuracyCase["waiver"] } {
+  // LE2-05 — FIRST, ahead of every excuse mechanism: a case with no parse
+  // artifact was never scored at all, so neither a quarantine nor a waiver
+  // can meaningfully "excuse" it. Marking it waived would misreport a
+  // MISSING measurement as an accepted failure.
+  if (entry.unscoreable === true) {
+    return { state: "unscoreable", waiver: null }
+  }
   if (quarantinedKeys.has(entry.key)) {
     return {
       state: "waived-quarantined",
@@ -221,21 +269,28 @@ function applyCaseState(
 
 /** Tally per-capability totals over the FINAL case states (waived/quarantined count as passing — they are not a hard fail, matching coverage's `covered` semantics for waived cells is intentionally NOT mirrored here: ratio reporting counts only genuinely-passing cases, so a waiver never inflates the reported accuracy number). */
 function computeCapabilityAccuracy(cases: readonly AccuracyCase[]): CapabilityAccuracy[] {
-  const byCapability = new Map<string, { total: number; passing: number }>()
+  const byCapability = new Map<string, { total: number; passing: number; unscoreable: number }>()
   for (const c of cases) {
-    const entry = byCapability.get(c.capability) ?? { total: 0, passing: 0 }
+    const entry = byCapability.get(c.capability) ?? { total: 0, passing: 0, unscoreable: 0 }
     entry.total += 1
     if (c.state === "passing") entry.passing += 1
+    if (c.state === "unscoreable") entry.unscoreable += 1
     byCapability.set(c.capability, entry)
   }
   return [...byCapability.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([capability, { total, passing }]) => ({
-      capability,
-      total,
-      passing,
-      ratio: total === 0 ? 0 : passing / total,
-    }))
+    .map(([capability, { total, passing, unscoreable }]) => {
+      const scoreable = total - unscoreable
+      return {
+        capability,
+        total,
+        passing,
+        ratio: total === 0 ? 0 : passing / total,
+        unscoreable,
+        scoreable,
+        scoreableRatio: scoreable === 0 ? 0 : passing / scoreable,
+      }
+    })
 }
 
 /**
@@ -288,7 +343,7 @@ export async function computeAccuracyReport(
     )
     if (waiver !== undefined) matchedWaivers.add(waiver)
     const { state, waiver: resolvedWaiver } = applyCaseState(
-      { ok: result.ok, key },
+      { ok: result.ok, key, ...(result.unscoreable === undefined ? {} : { unscoreable: result.unscoreable }) },
       quarantinedKeys,
       waiver,
     )

@@ -182,6 +182,7 @@ export const reservationsPack = {
   version: "1.0.0",
   contract: "v0",
   intents: [
+    // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
     "reservation.create",
     "reservation.modify",
     "reservation.cancel",
@@ -189,6 +190,7 @@ export const reservationsPack = {
     "reservation.complete",
     "reservation.no_show.mark",
     "reservation.waitlist.join",
+    // ═══ END GENERATED REGION ═══
   ],
   policy: reservationsPolicyBundle,
   planner: reservationsCapabilityPlanner,
@@ -202,9 +204,15 @@ export const reservationsPack = {
     "auth.required",
     "reservation.staff_only",
     "reservation.not_found",
+    // BKL-251 — the two disambiguation refusals were emitted from `policies.ts`
+    // (BKL-223 `refuseReservationAmbiguous`, BKL-174 `refuseSlotAmbiguous`) but
+    // never declared here. Both fire only after a resolver has found ≥2
+    // candidates, a state AC-004's empty-state sampling cannot construct.
+    "reservation.ambiguous",
     "reservation.not_modifiable",
     "reservation.not_cancellable",
     "reservation.slot.not_found",
+    "reservation.slot.ambiguous",
     "reservation.slot.in_past",
     "reservation.slot.full",
     "reservation.party_size.invalid",

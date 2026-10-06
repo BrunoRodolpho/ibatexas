@@ -15,13 +15,20 @@
 // reimplementation) PLUS the (unmodified, in full) `PLANNER_PERSONA` — the
 // customer-plane persona this capability is shown, which carries no
 // per-capability paragraph to excerpt (see extraction-prompt-fragment-
-// support.ts's header). Editing `payment-pix-regenerate.schema.ts`,
-// `wire-schemas.ts`'s registry, `buildToolSurface`'s composition, or
-// `PLANNER_PERSONA` itself all change this byte-identical fixture — and per
-// FE-T08, regenerating it without ALSO re-committing
-// `extraction-schema-binding.json` (after reviewing `ibx journey
+// support.ts's header). Editing `wire-schemas.ts`'s registry MEMBERSHIP,
+// `buildToolSurface`'s composition, or `PLANNER_PERSONA` itself all change
+// this byte-identical fixture — and per FE-T08, regenerating it without ALSO
+// re-committing `extraction-schema-binding.json` (after reviewing `ibx journey
 // extraction-accuracy`'s impact) fails the separate, CERTIFYING
 // `checkSchemaBinding` gate.
+//
+// SCOPE NARROWED (BKL-255a): editing `payment-pix-regenerate.schema.ts`'s
+// FIELDS no longer moves this fixture — the authored payload schemas left the
+// wire when `buildToolSurface` dropped the `allOf` the engine discarded at
+// decode (LE2-004). This capability's zero-field payload was never enforced by
+// the wire anyway; the thing that actually strips a hallucinated `orderId` is
+// the plan-time filter (`ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY`, see the
+// FE-T11 note in ibatexas-planner.ts), which still reads this schema.
 //
 // To regenerate after an intentional change:
 //
@@ -39,6 +46,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "../wire-schemas.js";
 import {
   computePaymentPixRegenerateExtractionPromptFragment,
   type ExtractionPromptFragment,
@@ -65,18 +73,19 @@ describe("extraction-prompt golden byte-identity gate (payment.pix.regenerate)",
     expect(canonicalize(fresh)).toBe(readGoldenRaw());
   });
 
-  it("exposes ZERO fields on the wire — payload is a closed empty object, never orderId", async () => {
-    const fresh = await computePaymentPixRegenerateExtractionPromptFragment();
-    const schema = fresh.expressIntentTool.inputSchema as {
-      allOf: Array<{
-        then: {
-          properties: {
-            payload: { properties: Record<string, unknown>; additionalProperties?: boolean };
-          };
-        };
-      }>;
+  // BKL-255a — this used to read the payload schema back off the
+  // `express_intent` wire surface (the `allOf` clause). That clause is gone:
+  // the engine dropped it at decode (LE2-004), so the planner no longer sends
+  // it. The zero-field inventory is still live and still load-bearing — it is
+  // exactly what makes `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY` strip a
+  // hallucinated `orderId` at the parse seam (the enforcement half that
+  // actually closes this, per the FE-T11 note in ibatexas-planner.ts) — so
+  // this now reads the AUTHORED registry directly.
+  it("the authored schema exposes ZERO fields — payload is a closed empty object, never orderId", () => {
+    const payload = EXTRACTION_SCHEMAS_BY_CAPABILITY.get("payment.pix.regenerate") as {
+      properties: Record<string, unknown>;
+      additionalProperties?: boolean;
     };
-    const payload = schema.allOf[0]!.then.properties.payload;
     expect(Object.keys(payload.properties)).toEqual([]);
     expect(payload.additionalProperties).toBe(false);
   });
@@ -85,15 +94,12 @@ describe("extraction-prompt golden byte-identity gate (payment.pix.regenerate)",
     const fresh = await computePaymentPixRegenerateExtractionPromptFragment();
     const mutated: ExtractionPromptFragment = JSON.parse(JSON.stringify(fresh)) as ExtractionPromptFragment;
     const schema = mutated.expressIntentTool.inputSchema as {
-      allOf: Array<{
-        then: { properties: { payload: { properties: Record<string, unknown> } } };
-      }>;
+      properties: { capability: { enum: string[] } };
     };
-    // Simulates a future edit accidentally exposing the forbidden identifier.
-    schema.allOf[0]!.then.properties.payload.properties.orderId = {
-      type: "string",
-      description: "x",
-    };
+    // BKL-255a — the payload sub-schema this used to mutate is no longer on the
+    // wire; the capability enum still is, and is still what a rollout slice
+    // drifts, so mutating it keeps this gate genuinely sensitive.
+    schema.properties.capability.enum.push("order.status.transition");
     expect(canonicalize(mutated)).not.toBe(readGoldenRaw());
   });
 

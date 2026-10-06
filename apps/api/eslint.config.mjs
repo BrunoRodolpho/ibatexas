@@ -8,6 +8,17 @@ const compat = new FlatCompat({
   allConfig: js.configs.all,
 });
 
+// ── Audit-redaction chokepoint (F-53) ────────────────────────────────────────
+//
+// The base config (@ibatexas/eslint-config) bans the raw @adjudicate/audit sink
+// primitives repo-wide. ESLint REPLACES rule options rather than merging them,
+// so the `no-restricted-imports` block below would silently drop that ban for
+// all of apps/api — measured: with the ban only in the base config, a probe
+// importing `multiSink` here linted CLEAN while the identical probe in
+// packages/journeys errored. Splice it in explicitly; anything added to this
+// file's `paths` must keep it.
+const { AUDIT_RAW_SINK_IMPORT_BAN } = require("@ibatexas/eslint-config/restricted-imports.js");
+
 // ── EGRESS BRAND enforcement (Plan 1 / Theorem E-1) ──────────────────────────
 //
 // Defense-in-depth for the runtime-non-forgeable `RenderedReply`:
@@ -67,16 +78,27 @@ export default [
         RENDERED_REPLY_CAST_BAN,
         ...TWILIO_REST_HOST_BAN,
       ],
-      "no-restricted-imports": ["error", { paths: [TWILIO_IMPORT_BAN] }],
+      "no-restricted-imports": [
+        "error",
+        { paths: [TWILIO_IMPORT_BAN, AUDIT_RAW_SINK_IMPORT_BAN] },
+      ],
     },
   },
   {
     // Egress chokepoint + Twilio inbound/OTP surfaces may import the SDK; the
     // RenderedReply cast ban + REST-host ban still apply to them (they use the
     // SDK, never a raw api.twilio.com fetch).
+    //
+    // F-53: this override re-declares the rule with the audit ban ALONE rather
+    // than switching it "off". Turning the rule off would have exempted these
+    // four files from the audit-sink ban too — they are sanctioned Twilio
+    // importers, not sanctioned audit composers.
     files: TWILIO_ALLOWED,
     rules: {
-      "no-restricted-imports": "off",
+      "no-restricted-imports": [
+        "error",
+        { paths: [AUDIT_RAW_SINK_IMPORT_BAN] },
+      ],
     },
   },
 ];

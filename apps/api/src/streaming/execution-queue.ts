@@ -10,6 +10,7 @@
 
 import { randomUUID } from "node:crypto"
 import { getRedisClient, rk } from "@ibatexas/tools"
+import { logger } from "../lib/logger.js"
 
 const LOCK_TTL_SECONDS = 30
 const HEARTBEAT_MS = 10_000
@@ -105,8 +106,32 @@ export async function releaseWebAgentLock(sessionId: string): Promise<void> {
     if (state) {
       await redis.eval(RELEASE_LOCK_SCRIPT, { keys: [key], arguments: [state.lockValue] })
     } else {
-      // Fallback: if no state tracked (shouldn't happen), unconditional DEL
-      await redis.del(key)
+      // F-21 (class rollout): NO tracked state means NO lockValue, and a
+      // lockValue is the only ownership proof this module has. The pre-rollout
+      // fallback was an unconditional `redis.del(key)` justified as
+      // "shouldn't happen" — but the states that produce it are exactly the
+      // states where the key is most likely to belong to SOMEONE ELSE: a
+      // process restart (the Map is per-process, the Redis key is not) or a
+      // second release for a session whose first release already cleared the
+      // entry. In both, the key under `key` may be a DIFFERENT, live cycle's
+      // lock, and deleting it lets a concurrent agent run for that session —
+      // the precise mutual exclusion this module exists to provide.
+      //
+      // Per the F-22 ruling's failure direction: with no ownership proof the
+      // safe action is to leave the key to its TTL and say so loudly. The cost
+      // is bounded — at most LOCK_TTL_SECONDS of a stuck session, and the
+      // heartbeat that would extend it past that is gone with the state. A
+      // blind DEL's cost is not bounded: it is a concurrent-execution bug.
+      logger.warn(
+        {
+          component: "execution-queue",
+          sessionId,
+          key,
+          ttlSeconds: LOCK_TTL_SECONDS,
+        },
+        "releaseWebAgentLock: no tracked lock state — leaving the key to its TTL " +
+          "rather than issuing an unconditional DEL (F-21: no lockValue, no ownership proof)",
+      )
     }
   } catch {
     // Non-critical — TTL will clean up

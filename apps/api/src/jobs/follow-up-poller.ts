@@ -8,7 +8,7 @@ import { publishNatsEvent } from "@ibatexas/nats-client";
 import * as Sentry from "@sentry/node";
 import type { Queue, Worker } from "bullmq";
 import type { FastifyBaseLogger } from "fastify";
-import { createQueue, createWorker, type Job } from "./queue.js";
+import { assertDepsBag, createQueue, createWorker, type Job } from "./queue.js";
 
 const REPEAT_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -16,10 +16,49 @@ let queue: Queue | null = null;
 let worker: Worker | null = null;
 let logger: FastifyBaseLogger | null = null;
 
-/** Core job logic — exported for direct testing. */
-export async function processFollowUps(log?: FastifyBaseLogger | null): Promise<void> {
+// ── The Redis client seam (R5 rollout, the dedup family) ─────────────────────
+//
+// FAIL-CLOSED PICK ANALYSIS (R5-S12's rule):
+//   • commands ISSUED here: `zRangeByScore`, `zRem`.
+//   • commands consumed DOWNSTREAM: none — the only thing this loop hands off is
+//     the PARSED member, to `publishNatsEvent`, which takes no client.
+//   • feature detection: none (measured, not assumed — F-22).
+// So {issued} ∪ {downstream} = {zRangeByScore, zRem}.
+//
+// The other end of this queue is `packages/tools/src/intelligence/schedule-follow-up.ts`,
+// which `zAdd`s `{score: fireAtMs, value: JSON}` onto the SAME key. Both ends
+// now run through the shared in-memory adapter, so this poller's due window is a
+// real score comparison rather than a stubbed array of members.
+
+/** The node-redis v4 surface this poller drains. */
+export type FollowUpPollerRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "zRangeByScore" | "zRem"
+>;
+
+export interface ProcessFollowUpsDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: FollowUpPollerRedis;
+}
+
+/**
+ * Core job logic — exported for direct testing.
+ *
+ * `assertDepsBag`: F-32. BullMQ calls a processor as `(job, token)` with a
+ * lock-token STRING, and this function's SECOND slot is the deps bag. It is not
+ * what `startFollowUpPoller` registers (see the one-argument wrapper below), so
+ * the collision is not live today — the guard is what keeps that true, because
+ * registering this function directly would otherwise put the token in `deps`,
+ * `("tok").redis` would read `undefined`, and every tick would silently fall
+ * back to the singleton. See `assertDepsBag` in ./queue.ts for the full note.
+ */
+export async function processFollowUps(
+  log?: FastifyBaseLogger | null,
+  deps: ProcessFollowUpsDeps = {},
+): Promise<void> {
+  assertDepsBag("follow-up-poller", deps);
   const effectiveLogger = log ?? logger;
-  const redis = await getRedisClient();
+  const redis: FollowUpPollerRedis = deps.redis ?? (await getRedisClient());
   const scheduledKey = rk("follow-up:scheduled");
   const now = Date.now();
 
@@ -65,17 +104,16 @@ export async function processFollowUps(log?: FastifyBaseLogger | null): Promise<
   // it carried the same due.length as the tick log above.
 }
 
-/** BullMQ processor. */
-async function processor(_job: Job): Promise<void> {
-  await processFollowUps();
-}
-
 export function startFollowUpPoller(log?: FastifyBaseLogger): void {
   if (worker) return;
   logger = log ?? null;
 
   queue = createQueue("follow-up-poller");
-  worker = createWorker("follow-up-poller", processor);
+  // A ONE-ARGUMENT wrapper, the family's F-32 registration pattern: BullMQ calls
+  // the registered function as `(job, token)`, and the extra token must land
+  // nowhere rather than in a deps slot. `processFollowUps` takes `(log, deps)`,
+  // so registering it bare would put the Job in `log` and the token in `deps`.
+  worker = createWorker("follow-up-poller", (_job: Job) => processFollowUps());
 
   worker.on("failed", (_job, err) => {
     logger?.error(err, "[follow-up-poller] Unexpected error");

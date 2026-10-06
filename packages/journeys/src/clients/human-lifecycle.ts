@@ -35,7 +35,20 @@ const HANDLE = "costela-bovina-defumada"
 const VARIANT_TITLE = "1kg"
 
 type Say = (s: string) => void
-type Http = (method: string, p: string, body?: unknown) => Promise<{ status: number; json: any }>
+
+// The slice of the cart/checkout API's JSON body this driver actually reads.
+// Every field is optional: the driver hits the LIVE api and must stay standing
+// on an error body (it reports `status` and the stringified blob instead).
+interface ApiCart {
+  id?: string
+  items?: Array<{ id?: string; quantity?: number; title?: string; variant_id?: string }>
+}
+interface ApiBody {
+  cart?: ApiCart
+  orderId?: string
+}
+
+type Http = (method: string, p: string, body?: unknown) => Promise<{ status: number; json: ApiBody | null }>
 type ShowDecisions = (scopes: string[], label: string) => Promise<void>
 
 // Strip CR/LF from values that get interpolated into a log line so they can't
@@ -82,8 +95,8 @@ function createHttp(cookie: string): Http {
       throw new Error("request URL escaped the expected API origin")
     }
     const res = await fetch(url, { method, headers: { "content-type": "application/json", cookie }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) })
-    let json: any = null
-    try { json = await res.json() } catch { json = null }
+    let json: ApiBody | null = null
+    try { json = (await res.json()) as ApiBody } catch { json = null }
     return { status: res.status, json }
   }
 }

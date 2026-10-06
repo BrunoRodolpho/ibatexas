@@ -944,20 +944,19 @@ async function runPlan(opts: { out?: string; env?: string }) {
     process.exit(1)
   }
 
-  // State safety check
+  // State safety check — dev is a single EC2 host (see ec2.tf), not ECS; look
+  // for a live instance tagged Role=ibatexas-<env>-host rather than an ECS
+  // cluster (stale from the pre-migration architecture — dev had an ECS
+  // cluster before the single-EC2 rewrite, production's ECS stack is staged
+  // but has never been applied, see infra/terraform/environments/production/README.md).
   try {
     const stateResult = await execa("terraform", ["state", "list"], { cwd: dir })
     if (!stateResult.stdout.trim()) {
       // State is empty — check if AWS resources exist
-      const clusterCheck = await awsCommand(["ecs", "describe-clusters", "--clusters", `ibatexas-${env}`, "--region", DEFAULT_REGION, "--output", "json"])
-      if (clusterCheck.exitCode === 0) {
-        try {
-          const data = JSON.parse(clusterCheck.stdout)
-          if (data.clusters?.length > 0 && data.clusters[0].status === "ACTIVE") {
-            console.log(chalk.yellow.bold("  ⚠️  No Terraform state found but AWS resources exist."))
-            console.log(chalk.yellow("     You may be about to recreate infrastructure.\n"))
-          }
-        } catch { /* ignore parse errors */ }
+      const instance = await findHostInstance(env)
+      if (instance) {
+        console.log(chalk.yellow.bold("  ⚠️  No Terraform state found but an AWS host instance exists."))
+        console.log(chalk.yellow(`     ${instance.id} (${instance.state}) — you may be about to recreate infrastructure.\n`))
       }
     }
   } catch { /* state list failed — likely no state, which is fine for first run */ }
@@ -1733,6 +1732,38 @@ async function runChecklist() {
 
 // ── Subcommand: destroy ───────────────────────────────────────────────────────
 
+// SSM parameter names dev's Terraform actually declares (secrets.tf +
+// bootstrap.tf) — anything under /ibatexas/<env>/ NOT in this set was pushed
+// out-of-band (e.g. via `ibx infra secrets:push` for a key nobody added to
+// secrets.tf's local.secret_names) and `terraform destroy` will never see it,
+// let alone delete it, no matter how clean Terraform's own state is.
+const TERRAFORM_MANAGED_SECRET_NAMES = new Set([
+  ...ALL_SECRETS.filter(s => s !== "REDIS_URL" && s !== "NATS_URL"), // declared in secrets.tf, minus the two bootstrap.tf auto-populates
+  "NATS_NKEY_SEED", "NATS_APP_NKEY_PUBLIC", // secrets.tf
+  "REDIS_URL", "REDIS_PASSWORD", "NATS_URL", "TYPESENSE_BOOTSTRAP_KEY", // bootstrap.tf
+])
+
+/** SSM parameters under /ibatexas/<env>/ that Terraform doesn't declare at all — `destroy` can't touch these. */
+async function findOrphanedSsmParams(env: string): Promise<string[]> {
+  const res = await awsCommand([
+    "ssm", "get-parameters-by-path",
+    "--path", `/${SECRET_PATH_PREFIX}/${env}`,
+    "--recursive",
+    "--region", DEFAULT_REGION,
+    "--query", "Parameters[].Name",
+    "--output", "json",
+  ])
+  if (res.exitCode !== 0) return []
+  try {
+    const names = JSON.parse(res.stdout) as string[]
+    return names
+      .map(n => n.split("/").pop()!)
+      .filter(n => !TERRAFORM_MANAGED_SECRET_NAMES.has(n))
+  } catch {
+    return []
+  }
+}
+
 async function runDestroy(opts: { env?: string }) {
   const { execa } = await import("execa")
   const { input: inputPrompt } = await import("@inquirer/prompts")
@@ -1749,8 +1780,34 @@ async function runDestroy(opts: { env?: string }) {
     console.log(chalk.white(`  Region:  ${chalk.bold(DEFAULT_REGION)}`))
   }
 
-  console.log(chalk.red(`\n  This will DESTROY all AWS infrastructure for environment: ${env}`))
-  console.log(chalk.red("  ECS services, ALB, ElastiCache, ECR repos, Route53 zone...\n"))
+  if (!fs.existsSync(path.join(dir, ".terraform"))) {
+    console.error(chalk.red(`  Terraform not initialized. Run: terraform init -chdir=${dir}`))
+    process.exit(1)
+  }
+
+  // What's actually tracked, so the confirmation prompt describes reality
+  // instead of a stale resource list (dev has no ECS/ALB/ElastiCache — that
+  // stack lives in environments/production/ and has never been applied).
+  let trackedCount: number | null = null
+  try {
+    const stateResult = await execa("terraform", ["state", "list"], { cwd: dir })
+    trackedCount = stateResult.stdout.split("\n").filter(l => l.trim() && !l.startsWith("data.")).length
+  } catch { /* leave null — terraform destroy below will surface the real error */ }
+
+  console.log(chalk.red(`\n  This will DESTROY all Terraform-tracked AWS infrastructure for environment: ${env}`))
+  console.log(chalk.red(`  ${trackedCount ?? "?"} tracked resource(s) — EC2 host, EIP, security group, IAM roles, ECR repos, SSM parameters...\n`))
+  console.log(chalk.yellow("  NOT touched by this command (by design):"))
+  console.log(chalk.yellow("    • Route53 zone + records — protected by prevent_destroy in dns.tf."))
+  console.log(chalk.yellow("      (A prior destroy/recreate cycle caused a DNS outage — see dns.tf's header comment"))
+  console.log(chalk.yellow("      for the intentional, manual escape hatch if you really need to rotate it.)"))
+
+  const orphans = await findOrphanedSsmParams(env)
+  if (orphans.length > 0) {
+    console.log(chalk.yellow(`    • ${orphans.length} SSM parameter(s) under /ibatexas/${env}/ not declared in Terraform at all:`))
+    console.log(chalk.yellow(`      ${orphans.join(", ")}`))
+    console.log(chalk.yellow(`      Clean up manually if desired: aws ssm delete-parameter --name /ibatexas/${env}/<NAME> --region ${DEFAULT_REGION}`))
+  }
+  console.log("")
 
   const confirmText = env === "production" || env === "prod" ? `destroy ${env}` : env
   const answer = await inputPrompt({ message: `Type "${confirmText}" to confirm:` })
@@ -1762,7 +1819,11 @@ async function runDestroy(opts: { env?: string }) {
 
   try {
     await execa("terraform", ["destroy", "-auto-approve"], { cwd: dir, stdio: "inherit" })
-    console.log(chalk.green.bold("\n  ✅  Infrastructure destroyed\n"))
+    console.log(chalk.green.bold("\n  ✅  Terraform-tracked infrastructure destroyed\n"))
+    if (orphans.length > 0) {
+      console.log(chalk.yellow(`  ⚠ ${orphans.length} non-Terraform SSM parameter(s) under /ibatexas/${env}/ still exist — see list above.`))
+    }
+    console.log(chalk.gray(`  Route53 zone for ${env} was left untouched (prevent_destroy) — this is intentional.\n`))
   } catch (err) {
     const error = err as { exitCode?: number }
     process.exit(error.exitCode ?? 1)
@@ -1864,7 +1925,7 @@ async function runDeploy(opts: { target?: string; watch?: boolean; timeout?: str
   }
 
   if (!stable) {
-    console.error(chalk.red(`\n  ❌ ECS services did not stabilize within ${Math.round(timeout / 60000)}m`))
+    console.error(chalk.red(`\n  ❌ Host did not become healthy within ${Math.round(timeout / 60000)}m`))
     process.exit(1)
   }
 
@@ -1920,50 +1981,13 @@ async function checkEcrRepos() {
   }
 }
 
-async function checkDoctorLogGroups(env: string) {
-  // Check CloudWatch log groups
-  for (const svc of VALID_SERVICES) {
-    const logGroup = `/ecs/ibatexas/${env}/${svc}`
-    const spinner = ora({ text: `Log group: ${logGroup}`, indent: 4 }).start()
-    const res = await awsCommand(["logs", "describe-log-groups", "--log-group-name-prefix", logGroup, "--region", DEFAULT_REGION, "--output", "json"])
-    if (res.exitCode === 0) {
-      try {
-        const data = JSON.parse(res.stdout)
-        if (data.logGroups?.length > 0) {
-          spinner.succeed(chalk.green(`${logGroup} exists`))
-        } else {
-          spinner.warn(chalk.yellow(`${logGroup} not found`))
-        }
-      } catch {
-        spinner.warn(chalk.yellow(`${logGroup}: could not parse`))
-      }
-    } else {
-      spinner.fail(chalk.red(`${logGroup}: query failed`))
-    }
-  }
-}
-
-async function checkCloudMap() {
-  // Check Cloud Map service discovery
-  const spinner = ora({ text: "Cloud Map services", indent: 4 }).start()
-  const nsRes = await awsCommand(["servicediscovery", "list-namespaces", "--region", DEFAULT_REGION, "--output", "json"])
-  if (nsRes.exitCode === 0) {
-    try {
-      const data = JSON.parse(nsRes.stdout)
-      const ns = data.Namespaces?.find((n: { Name: string }) => n.Name === "ibatexas.local")
-      if (ns) {
-        spinner.succeed(chalk.green("ibatexas.local namespace registered"))
-        console.log(chalk.gray("      Note: DNS resolution only works inside VPC"))
-      } else {
-        spinner.warn(chalk.yellow("ibatexas.local namespace not found"))
-      }
-    } catch {
-      spinner.warn(chalk.yellow("Could not parse Cloud Map response"))
-    }
-  } else {
-    spinner.fail(chalk.red("Cloud Map query failed"))
-  }
-}
+// NOTE: dev has no CloudWatch log groups or Cloud Map namespace — it's a
+// single EC2 host running Docker Compose (see ec2.tf); app logs come from
+// `docker logs` over SSM (see runLogs()/`ibx infra logs`), not CloudWatch.
+// ECS + Cloud Map checks were removed here because they always reported
+// "not found" for dev and there's nothing in environments/production/ to
+// check either (that stack is staged but has never been applied — see its
+// README). Re-add service-specific deep checks here if/when production goes live.
 
 async function runDoctor() {
   const env = getEnvironment()
@@ -1977,8 +2001,6 @@ async function runDoctor() {
   // Additional deep checks
   console.log(chalk.bold("  Deep Diagnostics\n"))
   await checkEcrRepos()
-  await checkDoctorLogGroups(env)
-  await checkCloudMap()
 
   console.log("")
 }

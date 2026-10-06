@@ -13,6 +13,7 @@ import {
   DOMAIN_DELETE_ORDER,
   DOMAIN_REFERENCE,
   KERNEL_TABLES,
+  WRITER_OWNED_KERNEL_TABLES,
   MEMORY_TABLES,
 } from "../lib/db-tables.js"
 import { resolveAuditMigrationsDir } from "../lib/kernel-migrate.js"
@@ -86,7 +87,17 @@ describe("db-tables drift guard — kernel (@adjudicate/audit-postgres)", () => 
       expect(KERNEL_TABLES as readonly string[]).toContain(t)
     }
     for (const t of KERNEL_TABLES) {
+      // Writer-owned tables (Wire Truth) declare their DDL owner in
+      // WRITER_OWNED_KERNEL_TABLES — exempt from the migrations bijection,
+      // never silently.
+      if (WRITER_OWNED_KERNEL_TABLES.has(t)) continue
       expect(created.has(t), `KERNEL_TABLES entry "${t}" is not created by any migration`).toBe(true)
+    }
+    // The exemption list may not name tables that a migration DOES create
+    // (that would hide a real drift) or tables absent from the registry.
+    for (const t of WRITER_OWNED_KERNEL_TABLES) {
+      expect(created.has(t), `writer-owned "${t}" is ALSO created by a migration — drop the exemption`).toBe(false)
+      expect(KERNEL_TABLES as readonly string[]).toContain(t)
     }
   })
 })

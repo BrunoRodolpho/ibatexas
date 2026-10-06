@@ -2,9 +2,37 @@
 //
 // We exercise sweepDeferTimeouts() directly (no BullMQ, no network).
 // Redis is replaced by a tiny in-memory stub with TTL semantics.
+//
+// ── M2: the Lua emulation is GONE (census class (i), item 2) ────────────────
+//
+// Ruling: docs/architecture/redis-lua-testing-decision.md (Q2). Census:
+// `apps/api/src/__tests__/helpers/redis-double-census.md`.
+//
+// The stub's `eval` re-implemented `releaseDeferResumingLock`'s compare-and-
+// delete in JS, script-blind — the same emulation as `defer-resolver.test.ts`,
+// from the sweeper side. One case rode on it: "[P0-2] acquires
+// defer:resuming:{hash} mutex BEFORE publishing the timeout", whose closing
+// assertion was that the mutex key had vanished.
+//
+// Where the invariant went: `apps/api/src/__tests__/lua-shape-cad-contract.test.ts`
+// EVALs this site's own script text (from `lib/defer-resuming-lock.ts`) against
+// a real Redis, with a conjunct-removal control. What is asserted here instead
+// is that the sweeper ISSUED that compare-and-delete against the mutex it
+// holds, with its own `sweeper:<uuid>` token as ARGV[1] — see
+// `expectSweeperMutexReleased()`.
+//
+// NOTE the `recovery:fired:*` marker is NOT part of this: the sweeper releases
+// it with a plain `redis.del` (defer-timeout-sweeper.ts:340/362), so those
+// assertions never touched the emulation and are unchanged.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { deferResumeHash } from "@adjudicate/runtime"
+import {
+  createLuaCallObserver,
+  expectLuaCall,
+  type LuaCallObserver,
+  type LuaSiteRef,
+} from "../../__tests__/helpers/lua-call-observer.js"
 import {
   sweepDeferTimeouts,
   startDeferTimeoutSweeper,
@@ -28,7 +56,22 @@ interface Entry {
 }
 const store = new Map<string, Entry>()
 
+/** The one production Lua site this SUT reaches. */
+const CAD_SITE: LuaSiteRef = {
+  file: "apps/api/src/lib/defer-resuming-lock.ts",
+  anchor: "const RELEASE_LOCK_SCRIPT =",
+}
+
+/**
+ * Records every Lua call the sweeper issues; NEVER emulates one. Default reply
+ * `1` — the CAD's answer to the owner. `releaseDeferResumingLock` swallows
+ * errors by design, so a throwing observer would be absorbed and prove nothing
+ * (that swallow is F-37); the positive assertion on `lua.calls` is the gate.
+ */
+let lua: LuaCallObserver
+
 function makeRedisStub() {
+  lua = createLuaCallObserver(1)
   return {
     async get(key: string): Promise<string | null> {
       const e = store.get(key)
@@ -64,28 +107,9 @@ function makeRedisStub() {
         }
       })()
     },
-    // WS5 (claustrum-on-dev): implement the Lua compare-and-delete used by
-    // `releaseDeferResumingLock` (audit-2026-05-25 I7). The sweeper switched
-    // its `defer:resuming:{hash}` mutex release from a plain `redis.del` to a
-    // UUID-bearing Lua CAD (CLAUDE.md rule #10). The only script passed is
-    // GET-equals-then-DEL; emulate that generically (release the key iff its
-    // stored value equals arguments[0]). Without this, the Lua release threw
-    // (swallowed by `releaseDeferResumingLock`'s catch) and the sweeper-owned
-    // mutex was never cleared — exactly the failure the [P0-2] legitimate-case
-    // test surfaces. Mirrors the stub in defer-resolver.test.ts.
-    async eval(
-      _script: string,
-      opts: { keys: string[]; arguments: string[] },
-    ): Promise<number> {
-      const key = opts.keys[0]!
-      const expected = opts.arguments[0]
-      const e = store.get(key)
-      if (e && e.value === expected) {
-        store.delete(key)
-        return 1
-      }
-      return 0
-    },
+    // M2: the Lua compare-and-delete is OBSERVED, never emulated. See the
+    // `lua` observer above and `expectSweeperMutexReleased()` below.
+    eval: lua.eval,
   }
 }
 
@@ -154,6 +178,45 @@ function parkBlob(opts: {
     },
     signal: opts.signal ?? "payment.confirmed",
     parkedAt: opts.parkedAt ?? "2025-01-01T00:00:00.000Z",
+  })
+}
+
+/**
+ * The M2 replacement for `expect(store.get(mutexKey)).toBeUndefined()`.
+ *
+ * The retired form asserted the mutex key was GONE — a deletion the JS
+ * emulation performed. This asserts what the sweeper did: it issued
+ * `lib/defer-resuming-lock.ts`'s compare-and-delete against that exact key,
+ * with the token it acquired under as ARGV[1].
+ *
+ * The token check is load-bearing. `acquireDeferResumingLock` builds
+ * `${holder}:${randomUUID()}` and tags the holder so incident forensics can
+ * tell sweeper from resolver; an ownership test whose ARGV[1] were a constant
+ * would discriminate nothing (F-21). The retired emulation could not see that
+ * — a constant stored and a constant passed compare equal.
+ */
+function expectSweeperMutexReleased(mutexKey: string): void {
+  const entry = store.get(mutexKey)
+  expect(
+    entry,
+    `the sweeper never SETNX'd ${mutexKey} — there is no mutex to release`,
+  ).toBeDefined()
+  const token = entry!.value
+  expect(token).toMatch(
+    /^sweeper:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  )
+
+  const index = lua.calls.findIndex((c) => c.keys[0] === mutexKey)
+  expect(
+    index,
+    `the sweeper issued no compare-and-delete against ${mutexKey} — ` +
+      `it issued ${lua.calls.length} Lua call(s): ` +
+      `${JSON.stringify(lua.calls.map((c) => c.keys))}`,
+  ).toBeGreaterThanOrEqual(0)
+  expectLuaCall(lua, index, {
+    site: CAD_SITE,
+    keys: [mutexKey],
+    arguments: [token],
   })
 }
 
@@ -407,9 +470,14 @@ describe("sweepDeferTimeouts", () => {
     expect(count).toBe(1)
     expect(mockPublishNatsEvent).toHaveBeenCalledOnce()
     expect(store.get(`test:defer:pending:${sessionId}`)).toBeUndefined()
-    // The sweeper releases the mutex on commit so it doesn't linger.
+    // The sweeper releases the mutex on commit so it doesn't linger. M2: what
+    // this file can honestly own is that the release was ISSUED — the
+    // production compare-and-delete, against the sweeper's own mutex key,
+    // carrying the `sweeper:<uuid>` token it acquired with. That the script
+    // then deletes the key is the CAD shape suite's claim, proven on a real
+    // Redis over these same bytes.
     const mutexKey = `test:defer:resuming:${deferResumeHash(intentHash, signal)}`
-    expect(store.get(mutexKey)).toBeUndefined()
+    expectSweeperMutexReleased(mutexKey)
   })
 
   it("[P0-2] skips publish when resolver mid-flight (defer:resuming:{hash} already claimed)", async () => {

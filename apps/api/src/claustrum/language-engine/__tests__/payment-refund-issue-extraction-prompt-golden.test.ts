@@ -13,12 +13,21 @@
 // receives on the wire (wire-schemas.ts's registry entry, composed through
 // the REAL `buildToolSurface`, driven via `createIbatexasPlanner` — never a
 // reimplementation) PLUS the `OPS_PLANNER_PERSONA` excerpt describing this
-// capability. Editing `payment-refund-issue.schema.ts`, `wire-schemas.ts`'s
-// registry, `buildToolSurface`'s composition, or the persona paragraph for
-// THIS capability all change this byte-identical fixture — and per FE-T08,
+// capability. Editing `wire-schemas.ts`'s registry MEMBERSHIP,
+// `buildToolSurface`'s composition, or the persona paragraph for THIS
+// capability all change this byte-identical fixture — and per FE-T08,
 // regenerating it without ALSO re-committing `extraction-schema-binding.json`
 // (after reviewing `ibx journey extraction-accuracy`'s impact) fails the
 // separate, CERTIFYING `checkSchemaBinding` gate.
+//
+// SCOPE NARROWED (BKL-255a): editing `payment-refund-issue.schema.ts`'s FIELDS
+// no longer moves this fixture — the authored payload schemas left the wire
+// when `buildToolSurface` dropped the `allOf` the engine discarded at decode
+// (LE2-004). This matters for the money-tier ruling above, so state it
+// plainly: the schema-binding gate no longer certifies this capability's
+// payload SHAPE, only its enum/persona surface. Payload-shape drift is caught
+// by `payment-refund-issue.schema.test.ts`, `schema-lint-gate.test.ts`, and
+// the "the authored schema exposes ONLY …" case below.
 //
 // To regenerate after an intentional change:
 //
@@ -36,6 +45,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "../wire-schemas.js";
 import {
   computePaymentRefundIssueExtractionPromptFragment,
   extractPaymentRefundIssuePersonaExcerpt,
@@ -63,12 +73,18 @@ describe("extraction-prompt golden byte-identity gate (payment.refund.issue)", (
     expect(canonicalize(fresh)).toBe(readGoldenRaw());
   });
 
-  it("exposes ONLY {orderReference, amount, reason} on the wire — never orderId/paymentId/refundAmountCentavos", async () => {
-    const fresh = await computePaymentRefundIssueExtractionPromptFragment();
-    const schema = fresh.expressIntentTool.inputSchema as {
-      allOf: Array<{ then: { properties: { payload: { properties: Record<string, unknown> } } } }>;
-    };
-    const payloadProps = schema.allOf[0]!.then.properties.payload.properties;
+  // BKL-255a — this used to read the payload schema back off the
+  // `express_intent` wire surface (the `allOf` clause). That clause is gone:
+  // the engine dropped it at decode (LE2-004), so the planner no longer sends
+  // it. The field inventory is still live and still load-bearing —
+  // `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY` derives the parse-seam filter
+  // from it — so this now reads the AUTHORED registry directly.
+  it("the authored schema exposes ONLY {orderReference, amount, reason} — never orderId/paymentId/refundAmountCentavos", () => {
+    const payloadProps = (
+      EXTRACTION_SCHEMAS_BY_CAPABILITY.get("payment.refund.issue") as {
+        properties: Record<string, unknown>;
+      }
+    ).properties;
     expect(Object.keys(payloadProps).sort()).toEqual(["amount", "orderReference", "reason"]);
   });
 
@@ -76,15 +92,12 @@ describe("extraction-prompt golden byte-identity gate (payment.refund.issue)", (
     const fresh = await computePaymentRefundIssueExtractionPromptFragment();
     const mutated: ExtractionPromptFragment = JSON.parse(JSON.stringify(fresh)) as ExtractionPromptFragment;
     const schema = mutated.expressIntentTool.inputSchema as {
-      allOf: Array<{
-        then: { properties: { payload: { properties: Record<string, unknown> } } };
-      }>;
+      properties: { capability: { enum: string[] } };
     };
-    // Simulates a future edit accidentally exposing a forbidden field.
-    schema.allOf[0]!.then.properties.payload.properties.paymentId = {
-      type: "string",
-      description: "x",
-    };
+    // BKL-255a — the payload sub-schema this used to mutate is no longer on the
+    // wire; the capability enum still is, and is still what a rollout slice
+    // drifts, so mutating it keeps this gate genuinely sensitive.
+    schema.properties.capability.enum.push("order.status.transition");
     expect(canonicalize(mutated)).not.toBe(readGoldenRaw());
   });
 

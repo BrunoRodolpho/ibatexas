@@ -14,7 +14,9 @@
 //
 // composeAgentPlane builds + wires; start()/stop() run the bridge + pollers. The
 // host-side kill check is the piece T3-5 left for the runner — it lands here,
-// wrapping the live runner so a killed agent never opens a capsule.
+// wrapping the live runner so a killed agent never opens a capsule. Its
+// kernel-side counterpart is wired by `startManagedAgentPlane`, not here; see
+// killGuardedRunner's doc for the exact split of what each leg covers.
 
 import type { AgentDefinition } from "@ibatexas/agents";
 import { logger } from "../lib/logger.js";
@@ -34,7 +36,20 @@ import type { AgentApprovalEngine } from "./agent-approvals.js";
  * trigger opens a capsule, short-circuit to a suppressed REFUSE-shaped outcome
  * (no turn, no model call). This is the pre-openCapsule gate "outside the seal
  * pipeline"; the AUTH-phase kill guard (agent-guards.ts) is the in-pipeline
- * backstop for a turn already in flight when the switch flips.
+ * backstop, and since F-51 wired its late-bound reader in
+ * `startManagedAgentPlane` it is genuinely live rather than constant-false.
+ *
+ * What each leg actually covers, stated exactly:
+ *   - this leg — no NEW trigger opens a capsule once the switch is on;
+ *   - the kernel leg — every `agent:`-namespaced envelope adjudicated through
+ *     the composed packs REFUSEs. That covers the two places this leg cannot
+ *     reach: the MUTATION of a turn already past openCapsule when the switch
+ *     flips, and the agent-approvals resume, which re-adjudicates a parked
+ *     envelope on a manager's accept without going through a runner at all.
+ *   - NEITHER leg cancels an in-flight turn. Its remaining model calls, read
+ *     tools and rendered reply run to completion; only its mutations are
+ *     stopped. A turn that plans zero envelopes never reaches the kernel, so a
+ *     kill has no effect on it beyond the next trigger.
  */
 export function killGuardedRunner(
   inner: TriggerTurnRunner,

@@ -1,0 +1,79 @@
+{
+  "fixture": "pairing-graph.malformed-pairing-handle",
+  "targets": "pairing-graph/malformed-pairing-handle",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/malformed-pairing-handle"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 5,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "malformed-pairing-handle",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "object",
+      "message": "\"Conformance Item Objeto\" is not a product or category handle (expected kebab-case ASCII like `costela-bovina-defumada`, per CLAUDE.md's naming conventions). The catalog cannot check that a handle EXISTS — that is a live-store question it deliberately never asks — so its shape is the only static statement available, and it is the form the read looks the graph up by, so a mis-shaped end is an edge that can never fire.",
+      "reference": "Conformance Item Objeto"
+    }
+  ],
+  "formatted": [
+    "pairing-graph/malformed-pairing-handle: pairing:conformance-item-sujeito · object — \"Conformance Item Objeto\" is not a product or category handle (expected kebab-case ASCII like `costela-bovina-defumada`, per CLAUDE.md's naming conventions). The catalog cannot check that a handle EXISTS — that is a live-store question it deliberately never asks — so its shape is the only static statement available, and it is the form the read looks the graph up by, so a mis-shaped end is an edge that can never fire."
+  ]
+}

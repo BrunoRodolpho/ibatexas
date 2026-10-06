@@ -1,11 +1,31 @@
-// Tests for get_my_reservations tool
-// Mock-based; no database required.
+// Tests for the get_my_reservations tool WRAPPER.
 //
-// Scenarios:
-// - Returns empty list when customer has no reservations
-// - Returns mapped DTOs + total count
-// - Status filter is forwarded to Prisma query
-// - Limit is respected
+// SCOPE. `getMyReservations` is a ~7-line wrapper (get-my-reservations.ts:8-18):
+// it parses with `GetMyReservationsInputSchema`, constructs the service, and
+// returns `svc.listByCustomer(customerId, { status, limit })` verbatim. That is
+// all this file asserts.
+//
+// Two things were removed here:
+//
+//   1. A PHANTOM `vi.mock("../utils.js")` declaring `reservationToDTO`,
+//      `assignTables` and `releaseReservation` — none of which exist in
+//      utils.ts (whose only exports are `buildDateTime`, `formatDateBR` and
+//      `locationLabel`). It was green solely because nothing in the SUT graph
+//      imports that module, so the factory never ran and its three bogus names
+//      were never checked against reality.
+//
+//   2. A re-implementation of `listByCustomer` inside the `@ibatexas/domain`
+//      mock factory. Its where/orderBy/take assertions were reading back the
+//      test's own construction, not production. The REAL `listByCustomer` —
+//      including the FE-T17b `{ in: [...] }` array branch, the single-status
+//      exact-match branch, and the pagination-burying regression — is genuinely
+//      covered at the domain layer in
+//      packages/domain/src/services/__tests__/reservation.test.ts:404-520.
+//      This removes a vacuous mirror, not coverage.
+//
+// The service method is stubbed as a bare `vi.fn()`, matching the in-repo
+// template used by cancel-reservation.test.ts, create-reservation.test.ts and
+// join-waitlist.test.ts.
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { ReservationStatus } from "@ibatexas/types"
@@ -13,134 +33,92 @@ import { getMyReservations } from "../get-my-reservations.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockReservationFindMany = vi.hoisted(() => vi.fn())
-const mockReservationCount = vi.hoisted(() => vi.fn())
+const mockListByCustomer = vi.hoisted(() => vi.fn())
+const mockCreateReservationService = vi.hoisted(() =>
+  vi.fn(() => ({ listByCustomer: mockListByCustomer })),
+)
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: {
-    reservation: {
-      findMany: mockReservationFindMany,
-      count: mockReservationCount,
-    },
-  },
-  createReservationService: () => ({
-    listByCustomer: async (
-      customerId: string,
-      options?: { status?: string; limit?: number },
-    ) => {
-      const where: Record<string, unknown> = { customerId }
-      if (options?.status) where.status = options.status
-      const [reservations, total] = await Promise.all([
-        mockReservationFindMany({
-          where,
-          include: { timeSlot: true, tables: { include: { table: true } } },
-          orderBy: [{ timeSlot: { date: "desc" } }, { timeSlot: { startTime: "desc" } }],
-          take: options?.limit ?? 10,
-        }),
-        mockReservationCount({ where }),
-      ])
-      return {
-        reservations: (reservations as Array<Record<string, unknown>>).map((r: Record<string, unknown>) => ({ ...r, _mapped: true })),
-        total,
-      }
-    },
-  }),
-}))
-
-// reservationToDTO is tested via integration; mock it for unit isolation
-vi.mock("../utils.js", () => ({
-  reservationToDTO: vi.fn((r: { id: string }) => ({ ...r, _mapped: true })),
-  assignTables: vi.fn(),
-  releaseReservation: vi.fn(),
+  createReservationService: mockCreateReservationService,
 }))
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
-function makeRow(id: string) {
-  return {
-    id,
-    customerId: "cus_01",
-    partySize: 4,
-    status: "confirmed",
-    specialRequests: [],
-    timeSlotId: "ts_01",
-    timeSlot: {
-      id: "ts_01",
-      date: new Date("2026-03-15T00:00:00.000Z"),
-      startTime: "19:30",
-      durationMinutes: 90,
-      maxCovers: 40,
-      reservedCovers: 4,
-    },
-    tables: [],
-    confirmedAt: new Date(),
-    checkedInAt: null,
-    cancelledAt: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  }
+const SERVICE_RESULT = {
+  reservations: [
+    { id: "res_01", customerId: "cus_01", partySize: 4, status: "confirmed" },
+    { id: "res_02", customerId: "cus_01", partySize: 2, status: "cancelled" },
+  ],
+  total: 2,
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
-describe("getMyReservations", () => {
-  beforeEach(() => { vi.clearAllMocks() })
+describe("getMyReservations (tool wrapper)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListByCustomer.mockResolvedValue({ reservations: [], total: 0 })
+  })
 
-  it("returns empty list when customer has no reservations", async () => {
-    mockReservationFindMany.mockResolvedValue([])
-    mockReservationCount.mockResolvedValue(0)
+  it("returns the service result verbatim — no reshaping in the wrapper", async () => {
+    mockListByCustomer.mockResolvedValue(SERVICE_RESULT)
 
     const result = await getMyReservations({ customerId: "cus_01", limit: 10 })
 
-    expect(result.reservations).toHaveLength(0)
-    expect(result.total).toBe(0)
+    expect(result).toBe(SERVICE_RESULT)
   })
 
-  it("returns mapped DTOs for all reservations", async () => {
-    const rows = [makeRow("res_01"), makeRow("res_02")]
-    mockReservationFindMany.mockResolvedValue(rows)
-    mockReservationCount.mockResolvedValue(2)
+  it("forwards customerId positionally and status/limit as the options bag", async () => {
+    await getMyReservations({
+      customerId: "cus_42",
+      status: ReservationStatus.CONFIRMED,
+      limit: 5,
+    })
 
-    const result = await getMyReservations({ customerId: "cus_01", limit: 10 })
-
-    expect(result.reservations).toHaveLength(2)
-    expect(result.total).toBe(2)
+    expect(mockCreateReservationService).toHaveBeenCalledOnce()
+    expect(mockListByCustomer).toHaveBeenCalledExactlyOnceWith("cus_42", {
+      status: ReservationStatus.CONFIRMED,
+      limit: 5,
+    })
   })
 
-  it("forwards customerId filter to prisma query", async () => {
-    mockReservationFindMany.mockResolvedValue([])
-    mockReservationCount.mockResolvedValue(0)
+  it("forwards status as undefined when the caller omits it (no filter)", async () => {
+    await getMyReservations({ customerId: "cus_01", limit: 10 })
 
-    await getMyReservations({ customerId: "cus_42", limit: 10 })
-
-    expect(mockReservationFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ customerId: "cus_42" }),
-      }),
-    )
+    expect(mockListByCustomer).toHaveBeenCalledExactlyOnceWith("cus_01", {
+      status: undefined,
+      limit: 10,
+    })
   })
 
-  it("includes status filter when provided", async () => {
-    mockReservationFindMany.mockResolvedValue([])
-    mockReservationCount.mockResolvedValue(0)
+  // The wrapper's zod schema carries `.default(10)`, so the service is never
+  // handed an undefined limit from this path — the default is applied HERE, by
+  // the parse, not by the service's own `?? 10` fallback.
+  it("applies the schema's default limit of 10 when the caller omits it", async () => {
+    await getMyReservations({
+      customerId: "cus_01",
+    } as Parameters<typeof getMyReservations>[0])
 
-    await getMyReservations({ customerId: "cus_01", status: ReservationStatus.CONFIRMED, limit: 10 })
-
-    expect(mockReservationFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ status: ReservationStatus.CONFIRMED }),
-      }),
-    )
+    expect(mockListByCustomer).toHaveBeenCalledExactlyOnceWith("cus_01", {
+      status: undefined,
+      limit: 10,
+    })
   })
 
-  it("respects the limit option", async () => {
-    mockReservationFindMany.mockResolvedValue([])
-    mockReservationCount.mockResolvedValue(0)
+  // ── The zod parse (the wrapper's other job) ─────────────────────────────────
 
-    await getMyReservations({ customerId: "cus_01", limit: 5 })
+  it.each([
+    ["a non-string customerId", { customerId: 42, limit: 10 }],
+    ["an unknown status", { customerId: "cus_01", status: "abducted", limit: 10 }],
+    ["a limit below the minimum", { customerId: "cus_01", limit: 0 }],
+    ["a limit above the maximum", { customerId: "cus_01", limit: 5000 }],
+    ["a non-integer limit", { customerId: "cus_01", limit: 2.5 }],
+  ])("rejects %s before touching the service", async (_label, input) => {
+    await expect(
+      getMyReservations(input as unknown as Parameters<typeof getMyReservations>[0]),
+    ).rejects.toThrow()
 
-    expect(mockReservationFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 5 }),
-    )
+    expect(mockCreateReservationService).not.toHaveBeenCalled()
+    expect(mockListByCustomer).not.toHaveBeenCalled()
   })
 })

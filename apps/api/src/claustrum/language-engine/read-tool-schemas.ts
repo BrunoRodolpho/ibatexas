@@ -271,6 +271,9 @@ export const CHECK_AVAILABILITY_READ_SCHEMA: CapabilityExtractionSchema = {
       required: false,
     },
   ],
+  // F-65 — illustrative date, never on the wire (see ExtractionSchemaExample).
+  // It is also an ECHO example: the date appears in the utterance too, so it
+  // demonstrates copying an explicit date, not resolving a bare one.
   example: {
     utterance: "tem mesa pra 4 pessoas sábado dia 20, data 2026-07-18?",
     payload: { date: "2026-07-18", partySize: 4 },

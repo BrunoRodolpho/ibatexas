@@ -10,10 +10,9 @@
  *
  * Guard ordering inside each phase matters. The PIX-DEFER guard fires
  * BEFORE the auth guards (kernel evaluation order: state → taint → auth
- * → business per ADR-104 / `@adjudicate/core/kernel/adjudicate.ts`); the
- * REWRITE clamp on `order.item.update` runs BEFORE the
- * quantity-cap REFUSE so adopters see a clamped envelope rather than a
- * blanket refusal when stock is depleted.
+ * → business per ADR-104 / `@adjudicate/core/kernel/adjudicate.ts`);
+ * `validateQuantity` runs BEFORE the `clampUpdateToStockCap` REWRITE,
+ * and that order is PROTECTIVE — see the note on the business phase.
  *
  * # Migrated behaviour
  *
@@ -58,6 +57,7 @@ import {
 } from "@ibatexas/types"
 import {
   refuseAllergensNotExplicit,
+  refuseAmbiguousOrderReference,
   refuseAmountExceedsLimit,
   refuseCartEmpty,
   refuseCheckoutMissingPaymentMethod,
@@ -66,8 +66,11 @@ import {
   refuseInvalidPaymentMethod,
   refuseInvalidQuantity,
   refuseInvalidRating,
+  refuseCouponNotUsable,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseNoOrderToCancel,
+  refuseNoPreviousOrder,
   refuseFiscalNotEligible,
   refuseFiscalRetryExceeded,
   refuseNotAuthenticated,
@@ -76,6 +79,7 @@ import {
   refuseOrderPastPonr,
   refuseOwnershipDenied,
   refuseSlotsIncomplete,
+  refuseSwapTotalUnknown,
   refuseTransitionIllegal,
   refuseTransitionStatusUnknown,
   refuseTransitionTerminal,
@@ -92,6 +96,49 @@ import {
 } from "./types.js"
 
 type OrderGuard = Guard<OrderIntentKind, OrderPayload, OrderState>
+
+// ── Customer-facing money + list formatting ──────────────────────────────────
+
+/**
+ * Integer centavos → the pt-BR decimal string a customer reads (Hard Rule #2 +
+ * Hard Rule #4). Extracted because four guards now quote an amount and a fifth
+ * spelling of the same three-step dance is one chance too many to drop the
+ * comma. Callers supply the `R$ ` prefix, since not every sentence wants it in
+ * the same position.
+ */
+function formatCentavosBrl(centavos: number): string {
+  return (centavos / 100).toFixed(2).replace(".", ",")
+}
+
+/**
+ * Max previous-order lines voiced inline by `confirmReorderLast` before the
+ * remainder is summarised. Mirrors `MAX_AMBIGUOUS_ORDERS_SHOWN` in
+ * `./refusals.ts` and exists for the same reason: a confirmation the customer
+ * has to scroll is a confirmation they will approve without reading, so the cap
+ * protects the confirm rather than the message length.
+ */
+const MAX_REORDER_ITEMS_SHOWN = 3
+
+/**
+ * "2x Costela bovina defumada, 1x Pão de alho e mais 2 itens" — the previous
+ * order's lines as one pt-BR fragment.
+ *
+ * Titles are quoted from the projection VERBATIM: they are the names the
+ * products carried when they were sold, and re-deriving them at read time would
+ * let a renamed product silently change what the customer thinks they are
+ * repeating.
+ */
+function reorderItemList(
+  items: ReadonlyArray<{ readonly title: string; readonly quantity: number }>,
+): string {
+  const shown = items
+    .slice(0, MAX_REORDER_ITEMS_SHOWN)
+    .map((item) => `${item.quantity}x ${item.title}`)
+    .join(", ")
+  const remaining = items.length - Math.min(items.length, MAX_REORDER_ITEMS_SHOWN)
+  if (remaining === 0) return shown
+  return `${shown} e mais ${remaining} ${remaining === 1 ? "item" : "itens"}`
+}
 
 // ── PII data-classification (F1) ─────────────────────────────────────────────
 // Two guards on the PIX / checkout free-text leaves. ORDER MATTERS: the PAN
@@ -194,7 +241,20 @@ const POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
 // "Cozinha já está preparando"). System/compensation cancels (payment-expiry /
 // stale-order) are NOT bound by the preparing PONR, but they run through
 // `order.status.transition`→CANCELED, not order.cancel (retired BKL-177).
-const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
+// EXPORTED for LE2-023. A workflow FEASIBILITY PRE-CHECK has to answer "could
+// this order be cancelled?" BEFORE any envelope exists — that is the whole point
+// of a pre-check, and it means the kernel cannot be asked. The pre-check must
+// therefore reach the same verdict `requireCancellable` will reach a moment
+// later, and the only way to guarantee that is to read THIS set rather than a
+// second copy of it. A host-side transcription would be a second source of truth
+// for the point of no return, and the day someone adds a status to one and not
+// the other, the workflow offers to cancel an order the kernel then refuses —
+// which is the exact "I asked, you agreed, now I am telling you it was never
+// possible" exchange pre-checks exist to delete.
+//
+// Same rationale as `promotion-validity.ts`'s extraction one layer over: the
+// predicate moves to where both callers can read it, and neither re-derives it.
+export const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
   ...POST_PONR_FULFILLMENT,
   "preparing",
 ])
@@ -207,7 +267,13 @@ const CUSTOMER_POST_PONR_FULFILLMENT: ReadonlySet<string> = new Set([
 // `disputed`). NOT settled: awaiting_payment / payment_pending / cash_pending
 // (nothing captured yet) and refunded / canceled / waived (money already
 // returned or the order already terminal). Drives `gatePaidCancel`.
-const CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES: ReadonlySet<string> = new Set([
+// EXPORTED for LE2-023, for the reason `CUSTOMER_POST_PONR_FULFILLMENT` above is:
+// the swap-for-coupon confirm has to TELL THE CUSTOMER that cancelling returns
+// their money, and it may only say so when `gatePaidCancel` would agree. One
+// transcription, read by the guard that decides and by the projection that
+// grounds the sentence — never two that can drift into a confirmation promising
+// a refund the money guards do not think is owed.
+export const CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES: ReadonlySet<string> = new Set([
   ...ORDER_PIX_CONFIRMED_STATUSES,
   "partially_refunded",
   "disputed",
@@ -266,6 +332,21 @@ const VALID_PAYMENT_METHODS = new Set(["pix", "card", "cash"])
  * no-op today AND a real seam once the multi-tenant actor model lands. Reads
  * (actor, state) → Decision — touches no principal shape / hashed byte (D-12).
  * Tenant id is env-driven (Hard Rule #3), defaulting to the single tenant.
+ *
+ * F-29 — NAME COLLISION. This guard REFUSEs with the CODE
+ * `tenant_binding_violation` (authored upstream, in `@adjudicate/primitives`).
+ * The SAME string is also a basis REASON, stamped by `enforceOrderOwnership`'s
+ * IDOR conjunct below on a `order.ownership_denied` refusal — a different guard,
+ * a different field, a different mechanism. Both decisions carry
+ * `refusal.kind: "SECURITY"` and basis `auth.scope_insufficient`, so the FIELD
+ * is the only discriminator, and this guard is `authGuards[0]` — it
+ * short-circuits before the ownership guard on all eight ownership-gated kinds.
+ * A cross-tenant fixture therefore produces this refusal even with the ownership
+ * guard removed entirely. Assert BOTH the code and the auth-basis reason; a
+ * code-only assertion proves nothing about ownership. Pinned in apps/api
+ * `claustrum/__tests__/ownership-set-agreement.test.ts` §4, which also records
+ * why a rename was declined (the code is authored in an external package, so a
+ * local rename cannot close the concept).
  */
 const requireTenantBindingGuard: OrderGuard = requireTenantBinding<
   OrderIntentKind,
@@ -428,6 +509,51 @@ const ORDER_OPS_REQUIRING_ORDER_ID: ReadonlySet<string> = new Set([
   // NEW-014 — fiscal emission targets a specific order.
   "order.fiscal.emit",
 ])
+
+/**
+ * BKL-216 — the amend kinds whose orderId the host resolves from an in-message
+ * order reference (`ORDER_NAMED_REFERENCE_KINDS`, resolve-and-assemble.ts). When
+ * the message named ≥2 of the customer's OWN orders the resolver declines to guess
+ * and stamps `orderReferenceAmbiguous*` instead of an orderId.
+ */
+const ORDER_REFERENCE_AMBIGUITY_KINDS: ReadonlySet<OrderIntentKind> = new Set([
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+])
+
+/**
+ * BKL-216 — voice the order numbers a message named ≥2 of. `resolveAmendOrderReference`
+ * leaves the orderId UNSTAMPED (so `requireOrderIdForMutation` below still fails
+ * closed) and stamps `orderReferenceAmbiguousCount` + the first-party
+ * `orderReferenceAmbiguousDisplayIds`. This runs FIRST so the disambiguation
+ * pre-empts the generic `order.not_found` refuse — the orders WERE found, the
+ * resolver just would not pick between two the customer named. Mirrors
+ * `clarifyAmbiguousReservation` (pack-reservations, BKL-223).
+ *
+ * Fail-inert when the marker is absent or malformed: a host that does not stamp it
+ * sees the pre-existing verdicts unchanged.
+ */
+const clarifyAmbiguousOrderReference: OrderGuard = (envelope) => {
+  if (!ORDER_REFERENCE_AMBIGUITY_KINDS.has(envelope.kind)) return null
+  const payload = envelope.payload as {
+    orderReferenceAmbiguousCount?: unknown
+    orderReferenceAmbiguousDisplayIds?: unknown
+  }
+  if (typeof payload.orderReferenceAmbiguousCount !== "number") return null
+  const displayIds = Array.isArray(payload.orderReferenceAmbiguousDisplayIds)
+    ? payload.orderReferenceAmbiguousDisplayIds.filter(
+        (d): d is number => typeof d === "number",
+      )
+    : []
+  return decisionRefuse(refuseAmbiguousOrderReference(displayIds), [
+    basis("state", BASIS_CODES.state.TRANSITION_ILLEGAL, {
+      reason: "order_reference_ambiguous",
+      count: payload.orderReferenceAmbiguousCount,
+    }),
+  ])
+}
 
 const requireOrderIdForMutation: OrderGuard = (envelope, state) => {
   if (!ORDER_OPS_REQUIRING_ORDER_ID.has(envelope.kind)) {
@@ -649,6 +775,13 @@ const requireCancellable: OrderGuard = (envelope, state) => {
 // resources + a session→principal map). The order money kinds bind to the order
 // resource via `resourceRefs`; a resource the customer does not own is unbound in
 // the graph ⇒ REFUSE (de-vacuumed — see the pack-orders ownership canary test).
+//
+// F-24 — this set MUST agree with the adopter's `OWNERSHIP_GATED_KINDS`
+// (ibatexas apps/api claustrum/authority-wiring.ts), which decides what gets a
+// `resourceRefs` stamp and an injected `state.authority`. Dropping a kind here
+// leaves the adopter stamping an envelope this guard never reads — enforcement
+// silently gone. The agreement is measured, per kind, by that adopter's
+// claustrum/__tests__/ownership-set-agreement.test.ts.
 const OWNERSHIP_GATED_ORDER_KINDS: ReadonlySet<string> = new Set([
   "order.cancel",
   "order.amend.request",
@@ -681,6 +814,14 @@ const enforceOrderOwnership: OrderGuard = (envelope, state) => {
   // forged / cross-session / unbound-agent actor) resolves to null and is REFUSEd.
   const authed = authority.principalOf?.(envelope.actor.sessionId) ?? null
   if (authed === null || authed !== fact.principal) {
+    // F-29 — this REASON is the same string as `requireTenantBindingGuard`'s
+    // refusal CODE (see that guard above), but a different mechanism: here it
+    // rides an `order.ownership_denied` refusal, there it IS the code. The two
+    // decisions agree on refusal.kind and on this very basis code, so only the
+    // FIELD tells them apart. Pinned in apps/api
+    // `claustrum/__tests__/ownership-set-agreement.test.ts` §4; renaming this
+    // reason was considered and declined there (the colliding code is authored
+    // in `@adjudicate/primitives`, and this string is in audit records).
     return decisionRefuse(refuseOwnershipDenied(), [
       basis("auth", BASIS_CODES.auth.SCOPE_INSUFFICIENT, { reason: "tenant_binding_violation" }),
     ])
@@ -882,6 +1023,24 @@ const validateQuantity: OrderGuard = (envelope) => {
  * not carry stock caps see this guard skip (extractor returns
  * undefined). The metadata declares `mutatesPayloadFields: ["quantity"]`
  * for the M3 REWRITE-scope analyzer (ADR-104).
+ *
+ * Runs AFTER `validateQuantity` — see the ordering note in the business
+ * phase; the pair is not interchangeable.
+ *
+ * KNOWN HOLE (F-57), open with the governor — do not "fix" it silently.
+ * `stockCap: 0` is a DEFINED cap, so the extractor engages and any
+ * positive request clamps to `quantity: 0` and EXECUTEs, even though
+ * `validateQuantity` classifies `0` as invalid (`q <= 0`). The clamp
+ * therefore mints a payload this Pack's own validity rule rejects, and
+ * it does so precisely in the depleted-stock case a stock clamp exists
+ * to serve. Inert in the ibatexas host today: nothing populates
+ * `stockCap`, and the live `ctx.items` is `undefined`, so the extractor
+ * returns undefined and the guard never fires — this is an adopter-facing
+ * Pack-contract defect, not a live one. Closing it is a behaviour change
+ * (a REFUSE where an EXECUTE happens now) and needs a ruling, not a
+ * drive-by; `refuseQuantityOverLimit` in `./refusals.ts` is the refusal
+ * it would use. Characterized by the `stockCap: 0` test in
+ * `__tests__/orders-pack.test.ts` so the hole cannot go quiet again.
  */
 const clampUpdateToStockCap = nameGuard(
   "clampUpdateToStockCap",
@@ -944,9 +1103,154 @@ const confirmLargeTicket = nameGuard(
     threshold: CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS,
     comparator: ">=",
     prompt: (value) =>
-      `Esse pedido soma R$ ${(value / 100).toFixed(2).replace(".", ",")}. Confirma a finalização?`,
+      `Esse pedido soma R$ ${formatCentavosBrl(value)}. Confirma a finalização?`,
   }),
 ) as OrderGuard
+
+/**
+ * BKL-280 — THE STAY-HOME / PICKUP CONTRADICTION GUARD.
+ *
+ * A customer says, in their own words, that they cannot leave the house — or
+ * simply asks for delivery — and the checkout envelope that reaches the kernel
+ * carries `deliveryType: "pickup"`. That combination is never what the customer
+ * asked for, so this guard REQUESTS CONFIRMATION and lets them choose.
+ *
+ * ── THE DEFECT, AND WHY IT IS FIXED HERE INSTEAD OF IN A PROMPT ──────────────
+ *
+ * V7-proven (bkl278, 2026-07-27): on "não vou poder sair de casa hoje, fecha
+ * aí, pago em dinheiro na entrega" the 4B emits `order.checkout.create
+ * {delivery_type: "pickup", payment_method: "cash"}`. Every gate upstream
+ * passes — the capability is real, the payload type-checks, the slots are
+ * filled, the money band is under threshold — so it EXECUTES. The wrongness is
+ * entirely in ONE field, and nothing in the pipeline was positioned to notice
+ * that the field contradicts the sentence that produced it.
+ *
+ * The measured evidence is that this is NOT a persona bug: the same row emits
+ * pickup under every prompt arm tried (V1/V2/V5/V7/V8/STOCK/PATCHED), and a
+ * neutral-padding control — a paragraph mentioning nothing about checkout —
+ * moves it just as well. The model is sitting on a decision boundary that
+ * prompt text does not stabilize. Owner ruling 2026-07-27 (OPTION B, Option A
+ * "explicitly rejected as an endless prompt battle"): the contradiction between
+ * "cannot leave home" and "pickup" exists independently of any prompt, so the
+ * check belongs outside the model, where every future engine inherits it. That
+ * is what the kernel is for.
+ *
+ * ── WHY REQUEST_CONFIRMATION AND NOT REFUSE ──────────────────────────────────
+ *
+ * Governor's disposition, per the same ruling: a MISREAD customer should be
+ * ASKED, not punished. The customer did nothing wrong — the model did — so the
+ * remedy is one question, never a refusal they cannot act on.
+ *
+ * ── THE INPUT IS MODEL-UNFORGEABLE, WHICH IS THE WHOLE MECHANISM ─────────────
+ *
+ * `state.ctx.stayHomeDeliveryMarker` is stamped by the HOST at resolve time
+ * from the customer's own utterance against a closed literal marker list
+ * (`hasStayHomeDeliveryMarker`, apps/api/src/claustrum/resolve-and-assemble.ts);
+ * `deliveryType` comes off the payload the MODEL filled. The guard fires on the
+ * disagreement between a thing the model cannot author and a thing it can. Were
+ * the flag model-supplied, the same mis-binding that sets `pickup` could clear
+ * the flag, and the guard would be theatre. Raw prose never crosses this seam —
+ * only the boolean does.
+ *
+ * ── ORDERING: BEFORE `confirmLargeTicket`, DELIBERATELY ──────────────────────
+ *
+ * Business guards are first-non-null-wins, so on a contradicting checkout at or
+ * above R$ 1.000 exactly one of the two questions gets asked. It must be this
+ * one. Behind `confirmLargeTicket` the large-ticket confirm would fire first,
+ * the customer's "sim" would satisfy it, and the corrected-delivery question
+ * would never be put — the defect would survive untouched for precisely the
+ * most expensive carts. Ahead of it, the contradiction is settled first and the
+ * money band still governs the CORRECTED envelope: answering "entrega" changes
+ * the payload, which changes the `intentHash`, which is a new adjudication in
+ * which this guard is silent and `confirmLargeTicket` asks normally. The money
+ * ladder is not weakened; it is merely asked second.
+ *
+ * ── THIS GUARD ONLY EVER ADDS A QUESTION ─────────────────────────────────────
+ *
+ * Both conditions must hold, and both are narrow. An absent flag (unwired host,
+ * or the confirm-RESUME path, which re-resolves with no utterance text) returns
+ * null; a `delivery`-typed checkout returns null; a pickup checkout with no
+ * marker returns null. Every existing checkout verdict — plain pickup, plain
+ * delivery, the money bands, the PIX defer, the slot/cart/auth gates — is
+ * reached exactly as before. Nothing here can turn a REFUSE into an EXECUTE:
+ * the only transition this guard can cause is EXECUTE → REQUEST_CONFIRMATION.
+ *
+ * ── CONFIRMATION-RECEIPT SCOPING ─────────────────────────────────────────────
+ *
+ * The kernel's 2a override converts a REQUEST_CONFIRMATION only on
+ * `receipt.intentHash === envelope.intentHash`, so a receipt minted against a
+ * DIFFERENT envelope (a stale "sim" from an earlier turn) cannot satisfy this
+ * confirm — pinned by a dedicated test rather than assumed, because receipts
+ * are scoped to an intent, not to the question that was asked.
+ */
+const confirmDeliveryContradiction: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.checkout.create") return null
+  if (state.ctx.stayHomeDeliveryMarker !== true) return null
+  const deliveryType = (envelope.payload as { deliveryType?: unknown })
+    .deliveryType
+  // Case/whitespace-tolerant on purpose: the conductor normalizes the wire
+  // value through DELIVERY_TYPE_VALUE_SYNONYMS ("retirada"/"buscar" → "pickup"),
+  // but the HTTP cart route threads its own, and tolerating spelling here can
+  // only ever ADD the question — never skip it.
+  if (
+    typeof deliveryType !== "string" ||
+    deliveryType.trim().toLowerCase() !== "pickup"
+  ) {
+    return null
+  }
+  return decisionRequestConfirmation(
+    "O pedido está marcado como retirada no local, mas sua mensagem indica entrega. Como você prefere receber: entrega no seu endereço ou retirada no local?",
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        rule: "delivery_type_contradicts_utterance",
+        kind: envelope.kind,
+        deliveryType: "pickup",
+      }),
+    ],
+  )
+}
+
+/**
+ * THE PAID-CANCEL CONFIRM SENTENCE — ONE definition, TWO callers (LE2-024).
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT TWO STRING LITERALS ───────────────────────
+ *
+ * `gatePaidCancel` asks this question when a customer cancels a paid order
+ * DIRECTLY. `confirmPaidCancel` asks the SAME question when the same customer
+ * reaches the same act through `workflow.orders.paid-cancel`, whose confirm
+ * template quotes it verbatim through `{confirmation}`.
+ *
+ * LE2-024's parity pin asserts those two renders are BYTE-IDENTICAL, and a pin
+ * over two copies of a sentence is a pin over an agreement somebody has to keep
+ * remembering. Copy-editing one band's copy — a comma, "ao cliente", the
+ * R$-format — would move one render and not the other, the parity test would go
+ * red in a suite nobody was touching, and the honest reading of that failure
+ * ("the workflow lies about what the direct path says") is not the one a reader
+ * would reach for. Under one function there is no agreement to keep: the two
+ * renders are the same bytes because they are the same call.
+ *
+ * ── THE ABSENT-TOTAL BRANCH IS NOT A FALLBACK ────────────────────────────────
+ *
+ * A `null` total still asks, and asks WITHOUT a number, because the alternative
+ * readings are both worse: quoting R$ 0,00 would state a refund amount that is
+ * false, and declining to ask would let a paid cancel EXECUTE unconfirmed. The
+ * customer is told the consequence they can act on (their money comes back)
+ * without a figure the projection could not ground.
+ *
+ * @param refundEquivalentCentavos The order total — the amount a cancel returns.
+ *   `null` when the host projected none.
+ */
+export function paidCancelConfirmText(
+  refundEquivalentCentavos: number | null,
+): string {
+  if (typeof refundEquivalentCentavos !== "number") {
+    return "Esse pedido já foi pago. Cancelar implica reembolso — confirma o cancelamento?"
+  }
+  return (
+    `Esse pedido já foi pago (R$ ${formatCentavosBrl(refundEquivalentCentavos)}).` +
+    " Cancelar implica reembolso ao cliente — confirma o cancelamento?"
+  )
+}
 
 /**
  * BKL-036 finding 2 (J015) — PAID-state cancel gating.
@@ -1001,7 +1305,7 @@ const gatePaidCancel: OrderGuard = (envelope, state) => {
   const refundEquivalentCentavos = state.ctx.totalInCentavos ?? null
   const reais =
     typeof refundEquivalentCentavos === "number"
-      ? (refundEquivalentCentavos / 100).toFixed(2).replace(".", ",")
+      ? formatCentavosBrl(refundEquivalentCentavos)
       : null
   // High band: a large paid cancel escalates to a human (mirrors the refund
   // ESCALATE band + escalateLargeCancel's >= comparator/threshold).
@@ -1009,6 +1313,63 @@ const gatePaidCancel: OrderGuard = (envelope, state) => {
     typeof refundEquivalentCentavos === "number" &&
     refundEquivalentCentavos >= ESCALATE_REFUND_THRESHOLD_CENTAVOS
   ) {
+    // ── BKL-103 / AUT-017 — ESCALATE→OWNER-approve→executable-resume overlay ──
+    //
+    // Before BKL-103 this ESCALATE was TERMINAL for the customer: they were told
+    // "um atendente vai avaliar" and the escalation was audit-row-only —
+    // `order.cancel` was absent from `ESCALATION_RESUMABLE_KINDS`, so nothing
+    // parked and no staff surface could ever ACT on it. `order.cancel` is now a
+    // resumable kind, which makes this overlay the seam that lets an approved
+    // cancel actually execute. Structural mirror of the refund escalate band
+    // (`@ibatexas/pack-payments` policies.ts) — same conditions, same monotonic
+    // posture:
+    //   - `intentHash === envelope.intentHash` — the approval is for THIS
+    //     envelope, not replayed onto a different one.
+    //   - `approverRole === "OWNER"` — only an owner approves a big-ticket paid
+    //     cancel (a MANAGER-approver marker leaves the ESCALATE intact).
+    //   - `approverId !== payload.actorId` — SEPARATION OF DUTY: the approver may
+    //     not be the party who PROPOSED the cancel (the authenticated write side
+    //     stamps the requester onto `payload.actorId`).
+    //
+    // DIVERGENCE FROM THE REFUND OVERLAY, deliberately STRICTER: the comparand is
+    // required to be a NON-EMPTY string before the marker may convert. The refund
+    // overlay's bare `approverId !== payload.actorId` is trivially TRUE when the
+    // write side never stamped a proposer — precisely the silent degradation
+    // BKL-113 made a compile error. Here an UNSTAMPED payload cannot convert at
+    // all: the ESCALATE stands, so a missing stamp fails SAFE (an escalation that
+    // stays escalated) instead of converting past an unenforced gate.
+    //
+    // The marker is ABSENT on every ordinary turn ⟹ byte-identical ESCALATE. This
+    // overlay is MONOTONIC — it converts only this band's OWN ESCALATE, and only
+    // DOWN to REQUEST_CONFIRMATION (friction), never rescuing a REFUSE. A
+    // receipt-less conversion stops at REQUEST_CONFIRMATION (a human still
+    // confirms) — friction, never a bypass.
+    const approval = state.ctx.escalationApproval
+    const proposerId = (envelope.payload as { actorId?: unknown }).actorId
+    if (
+      approval !== undefined &&
+      approval.intentHash === envelope.intentHash &&
+      approval.approverRole === "OWNER" &&
+      typeof proposerId === "string" &&
+      proposerId !== "" &&
+      approval.approverId !== proposerId
+    ) {
+      return decisionRequestConfirmation(
+        reais === null
+          ? `Cancelamento aprovado por ${approval.approverId}. Confirmar execução?`
+          : `Cancelamento com reembolso de R$ ${reais} aprovado por ${approval.approverId}. Confirmar execução?`,
+        [
+          basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+            reason: "paid_cancel_escalation_approved",
+            approvedBy: approval.approverId,
+            approverRole: approval.approverRole,
+            refundEquivalentCentavos,
+            escalateThreshold: ESCALATE_REFUND_THRESHOLD_CENTAVOS,
+            paymentStatus: ps,
+          }),
+        ],
+      )
+    }
     return decisionEscalate(
       "human",
       "paid_cancel_refund_above_escalate_threshold",
@@ -1025,9 +1386,7 @@ const gatePaidCancel: OrderGuard = (envelope, state) => {
   // Low / medium band: park for explicit confirmation — a paid cancel is a
   // real-money refund and must never silently EXECUTE.
   return decisionRequestConfirmation(
-    reais === null
-      ? "Esse pedido já foi pago. Cancelar implica reembolso — confirma o cancelamento?"
-      : `Esse pedido já foi pago (R$ ${reais}). Cancelar implica reembolso ao cliente — confirma o cancelamento?`,
+    paidCancelConfirmText(refundEquivalentCentavos),
     [
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         reason: "paid_cancel_requires_confirmation",
@@ -1055,7 +1414,7 @@ const escalateLargeCancel = nameGuard(
     comparator: ">=",
     to: "human",
     reason: (value) =>
-      `Cancelamento de pedido com valor de R$ ${(value / 100).toFixed(2).replace(".", ",")} — atendente humano deve revisar.`,
+      `Cancelamento de pedido com valor de R$ ${formatCentavosBrl(value)} — atendente humano deve revisar.`,
   }),
 ) as OrderGuard
 
@@ -1132,6 +1491,365 @@ const requireAmendItemDisambiguation: OrderGuard = (envelope, state) => {
       basis("business", BASIS_CODES.business.RULE_SATISFIED, {
         rule: "adjacent_amend_requires_confirmation",
         kind: envelope.kind,
+      }),
+    ],
+  )
+}
+
+/**
+ * LE2-021 — the WHOLE-WORKFLOW confirm for `workflow.orders.reorder-last`, and
+ * its no-history refusal. One guard, because they are the two answers to one
+ * question the kernel asks once: *may this customer be shown a repeat of their
+ * last order, and what does it say?*
+ *
+ * ── WHY THE GUARD AUTHORS THE SENTENCE ───────────────────────────────────────
+ *
+ * The owner's reading of ticket 21's second acceptance criterion is
+ * GROUNDED-NOT-LITERALLY-CLAIMS: the items and the total must be first-party and
+ * fresh, and the order id must never be model-authored — but they need not
+ * travel as claim-kernel values, and in this repository they cannot (no per-turn
+ * validated-claims capture exists, and no order claim carries an order id at
+ * all — `ORDER_HISTORY`'s validated value is a pre-composed summary STRING).
+ *
+ * So the sentence is authored HERE, from `state.ctx` fields the host projected
+ * out of the owner-scoped `OrderProjection` read, and the workflow's confirm
+ * template quotes it verbatim through `{confirmation}`. That is the same path
+ * every other grounded action value in this Pack already takes —
+ * `confirmLargeTicket` reads `ctx.totalInCentavos` for exactly this reason — and
+ * it keeps the anti-fabrication invariant structural rather than procedural: at
+ * no point does a probabilistic model supply, relay, or get to influence the
+ * item names, the amount, or the identifier.
+ *
+ * ── WHY IT IS UNCONDITIONAL ──────────────────────────────────────────────────
+ *
+ * Not threshold-banded, so `createConfirmGuard` is the wrong tool (it is a
+ * `createThresholdGuard` alias and cannot express "always"). This is a plain
+ * `OrderGuard` arrow on the `requireAmendItemDisambiguation` pattern.
+ *
+ * The Inv 11 money bands are deliberately NOT the gate here. A reorder is not a
+ * large-ticket problem, it is an IDENTITY problem: the customer is approving a
+ * basket they cannot see, assembled from a record only the system holds, and an
+ * R$40 repeat of the WRONG order is exactly as wrong as an R$4.000 one. A band
+ * would make the small-value majority execute silently, which is the case where
+ * the customer has least chance of noticing. The bands still apply INSIDE the
+ * run: each activity meets its own guards, so a reorder that crosses
+ * `CONFIRM_LARGE_TICKET_THRESHOLD_CENTAVOS` at checkout still meets that band
+ * there. A workflow confirm never pre-authorises a step's own confirm.
+ *
+ * ── ORDERING ─────────────────────────────────────────────────────────────────
+ *
+ * Lives in `business[]` BEFORE the EXECUTE producers. `executeW5Kinds` matches
+ * this kind too, and first-non-null wins, so behind it this guard would be dead
+ * code and the workflow would run without ever asking.
+ */
+const confirmReorderLast: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.reorder.request") return null
+  const { previousOrderId, previousOrderItems, previousOrderTotalInCentavos } = state.ctx
+  // FAIL-SAFE, not fail-open: an unwired host, an anonymous customer, or a
+  // genuinely first-time customer all land here, and all three get the honest
+  // sentence rather than a confirmation for a basket nobody can name.
+  if (
+    previousOrderId === undefined ||
+    previousOrderTotalInCentavos === undefined ||
+    previousOrderItems === undefined ||
+    previousOrderItems.length === 0
+  ) {
+    return decisionRefuse(refuseNoPreviousOrder(), [
+      basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+        rule: "reorder_requires_previous_order",
+        kind: envelope.kind,
+      }),
+    ])
+  }
+  return decisionRequestConfirmation(
+    `Vou repetir seu último pedido: ${reorderItemList(previousOrderItems)}, ` +
+      `total R$ ${formatCentavosBrl(previousOrderTotalInCentavos)}. Confirma?`,
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        rule: "reorder_requires_confirmation",
+        kind: envelope.kind,
+        // First-party by construction (owner-scoped projection), and the join
+        // key an operator needs to check WHICH order a customer approved.
+        previousOrderId,
+      }),
+    ],
+  )
+}
+
+/**
+ * The swap-for-coupon confirm SENTENCE — LE2-023, extracted from its guard.
+ *
+ * It is its own function for two reasons that are really one. It is the string a
+ * customer reads before approving the cancellation of a real order, so it is
+ * worth reading on its own; and it is the object of a RUNTIME GATE — the
+ * workflow's `confirm.statesFacts` declares that this sentence states the order
+ * amount, the refund consequence and the new total, and a test drives this
+ * function and asserts each of them is actually in it. Both halves of that gate
+ * point at this function, so it should be findable.
+ *
+ * ── THE REFUND CLAUSE IS CONDITIONAL, AND THAT IS THE POINT ─────────────────
+ *
+ * "Cancelar implica reembolso" is a promise that money moves back, and on an
+ * unpaid order no money moves. So the clause appears exactly when
+ * `paymentIsSettled` — which is also, and not coincidentally, exactly the
+ * condition under which `gatePaidCancel` asks its own `paid_cancel_requires_
+ * confirmation`. That is what makes the workflow's declared coverage honest
+ * rather than merely declared: on every run where the coverage is USED, the
+ * customer had already read this clause; on every run where they had not, there
+ * is no coverable confirm to resolve, because the guard that would ask it
+ * returned null.
+ */
+function swapForCouponConfirmText(args: {
+  readonly couponCode: string
+  readonly displayId: number | undefined
+  readonly orderTotalInCentavos: number
+  readonly newTotalInCentavos: number
+  readonly paymentIsSettled: boolean
+}): string {
+  const order =
+    args.displayId === undefined ? "seu pedido" : `seu pedido #${args.displayId}`
+  const refund = args.paymentIsSettled
+    ? " Como ele já foi pago, esse valor volta pra você como reembolso."
+    : ""
+  return (
+    `Pra usar o cupom ${args.couponCode} eu preciso cancelar ${order}, de ` +
+    `R$ ${formatCentavosBrl(args.orderTotalInCentavos)}, e refazer ele.${refund}` +
+    ` O pedido novo sai por R$ ${formatCentavosBrl(args.newTotalInCentavos)}. Confirma?`
+  )
+}
+
+/**
+ * LE2-023 — the WHOLE-WORKFLOW confirm for `workflow.orders.swap-for-coupon`,
+ * and the four refusals that stand in front of it.
+ *
+ * Same shape and same warrant as `confirmReorderLast` above: the guard authors
+ * the sentence from host-projected `ctx` fields, the workflow's confirm template
+ * quotes it verbatim through `{confirmation}`, and no probabilistic model
+ * supplies, relays or influences an identifier or an amount anywhere in it.
+ *
+ * ── WHY FOUR REFUSALS IN FRONT OF ONE CONFIRM ────────────────────────────────
+ *
+ * Because this ask is the entry point to a saga that CANCELS A REAL ORDER, and
+ * every one of these is a way the confirm sentence could otherwise be a lie:
+ *
+ *   NO PREVIOUS ORDER   — there is nothing to swap.
+ *   PAST THE PONR       — the cancel that step one depends on will be refused by
+ *                         `requireCancellable`, so confirming here would ask a
+ *                         customer to approve a route whose first act is already
+ *                         impossible.
+ *   COUPON NOT USABLE   — the entire reason for cancelling would not hold.
+ *   NO COMPUTABLE TOTAL — the sentence's third grounded number does not exist,
+ *                         and a confirm missing it is one a customer cannot
+ *                         actually evaluate: "cancel this and rebuild it" with
+ *                         no price is not a decision, it is a leap.
+ *
+ * The workflow ALSO declares pre-checks over the same four facts, and that
+ * duplication is deliberate rather than redundant. The pre-checks run at
+ * SELECTION, before any envelope exists, so they produce the honest sentence
+ * BEFORE the customer is asked anything. These run at ADJUDICATION — including
+ * on the RESUME path, where they are the only line of defence there is. A coupon
+ * that expired in the seconds between the confirm and the customer's "sim" is
+ * caught here and nowhere else, and it is caught before the cancel.
+ *
+ * ── ORDERING ─────────────────────────────────────────────────────────────────
+ *
+ * `business[]`, BEFORE the EXECUTE producers, for the same reason
+ * `confirmReorderLast` is: `executeW5Kinds` matches this kind too and
+ * first-non-null wins, so behind it this guard would be dead code and the
+ * workflow would cancel an order without ever asking.
+ */
+const confirmSwapForCoupon: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.coupon.swap.request") return null
+  const {
+    previousOrderId,
+    previousOrderDisplayId,
+    previousOrderTotalInCentavos,
+    previousOrderIsCancelable,
+    previousOrderPaymentIsSettled,
+    couponIsValid,
+    couponNewTotalInCentavos,
+    couponCode,
+  } = state.ctx
+
+  const refusalBasis = (reason: string): ReturnType<typeof basis> =>
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+      rule: reason,
+      kind: envelope.kind,
+    })
+
+  // FAIL-SAFE, not fail-open, and in the order a customer can act on. An
+  // unwired host, an anonymous caller and a first-time customer all land on the
+  // first branch and all get an honest sentence rather than a confirmation for
+  // an order nobody can name.
+  if (previousOrderId === undefined || previousOrderTotalInCentavos === undefined) {
+    return decisionRefuse(refuseNoPreviousOrder(), [
+      refusalBasis("swap_requires_previous_order"),
+    ])
+  }
+  if (previousOrderIsCancelable !== true) {
+    return decisionRefuse(refuseOrderPastPonr(), [refusalBasis("swap_order_not_cancelable")])
+  }
+  if (couponIsValid !== true || couponCode === undefined || couponCode === "") {
+    return decisionRefuse(refuseCouponNotUsable(), [refusalBasis("swap_coupon_not_usable")])
+  }
+  if (couponNewTotalInCentavos === undefined) {
+    return decisionRefuse(refuseSwapTotalUnknown(), [refusalBasis("swap_total_not_computable")])
+  }
+
+  return decisionRequestConfirmation(
+    swapForCouponConfirmText({
+      couponCode,
+      displayId: previousOrderDisplayId,
+      orderTotalInCentavos: previousOrderTotalInCentavos,
+      newTotalInCentavos: couponNewTotalInCentavos,
+      paymentIsSettled: previousOrderPaymentIsSettled === true,
+    }),
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        rule: "swap_for_coupon_requires_confirmation",
+        kind: envelope.kind,
+        // All first-party (owner-scoped projection + a store-matched promotion
+        // code), and between them the join keys an operator needs to check WHAT
+        // a customer approved: which order, which coupon, and the two amounts
+        // the sentence quoted.
+        previousOrderId,
+        couponCode,
+        orderTotalInCentavos: previousOrderTotalInCentavos,
+        newTotalInCentavos: couponNewTotalInCentavos,
+        paymentIsSettled: previousOrderPaymentIsSettled === true,
+      }),
+    ],
+  )
+}
+
+/**
+ * LE2-024 — the WHOLE-WORKFLOW confirm for `workflow.orders.paid-cancel`, the
+ * PARITY RE-PLATFORM of the direct paid-cancel ladder.
+ *
+ * Same shape and same warrant as `confirmSwapForCoupon` and `confirmReorderLast`
+ * above: the guard authors the sentence from host-projected `ctx`, the workflow's
+ * confirm template quotes it verbatim through `{confirmation}`, and no
+ * probabilistic model supplies, relays or influences an identifier or an amount.
+ *
+ * ── WHAT MAKES THIS ONE DIFFERENT: IT MUST NOT INVENT A QUESTION ─────────────
+ *
+ * The other two anchors ask about acts that had no direct-intent form, so their
+ * sentences were free to be authored. This anchor fronts an act the system has
+ * ALWAYS had, and the parity pin asserts that a customer reaching it through the
+ * workflow reads EXACTLY what a customer reaching it directly reads. So the
+ * sentence is not authored here at all — it is {@link paidCancelConfirmText},
+ * the one `gatePaidCancel` itself asks with. See that function on why one call
+ * beats two agreeing copies.
+ *
+ * ── THE THREE BANDS, AND WHY ONLY ONE OF THEM SPEAKS HERE ───────────────────
+ *
+ * The direct ladder has three outcomes and this guard deliberately reproduces
+ * only the middle one, letting the chain reach the other two unchanged:
+ *
+ *   UNPAID          → `null`. Falls through to `executeW5Kinds`, so the anchor
+ *                     EXECUTEs on the SELECTING turn and the route's cancel
+ *                     activity runs in that same turn — which is parity, because
+ *                     the direct path does not ask either. Asking would be a
+ *                     confirmation the direct customer never sees, and a
+ *                     workflow that adds friction to the unpaid path would be a
+ *                     re-platform that changed the thing it was pinning.
+ *   PAID, SUB-BAND  → REQUEST_CONFIRMATION, this guard, the shared sentence. The
+ *                     `cancel` activity then meets `gatePaidCancel` on its own
+ *                     terms and its REQUEST_CONFIRMATION is resolved by the
+ *                     DECLARED COVERAGE — which is honest precisely because the
+ *                     question the customer answered was, byte for byte, the
+ *                     question that guard would have asked.
+ *   PAID, ≥ BAND    → ALSO this guard's REQUEST_CONFIRMATION, and the escalation
+ *                     happens one layer down, at the ACTIVITY. See below.
+ *
+ * ── WHY THE ESCALATE BAND IS NOT REPRODUCED HERE (the load-bearing choice) ───
+ *
+ * The tempting symmetry is to mirror `gatePaidCancel` exactly and ESCALATE at or
+ * above the band, so the customer is never asked a question whose answer cannot
+ * be acted on. It is the wrong call, and BKL-103 is the reason.
+ *
+ * An ESCALATE raised HERE parks the envelope this guard was given — an
+ * `order.cancel.request`. That kind is not in `ESCALATION_RESUMABLE_KINDS`,
+ * carries no `ESCALATION_PROPOSER_STAMPS` entry, and has no
+ * `createApprovedOrderCancelExecutor` behind it. The escalation would surface to
+ * staff and then be UNAPPROVABLE — the exact audit-row-only, nobody-can-act-on-it
+ * hole BKL-103 spent a ticket closing, re-opened through a new door and for the
+ * same customers.
+ *
+ * Raised at the ACTIVITY, the parked envelope is a real `order.cancel`: resumable
+ * kind, `actorId` proposer stamp (host-stamped by `stampOrderActivityPayload`),
+ * owner-approval overlay, approved-cancel executor, refund-first write path. The
+ * whole BKL-103 contract applies unchanged, because it is literally the same
+ * envelope shape that contract was built for.
+ *
+ * The cost is stated rather than hidden, and the parity suite measures it: on the
+ * escalate band the workflow asks the confirm question FIRST and escalates on the
+ * following turn, where the direct ladder escalates immediately. The customer is
+ * asked something they are then told needs approval. That is one extra turn and
+ * one extra question — against an escalation a human can actually approve. It is
+ * the ticket's one intentional divergence and it is recorded in the PR's parity
+ * table, not smoothed over.
+ *
+ * ── ORDERING ─────────────────────────────────────────────────────────────────
+ *
+ * `business[]`, BEFORE the EXECUTE producers, for the same reason the other two
+ * anchors are: `executeW5Kinds` matches this kind too and first-non-null wins, so
+ * behind it this guard would be dead code and the workflow would cancel a paid
+ * order without ever asking.
+ */
+const confirmPaidCancel: OrderGuard = (envelope, state) => {
+  if (envelope.kind !== "order.cancel.request") return null
+  const {
+    previousOrderId,
+    previousOrderTotalInCentavos,
+    previousOrderIsCancelable,
+    previousOrderPaymentIsSettled,
+  } = state.ctx
+
+  const refusalBasis = (reason: string): ReturnType<typeof basis> =>
+    basis("business", BASIS_CODES.business.RULE_VIOLATED, {
+      rule: reason,
+      kind: envelope.kind,
+    })
+
+  // FAIL-SAFE, and in the order a customer can act on. An unwired host, an
+  // anonymous caller and a first-time customer all land on the first branch and
+  // all get an honest sentence rather than a confirmation for an order nobody
+  // could name.
+  if (previousOrderId === undefined) {
+    return decisionRefuse(refuseNoOrderToCancel(), [
+      refusalBasis("paid_cancel_requires_previous_order"),
+    ])
+  }
+  // The SAME sentence `requireCancellable` refuses a direct cancel with — the
+  // parity pin asserts it, and reusing the factory is how it stays true.
+  if (previousOrderIsCancelable !== true) {
+    return decisionRefuse(refuseOrderPastPonr(), [
+      refusalBasis("paid_cancel_order_not_cancelable"),
+    ])
+  }
+  // UNPAID ⟹ SILENT. `gatePaidCancel` returns null here too, and for the same
+  // reason: a cancel that implies no refund is not a money decision, so there is
+  // nothing to ask about. The chain carries on to `executeW5Kinds`.
+  if (previousOrderPaymentIsSettled !== true) return null
+
+  return decisionRequestConfirmation(
+    paidCancelConfirmText(previousOrderTotalInCentavos ?? null),
+    [
+      basis("business", BASIS_CODES.business.RULE_SATISFIED, {
+        // NOT `paid_cancel_requires_confirmation`. That reason is the ACTIVITY's,
+        // and the `cancel` activity's declared coverage matches on it verbatim —
+        // a coverage naming a reason this anchor also emitted would be satisfied
+        // by the anchor's own decision rather than by the guard whose question it
+        // claims to have asked.
+        rule: "paid_cancel_workflow_requires_confirmation",
+        kind: envelope.kind,
+        // First-party (owner-scoped projection), and between them the join keys
+        // an operator needs to check WHAT a customer approved: which order, and
+        // the amount the sentence quoted.
+        previousOrderId,
+        refundEquivalentCentavos: previousOrderTotalInCentavos ?? null,
+        escalateThreshold: ESCALATE_REFUND_THRESHOLD_CENTAVOS,
       }),
     ],
   )
@@ -1258,6 +1976,24 @@ const W5_EXECUTE_KINDS: ReadonlySet<string> = new Set([
   "order.type.switch",
   "order.review.submit",
   "order.reorder",
+  // LE2-021 — reachable ONLY after `confirmReorderLast` has parked it and the
+  // customer's "sim" resumed it with a receipt. On an unconfirmed turn that
+  // guard fires first (it sits earlier in `business[]`), so this entry is what
+  // the RESUMED anchor lands on, never a way around the confirm.
+  "order.reorder.request",
+  // LE2-023 — same shape as the anchor above: reachable ONLY after
+  // `confirmSwapForCoupon` has parked it and the customer's "sim" resumed it
+  // with a receipt. On an unconfirmed turn that guard fires first (it sits
+  // earlier in `business[]`), so this entry is what the RESUMED anchor lands on,
+  // never a way around the confirm.
+  "order.coupon.swap.request",
+  // LE2-024 — the paid-cancel anchor, and the ONE entry here that is reachable
+  // WITHOUT a receipt: `confirmPaidCancel` returns null for an UNPAID order, so
+  // this is what an unpaid workflow cancel lands on, on the selecting turn. That
+  // is deliberate parity — the direct ladder does not ask about an unpaid cancel
+  // either (see that guard's three-band doc). On a PAID order the guard fires
+  // first and this entry is, as above, only what the RESUMED anchor reaches.
+  "order.cancel.request",
   "order.projection.create",
   "order.status.transition",
   "order.status.reconcile",
@@ -1354,6 +2090,9 @@ export const ordersPolicyBundle: PolicyBundle<
 > = {
   stateGuards: [
     requireCartIdForCartOps,
+    // BKL-216 — BEFORE requireOrderIdForMutation: a message naming ≥2 owned orders
+    // resolves no orderId, and "qual pedido?" is the honest answer, not `order.not_found`.
+    clarifyAmbiguousOrderReference,
     requireOrderIdForMutation,
     // BKL-090 — after requireOrderIdForMutation so a missing order REFUSEs
     // `no_order` first; this guard then gates transition LEGALITY/terminality.
@@ -1370,6 +2109,25 @@ export const ordersPolicyBundle: PolicyBundle<
   taint: orderTaintPolicy,
   business: [
     requireExplicitAllergens,
+    // F-57 — `validateQuantity` MUST stay ABOVE `clampUpdateToStockCap`. This
+    // pair is NOT interchangeable and the order is protective; an earlier
+    // version of this file's header asserted the opposite order, so if you came
+    // here to make the code match a comment, the comment was the bug.
+    //
+    // The two match domains OVERLAP on an `order.item.update` whose quantity is
+    // BOTH non-integer AND above the line's `stockCap` (e.g. `7.5` against a cap
+    // of `3`). Business guards are first-non-null-wins, so on that overlap the
+    // ORDER alone picks the decision:
+    //   shipped (validate first) → REFUSE `order.item.quantity_invalid`
+    //   swapped  (clamp first)   → REWRITE to `quantity: 3`, then EXECUTE
+    // Swapping converts a REFUSE of a malformed LLM proposal into an EXECUTE of
+    // a laundered one — permissive, and silent: the swap is 223/223 GREEN in
+    // both directions. The ERDS-056 config-seal DOES red on it (guard order is
+    // part of the sealed `policyStructure`), but its remedy line reads
+    // "re-gere com 'export --out'" — so the seal alone invites a re-baseline
+    // that would bless the change. The behavioural pin is what makes the swap
+    // legible as a REGRESSION rather than as config drift:
+    // `__tests__/orders-pack.test.ts` §"guard ORDER is protective".
     validateQuantity,
     clampUpdateToStockCap,
     validatePaymentMethod,
@@ -1380,7 +2138,21 @@ export const ordersPolicyBundle: PolicyBundle<
     // large-cancel escalation unchanged.
     gatePaidCancel,
     escalateLargeCancel,
+    // BKL-280 — MUST stay ABOVE `confirmLargeTicket`. Both match
+    // `order.checkout.create` and business guards are first-non-null-wins, so on a
+    // contradicting checkout at/above R$ 1.000 exactly one question gets asked.
+    // Below the large-ticket confirm this guard is unreachable for precisely the
+    // most expensive carts: the money confirm would fire first, a "sim" would
+    // satisfy it, and the wrong pickup checkout would EXECUTE unasked — the very
+    // defect. Above it, the contradiction is settled first and the money band
+    // still governs the CORRECTED envelope (a different payload ⇒ a different
+    // intentHash ⇒ a fresh adjudication where this guard is silent).
+    confirmDeliveryContradiction,
     confirmLargeTicket,
+    // LE2-023 — BEFORE the EXECUTE producers (see the guard's own ordering
+    // note): `executeW5Kinds` matches `order.coupon.swap.request` too, and
+    // first-non-null wins, so behind it the swap would run without asking.
+    confirmSwapForCoupon,
     // FE-T05 — after requireLegalStatusTransition (stateGuards) already REFUSEd
     // an illegal/terminal transition; a legal-but-GUESSED target still needs
     // explicit confirmation before it can execute.
@@ -1389,6 +2161,15 @@ export const ordersPolicyBundle: PolicyBundle<
     refuseCardPanInPix,
     redactPiiInPix,
     requireAmendItemDisambiguation,
+    // LE2-021 — the reorder-last whole-workflow confirm. MUST stay above
+    // `executeW5Kinds`, which also matches `order.reorder.request`: below it
+    // this guard is dead code and the workflow runs unasked.
+    confirmReorderLast,
+    // LE2-024 — the paid-cancel whole-workflow confirm. MUST stay above
+    // `executeW5Kinds`, which also matches `order.cancel.request`: below it a
+    // PAID workflow cancel would EXECUTE unasked, which is the one thing the
+    // whole paid ladder exists to prevent.
+    confirmPaidCancel,
     // NEW-014 — bounded fiscal-emit retries BEFORE the fiscal EXECUTE producer.
     fiscalEmitRetryCapGuard,
     executeCartOps,

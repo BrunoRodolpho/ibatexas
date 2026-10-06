@@ -103,22 +103,48 @@ ibx dev start --with-tunnel --with-stripe  # same as 'all' (explicit flags)
 ibx dev start commerce api                 # only specific services + their deps
 ibx dev start --no-tui                     # plain log output (no TUI)
 ibx dev start --skip-docker                # infra already running
+ibx dev start --no-observability           # skip the obs stack (drops funnel records)
 ```
 
 `ibx dev start` launches [process-compose](https://github.com/F1bonacc1/process-compose), which orchestrates:
 1. Docker infrastructure (Postgres, Redis, Typesense, NATS)
-2. Commerce (Medusa) — waits for Docker healthy
-3. API — waits for Commerce healthy
-4. Web + Admin — wait for Docker healthy
-5. (optional) ngrok tunnel + Stripe listener — wait for API healthy
+2. Observability (VictoriaLogs, VictoriaMetrics, Grafana) — a **default** service
+3. Commerce (Medusa) — waits for Docker healthy
+4. API — waits for Commerce healthy
+5. Web + Admin — wait for Docker healthy
+6. (optional) ngrok tunnel + Stripe listener — wait for API healthy
+
+> Observability is a default service on purpose: VictoriaLogs is the **only**
+> record of a zero-call funnel turn (L0/L1/L2-fallback/ALIAS write no `turn_trace`
+> row), so an outage loses those permanently rather than delaying them. Skipping
+> it — with `--no-observability` or `--skip-docker` — prints a yellow
+> `Observability OFF` line, and the API prints one `[funnel-sink]` boot warning
+> when the sink is unset or unreachable. See
+> [docs/cli/reference.md](../cli/reference.md#why-observability-is-a-default-service).
+
+The supervisor's own log — readiness-probe results, restart decisions, exit
+codes; the record that diagnoses a process being killed by its own probe — is
+written to **`$TMPDIR/ibx-dev-supervisor.log`** (echoed in the `-L` argument
+`ibx dev start` prints). It is deliberately *not* process-compose's shared
+`$TMPDIR/process-compose-$USER.log` default: process-compose truncates that file
+on every startup, including `--dry-run` and `version`, so the CI profile gate and
+the test stack used to wipe the running dev stack's log (BKL-288). Per-process
+output is separate — reach it with `process-compose process logs <process>`.
 
 ### Stop everything
 
 ```bash
 ibx dev stop          # stop all processes + Docker
 ibx dev stop web      # stop only web (keeps others running)
-ibx dev stop -f       # force-kill by port
+ibx dev stop -f       # force-kill by port (skips process-compose entirely)
+ibx dev stop tunnel   # stop only the ngrok tunnel
 ```
+
+> `-f` bypasses `process-compose down`, so each process's own graceful shutdown
+> never runs — prefer plain `ibx dev stop` and keep `-f` for a hung supervisor.
+> The force path sweeps the service ports plus process-compose (:8080) and
+> ngrok's inspector (:4040), and also kills any ngrok agent pointed at the API
+> port by argv — an ngrok started with `--inspect=false` holds no port at all.
 
 ### Restart a service
 
@@ -142,10 +168,28 @@ ibx dev stop          # tear the running stack down
 ibx dev start         # bring it back up on the fresh deps
 ```
 
-Guard rail: `ibx dev build` (the build-packages path) now **fails closed** when
-`pnpm-lock.yaml` is newer than `node_modules`, printing
-`pnpm-lock.yaml is newer than node_modules — … Run: pnpm install` instead of
-proceeding with a stale build. If you see that error, run `pnpm install` and retry.
+Guard rail: `ibx dev build` (the build-packages path) **fails closed** when the
+installed tree does not match the lockfile, printing
+`pnpm-lock.yaml differs from the lockfile pnpm last installed — … Run: pnpm install`
+instead of proceeding with a stale build. If you see that error, run
+`pnpm install` and retry.
+
+The guard compares **content**, not timestamps: pnpm keeps the lockfile it
+actually installed at `node_modules/.pnpm/lock.yaml`, so you can ask the same
+question by hand at any time:
+
+```bash
+diff -q pnpm-lock.yaml node_modules/.pnpm/lock.yaml   # DIFFERS ⇒ run pnpm install
+```
+
+> Until 2026-07-26 the guard compared `pnpm-lock.yaml`'s mtime against
+> `node_modules`' mtime. That was wrong in both directions and produced a
+> recurring false alarm: a directory's mtime only advances when an entry is
+> created or removed inside it, and `pnpm install` rewrites `.modules.yaml`,
+> `.pnpm/` and `.bin/` **in place** — so a correct install did not clear the
+> error, while an unrelated tool writing a new top-level entry (vite's
+> `.vite-temp`) silently did. If you remember "run `pnpm install` twice and it
+> goes away", that was why.
 
 ---
 
@@ -299,10 +343,40 @@ See [plugins.md](plugins.md) for full documentation.
 | Medusa doesn't start | `ibx dev stop && ibx dev` (fresh start) |
 | Seed fails | Ensure Medusa is running first: `ibx svc health` |
 | CLI command not found | `cd packages/cli && npm link` |
-| Docker containers unhealthy | `docker compose down -v && ibx dev` |
-| PG version mismatch (`initialized by PostgreSQL 15, not compatible with 17`) | `docker compose down -v && ibx bootstrap` |
+| Docker containers unhealthy | `ibx dev stop && ibx dev` — recreates the containers, keeps your data. Still unhealthy? `ibx svc logs <svc>`, then [destructive last resort](#destructive-last-resort) |
+| PG version mismatch (`initialized by PostgreSQL 15, not compatible with 17`) | Point the postgres image back at the old major in `docker-compose.yml`, `docker compose up -d postgres`, then `pg_dump` and restore into the new major. Only if you don't need the data: [destructive last resort](#destructive-last-resort) |
 | `relation "X" does not exist` on startup | Run `ibx bootstrap` or manually: `ibx db migrate` then `ibx db migrate:domain` |
 | `process-compose: command not found` | `brew install f1bonacc1/tap/process-compose` |
 | TUI not rendering | Try `ibx dev start --no-tui` for plain output |
 | `Port XXXX already in use` | Ghost process — run `ibx dev stop -f` to force-kill, then retry |
 | Admin panel returns 503 on all pages | Server-side `ADMIN_API_KEY` is empty (the API returns 503 when no admin keys are configured). Generate with `openssl rand -base64 32` and set the **same** value for `ADMIN_API_KEY` in both the API and admin app envs — the admin proxy forwards it as the `x-admin-key` header. (There is no `NEXT_PUBLIC_ADMIN_API_KEY`; the key is server-side only.) |
+
+### Destructive last resort
+
+> **`docker compose down -v` PERMANENTLY DELETES ALL LOCAL DATA.** The `-v`
+> removes the named volumes for **all four** core services — postgres, redis,
+> typesense *and* nats — not just the one you are debugging. Every local order,
+> customer, seeded product and stored conversation is gone and is **not
+> recoverable**. There is no undo and no backup.
+
+Try `ibx dev stop && ibx dev` first: it recreates the containers while leaving
+the volumes intact, which resolves most "unhealthy" states on its own.
+
+Reach for the destructive path only when the data is genuinely disposable:
+
+```bash
+docker compose down -v    # removes containers AND all four data volumes
+ibx bootstrap             # fresh setup — re-migrates and re-seeds from scratch
+```
+
+Two related notes:
+
+- **`docker system prune -f` also removes containers.** It deletes every
+  *stopped* container, so running it after `ibx dev stop` (which stops the core
+  four rather than removing them) deletes them outright. Named volumes survive;
+  recreate with `ibx dev`. Prefer `docker image prune -f` / `docker builder
+  prune -f`, which touch no containers.
+- **Never add `--remove-orphans`** to a `docker compose` command here. The core
+  and observability stacks share the compose project name `ibatexas`, so that
+  flag applied to *either* compose file removes the *other* file's running
+  containers — restart policy and all.

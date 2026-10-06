@@ -11,6 +11,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./refusals": {
+      "types": "./dist/refusals.d.ts",
+      "import": "./dist/refusals.js",
+      "default": "./dist/refusals.js"
+    },
     "./signals": {
       "types": "./dist/signals.d.ts",
       "import": "./dist/signals.js",
@@ -24,7 +29,7 @@
   },
   "scripts": {
     "build": "tsc --outDir dist",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint \"src/**/*.ts\"",
     "test": "vitest run"
   },
   "peerDependencies": {
@@ -39,8 +44,10 @@
   "devDependencies": {
     "@adjudicate/analyze": "^0.4.2",
     "@adjudicate/conformance": "^3.0.0",
+    "@eslint/eslintrc": "^3.0.0",
     "@ibatexas/eslint-config": "workspace:*",
     "@vitest/coverage-v8": "^3.2.6",
+    "eslint": "^9.0.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.6"
   }

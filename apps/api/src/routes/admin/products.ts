@@ -29,8 +29,102 @@ const ProductPatchBody = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
-export async function productRoutes(server: FastifyInstance): Promise<void> {
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+// ── R5 rollout, family 5 — this route's Redis client seam ───────────────────
+//
+// The ONE `getRedisClient()` call this module used to make directly now
+// resolves through `AdminProductRouteDeps.redis`. This file had no composition
+// root before; the one below is `redis`-only by design — the two Medusa
+// collaborators (`medusaAdmin`, `medusaAdjudicated`) are a separate seam
+// question and are untouched here.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule) ─────────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream}. MEASURED for
+// this module: the downstream half is EMPTY. Every `redis` occurrence in the
+// file was read (not just the one call site): the client is bound to a
+// handler-local `const` and its single command is issued on it directly. No
+// site passes `redis` to anything.
+//
+// ── The HAND-IT-TO read (#548's rule, and its negative half) ───────────────
+//
+// `medusaAdjudicated({...})` is the one collaborator that LOOKS like it could
+// carry a client — it is the kernel-gated egress, and the execution ledger is
+// Redis-backed. It does NOT: `MedusaAdjudicatedArgs` has no Redis member
+// (scope / method / path / payload / intentKind / idempotencyKey /
+// sourceSubject / auditSink / log), and `packages/tools/src/medusa/
+// adjudicated.ts` issues no Redis command at all — `adjudicate()` is pure, and
+// its three mentions of "Redis"/"ledger" are comments. `medusaAdmin` is HTTP
+// and `getAuditSink()` takes no arguments.
+//
+// So there is no `atomicIncr`-shaped hand-off here, and no `eval`/`multi` in
+// the module's own text.
+//
+// ── Feature detection: MEASURED, none ─────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/middleware` and `packages/tools/src`: zero live Redis probes.
+
+/**
+ * The PATCH idempotency dedup gate: one `SET key "1" EX 300 NX`, whose null
+ * return IS the duplicate verdict.
+ */
+type ProductDedupRedis = Pick<RedisClient, "set">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route issues — the type
+ * `AdminProductRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived from the per-consumer type
+ * above: a derived union can never disagree with its consumer, so it could
+ * not catch a consumer that grew a command nobody declared (F-14).
+ */
+export type AdminProductRouteRedisClient = Pick<RedisClient, "set">;
+
+/** The collaborators `admin/products.ts` resolves through the seam. */
+export interface AdminProductRouteDeps {
+  /**
+   * Resolves the Redis client the PATCH idempotency gate issues against.
+   *
+   * A FACTORY returning a promise, not an instance, so the `await` stays
+   * exactly where it was — per REQUEST, inside the guard. An instance would
+   * hoist the resolution to registration and change when a Redis outage first
+   * surfaces (today: on the first PATCH carrying an `x-request-id` — never at
+   * boot).
+   */
+  readonly redis: () => Promise<AdminProductRouteRedisClient>;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/admin/index.ts is unchanged.
+ */
+export interface AdminProductRoutesOptions {
+  readonly deps?: Partial<AdminProductRouteDeps>;
+}
+
+/** The production set — byte-for-byte the resolution this file did inline. */
+function defaultAdminProductRouteDeps(): AdminProductRouteDeps {
+  return { redis: () => getRedisClient() };
+}
+
+function resolveAdminProductRouteDeps(
+  options?: AdminProductRoutesOptions,
+): AdminProductRouteDeps {
+  return { ...defaultAdminProductRouteDeps(), ...(options?.deps ?? {}) };
+}
+
+export async function productRoutes(
+  server: FastifyInstance,
+  options?: AdminProductRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The member is a factory, so NOTHING is
+  // resolved here — the client is still awaited per request, inside the guard.
+  const deps = resolveAdminProductRouteDeps(options);
 
   // ── GET /api/admin/products ────────────────────────────────────────────────
   app.get(
@@ -124,7 +218,7 @@ export async function productRoutes(server: FastifyInstance): Promise<void> {
 
       // Idempotency guard via x-request-id (catches double-clicks)
       if (requestId) {
-        const redis = await getRedisClient();
+        const redis: ProductDedupRedis = await deps.redis();
         const dedupKey = rk(`product:update:dedup:${requestId}`);
         const isNew = await redis.set(dedupKey, "1", { EX: 300, NX: true });
         if (!isNew) {

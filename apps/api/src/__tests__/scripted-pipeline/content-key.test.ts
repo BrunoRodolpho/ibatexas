@@ -49,12 +49,17 @@ function toRequest(entry: ScriptedEntry): CompletionRequest {
   };
 }
 
+// LE2-024 — these three cases use ONE recorded fixture as a REPRESENTATIVE to
+// prove key-derivation properties; they assert nothing about its domain meaning.
+// They pointed at `cancel-confirm-gate`, which was retired with the ad-hoc
+// paid-cancel route, so they now point at `cart-intent-refused`. Any recorded
+// planner fixture would do.
 describe("content-keyed scripted provider — key derivation (T2-6b acceptance)", () => {
   it("resolves the recorded planner fixture by content", async () => {
     const entries = await loadEntries();
     const provider = createScriptedModelProvider({ entries });
     const planner = entries.find(
-      (e) => e.label === "planner:cancel-confirm-gate",
+      (e) => e.label === "planner:cart-intent-refused",
     );
     expect(planner).toBeDefined();
 
@@ -64,14 +69,14 @@ describe("content-keyed scripted provider — key derivation (T2-6b acceptance)"
     expect(completion.toolCalls?.[0]?.name).toBe("express_intent");
     expect(
       (completion.toolCalls?.[0]?.input as { capability?: string }).capability,
-    ).toBe("order.cancel");
+    ).toBe("order.item.add");
   });
 
   it("a ONE-CHAR system-prompt mutation produces a DIFFERENT content key and a loud unknown-key error naming the nearest fixture", async () => {
     const entries = await loadEntries();
     const provider = createScriptedModelProvider({ entries });
     const planner = entries.find(
-      (e) => e.label === "planner:cancel-confirm-gate",
+      (e) => e.label === "planner:cart-intent-refused",
     ) as ScriptedEntry;
 
     const recordedKey = deriveContentKey(planner.request);
@@ -89,14 +94,14 @@ describe("content-keyed scripted provider — key derivation (T2-6b acceptance)"
       /no scripted completion for content key/,
     );
     await expect(provider.complete(mutated)).rejects.toThrow(
-      /planner:cancel-confirm-gate/,
+      /planner:cart-intent-refused/,
     );
   });
 
   it("a tool-surface mutation also changes the key (capability drift breaks fixtures)", async () => {
     const entries = await loadEntries();
     const planner = entries.find(
-      (e) => e.label === "planner:cancel-confirm-gate",
+      (e) => e.label === "planner:cart-intent-refused",
     ) as ScriptedEntry;
     const tools = planner.request.tools ?? [];
     expect(tools.length).toBeGreaterThan(0);

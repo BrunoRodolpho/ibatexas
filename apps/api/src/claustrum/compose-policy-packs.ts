@@ -44,6 +44,31 @@ import {
   paymentTransitionBandGuard,
   staffRoleGuard,
 } from "./staff-role-guard.js";
+// R3-S2 — the DECLARED resolver→guard signal contract. Each adopter guard below
+// reads its ctx signal through this ONE declaration instead of re-stating the
+// shape in an inline `state as { ctx?: { … } }` cast. Both ends of the channel now
+// name the key through the same constant, so a rename breaks the stamp site AND
+// the read at tsc; before it, a typo on either end compiled clean and the guard
+// silently PASSED (absent key = null = pass).
+import {
+  ALLERGEN_MENTION_DETECTED,
+  AMEND_ITEM_UNRESOLVED,
+  AUTO_RESOLVED_MONEY_REF,
+  REVIEW_PRODUCT_UNRESOLVED,
+  SESSION_TOKENS_CONSUMED,
+  readResolutionSignal,
+  resolutionSignalIsSet,
+} from "./resolution-signals.js";
+// R3-S3 — the per-kind profile table. `AUTORESOLVE_CONFIRM_KINDS` is a DERIVED
+// view of it (the rows with `confirmOnAutoResolve: true`), replacing the
+// hand-written set this file used to carry. Imported rather than re-exported
+// straight through, because `confirmOnAutoResolveGuard` below needs the local
+// binding; the `export` beside the guard keeps every existing importer working.
+// The table module deliberately has no runtime dependency on the 2.8k-line
+// resolver, so importing it here does not pull the resolver's domain services /
+// Redis / Medusa graph into policy composition — the same discipline
+// `resolution-signals.ts` was built with.
+import { AUTORESOLVE_CONFIRM_KINDS } from "./kind-resolution-profiles.js";
 
 /** A first-party pack with its K/P/S/C generics erased for heterogeneous storage. */
 export type ErasedPack = PackV0<string, unknown, unknown, unknown>;
@@ -65,9 +90,10 @@ export const SESSION_TOKEN_BUDGET = Number.parseInt(
 export const sessionTokenBudgetGuard = nameGuard(
   "sessionTokenBudget",
   createTokenBudgetGuard<string, unknown, unknown>({
-    extractSessionTokens: (state) =>
-      (state as { ctx?: { sessionTokensConsumed?: number } }).ctx
-        ?.sessionTokensConsumed ?? 0,
+    // `?? 0` kept verbatim: this signal is the one THRESHOLD, and its absent-key
+    // direction is fail-OPEN at zero (a Redis hiccup must never REFUSE a turn),
+    // not the honesty floors' "not true ⇒ pass".
+    extractSessionTokens: (state) => readResolutionSignal(state, SESSION_TOKENS_CONSUMED) ?? 0,
     sessionBudget: Number.isFinite(SESSION_TOKEN_BUDGET)
       ? SESSION_TOKEN_BUDGET
       : 100_000,
@@ -90,51 +116,53 @@ export const sessionTokenBudgetGuard = nameGuard(
 // adopter level (no pack-source change), like the F4 guard. This set MUST mirror
 // ORDER_AUTORESOLVE_KINDS + RESERVATION_AUTORESOLVE_KINDS (resolve-and-assemble.ts):
 // every kind that auto-resolves an implicit target must confirm it here.
-const AUTORESOLVE_CONFIRM_KINDS = new Set([
-  "order.cancel",
-  "payment.pix.regenerate",
-  "reservation.cancel",
-  // BKL-038 — same NL→id targeting → same confirm gate, so an auto-resolved
-  // "meu pedido" is surfaced before the in-flight modify executes.
-  "order.amend.request",
-  // FE-T09 (D-a) — the granular amend kinds now auto-resolve orderId too
-  // (resolve-and-assemble.ts's ORDER_AUTORESOLVE_KINDS), so they need the
-  // same confirm gate as order.amend.request.
-  "order.amend.add_item",
-  "order.amend.update_qty",
-  "order.amend.remove_item",
-  "order.note.add",
-  "order.address.change",
-  "order.type.switch",
-  // FE-D28 — order.review.submit auto-resolves its reviewed order too
-  // (resolve-and-assemble.ts's ORDER_AUTORESOLVE_KINDS), so it needs the same
-  // confirm gate: the customer sees the resolved order + product before a
-  // public review posts.
-  "order.review.submit",
-  // FE-T14 — reservation.modify now auto-resolves reservationId too
-  // (resolve-and-assemble.ts's RESERVATION_AUTORESOLVE_KINDS), so it needs
-  // the same confirm gate as reservation.cancel.
-  "reservation.modify",
-]);
+//
+// R3-S1 — EXPORTED for the lockstep coverage contract
+// (claustrum/__tests__/autoresolve-confirm-lockstep.test.ts), mirroring how
+// `ORDER_BY_ID_KINDS` / `OWNERSHIP_GATED_KINDS` are exported for the
+// ownership-gating coverage contract. The "MUST mirror" above was comment-only
+// until then — both sides were module-private, so no test could compare them
+// and the mirror had already drifted in a hand-copied replica. Not a runtime
+// API: production reads it only through `confirmOnAutoResolveGuard` below.
+//
+// R3-S3 — and now there is nothing left to mirror. This was a HAND-WRITTEN set
+// whose eleven comments each explained that some kind had joined an auto-resolve
+// set in another file; it is DERIVED from the `confirmOnAutoResolve` field of
+// `KIND_RESOLUTION_PROFILES`, so the fact is written once, on the row, next to
+// the strategy that makes the confirm necessary. The lockstep contract does not
+// become vacuous: confirm and auto-resolve derive from DIFFERENT FIELDS, so a row
+// declaring a strategy without a confirm still breaks it — see the derivation's
+// docblock in kind-resolution-profiles.ts.
+//
+// Re-exported (not re-declared) so every existing importer of
+// `AUTORESOLVE_CONFIRM_KINDS` from this module keeps working unchanged.
+export { AUTORESOLVE_CONFIRM_KINDS };
 export const confirmOnAutoResolveGuard = nameGuard(
   "confirmOnAutoResolvedRef",
   createConfirmGuard<string, unknown, unknown>({
     matches: (env) => AUTORESOLVE_CONFIRM_KINDS.has(env.kind),
-    extract: (_env, state) =>
-      (state as { ctx?: { autoResolvedMoneyRef?: boolean } }).ctx
-        ?.autoResolvedMoneyRef
-        ? 1
-        : 0,
+    // TRUTHINESS kept verbatim (not `=== true`): this extractor feeds a numeric
+    // threshold, and tightening the test here would change the decision for any
+    // non-boolean value a caller ever put on the flag. Behaviour-preserving
+    // conversion only — the typed read is the change.
+    extract: (_env, state) => (readResolutionSignal(state, AUTO_RESOLVED_MONEY_REF) ? 1 : 0),
     threshold: 1,
     comparator: ">=",
     // BKL-197 — the prompt referred to an ORDER as an "item" (wrong noun) and is
-    // shared across kinds that blind-resolve to the customer's MOST-RECENT order
-    // (the amend kinds' resolveOrderId ignores a named order — the mutation-plane
-    // sibling of BKL-203, tracked separately). Use the "pedido" noun and keep the
-    // wording honest to that most-recent resolution. Rendering a specific "#N" for
-    // an explicitly-named order is deferred to the mutation-plane order-reference
-    // resolution fix (BKL-216) — until the resolver honors the named order, a "#N"
-    // here could confidently show the wrong (most-recent) order's number.
+    // shared across kinds that blind-resolve to the customer's MOST-RECENT order.
+    // Use the "pedido" noun and keep the wording honest to that most-recent
+    // resolution. Rendering a specific "#N" for an explicitly-named order stays
+    // BKL-197's own row (a copy change, not resolver behavior).
+    //
+    // BKL-216 (landed) — the amend kinds (`order.amend.*`) no longer ignore an order
+    // the customer NAMED: `resolveAmendOrderReference` binds it and does NOT set
+    // `autoResolvedMoneyRef`, so for those kinds this prompt now fires ONLY on the
+    // genuinely blind most-recent branch — "mais recente" is TRUE whenever a
+    // customer sees it. That removes the hazard that deferred the "#N" split (a
+    // number here can no longer name a different order than the one resolved). The
+    // remaining autoresolve kinds (order.cancel / note.add / address.change /
+    // type.switch / payment.pix.regenerate) still blind-resolve — widening the
+    // reference resolution to them is BKL-198.
     //
     // BKL-226 — this same guard fronts the RESERVATION autoresolve kinds
     // (reservation.cancel / reservation.modify are in AUTORESOLVE_CONFIRM_KINDS),
@@ -177,9 +205,9 @@ export const refuseAllergenMentionGuard: Guard<string, unknown, unknown> = nameG
   "refuseAllergenMention",
   (envelope, state) => {
     if (envelope.kind !== "customer.preferences.update") return null;
-    if ((state as { ctx?: { allergenMentionDetected?: boolean } }).ctx?.allergenMentionDetected !== true) {
-      return null;
-    }
+    // `resolutionSignalIsSet` IS the `!== true` this replaced: absent / false /
+    // any non-`true` value all mean PASS.
+    if (!resolutionSignalIsSet(state, ALLERGEN_MENTION_DETECTED)) return null;
     return decisionRefuse(
       refuse("BUSINESS_RULE", ALLERGEN_MENTION_REFUSAL_CODE, ALLERGEN_MENTION_REFUSAL_PT_BR),
       [
@@ -221,9 +249,7 @@ export const refuseUnresolvedAmendItemGuard: Guard<string, unknown, unknown> = n
   "refuseUnresolvedAmendItem",
   (envelope, state) => {
     if (envelope.kind !== "order.amend.add_item") return null;
-    if ((state as { ctx?: { amendItemUnresolved?: boolean } }).ctx?.amendItemUnresolved !== true) {
-      return null;
-    }
+    if (!resolutionSignalIsSet(state, AMEND_ITEM_UNRESOLVED)) return null;
     return decisionRefuse(
       refuse("BUSINESS_RULE", UNRESOLVED_AMEND_ITEM_REFUSAL_CODE, UNRESOLVED_AMEND_ITEM_REFUSAL_PT_BR),
       [
@@ -256,12 +282,7 @@ export const refuseUnresolvedReviewProductGuard: Guard<string, unknown, unknown>
   "refuseUnresolvedReviewProduct",
   (envelope, state) => {
     if (envelope.kind !== "order.review.submit") return null;
-    if (
-      (state as { ctx?: { reviewProductUnresolved?: boolean } }).ctx?.reviewProductUnresolved !==
-      true
-    ) {
-      return null;
-    }
+    if (!resolutionSignalIsSet(state, REVIEW_PRODUCT_UNRESOLVED)) return null;
     return decisionRefuse(
       refuse(
         "BUSINESS_RULE",
@@ -319,15 +340,29 @@ export const IBATEXAS_ADOPTER_BUSINESS_GUARDS: ReadonlyArray<
 // at import — before the manager exists — and is ALSO consumed by the pure
 // policy-manifest exporter / CLI (no manager). So the kill state is read
 // through a late-bound holder: `setAgentKillStateReader()` points it at the
-// live manager at bootstrap; everywhere else it defaults to "never killed" (a
-// kill switch is a runtime control, not static policy — the exported manifest
-// must not depend on it).
+// live manager when the managed-agent plane starts; everywhere else it defaults
+// to "never killed" (a kill switch is a runtime control, not static policy — the
+// exported manifest must not depend on it).
 let agentKillStateReader: (agentNamespace: string) => boolean = () => false;
 
 /**
  * Point the AUTH-phase kill guard at the live per-agent kill state (the
- * AgentKillSwitchManager). Called once from claustrum-bootstrap after the
- * manager boots. Idempotent; safe to leave unset (guard then never fires).
+ * AgentKillSwitchManager). Idempotent.
+ *
+ * ONE production caller: `startManagedAgentPlane` (managed-agent-plane.ts),
+ * beside the host-side leg and over the SAME manager binding, so both legs
+ * answer from one store. `bootstrapClaustrum` reaches it only through that call,
+ * and only when `IBX_AGENTS_ENABLED=true` — a boot with the plane off leaves the
+ * default in place, which is correct there because no `agent:`-namespaced
+ * envelope exists to kill.
+ *
+ * "Safe to leave unset" is true only in that narrow sense; unset is NOT a benign
+ * default for a process that DOES run agents. It makes `agentKillSwitchGuard` —
+ * authGuards[0] of every composed pack — constant-false, which is exactly the
+ * state F-51 found and fixed. A test that calls this setter itself therefore
+ * proves the guard BODY and nothing about the wiring; the production wiring is
+ * covered by `agent-kill-switch-production-wiring.test.ts`, which never names
+ * this function.
  */
 export function setAgentKillStateReader(
   reader: (agentNamespace: string) => boolean,

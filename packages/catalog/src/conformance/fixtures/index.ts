@@ -1,0 +1,72 @@
+// The CONFORMANCE CORPUS — the registry the suite and the meta-gate read
+// (LE2-017).
+//
+// One entry per rule id the compiler can emit, plus the clean controls. The
+// meta-enforcement test (`../__tests__/meta-coverage.test.ts`) scans the
+// compiler's own source for its registered passes and rule ids and FAILS when
+// anything here is missing — so a later ticket's pass (boot reconciliation,
+// the journey/compensation/lifecycle passes) cannot land without extending
+// this array.
+//
+// Registration is deliberately one explicit line per fixture family: removing
+// a fixture is a visible edit, and the meta-gate turns it into a named
+// failure.
+
+import {
+  ALIAS_GAZETTEER_FIXTURES,
+  CLEAN_ALIAS_GAZETTEER_FIXTURE,
+} from "./alias-gazetteer.js"
+import { CLEAN_FIXTURES } from "./clean.js"
+import { CONVERSATION_PROJECTION_FIXTURES } from "./conversation-projection.js"
+import {
+  CLEAN_EXTERNAL_REFERENCE_FIXTURE,
+  EXTERNAL_REFERENCES_FIXTURES,
+} from "./external-references.js"
+import {
+  CLEAN_PAIRING_GRAPH_FIXTURE,
+  PAIRING_GRAPH_FIXTURES,
+} from "./pairing-graph.js"
+import { REFERENTIAL_INTEGRITY_FIXTURES } from "./referential-integrity.js"
+import { SAFETY_IMPLICATION_EDGES_FIXTURES } from "./safety-implication-edges.js"
+import { SLOT_DATAFLOW_FIXTURES } from "./slot-dataflow.js"
+import { TERMINAL_COVERAGE_FIXTURES } from "./terminal-coverage.js"
+import {
+  CLEAN_WORKFLOW_RUNTIME_FIXTURE,
+  LE2_023_WORKFLOW_RUNTIME_FIXTURES,
+  WORKFLOW_RUNTIME_SHAPE_FIXTURES,
+} from "./workflow-runtime-shape.js"
+import { CLEAN_WORKFLOW_FIXTURE, WORKFLOW_SHAPE_FIXTURES } from "./workflow-shape.js"
+import type { ConformanceFixture } from "../types.js"
+
+/**
+ * Every conformance fixture, in pass-registration order then rule order, with
+ * the clean controls last. The order is the order the goldens are written and
+ * the suite reports in; it carries no other contract.
+ */
+export const CONFORMANCE_FIXTURES: readonly ConformanceFixture[] = [
+  ...REFERENTIAL_INTEGRITY_FIXTURES,
+  ...SLOT_DATAFLOW_FIXTURES,
+  ...CONVERSATION_PROJECTION_FIXTURES,
+  ...ALIAS_GAZETTEER_FIXTURES,
+  ...SAFETY_IMPLICATION_EDGES_FIXTURES,
+  ...TERMINAL_COVERAGE_FIXTURES,
+  ...EXTERNAL_REFERENCES_FIXTURES,
+  ...WORKFLOW_SHAPE_FIXTURES,
+  ...WORKFLOW_RUNTIME_SHAPE_FIXTURES,
+  ...LE2_023_WORKFLOW_RUNTIME_FIXTURES,
+  ...PAIRING_GRAPH_FIXTURES,
+  ...CLEAN_FIXTURES,
+  CLEAN_EXTERNAL_REFERENCE_FIXTURE,
+  CLEAN_ALIAS_GAZETTEER_FIXTURE,
+  CLEAN_WORKFLOW_FIXTURE,
+  CLEAN_WORKFLOW_RUNTIME_FIXTURE,
+  CLEAN_PAIRING_GRAPH_FIXTURE,
+]
+
+/** The fixtures that must FAIL to compile — everything with a target rule. */
+export const REJECTION_FIXTURES: readonly ConformanceFixture[] =
+  CONFORMANCE_FIXTURES.filter((f) => f.targets !== null)
+
+/** The fixtures that must compile CLEAN. */
+export const CLEAN_CONFORMANCE_FIXTURES: readonly ConformanceFixture[] =
+  CONFORMANCE_FIXTURES.filter((f) => f.targets === null)

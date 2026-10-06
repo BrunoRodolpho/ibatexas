@@ -634,6 +634,155 @@ describe("createIbatexasResponder", () => {
     expect(draft.text).toBe(clean);
   });
 
+  // ── BKL-239 — the F6 confirmation is gated on the BUSINESS OUTCOME ──────────
+  //
+  // `order.checkout.create` ∈ executedKinds proves only that `tool.execute` did not
+  // THROW (@claustrum decides executed-vs-failed without inspecting the return
+  // value), and `createCheckout` RETURNS `success:false` on its PIX legs
+  // (create-checkout.ts:133 no QR data, :188 the catch-all around
+  // `confirmPixAndGetQrCode`) — then :611 spreads `scheduledPickup` ONTO that
+  // failure. So a FAILED closed-hours scheduled PIX checkout reached this guard as
+  // `executed` + `{ success:false, paymentMethod:"pix", scheduledPickup:true }` and
+  // voiced the awaiting-PIX confirmation: a false confirmation to a customer whose
+  // order was never placed. The gate is `success !== false` (BKL-247 polarity), and
+  // a reported failure takes the SAME safe degrade the delivery path takes in F6(b).
+
+  /** The real :188 failure shape — the catch-all return, with :611's spread. */
+  const FAILED_PIX_RESULT = {
+    success: false,
+    paymentMethod: "pix",
+    orderId: "pi_3Qk1abcdef",
+    message:
+      "Erro ao gerar QR Code PIX. Seu pedido foi iniciado — entre em contato se o problema persistir. Referência: pi_3Qk1abcdef",
+    scheduledPickup: true,
+  };
+
+  it("F6(e): a FAILED scheduled PIX pickup → SAFE degrade, NEVER the awaiting-PIX confirmation", async () => {
+    const { model } = mockModel("Seu pedido já está em preparo e sai em 20 minutos!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: FAILED_PIX_RESULT,
+    };
+    const draft = await responder.respond(
+      mkInput({
+        decision,
+        envelopeKinds: ["order.checkout.create"],
+        acted,
+        text: "quero retirar amanhã, pago no pix",
+      }),
+    );
+    // The safe path is the one F6(b) already delivers — no new failure copy.
+    expect(draft.text).toBe(CLOSED_DISCLOSURE);
+    expect(draft.text).not.toBe(SCHEDULED_CONFIRMATION_PIX);
+    expect(draft.text).not.toBe(SCHEDULED_CONFIRMATION);
+    // The two clauses that made this a false confirmation must both be absent.
+    expect(draft.text).not.toContain("Seu pedido foi registrado");
+    expect(draft.text).not.toContain("PIX para confirmar");
+  });
+
+  it("F6(e2): a FAILED scheduled pickup on the cash-shaped result degrades identically", async () => {
+    // Uniform gate: the confirmation is withheld on ANY reported failure, not just
+    // the PIX leg, so a future cash/other-method failure inherits the safety.
+    const { model } = mockModel("Seu pedido já está em preparo e sai em 20 minutos!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: {
+        success: false,
+        paymentMethod: "cash",
+        scheduledPickup: true,
+        message: "Não foi possível inicializar o pagamento. Tente novamente.",
+      },
+    };
+    const draft = await responder.respond(
+      mkInput({
+        decision,
+        envelopeKinds: ["order.checkout.create"],
+        acted,
+        text: "quero retirar amanhã, pago em dinheiro",
+      }),
+    );
+    expect(draft.text).toBe(CLOSED_DISCLOSURE);
+    expect(draft.text).not.toContain("Seu pedido foi registrado");
+  });
+
+  it("F6(f): an EXPLICIT success:true scheduled PIX pickup still CONFIRMS (the gate is not over-broad)", async () => {
+    // The false-FAILURE direction: a real accepted scheduled PIX pickup stamps
+    // `success:true`, and it must keep voicing the awaiting-payment confirmation.
+    const { model } = mockModel("Seu pedido está a caminho!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: {
+        success: true,
+        orderId: "pi_3Qk1abcdef",
+        scheduledPickup: true,
+        paymentMethod: "pix",
+        pixCopyPaste: "00020126PIX",
+      },
+    };
+    const draft = await responder.respond(
+      mkInput({
+        decision,
+        envelopeKinds: ["order.checkout.create"],
+        acted,
+        text: "quero retirar amanhã, pago no pix",
+      }),
+    );
+    expect(draft.text).toBe(SCHEDULED_CONFIRMATION_PIX);
+  });
+
+  it("F6(g): a result with NO success field still CONFIRMS — the `!== false` polarity", async () => {
+    // Pins the polarity itself: `=== true` would silently stop confirming every
+    // legacy/absent-success shape (F6(a)/(c)/(d)'s fixtures are exactly those),
+    // reintroducing the false-FAILURE the F6 confirmation exists to kill. This case
+    // is the explicit pin so the polarity cannot be tightened by accident.
+    const { model } = mockModel("Seu pedido já está em preparo e sai em 20 minutos!");
+    const responder = createIbatexasResponder({
+      model,
+      modelId: "m",
+      explainer,
+      resolveScheduleSignal: () => closedSignal,
+    });
+    const decision = { kind: "EXECUTE", basis: [] } as unknown as Decision;
+    const acted = {
+      kind: "executed",
+      envelope: { kind: "order.checkout.create" },
+      result: { orderId: "IBX-9", scheduledPickup: true, paymentMethod: "cash" },
+    };
+    const draft = await responder.respond(
+      mkInput({
+        decision,
+        envelopeKinds: ["order.checkout.create"],
+        acted,
+        text: "quero retirar amanhã",
+      }),
+    );
+    expect(draft.text).toBe(SCHEDULED_CONFIRMATION);
+  });
+
   it("closed: repairs a conversational reply that falsely says 'estamos abertos'", async () => {
     const { model } = mockModel("Sim, estamos abertos! Pode fazer seu pedido.");
     const responder = createIbatexasResponder({

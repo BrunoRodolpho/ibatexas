@@ -43,6 +43,7 @@ import {
   RUN_BOOTSTRAP_HARNESS,
   setupClaustrumBootstrapHarness,
   type ClaustrumBootstrapTestHarness,
+  TEST_EXTERNAL_REFERENCE_PROBES,
 } from "./helpers/claustrum-bootstrap-harness.js";
 
 // createConductor-spy (PR #187 / BKL-003 idiom): keep every other
@@ -131,7 +132,10 @@ async function bootWithClaimsFlag(
   else process.env[CLAIMS_PIPELINE_ENABLED_ENV] = value;
   createConductorSpy.mockClear();
   try {
-    await bootstrapClaustrum({ modelProvider: scriptedModelProvider(label) });
+    await bootstrapClaustrum({
+      modelProvider: scriptedModelProvider(label),
+      externalReferenceProbes: TEST_EXTERNAL_REFERENCE_PROBES,
+    });
     return customerConductorOptions();
   } finally {
     await resetClaustrumForTests().catch(() => undefined);

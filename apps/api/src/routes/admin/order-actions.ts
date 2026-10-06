@@ -59,6 +59,11 @@ import {
   createPaymentQueryService,
   type OrderStatusTransitionPayload,
   type PaymentStatusTransitionPayload,
+  type OrderCommandService,
+  type OrderEventLogService,
+  type OrderQueryService,
+  type PaymentCommandService,
+  type PaymentQueryService,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import {
@@ -152,31 +157,108 @@ async function cancelActivePaymentBestEffort(deps: {
   }
 }
 
-export async function adminOrderActionRoutes(server: FastifyInstance): Promise<void> {
-  const app = server.withTypeProvider<ZodTypeProvider>();
-  // Defer audit-sink resolution to onReady (see adminPaymentRoutes for
-  // the full rationale — boot-order race between plugin-body execution
-  // during buildServer() and bootstrapAuditSinkDI() in index.ts).
-  let orderCmdSvc!: ReturnType<typeof createOrderCommandService>;
-  let paymentCmdSvc!: ReturnType<typeof createPaymentCommandService>;
-  server.addHook("onReady", async () => {
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Factories, not instances (the R5-S2 rule), and here that property is
+// load-bearing rather than stylistic: the two command-service members close
+// over `getAuditSink()` calls that MUST NOT run until the onReady hook.
+// Because the members are factories, resolving the dep set in the plugin body
+// constructs nothing and calls nothing — the sink is still resolved inside
+// onReady, after bootstrapAuditSinkDI(). The T8 conformance gate
+// (src/__tests__/bypass-detection/audit-sink-bootstrap-order-conformance.test.ts)
+// pins that: it scans the plugin-body prefix with onReady bodies blotted out,
+// and this block lives at MODULE level, outside that prefix.
+//
+// The other three keep their registration-time construction timing exactly.
+
+/** The domain services `admin/order-actions.ts` resolves through the seam. */
+export interface AdminOrderActionRouteDeps {
+  /**
+   * Builds the audit-wired, staff-role-guarded OrderCommandService.
+   * Invoked from the onReady hook ONLY — calling it during plugin-body
+   * execution would throw AuditSinkNotInitializedError and crash boot.
+   */
+  readonly orderCommandService: () => OrderCommandService;
+  /**
+   * Builds the audit-wired PaymentCommandService carrying BKL-074's
+   * staffRoleGuard + BKL-075's payment banding. onReady-only, same reason.
+   */
+  readonly paymentCommandService: () => PaymentCommandService;
+  /** Builds the OrderQueryService behind the order loads. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the PaymentQueryService behind the active-payment loads. */
+  readonly paymentQueryService: () => PaymentQueryService;
+  /** Builds the OrderEventLogService for the action audit trail. */
+  readonly orderEventLogService: () => OrderEventLogService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/admin/index.ts is unchanged.
+ */
+export interface AdminOrderActionRoutesOptions {
+  readonly deps?: Partial<AdminOrderActionRouteDeps>;
+}
+
+/**
+ * The production set — byte-for-byte the construction this file did inline.
+ * Takes `server` because three of the five constructions bind `server.log`.
+ */
+function defaultAdminOrderActionRouteDeps(
+  server: FastifyInstance,
+): AdminOrderActionRouteDeps {
+  return {
     // BKL-074: inject the kernel-level staff-role backstop into the
     // command-service adjudication. `staffRoleGuard` is inert for non-`admin:`
     // envelopes, so this REFUSES a mis-scoped staff role at the kernel while
     // leaving system/customer/agent mutations untouched.
-    orderCmdSvc = createOrderCommandService(server.log, {
-      auditSink: getAuditSink(),
-      authGuards: [staffRoleGuard],
-    });
-    paymentCmdSvc = createPaymentCommandService(server.log, {
-      auditSink: getAuditSink(),
-      // BKL-074 staffRoleGuard + BKL-075 payment banding (force/waive → OWNER).
-      authGuards: [staffRoleGuard, paymentTransitionBandGuard],
-    });
+    orderCommandService: () =>
+      createOrderCommandService(server.log, {
+        auditSink: getAuditSink(),
+        authGuards: [staffRoleGuard],
+      }),
+    paymentCommandService: () =>
+      createPaymentCommandService(server.log, {
+        auditSink: getAuditSink(),
+        // BKL-074 staffRoleGuard + BKL-075 payment banding (force/waive → OWNER).
+        authGuards: [staffRoleGuard, paymentTransitionBandGuard],
+      }),
+    orderQueryService: () => createOrderQueryService(),
+    paymentQueryService: () => createPaymentQueryService(),
+    orderEventLogService: () => createOrderEventLogService(server.log),
+  };
+}
+
+function resolveAdminOrderActionRouteDeps(
+  server: FastifyInstance,
+  options?: AdminOrderActionRoutesOptions,
+): AdminOrderActionRouteDeps {
+  return { ...defaultAdminOrderActionRouteDeps(server), ...(options?.deps ?? {}) };
+}
+
+export async function adminOrderActionRoutes(
+  server: FastifyInstance,
+  options?: AdminOrderActionRoutesOptions,
+): Promise<void> {
+  const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so NOTHING is
+  // constructed here — which is what keeps the two `getAuditSink()` calls
+  // inside the onReady hook below. See AdminOrderActionRouteDeps above.
+  const deps = resolveAdminOrderActionRouteDeps(server, options);
+  // Defer audit-sink resolution to onReady (see adminPaymentRoutes for
+  // the full rationale — boot-order race between plugin-body execution
+  // during buildServer() and bootstrapAuditSinkDI() in index.ts).
+  let orderCmdSvc!: OrderCommandService;
+  let paymentCmdSvc!: PaymentCommandService;
+  server.addHook("onReady", async () => {
+    orderCmdSvc = deps.orderCommandService();
+    paymentCmdSvc = deps.paymentCommandService();
   });
-  const orderQuerySvc = createOrderQueryService();
-  const paymentQuerySvc = createPaymentQueryService();
-  const eventLogSvc = createOrderEventLogService(server.log);
+  const orderQuerySvc = deps.orderQueryService();
+  const paymentQuerySvc = deps.paymentQueryService();
+  const eventLogSvc = deps.orderEventLogService();
   const confirmationStore = createAdminConfirmationStore();
 
   // Behavior-preserving extraction of the order-existence + terminal-state

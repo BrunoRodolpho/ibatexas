@@ -1,0 +1,78 @@
+{
+  "fixture": "pairing-graph.unreviewed-authored-pairing",
+  "targets": "pairing-graph/unreviewed-authored-pairing",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/unreviewed-authored-pairing"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 5,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "unreviewed-authored-pairing",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "ownerReview",
+      "message": "this edge is tagged `authored` — invented, with no menu data behind it — and carries no `ownerReview: true`. That flag is required precisely because an invented pairing reads exactly like a real one in review: there is no external fact to check the house's taste against, so the table has to say which rows are awaiting an opinion. Either flag it, or ground it in menu data and tag it `menu-composition` with the quote."
+    }
+  ],
+  "formatted": [
+    "pairing-graph/unreviewed-authored-pairing: pairing:conformance-item-sujeito · ownerReview — this edge is tagged `authored` — invented, with no menu data behind it — and carries no `ownerReview: true`. That flag is required precisely because an invented pairing reads exactly like a real one in review: there is no external fact to check the house's taste against, so the table has to say which rows are awaiting an opinion. Either flag it, or ground it in menu data and tag it `menu-composition` with the quote."
+  ]
+}

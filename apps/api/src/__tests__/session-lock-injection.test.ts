@@ -149,9 +149,19 @@ describe.skipIf(SKIP_REAL_POSTGRES)(
 
 // ── Bootstrap wiring (static, runs even when containers are skipped) ────────
 
+// R1-S1 — this pin now spans TWO files, because the customer composition moved out
+// of claustrum-bootstrap.ts into claustrum/compose-customer-conductor.ts. The
+// property is unchanged and still whole: the BOOTSTRAP is where the lock is
+// CONSTRUCTED over the real pgPool (only an adapter has a pool), and the COMPOSER is
+// where it reaches `createConductor` (only the composition calls it). Asserting just
+// one half would let the other be unwired silently.
 describe("claustrum-bootstrap injects the distributed session lock", () => {
   const source = readFileSync(
     path.resolve(__dirname, "../claustrum-bootstrap.ts"),
+    "utf8",
+  );
+  const composer = readFileSync(
+    path.resolve(__dirname, "../claustrum/compose-customer-conductor.ts"),
     "utf8",
   );
 
@@ -161,12 +171,16 @@ describe("claustrum-bootstrap injects the distributed session lock", () => {
     );
   });
 
-  it("passes sessionLock over pgPool in the createConductor options", () => {
-    // The only `createConductor({` in the file is the composition-root call.
-    const callIndex = source.indexOf("createConductor({");
-    expect(callIndex).toBeGreaterThan(-1);
-    expect(source.slice(callIndex)).toContain(
+  it("constructs the lock over pgPool into the customer conductor deps", () => {
+    expect(source).toContain(
       "sessionLock: new PostgresAdvisorySessionLock(pgPool)",
     );
+  });
+
+  it("passes that sessionLock through in the createConductor options", () => {
+    // The only `createConductor({` in the composer is the customer-plane call.
+    const callIndex = composer.indexOf("createConductor({");
+    expect(callIndex).toBeGreaterThan(-1);
+    expect(composer.slice(callIndex)).toContain("sessionLock: deps.sessionLock");
   });
 });

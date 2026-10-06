@@ -84,6 +84,40 @@ describe("paymentsPolicyBundle — tenant binding (AuthReviewer-009)", () => {
 
 // ── 034-F1: ownership/IDOR guard (defense-in-depth) ───────────────────────
 
+/**
+ * F-26 — the conjunct labels `enforcePaymentOwnership` stamps on its auth basis.
+ *
+ * The guard has TWO conjuncts and they REFUSE with the SAME code
+ * (`payment.ownership_denied`): (1) the BINDING — the declared owner does not own
+ * the resource — and (2) the IDOR gate — the authenticated principal behind the
+ * acting session is not the declared owner. A code-only assertion therefore cannot
+ * tell them apart, so either conjunct silently stands in for the other. Measured:
+ * with the two branches' reasons SWAPPED, all 135 tests in this package stayed
+ * green. The discriminating information is the auth basis `reason`, so every test
+ * below that drives a conjunct pins WHICH one spoke.
+ *
+ * Mirrors the house style of the adopter's
+ * `apps/api/src/claustrum/__tests__/ownership-set-agreement.test.ts` (PR #530).
+ */
+const BINDING_CONJUNCT = "resource_not_owned"
+const IDOR_CONJUNCT = "tenant_binding_violation"
+
+/**
+ * Flattens a decision to `EXECUTE` / `REQUEST_CONFIRMATION` / `REFUSE:<code>:<auth
+ * basis reason>` so one assertion reds by NAME on both the code and the conjunct.
+ * The basis row is keyed `category` (never `kind`).
+ */
+function outcome(decision: unknown): string {
+  const d = decision as {
+    kind: string
+    refusal?: { code?: string }
+    basis?: readonly { category?: string; detail?: { reason?: string } }[]
+  }
+  if (d.kind !== "REFUSE") return d.kind
+  const reason = d.basis?.find((b) => b.category === "auth")?.detail?.reason ?? "no-auth-basis"
+  return `REFUSE:${d.refusal?.code}:${reason}`
+}
+
 describe("paymentsPolicyBundle — ownership/IDOR guard (034-F1)", () => {
   function refundEnv(owner: string, resource: string, sessionId: string) {
     return buildEnvelope({
@@ -126,19 +160,48 @@ describe("paymentsPolicyBundle — ownership/IDOR guard (034-F1)", () => {
     } as unknown as PaymentState
   }
 
-  it("CANARY (de-vacuumed): a refund on a NON-owned order REFUSEs payment.ownership_denied", () => {
+  it("CANARY (de-vacuumed): a refund on a NON-owned order REFUSEs payment.ownership_denied from the BINDING conjunct", () => {
+    // The session IS the authenticated owner (sess-A → cust-A), so the IDOR
+    // conjunct cannot be what spoke — but it WOULD speak anyway if the binding
+    // branch were neutered (an unbound resource resolves principal to null, which
+    // also fails the IDOR equality with the SAME code). Pinning the conjunct is
+    // what makes this canary test its own mechanism rather than the other one.
     const d = adjudicate(refundEnv("cust-A", "ord-B", "sess-A"), authState("cust-A", "ord-A", "sess-A"), paymentsPolicyBundle)
     expect(d.kind).toBe("REFUSE")
-    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("payment.ownership_denied")
+    expect(outcome(d)).toBe(`REFUSE:payment.ownership_denied:${BINDING_CONJUNCT}`)
   })
   it("a refund on the OWNED order is NOT refused by the ownership guard", () => {
     const d = adjudicate(refundEnv("cust-A", "ord-A", "sess-A"), authState("cust-A", "ord-A", "sess-A"), paymentsPolicyBundle)
     if (d.kind === "REFUSE") expect(d.refusal.code).not.toBe("payment.ownership_denied")
   })
-  it("IDOR-gate: an unrecognised session REFUSEs even on an owned order", () => {
+  it("IDOR-gate: an unrecognised session REFUSEs even on an owned order — from the IDOR conjunct, not the binding", () => {
+    // The resource IS owned, so the binding conjunct passes and only the
+    // session→principal gate can refuse. Asserting the conjunct is what makes the
+    // test name ("IDOR-gate") the tested part: a code-only pin here is satisfied by
+    // the binding conjunct too.
     const d = adjudicate(refundEnv("cust-A", "ord-A", "sess-B"), authState("cust-A", "ord-A", "sess-A"), paymentsPolicyBundle)
     expect(d.kind).toBe("REFUSE")
-    if (d.kind === "REFUSE") expect(d.refusal.code).toBe("payment.ownership_denied")
+    expect(outcome(d)).toBe(`REFUSE:payment.ownership_denied:${IDOR_CONJUNCT}`)
+  })
+
+  it("F-26 — the two conjuncts are DISTINGUISHABLE: same code, different reason, on the same fixtures", () => {
+    // The finding itself, pinned as a standing claim: swapping the guard's two
+    // branches must not be a no-op. Same helper, same authority graph — the only
+    // difference between the rows is which conjunct the input trips.
+    const binding = outcome(
+      adjudicate(refundEnv("cust-A", "ord-B", "sess-A"), authState("cust-A", "ord-A", "sess-A"), paymentsPolicyBundle),
+    )
+    const idor = outcome(
+      adjudicate(refundEnv("cust-A", "ord-A", "sess-B"), authState("cust-A", "ord-A", "sess-A"), paymentsPolicyBundle),
+    )
+    // The codes AGREE (that is the shadowing hazard)…
+    expect(binding.split(":")[1]).toBe(idor.split(":")[1])
+    // …and the reasons DISAGREE (that is what defeats it).
+    expect([binding, idor]).toEqual([
+      `REFUSE:payment.ownership_denied:${BINDING_CONJUNCT}`,
+      `REFUSE:payment.ownership_denied:${IDOR_CONJUNCT}`,
+    ])
+    expect(BINDING_CONJUNCT).not.toBe(IDOR_CONJUNCT)
   })
 })
 

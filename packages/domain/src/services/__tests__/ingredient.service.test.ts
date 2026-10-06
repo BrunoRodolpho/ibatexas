@@ -112,6 +112,20 @@ describe("IngredientService.update", () => {
     expect(mockUpdateMany).not.toHaveBeenCalled()
   })
 
+  // BKL-265 — call site 1 of 3. The row VANISHED between mutateOrNull's findUnique
+  // and its updateMany, so the write matched NOTHING; the merged row would report a
+  // patch that was never persisted.
+  it("returns null when the row vanishes between the read and the write (count === 0)", async () => {
+    mockFindUnique.mockResolvedValue({ id: "ing_1", name: "Farinha", unit: "kg", stockMilli: 2000, lowStockMilli: 500, active: true })
+    mockUpdateMany.mockResolvedValue({ count: 0 })
+
+    const row = await svc.update("ing_1", { lowStockMilli: 800 })
+
+    expect(row).toBeNull()
+    // The write WAS attempted — the between-reads window, not the missing-id short circuit.
+    expect(mockUpdateMany).toHaveBeenCalledWith({ where: { id: "ing_1" }, data: { lowStockMilli: 800 } })
+  })
+
   it("sets a cost, and an explicit null CLEARS it (NEW-035)", async () => {
     mockFindUnique.mockResolvedValue({ id: "ing_1", name: "Farinha", unit: "kg", stockMilli: 2000, lowStockMilli: 500, costCentavosPerUnit: 450, active: true })
     mockUpdateMany.mockResolvedValue({ count: 1 })
@@ -227,6 +241,18 @@ describe("IngredientService.adjustStock", () => {
     expect(row).toBeNull()
     expect(mockUpdateMany).not.toHaveBeenCalled()
   })
+
+  // BKL-265 — call site 2 of 3. A vanished row must not report an adjusted stock
+  // level that no row carries.
+  it("returns null when the row vanishes between the read and the write (count === 0)", async () => {
+    mockFindUnique.mockResolvedValue({ id: "ing_1", stockMilli: 2000 })
+    mockUpdateMany.mockResolvedValue({ count: 0 })
+
+    const row = await svc.adjustStock("ing_1", 500)
+
+    expect(row).toBeNull()
+    expect(mockUpdateMany).toHaveBeenCalledWith({ where: { id: "ing_1" }, data: { stockMilli: 2500 } })
+  })
 })
 
 describe("IngredientService.depleteStock (NEW-036)", () => {
@@ -275,6 +301,19 @@ describe("IngredientService.depleteStock (NEW-036)", () => {
 
     expect(res).toBeNull()
     expect(mockUpdateMany).not.toHaveBeenCalled()
+  })
+
+  // BKL-265 — call site 3 of 3. The depletion subscriber warns off `shortfallMilli`;
+  // a vanished row must surface as null (nothing depleted) rather than a result
+  // object carrying a shortfall for a write that never landed.
+  it("returns null when the row vanishes between the read and the write (count === 0)", async () => {
+    mockFindUnique.mockResolvedValue({ id: "ing_1", stockMilli: 300 })
+    mockUpdateMany.mockResolvedValue({ count: 0 })
+
+    const res = await svc.depleteStock("ing_1", 1000)
+
+    expect(res).toBeNull()
+    expect(mockUpdateMany).toHaveBeenCalledWith({ where: { id: "ing_1" }, data: { stockMilli: 0 } })
   })
 })
 

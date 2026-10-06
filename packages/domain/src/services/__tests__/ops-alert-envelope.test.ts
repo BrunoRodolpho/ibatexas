@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { buildEnvelope } from "@adjudicate/core"
+import type { AuditSink } from "@adjudicate/core"
 import { randomUUID } from "node:crypto"
 
 const mockFindFirst = vi.hoisted(() => vi.fn())
@@ -325,6 +326,106 @@ describe("resolveAlertFromEnvelope — current-on-found / null-on-missing", () =
 
     expect(out.decision.kind).toBe("EXECUTE")
     expect(out.result).toBeNull()
+  })
+})
+
+// BKL-260 (PR #423) shipped this method covered only INDIRECTLY, by the apps/api
+// runtime class gate. These are its DIRECT unit tests. It is the raw post-decision
+// persistence body — the ops registry's `ops.alert.resolve.staff` executor calls it
+// holding a positive decision the composed ops router already produced. The contract
+// below is FROZEN: these tests pin the shipped behavior, they do not change it.
+describe("writeAdjudicatedAlertResolve — post-decision write body (BKL-260)", () => {
+  beforeEach(() => vi.resetAllMocks())
+
+  const staffPayload: OpsAlertResolvePayload = {
+    id: "ops_01",
+    resolvedBy: "staff:7",
+    resolutionType: "STAFF",
+  }
+
+  it("STAFF resolve writes RESOLVED under the NON_TERMINAL filter and returns the re-read row", async () => {
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+    mockFindUnique.mockResolvedValue(
+      makeRow({ status: "RESOLVED", resolvedBy: "staff:7", resolutionType: "STAFF" }),
+    )
+
+    const svc = createOpsAlertService()
+    const row = await svc.writeAdjudicatedAlertResolve(staffPayload)
+
+    expect(row).toMatchObject({ id: "ops_01", status: "RESOLVED", resolvedBy: "staff:7" })
+    expect(mockUpdateMany).toHaveBeenCalledTimes(1)
+    const call = mockUpdateMany.mock.calls[0]![0]
+    // Idempotent transition — only a non-terminal row moves.
+    expect(call.where).toEqual({ id: "ops_01", status: { in: ["OPEN", "ACKNOWLEDGED"] } })
+    expect(call.data).toMatchObject({
+      status: "RESOLVED",
+      resolvedBy: "staff:7",
+      resolutionType: "STAFF",
+    })
+    expect(call.data.resolvedAt).toBeInstanceOf(Date)
+    // The return is a RE-READ of the row, never the write patch merged onto a stale
+    // read — which is why discarding updateMany's `{count}` is SOUND here (contrast
+    // BKL-265's mutateOrNull, where the merged object WAS the return).
+    expect(mockFindUnique).toHaveBeenCalledWith({ where: { id: "ops_01" } })
+  })
+
+  it("AUTO resolve writes AUTO_RESOLVED — the terminal status is derived, never taken from the caller", async () => {
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+    mockFindUnique.mockResolvedValue(makeRow({ status: "AUTO_RESOLVED" }))
+
+    const svc = createOpsAlertService()
+    await svc.writeAdjudicatedAlertResolve({
+      id: "ops_01",
+      resolvedBy: "system",
+      resolutionType: "AUTO",
+    })
+
+    expect(mockUpdateMany.mock.calls[0]![0].data).toMatchObject({
+      status: "AUTO_RESOLVED",
+      resolutionType: "AUTO",
+    })
+  })
+
+  it("returns the CURRENT row when the alert is already terminal (count === 0 is a no-op, not an error)", async () => {
+    mockUpdateMany.mockResolvedValue({ count: 0 })
+    mockFindUnique.mockResolvedValue(makeRow({ status: "RESOLVED", resolvedBy: "staff:1" }))
+
+    const svc = createOpsAlertService()
+    const row = await svc.writeAdjudicatedAlertResolve(staffPayload)
+
+    // Already-resolved must not error and must not be reported as absent: the row
+    // exists, so the render gate is allowed to voice a resolved alert.
+    expect(row).toMatchObject({ status: "RESOLVED", resolvedBy: "staff:1" })
+  })
+
+  it("returns null ONLY when the id does not exist — the signal the #412 render gate keys on", async () => {
+    mockUpdateMany.mockResolvedValue({ count: 0 })
+    mockFindUnique.mockResolvedValue(null)
+
+    const svc = createOpsAlertService()
+    const row = await svc.writeAdjudicatedAlertResolve({ ...staffPayload, id: "missing" })
+
+    expect(row).toBeNull()
+  })
+
+  it("performs NO adjudication — the audit sink is never touched", async () => {
+    const sink = { emit: vi.fn().mockResolvedValue(undefined) }
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+    mockFindUnique.mockResolvedValue(makeRow({ status: "RESOLVED" }))
+
+    const svc = createOpsAlertService({ auditSink: sink as unknown as AuditSink })
+    await svc.writeAdjudicatedAlertResolve(staffPayload)
+
+    // The caller already holds the decision. A record emitted here would be the
+    // SECOND intent_audit EXECUTE row for one staff action — exactly the BKL-232/242
+    // duplicate this entry point was extracted to remove.
+    expect(sink.emit).not.toHaveBeenCalled()
+
+    // POSITIVE CONTROL — the same sink on the same service DOES emit through the
+    // self-adjudicating sibling, so the assertion above is a real observation and
+    // not a sink that could never have fired.
+    await svc.resolveAlertFromEnvelope(systemResolveEnv(staffPayload), state)
+    expect(sink.emit).toHaveBeenCalledTimes(1)
   })
 })
 

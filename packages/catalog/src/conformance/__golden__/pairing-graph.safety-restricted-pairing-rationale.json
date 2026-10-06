@@ -1,0 +1,79 @@
+{
+  "fixture": "pairing-graph.safety-restricted-pairing-rationale",
+  "targets": "pairing-graph/safety-restricted-pairing-rationale",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/safety-restricted-pairing-rationale"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 5,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "safety-restricted-pairing-rationale",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "why",
+      "message": "this pairing edge's `why` carries the dietary-restriction marker \"gluten\". a pairing edge's authored rationale may not state an allergen or dietary reason. The renderer does not quote `why` today, so this edge is inert — which is exactly why it is cheap to reject now, one product decision before somebody makes the reason customer-facing. Forbidden by the ratified BKL-143 / BKL-123 / BKL-171 rulings, whose standing policy is honest self-report plus a real staff handoff; reopening requires an explicit owner reversal in writing. If this is an ordinary product whose NAME merely contains an ingredient word, that is the deliberate false positive documented in `src/pairing-graph.ts` — the product stays orderable and answerable by every other read, it just cannot be the subject of an automated suggestion.",
+      "reference": "combina porque e sem gluten."
+    }
+  ],
+  "formatted": [
+    "pairing-graph/safety-restricted-pairing-rationale: pairing:conformance-item-sujeito · why — this pairing edge's `why` carries the dietary-restriction marker \"gluten\". a pairing edge's authored rationale may not state an allergen or dietary reason. The renderer does not quote `why` today, so this edge is inert — which is exactly why it is cheap to reject now, one product decision before somebody makes the reason customer-facing. Forbidden by the ratified BKL-143 / BKL-123 / BKL-171 rulings, whose standing policy is honest self-report plus a real staff handoff; reopening requires an explicit owner reversal in writing. If this is an ordinary product whose NAME merely contains an ingredient word, that is the deliberate false positive documented in `src/pairing-graph.ts` — the product stays orderable and answerable by every other read, it just cannot be the subject of an automated suggestion."
+  ]
+}

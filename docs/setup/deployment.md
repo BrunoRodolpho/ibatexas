@@ -188,10 +188,93 @@ Parameter Store on each `ibatexas-deploy` run.
    `admin`, `commerce`), tagged with commit SHA + `latest`.
 3. **migrate** — runs Prisma `migrate deploy` (`@ibatexas/domain`) against
    `STAGING_DIRECT_DATABASE_URL`.
-4. **deploy** — SSM Run Command on the dev host: `/usr/local/bin/ibatexas-deploy`
+4. **catalog-live** — the pre-deploy gate, below. Blocks step 5.
+5. **deploy** — SSM Run Command on the dev host: `/usr/local/bin/ibatexas-deploy`
    (ECR login + `docker compose pull` + `docker compose up -d`).
-5. **health-check** — probes 4 HTTPS endpoints until 2xx/3xx: storefront,
+6. **health-check** — probes 4 HTTPS endpoints until 2xx/3xx: storefront,
    `api/health`, admin, `commerce/health`.
+
+### Pre-deploy gate — external references (LE2-018)
+
+**The api refuses to start if a declared external reference is missing.**
+`@ibatexas/catalog` (`src/external-references.ts`) declares the names the code
+depends on but does not own — today the welcome-credit and loyalty-reward
+coupons, which must exist as Medusa promotions. At boot,
+`claustrum-bootstrap.ts` reconciles every one of them against its live store,
+and any miss (config variable unset, promotion absent, store unreachable) kills
+the process with a diagnostic naming the reference, its store, its config
+variable and the code sites that break. This is strict by owner decision
+(LE2 Implementation Decision 16): there is no flag, no dev-mode warning and no
+allowlist.
+
+So the same check runs **before** a deploy, as the `catalog-live` job:
+
+```bash
+ibx catalog check --live          # exit 1 if any declared reference is missing
+ibx catalog check --live --json   # same, machine-readable
+```
+
+Run it yourself against any environment whose config you have loaded — that is
+the point of it. It is the cheap way to find a dangling reference; the
+expensive way is a container that will not come up.
+
+> **Where the live check does and does not run.** It runs in
+> `deploy-staging.yml` (`catalog-live`, gating `deploy`), and by hand. It does
+> **not** run in `ci.yml`: a GitHub-hosted runner on a pull request has no
+> Medusa and no database, so the check there could only be skipped-but-green or
+> red on every commit. `ci.yml` runs the *static* half only
+> (`ibx catalog check` — the five compiler passes, including the one that
+> validates the declaration table's shape).
+
+The `catalog-live` job needs the target environment's store config. Until these
+exist it fails, which is the gate doing its job — an environment whose
+references nobody has verified is exactly what it exists to catch:
+
+| Kind | Name |
+|------|------|
+| secret | `STAGING_MEDUSA_ADMIN_EMAIL` |
+| secret | `STAGING_MEDUSA_ADMIN_PASSWORD` |
+| secret | `STAGING_DIRECT_DATABASE_URL` *(already used by `migrate`)* |
+| var | `STAGING_MEDUSA_URL` |
+| var | `STAGING_WELCOME_CREDIT_COUPON_CODE` |
+| var | `STAGING_LOYALTY_REWARD_COUPON_CODE` |
+
+#### Ephemeral stacks provision the references themselves (BKL-263)
+
+Staging and dev have stores somebody administers by hand. The **ephemeral test
+stack** — `scripts/test-stack-up.sh`, used by `e2e-smoke` on every PR and by
+`journeys-nightly` — builds a brand-new Medusa per run, so it has to *create*
+the references before the api boots or the gate refuses to start. It is the same
+gate with no human in the loop, and it needs **both halves**:
+
+| Half | Where |
+|------|-------|
+| the config variables | `.env.test.example` → `.env.test` (`gen-env-test.sh`) |
+| the promotions themselves | `process-compose.test.yaml`'s `seed-promotions` one-shot → `ibx db seed:promotions` |
+
+The seeding step is a **dependency edge, not a seed-phase step**: `api`
+`depends_on` `seed-promotions` with `process_completed_successfully`, because
+process-compose starts the api the moment `commerce` turns healthy, so anything
+the launcher ran between those two events would race the boot gate.
+`ibx db seed:promotions` (`apps/commerce/src/seed-promotions.ts`) is idempotent
+find-or-create by exact code and reads the declaration table through
+`externalReferencesForStore("promotion")`, so it seeds whatever the catalog
+declares rather than a list of its own.
+
+> **The failure mode to recognize.** A missing reference kills the api inside
+> `bootstrapClaustrum()`, *before* `server.listen` — so the port never binds and
+> the launcher reports `api (:3001) not ready after 600s`, naming nothing. That
+> timeout is the gate's signature on this stack. `test-stack-up.sh` now dumps the
+> stuck process's own log (and `seed-promotions`') on a readiness failure, where
+> the refusal report actually is.
+
+Adding a reference is: declare it in `packages/catalog/src/external-references.ts`,
+add its variable to `.env.example`, to `.env.test.example` and to the
+environment's secrets/vars, give it an amount in `seed-promotions.ts`'s
+`SEED_AMOUNTS_BRL` (a declared promotion with no amount fails that script by
+name rather than seeding a R$0 coupon), and create the thing itself in every
+store an operator owns. The compiler will tell you if the declaration is
+malformed; `--live` will tell you if the thing is missing.
 
 ---
 
@@ -201,6 +284,38 @@ See [infra/terraform/environments/production/README.md](../../infra/terraform/en
 for the full checklist. TL;DR: review task sizes, ECR repo names (prefixed
 `ibatexas-prod-*`), ALB deletion protection, domain cutover plan, then
 `terraform apply`.
+
+---
+
+## Tearing down dev
+
+`ibx infra destroy` runs `terraform destroy` against `infra/terraform/environments/dev/`.
+It only removes what Terraform currently tracks in state — it does **not**
+give you a bare AWS account back. Two things survive every run, by design:
+
+1. **The Route53 zone and its 4 A records.** `dns.tf` sets
+   `lifecycle { prevent_destroy = true }` on `aws_route53_zone.this`. This is
+   intentional, not a bug: an earlier destroy/recreate cycle assigned the zone
+   a fresh nameserver set, the domain registrar (Registro.br) still pointed at
+   the old ones, and `ibatexas.com.br` was unreachable globally for up to a
+   day (lame delegation) until the registrar's NS records were updated by
+   hand. If you genuinely need to rotate the zone, see the escape hatch
+   documented at the top of `dns.tf`: flip `prevent_destroy` to `false`,
+   `apply`, `destroy`, then immediately re-enter the new NS records at the
+   registrar. Don't automate this step.
+2. **SSM parameters under `/ibatexas/dev/*` that were never declared in
+   Terraform.** `secrets.tf`'s `local.secret_names` and `bootstrap.tf` are the
+   full list of Terraform-managed names; anything pushed via
+   `ibx infra secrets:push` for a key that was never added there is invisible
+   to `terraform destroy`. Run `ibx infra destroy` to see the current list —
+   it prints every such orphan before asking for confirmation, along with the
+   exact `aws ssm delete-parameter` command to remove each one by hand.
+
+Everything else Terraform does manage for dev — the EC2 host (if one exists),
+EIP, security group, IAM roles (including the GitHub Actions OIDC deploy
+role — expect CI deploys to dev to fail until the next `terraform apply`),
+ECR repositories (`force_delete = true`, so this deletes any pushed images
+too), and the Terraform-declared SSM parameters — is destroyed.
 
 ---
 

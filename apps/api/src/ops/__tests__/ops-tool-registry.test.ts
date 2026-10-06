@@ -30,8 +30,8 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
   writeAdjudicatedRefund: ReturnType<typeof vi.fn>;
   publishPaymentStatusChanged: ReturnType<typeof vi.fn>;
   appendRefundEventLog: ReturnType<typeof vi.fn>;
-  resolveAlertFromEnvelope: ReturnType<typeof vi.fn>;
-  closeIncidentFromEnvelope: ReturnType<typeof vi.fn>;
+  writeAdjudicatedAlertResolve: ReturnType<typeof vi.fn>;
+  writeAdjudicatedIncidentClose: ReturnType<typeof vi.fn>;
   readProductBrlVariantIds: ReturnType<typeof vi.fn>;
   upsertOverride: ReturnType<typeof vi.fn>;
   invalidateScheduleCache: ReturnType<typeof vi.fn>;
@@ -73,13 +73,14 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     async (_event: PaymentStatusChangedEvent) => {},
   );
   const appendRefundEventLog = vi.fn(async () => {});
-  // BKL-088 — the alert-resolve + incident-close SYSTEM-write layer spies.
-  const resolveAlertFromEnvelope = vi.fn(async () => ({
-    result: { status: "RESOLVED" },
-  }));
-  const closeIncidentFromEnvelope = vi.fn(async () => ({
-    result: { status: "RESOLVED" },
-  }));
+  // BKL-088/BKL-260 — the alert-resolve + incident-close POST-adjudication write
+  // spies. Each returns the committed row, or `null` when the id does not exist.
+  const writeAdjudicatedAlertResolve = vi.fn(
+    async (): Promise<{ status: string } | null> => ({ status: "RESOLVED" }),
+  );
+  const writeAdjudicatedIncidentClose = vi.fn(
+    async (): Promise<{ status: string } | null> => ({ status: "RESOLVED" }),
+  );
   // SCN-127 — the schedule-override write returns the committed row shape.
   const upsertOverride = vi.fn(async (date: string, data: { isOpen: boolean }) => ({
     date,
@@ -106,8 +107,8 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     paymentCmdSvc: { writeAdjudicatedRefund },
     publishPaymentStatusChanged,
     appendRefundEventLog,
-    opsAlertSvc: { resolveAlertFromEnvelope },
-    incidentSvc: { closeIncidentFromEnvelope },
+    opsAlertSvc: { writeAdjudicatedAlertResolve },
+    incidentSvc: { writeAdjudicatedIncidentClose },
     scheduleSvc: { upsertOverride: upsertOverride as never },
     invalidateScheduleCache: invalidateScheduleCache as never,
     ...over,
@@ -121,8 +122,8 @@ function makeDeps(over: Partial<OpsToolRegistryDeps> = {}): {
     writeAdjudicatedRefund,
     publishPaymentStatusChanged,
     appendRefundEventLog,
-    resolveAlertFromEnvelope,
-    closeIncidentFromEnvelope,
+    writeAdjudicatedAlertResolve,
+    writeAdjudicatedIncidentClose,
     readProductBrlVariantIds,
     upsertOverride,
     invalidateScheduleCache,
@@ -642,65 +643,70 @@ describe("payment.refund.issue executor — POST-adjudication refund write (BKL-
   });
 });
 
-describe("ops.alert.resolve.staff executor — D10 SYSTEM-write layer (BKL-088)", () => {
-  it("builds a SYSTEM ops.alert.resolve envelope: FORCED resolvedBy=staff:<id> + resolutionType=STAFF, principal=system, taint=SYSTEM", async () => {
-    const { deps, resolveAlertFromEnvelope } = makeDeps();
+describe("ops.alert.resolve.staff executor — POST-adjudication write (BKL-088, BKL-260)", () => {
+  it("writes with a FORCED resolvedBy=staff:<id> + resolutionType=STAFF payload and re-adjudicates NOTHING", async () => {
+    const { deps, writeAdjudicatedAlertResolve } = makeDeps();
     const tool = toolByKind(deps, "ops.alert.resolve.staff");
-    // The `reason` rides the staff-verb envelope (audited) — it is NOT forwarded
-    // to the SYSTEM payload (which has no reason slot).
+    // The `reason` rides the audited staff-verb envelope the ops router already
+    // decided — it is NOT forwarded to the write payload (no reason slot there).
     const out = await tool.execute(
       { alertId: "alert_1", reason: "condição normalizada" },
       capsule("staff_9"),
     );
-    expect(resolveAlertFromEnvelope).toHaveBeenCalledTimes(1);
-    const [envelope, state] = resolveAlertFromEnvelope.mock.calls[0]!;
-    expect(envelope.kind).toBe("ops.alert.resolve");
-    expect(envelope.actor.principal).toBe("system");
-    // A SYSTEM write is role-free by contract (never admin:+role).
-    expect(envelope.actor.role).toBeUndefined();
-    expect(envelope.taint).toBe("SYSTEM");
-    expect(envelope.payload).toEqual({
+    expect(writeAdjudicatedAlertResolve).toHaveBeenCalledTimes(1);
+    const [payload] = writeAdjudicatedAlertResolve.mock.calls[0]!;
+    expect(payload).toEqual({
       id: "alert_1",
       resolvedBy: "staff:staff_9", // FROM the Capsule, never the model
       resolutionType: "STAFF",
     });
-    // No reason leaked into the SYSTEM payload.
-    expect(envelope.payload).not.toHaveProperty("reason");
-    expect(state).toEqual({});
+    expect(payload).not.toHaveProperty("reason");
     expect(out).toMatchObject({ alertId: "alert_1", status: "RESOLVED" });
   });
 
+  it("propagates a null write (the alert row does not exist) as status:null — never a fabricated status", async () => {
+    const { deps, writeAdjudicatedAlertResolve } = makeDeps();
+    writeAdjudicatedAlertResolve.mockResolvedValueOnce(null);
+    const tool = toolByKind(deps, "ops.alert.resolve.staff");
+    const out = await tool.execute({ alertId: "gone_1" }, capsule("staff_9"));
+    // BKL-239/240 (PR #412): the ops action render gates its success line on this.
+    expect(out).toMatchObject({ alertId: "gone_1", status: null });
+  });
+
   it("degrades resolvedBy to a traceable marker when the Capsule carries no staffId (never fabricates a staff id)", async () => {
-    const { deps, resolveAlertFromEnvelope } = makeDeps();
+    const { deps, writeAdjudicatedAlertResolve } = makeDeps();
     const tool = toolByKind(deps, "ops.alert.resolve.staff");
     await tool.execute({ alertId: "alert_1" }, capsule(null));
-    const [envelope] = resolveAlertFromEnvelope.mock.calls[0]!;
-    expect((envelope.payload as { resolvedBy: string }).resolvedBy).toBe(
-      "ops:unknown",
-    );
+    const [payload] = writeAdjudicatedAlertResolve.mock.calls[0]!;
+    expect((payload as { resolvedBy: string }).resolvedBy).toBe("ops:unknown");
   });
 });
 
-describe("incident.ticket.close.staff executor — D10 SYSTEM-write layer (BKL-088)", () => {
-  it("builds a SYSTEM incident.ticket.close envelope: FORCED resolvedBy=staff:<id> + resolutionType=STAFF + closingTurnId null", async () => {
-    const { deps, closeIncidentFromEnvelope } = makeDeps();
+describe("incident.ticket.close.staff executor — POST-adjudication write (BKL-088, BKL-260)", () => {
+  it("writes with a FORCED resolvedBy=staff:<id> + resolutionType=STAFF + closingTurnId null payload", async () => {
+    const { deps, writeAdjudicatedIncidentClose } = makeDeps();
     const tool = toolByKind(deps, "incident.ticket.close.staff");
     const out = await tool.execute(
       { incidentId: "inc_1" },
       capsule("staff_3"),
     );
-    expect(closeIncidentFromEnvelope).toHaveBeenCalledTimes(1);
-    const [envelope] = closeIncidentFromEnvelope.mock.calls[0]!;
-    expect(envelope.kind).toBe("incident.ticket.close");
-    expect(envelope.actor.principal).toBe("system");
-    expect(envelope.taint).toBe("SYSTEM");
-    expect(envelope.payload).toEqual({
+    expect(writeAdjudicatedIncidentClose).toHaveBeenCalledTimes(1);
+    const [payload] = writeAdjudicatedIncidentClose.mock.calls[0]!;
+    expect(payload).toEqual({
       id: "inc_1",
       resolvedBy: "staff:staff_3",
       resolutionType: "STAFF",
       closingTurnId: null,
     });
     expect(out).toMatchObject({ incidentId: "inc_1", status: "RESOLVED" });
+  });
+
+  it("propagates a null write (the incident row does not exist) as status:null", async () => {
+    const { deps, writeAdjudicatedIncidentClose } = makeDeps();
+    writeAdjudicatedIncidentClose.mockResolvedValueOnce(null);
+    const tool = toolByKind(deps, "incident.ticket.close.staff");
+    const out = await tool.execute({ incidentId: "gone_1" }, capsule("staff_3"));
+    expect(out).toMatchObject({ incidentId: "gone_1", status: null });
   });
 });
 
@@ -769,5 +775,48 @@ describe("schedule.override.set executor — domain-service write + cache invali
     // The WARN carries the Capsule staffId (audit of who), never a payload field.
     const [ctx] = warn.mock.calls[0]!;
     expect((ctx as { staffId?: string }).staffId).toBe("staff_1");
+  });
+});
+
+// ── BKL-240 — menu.special.set must not report a phantom specialId ─────────────
+//
+// `OpsDailySpecialWriter.update` is ROW-OR-NULL (the domain service's `mutateOrNull`,
+// packages/domain/src/services/daily-special.service.ts:67 — a missing id returns
+// `null`, it does NOT throw). The executor used to DISCARD that null and report
+// `existing.id` regardless, so a row deleted between the day's `list` and the
+// `update` still produced a truthy id — and the ops action render announced a special
+// that does not exist. The null is now the executor's committed-shape failure signal.
+
+describe("menu.special.set executor — the ROW-OR-NULL update is propagated (BKL-240)", () => {
+  const SPECIAL_PAYLOAD = { productId: "prod_1", date: "2026-07-11" };
+
+  function withUpdate(update: ReturnType<typeof vi.fn>) {
+    return makeDeps({
+      dailySpecialSvc: {
+        list: vi.fn(async () => [{ id: "special_1", medusaProductId: "prod_1" }]),
+        create: vi.fn(async () => ({ id: "special_new" })),
+        update,
+      },
+    }).deps;
+  }
+
+  it("update → null (row vanished) yields specialId:null, never the requested id", async () => {
+    const deps = withUpdate(vi.fn(async () => null));
+    const out = (await toolByKind(deps, "menu.special.set").execute(
+      SPECIAL_PAYLOAD,
+      capsule("staff_1"),
+    )) as { specialId: string | null; created: boolean };
+    expect(out.specialId).toBeNull();
+    expect(out.created).toBe(false);
+  });
+
+  it("update → the row yields the committed specialId (unchanged behaviour)", async () => {
+    const deps = withUpdate(vi.fn(async () => ({ id: "special_1" })));
+    const out = (await toolByKind(deps, "menu.special.set").execute(
+      SPECIAL_PAYLOAD,
+      capsule("staff_1"),
+    )) as { specialId: string | null; created: boolean };
+    expect(out.specialId).toBe("special_1");
+    expect(out.created).toBe(false);
   });
 });

@@ -15,6 +15,9 @@ const {
   __resetMenuItemMemoForTest,
   resolveMenuOverviewText,
   __resetMenuOverviewMemoForTest,
+  resolveDietaryOptionsText,
+  __resetMenuDietaryMemoForTest,
+  composeMenuContentsText,
 } = await import("../menu-item-resolver.js");
 
 const product = (overrides: Record<string, unknown> = {}) => ({
@@ -49,7 +52,7 @@ describe("resolveMenuOverviewText — wildcard listing, per-turn memo, fail-clos
         product({ id: "p2", title: "Farofa", price: 1500, categoryHandle: "acompanhamentos" }),
       ],
     });
-    const text = await resolveMenuOverviewText("turn-1", CTX);
+    const text = await resolveMenuOverviewText("turn-1", "o que tem no cardápio?", CTX);
     expect(text).toBe("No nosso cardápio: Farofa — R$ 15,00; Costela — R$ 89,00.");
     // The wildcard path — same source the catalog route uses.
     expect(searchProductsMock.mock.calls[0]![0]).toMatchObject({ query: "*" });
@@ -57,20 +60,96 @@ describe("resolveMenuOverviewText — wildcard listing, per-turn memo, fail-clos
 
   it("memoizes on turnId: two calls in the same turn coalesce onto ONE read (byte-equal)", async () => {
     searchProductsMock.mockResolvedValue({ products: [product({ title: "Costela", price: 8900 })] });
-    const a = await resolveMenuOverviewText("turn-1", CTX);
-    const b = await resolveMenuOverviewText("turn-1", CTX);
+    const a = await resolveMenuOverviewText("turn-1", "o que tem no cardápio?", CTX);
+    const b = await resolveMenuOverviewText("turn-1", "o que tem no cardápio?", CTX);
     expect(a).toBe(b);
     expect(searchProductsMock).toHaveBeenCalledTimes(1);
   });
 
   it("empty catalog → undefined (honest UNKNOWN, never a fabricated menu)", async () => {
     searchProductsMock.mockResolvedValue({ products: [] });
-    expect(await resolveMenuOverviewText("turn-1", CTX)).toBeUndefined();
+    expect(await resolveMenuOverviewText("turn-1", "o que tem no cardápio?", CTX)).toBeUndefined();
   });
 
   it("catalog read error → undefined (fail-closed)", async () => {
     searchProductsMock.mockRejectedValue(new Error("typesense down"));
-    expect(await resolveMenuOverviewText("turn-1", CTX)).toBeUndefined();
+    expect(await resolveMenuOverviewText("turn-1", "o que tem no cardápio?", CTX)).toBeUndefined();
+  });
+});
+
+// ── BKL-273 — the READ-level allergen guards ───────────────────────────────────
+// The three MENU reads whose span-suppression this ticket removed. Each proves the
+// SAME shape LE2-029 proved for the pairing read: an allergen/diet-marked ask gets
+// NO answer FROM THE READ (so the span survives and §O#15 keeps the question), and
+// the identical ask WITHOUT the marker still answers — which is what makes the
+// negative directional rather than a dead feature.
+describe("BKL-273 — allergen-marked MENU reads refuse at the READ", () => {
+  it("resolveMenuOverviewText: allergen ask → undefined, and NEVER touches the catalog", async () => {
+    searchProductsMock.mockResolvedValue({
+      products: [product({ title: "Costela", price: 8900, categoryHandle: "carnes" })],
+    });
+    expect(
+      await resolveMenuOverviewText("turn-a", "o que tem no cardápio sem lactose?", CTX),
+    ).toBeUndefined();
+    // The guard is BEFORE the memo and before the egress: no listing is even read,
+    // so nothing this turn must not hold can be cached.
+    expect(searchProductsMock).not.toHaveBeenCalled();
+  });
+
+  it("resolveMenuOverviewText: THE CONTROL — the same turn's unmarked ask still answers", async () => {
+    searchProductsMock.mockResolvedValue({
+      products: [product({ title: "Costela", price: 8900, categoryHandle: "carnes" })],
+    });
+    expect(await resolveMenuOverviewText("turn-b", "o que tem no cardápio?", CTX)).toBe(
+      "No nosso cardápio: Costela — R$ 89,00.",
+    );
+  });
+
+  it("resolveDietaryOptionsText: a MIXED vegetarian+allergen ask → undefined", async () => {
+    __resetMenuDietaryMemoForTest();
+    searchProductsMock.mockResolvedValue({
+      products: [product({ title: "Salada", price: 2500, tags: ["vegetariano"] })],
+    });
+    expect(
+      await resolveDietaryOptionsText(
+        "turn-c",
+        "vegetariano",
+        "tem opção vegetariana sem glúten?",
+        CTX,
+      ),
+    ).toBeUndefined();
+    expect(searchProductsMock).not.toHaveBeenCalled();
+  });
+
+  it("resolveDietaryOptionsText: THE CONTROL — the unmarked dietary ask still answers", async () => {
+    __resetMenuDietaryMemoForTest();
+    searchProductsMock.mockResolvedValue({
+      products: [product({ title: "Salada", price: 2500, tags: ["vegetariano"] })],
+    });
+    const out = await resolveDietaryOptionsText(
+      "turn-d",
+      "vegetariano",
+      "tem opção vegetariana?",
+      CTX,
+    );
+    expect(out).toBeDefined();
+    expect(out).toContain("Salada");
+  });
+
+  it("composeMenuContentsText: allergen ask → undefined even with a full description", () => {
+    const item = {
+      id: "prod_1",
+      title: "Costela Defumada",
+      price: 8900,
+      description: "Costela bovina defumada 12h.",
+      categoryHandle: "carnes",
+      inStock: true,
+    };
+    expect(composeMenuContentsText(item, "o que vem na costela sem glúten?")).toBeUndefined();
+    // THE CONTROL: identical item, marker removed → the first-party blurb composes.
+    expect(composeMenuContentsText(item, "o que vem na costela?")).toBe(
+      "Costela Defumada: Costela bovina defumada 12h.",
+    );
   });
 });
 

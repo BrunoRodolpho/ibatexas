@@ -53,6 +53,186 @@ import type {
 } from "@claustrum/core";
 import { isAuthenticatedCustomer } from "./ibatexas-investigator.js";
 
+// ── BKL-234 — the SCHEDULE-CLUSTER co-render declarations (P2 / §O#1) ─────────
+
+/**
+ * The schedule read cluster's claim types. Every member is a projection of the SAME
+ * first-party schedule read the investigator performs once per turn
+ * (`readSchedule` / `readStoreHours` / `readHoursForDate`), so no two members can
+ * contradict each other: they report DIFFERENT ATTRIBUTES of one consistent source
+ * (the current meal period, TODAY's operating-hours string, a QUERIED date's
+ * operating-hours string), not competing answers to one question.
+ */
+const SCHEDULE_CLUSTER_TYPES = [
+  "STORE_OPEN_NOW",
+  "STORE_HOURS",
+  "STORE_HOURS_FOR_DATE",
+] as const;
+
+/**
+ * BKL-234 — declare every same-subject PAIR inside the schedule cluster COMPATIBLE.
+ *
+ * ── Why this is needed (the defect) ──────────────────────────────────────────
+ * `DEFAULT_CONSISTENCY_TABLE` declares no relation between these types, and the
+ * kernel's P2 stage applies §O#1 DEFAULT-DENY to an un-modelled same-subject pair:
+ * both members are SUPPRESSED and the turn terminal becomes ESCALATE. So an hours
+ * question that legitimately resolved BOTH "today's hours" and "the current period"
+ * annihilated itself and delivered the escalation copy instead of two grounded facts.
+ *
+ * Worse, it was a COIN FLIP rather than a consistent failure: consistency partitions
+ * by SUBJECT, and for a public single-key type `ibatexas-planner.ts` leaves `subject`
+ * exactly as the model emitted it (there is no canonicalization — only owner-scoped
+ * and STORE_HOURS_FOR_DATE subjects are derived first-party). Two claims the 4B
+ * happened to label "loja" collided and escalated; the same two labelled "loja" and
+ * "restaurante" landed in different buckets and both rendered. Declaring the pairs
+ * removes the model's free-text subject choice from the safety outcome entirely.
+ *
+ * ── Why COMPATIBLE is the SOUND relation, not a weakening ────────────────────
+ * §O#1's default-deny exists because P2 is guaranteed only relative to DECLARED
+ * constraints — an UNREVIEWED pair must fail safe. This is that review, and it is
+ * discharged MECHANICALLY rather than by taste. The members are complementary
+ * ATTRIBUTE projections of ONE schedule load: `createDomainTriadReadBackend`
+ * (turn-reads.ts) resolves the schedule through a single-flight per-turn memo
+ * (`scheduleP ??= loadSchedule()`), and `readSchedule` (STORE_OPEN_NOW),
+ * `readStoreHours` (STORE_HOURS), `readHoursForDate` (STORE_HOURS_FOR_DATE) and
+ * EVERY falsifier read are pure projections of that one loaded object. "The period is
+ * closed" and "today's hours are 11h–15h / 18h–23h" are both true at 16:00 — there is
+ * no assignment of the schedule state under which two cluster members disagree, so no
+ * co-render of them can surface a self-contradiction (SDD §C P2). MUTUAL_EXCLUSION
+ * would be false, and IMPLICATION would assert a derivation none of them performs.
+ *
+ * THE LOAD-BEARING PRECONDITION (why this is structural, not merely empirical): the
+ * members do NOT share a freshness policy — STORE_OPEN_NOW is `must_read_this_turn`
+ * while STORE_HOURS is `{ kind: "cacheable", ttl: 3_600_000 }` (1 HOUR). Read naively
+ * that is exactly the dangerous "one cached, one live" pairing, in which a stale hours
+ * string could co-render with a fresh open-now signal and contradict it. It cannot
+ * today, for two reasons and only two:
+ *   1. the backend instance — and therefore the memo — is constructed INSIDE the
+ *      per-turn gatherer (`ibatexas-investigator.ts`: "PER-TURN backend … single-
+ *      flight, NO cross-turn cache"), so nothing is carried between turns; and
+ *   2. within a turn both values project from the SAME load, which makes the 1h TTL
+ *      vacuous — the entry is always written by THIS turn's read.
+ * If either ever stops holding (independent loads, or a backend/ledger outliving a
+ * turn), the TTL becomes live and this declaration is no longer justified. That is why
+ * the premise is PINNED rather than merely documented:
+ * `__tests__/schedule-cluster-single-load.test.ts` goes RED if the cluster reads ever
+ * stop sharing one load, or if the memo starts surviving across turns.
+ *
+ * SAFETY PRESERVED — this narrows §O#1 for exactly these pairs and nothing else:
+ *   · a SAME-TYPE pair still goes through `SAME_TYPE_VALUE_CONFLICT` (two VALIDATED
+ *     STORE_HOURS carrying different values still suppress both — untouched);
+ *   · a cluster member paired with any type OUTSIDE the cluster is still UNDECLARED
+ *     and still default-denies;
+ *   · only VALIDATED members ever reach P2 (§D), so this can never promote an
+ *     UNKNOWN/REFUSED claim — a holiday/override still demotes STORE_HOURS to UNKNOWN
+ *     and it is dropped before this table is consulted.
+ * Pairs are generated (never hand-listed) so a future cluster member cannot be added
+ * to the type list while silently missing a pair.
+ */
+export const SCHEDULE_CLUSTER_COMPATIBLE: readonly ConsistencyConstraint[] =
+  SCHEDULE_CLUSTER_TYPES.flatMap((typeA, i) =>
+    SCHEDULE_CLUSTER_TYPES.slice(i + 1).map(
+      (typeB): ConsistencyConstraint => ({
+        typeA,
+        typeB,
+        relation: "COMPATIBLE",
+      }),
+    ),
+  );
+
+// ── F-10 — the STATUS-COMPANION co-render declaration (P2 / §O#1) ─────────────
+
+/**
+ * F-10 — declare (`ORDER_FULFILLMENT_STAGE`, `PAYMENT_STATUS`) COMPATIBLE. This is
+ * the BKL-234 class on a new pair; the reasoning below is the review §O#1 demands.
+ *
+ * ── Why this is needed (the defect, MEASURED) ────────────────────────────────
+ * A bare status question — "qual o status?" with NO order/payment/reservation
+ * discriminator — hits the hand-written bare-"status" fallback in
+ * `required-claim-decomposer.ts`, which deliberately OVER-INCLUDES both span classes
+ * (`ORDER_STATUS_Q` + `PAYMENT_STATUS_Q`) rather than silently drop either companion.
+ * §O#15 completeness then requires BOTH `ORDER_FULFILLMENT_STAGE` and `PAYMENT_STATUS`,
+ * and for a customer with ONE owned order both resolve on the SAME subject (that
+ * orderId — both types are `perResourceKey`, subjected by the order id). The pair had
+ * no declared relation, so the kernel's P2 stage applied §O#1 DEFAULT-DENY: both
+ * VALIDATED members SUPPRESSED, terminal ESCALATE. An answerable question — the
+ * customer's own order, both facts freshly read and ownership-confirmed — delivered a
+ * staff handoff instead. Safe, but wrong: the over-inclusion that exists to avoid
+ * dropping a companion was annihilating BOTH.
+ *
+ * Measured on BOTH routes before the fix (R2-S7 recorded it; re-measured here):
+ * the CLASSIFY-ONLY path (both types are `CLASSIFY_ONLY_ELIGIBLE_TYPES`, so a bare
+ * status ask resolves deterministically with no model proposal) and the MODEL path
+ * (the planner proposes both on one subject) BOTH terminated in the same ESCALATE.
+ *
+ * ── Why COMPATIBLE is the SOUND relation, not a weakening ────────────────────
+ * The two types answer DIFFERENT QUESTIONS about one order: the FULFILLMENT stage is
+ * kitchen/delivery progress (`em preparo` / `saiu para entrega`), the PAYMENT status is
+ * the money state (`pagamento pendente` / `pago`). They are complementary attributes,
+ * not competing answers, so there is no assignment of an order's state under which
+ * co-rendering them surfaces a self-contradiction (SDD §C P2). Every combination is a
+ * coherent real order: `em preparo` + `pagamento pendente` (placed, unpaid),
+ * `saiu para entrega` + `pago` (paid, out for delivery), `em preparo` + `pago`
+ * (prepaid, cooking), and `saiu para entrega` + `pagamento pendente` (pay-on-delivery,
+ * which this restaurant sells). MUTUAL_EXCLUSION would therefore be false, and
+ * IMPLICATION would assert an entailment NEITHER performs — a paid order is not thereby
+ * delivered, and a delivered order is not thereby paid (that is exactly the
+ * pay-on-delivery case, and asserting otherwise is the `fulfillment-claimed` /
+ * `payment-settled` confabulation the responder's success guard exists to prevent).
+ *
+ * THE LOAD-BEARING PRECONDITION, and why it is STRICTLY stronger than BKL-234's. That
+ * declaration needed a pinned single-load argument because its members do NOT share a
+ * freshness policy (`STORE_OPEN_NOW` is `must_read_this_turn` while `STORE_HOURS` is
+ * cacheable at a 1h TTL), so a stale value could in principle co-render with a fresh
+ * one. This pair has NO such hazard to discharge: EVERY required-evidence row of BOTH
+ * claimdefs is `must_read_this_turn` (`./claimdefs/order-fulfillment-stage.claim.ts`,
+ * `./claimdefs/payment-status.claim.ts` — evidence rows and falsifier rows alike), so
+ * neither member can ever carry a cached value into a co-render. Both are also
+ * `ownershipPolicy: "required"` and `perResourceKey`, so a same-subject co-render is by
+ * construction two live, owner-confirmed reads OF THE SAME ORDER — never a join across
+ * two orders, and never a guest's.
+ *
+ * SAFETY PRESERVED — this narrows §O#1 for exactly this ONE pair and nothing else:
+ *   · a SAME-TYPE pair still goes through `SAME_TYPE_VALUE_CONFLICT` (two VALIDATED
+ *     PAYMENT_STATUS claims with different values still suppress both — untouched);
+ *   · `ORDER_FULFILLMENT_STAGE` ⊥ `ORDER_ESTIMATED_ARRIVAL` stays MUTUAL_EXCLUSION in
+ *     the published table — declaring this pair does not make the stage type freely
+ *     co-renderable with everything;
+ *   · either type paired with any OTHER type is still UNDECLARED and still default-denies;
+ *   · only VALIDATED members ever reach P2 (§D), so this can never promote an
+ *     UNKNOWN/REFUSED claim — a refund or chargeback still demotes PAYMENT_STATUS to
+ *     UNKNOWN and it is dropped BEFORE this table is consulted.
+ *
+ * DELIBERATELY HAND-LISTED, unlike {@link SCHEDULE_CLUSTER_COMPATIBLE}. That constant
+ * GENERATES its pairs from a member list because its justification is CLUSTER-WIDE (every
+ * member projects from one schedule load, so a new member inherits the argument). No
+ * such cluster exists here: the reasoning above is specific to THESE TWO types'
+ * complementary semantics. Generating from a "status types" list would silently extend
+ * COMPATIBLE to a future third status type whose relation nobody reviewed — which is
+ * precisely what §O#1's default-deny is for.
+ */
+export const STATUS_COMPANIONS_COMPATIBLE: readonly ConsistencyConstraint[] = [
+  {
+    typeA: "ORDER_FULFILLMENT_STAGE",
+    typeB: "PAYMENT_STATUS",
+    relation: "COMPATIBLE",
+  },
+];
+
+/**
+ * The IbateXas P2 constraint table: the published kernel-foundation table PLUS the
+ * repo's own reviewed {@link SCHEDULE_CLUSTER_COMPATIBLE} and
+ * {@link STATUS_COMPANIONS_COMPATIBLE} declarations. This is the DEFAULT for both deps
+ * builders below, so the ops and customer planes get an identical P2 verdict for a
+ * schedule or status turn (the ops plane composes the same kernel deps; a per-plane
+ * table would be a second source of truth for consistency).
+ */
+export const IBATEXAS_CONSISTENCY_TABLE: readonly ConsistencyConstraint[] = [
+  ...DEFAULT_CONSISTENCY_TABLE,
+  ...SCHEDULE_CLUSTER_COMPATIBLE,
+  ...STATUS_COMPANIONS_COMPATIBLE,
+];
+
 export interface IbatexasClaimsKernelDepsConfig {
   /**
    * C1 ownership validation predicate (SDD §E C1; Inv 2): does `actor` own
@@ -73,8 +253,10 @@ export interface IbatexasClaimsKernelDepsConfig {
    */
   readonly now?: () => number;
   /**
-   * The P2 same-subject constraint table. Defaults to the published
-   * kernel-foundation {@link DEFAULT_CONSISTENCY_TABLE}.
+   * The P2 same-subject constraint table. Defaults to
+   * {@link IBATEXAS_CONSISTENCY_TABLE} (the published kernel-foundation table plus
+   * the reviewed co-render declarations: the schedule cluster, BKL-234, and the
+   * status companions, F-10).
    */
   readonly consistencyTable?: readonly ConsistencyConstraint[];
 }
@@ -98,7 +280,7 @@ export function createIbatexasClaimsKernelDeps(
 
   return {
     soundness,
-    consistency: { table: config.consistencyTable ?? DEFAULT_CONSISTENCY_TABLE },
+    consistency: { table: config.consistencyTable ?? IBATEXAS_CONSISTENCY_TABLE },
   };
 }
 
@@ -207,7 +389,7 @@ export interface PerTurnClaimsKernelFacts {
   readonly ownership: OwnershipFacts;
   /** This turn's Action verdict + dispatch outcomes for the REAL `outcomeConfirmed`. */
   readonly outcomes?: readonly ActionOutcome[];
-  /** Optional consistency-table override; defaults to DEFAULT_CONSISTENCY_TABLE. */
+  /** Optional consistency-table override; defaults to {@link IBATEXAS_CONSISTENCY_TABLE}. */
   readonly consistencyTable?: readonly ConsistencyConstraint[];
 }
 
@@ -231,7 +413,7 @@ export function createPerTurnClaimsKernelDeps(
       now: facts.now,
     },
     consistency: {
-      table: facts.consistencyTable ?? DEFAULT_CONSISTENCY_TABLE,
+      table: facts.consistencyTable ?? IBATEXAS_CONSISTENCY_TABLE,
     },
   };
 }

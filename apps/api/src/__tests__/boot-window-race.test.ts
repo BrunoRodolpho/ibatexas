@@ -16,6 +16,8 @@
 // as an explicit parameter, eliminating the boot-window entirely.
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing"
+import { rk } from "@ibatexas/tools"
 import { buildEnvelope, type IntentEnvelope } from "@adjudicate/core"
 import type { PaymentStatusChangedEvent } from "@ibatexas/types"
 
@@ -26,78 +28,23 @@ const mockPublishNatsEvent = vi.hoisted(() => vi.fn())
 const mockGetAuditSinkEmit = vi.hoisted(() => vi.fn())
 const mockAdjudicate = vi.hoisted(() => vi.fn())
 
-interface Entry {
-  value: string
-  ttl: number
-}
-const store = new Map<string, Entry>()
-
-function makeRedisStub() {
-  return {
-    async get(key: string): Promise<string | null> {
-      const e = store.get(key)
-      return e ? e.value : null
-    },
-    async set(
-      key: string,
-      value: string,
-      opts?: { NX?: boolean; EX?: number },
-    ): Promise<string | null> {
-      const exists = store.has(key)
-      if (opts?.NX && exists) return null
-      store.set(key, { value, ttl: opts?.EX ?? -1 })
-      return "OK"
-    },
-    async del(key: string): Promise<number> {
-      return store.delete(key) ? 1 : 0
-    },
-    async ttl(key: string): Promise<number> {
-      return store.get(key)?.ttl ?? -2
-    },
-    async incr(key: string): Promise<number> {
-      const e = store.get(key)
-      const n = e ? Number.parseInt(e.value, 10) + 1 : 1
-      store.set(key, { value: String(n), ttl: e?.ttl ?? -1 })
-      return n
-    },
-    async decr(key: string): Promise<number> {
-      const e = store.get(key)
-      const n = e ? Number.parseInt(e.value, 10) - 1 : -1
-      store.set(key, { value: String(n), ttl: e?.ttl ?? -1 })
-      return n
-    },
-    async expire(key: string, seconds: number): Promise<number> {
-      const e = store.get(key)
-      if (!e) return 0
-      store.set(key, { value: e.value, ttl: seconds })
-      return 1
-    },
-    scanIterator(opts: { MATCH?: string; COUNT?: number }) {
-      const pattern = opts.MATCH ?? "*"
-      const re = new RegExp(
-        "^" + pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$",
-      )
-      const keys = [...store.keys()].filter((k) => re.test(k))
-      return (async function* () {
-        for (const k of keys) yield k
-      })()
-    },
-    async lPush(_k: string, _v: string): Promise<number> {
-      return 1
-    },
-  }
-}
-let redisStub: ReturnType<typeof makeRedisStub>
+// R5-S12 — the copy-pasted hand-rolled double is retired for the canonical
+// adapter, threaded in through the `startDeferResolverSubscriber({ redis })`
+// seam. `rk()` runs REAL (Hard Rule #7): the retired double was reached
+// through a faked `rk` hardcoding a `test:` prefix, so every key this file
+// asserted on was a test-local invention rather than production's.
+let redis: InMemoryRedis
 
 vi.mock("@ibatexas/nats-client", () => ({
   subscribeNatsEvent: mockSubscribeNatsEvent,
   publishNatsEvent: mockPublishNatsEvent,
 }))
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => redisStub),
-  rk: (key: string) => `test:${key}`,
-}))
+const mockGetRedisClient = vi.hoisted(() => vi.fn())
+vi.mock("@ibatexas/tools", async (orig) => {
+  const real = await orig<typeof import("@ibatexas/tools")>()
+  return { ...real, getRedisClient: mockGetRedisClient }
+})
 
 vi.mock("@adjudicate/core/kernel", async () => {
   const real = await vi.importActual<typeof import("@adjudicate/core/kernel")>(
@@ -115,20 +62,28 @@ vi.mock("@sentry/node", () => ({
   init: vi.fn(),
 }))
 
-function parkEnvelope(
+async function parkEnvelope(
   sessionId: string,
   envelope: IntentEnvelope,
   signal: string,
   ttlSeconds = 900,
-): void {
-  store.set(`test:defer:pending:${sessionId}`, {
-    value: JSON.stringify({
-      envelope: { ...envelope, actorPrincipal: envelope.actor.principal },
+): Promise<void> {
+  await redis.client.set(
+    parkKey(sessionId),
+    JSON.stringify({
+      envelope: {
+        ...envelope,
+        actorPrincipal: envelope.actor.principal,
+      },
       signal,
       parkedAt: "2025-01-01T00:00:00.000Z",
     }),
-    ttl: ttlSeconds,
-  })
+    { EX: ttlSeconds } as { EX: number },
+  )
+}
+
+function parkKey(sessionId: string): string {
+  return rk(`defer:pending:${sessionId}`)
 }
 
 function paymentConfirmed(): PaymentStatusChangedEvent {
@@ -145,9 +100,9 @@ function paymentConfirmed(): PaymentStatusChangedEvent {
 
 describe("NEW-P0-X1 boot-window race", () => {
   beforeEach(() => {
-    store.clear()
     vi.clearAllMocks()
-    redisStub = makeRedisStub()
+    redis = createInMemoryRedis()
+    mockGetRedisClient.mockImplementation(async () => redis.client)
     mockGetAuditSinkEmit.mockResolvedValue(undefined)
   })
 
@@ -161,7 +116,7 @@ describe("NEW-P0-X1 boot-window race", () => {
       nonce: "boot-window-nonce-1",
     })
 
-    parkEnvelope(sessionId, envelope, "payment.confirmed")
+    await parkEnvelope(sessionId, envelope, "payment.confirmed")
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
 
     // Simulate the boot-window: subscriber STARTS without dispatcher wiring.
@@ -170,7 +125,7 @@ describe("NEW-P0-X1 boot-window race", () => {
       await import("../subscribers/defer-resolver.js")
     setResumeIntentDispatcher(null) // ensure dispatcher is unset
 
-    await startDeferResolverSubscriber()
+    await startDeferResolverSubscriber(undefined, { redis: redis.client })
     const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as unknown as [
       string,
       (payload: unknown) => Promise<void>,
@@ -188,11 +143,10 @@ describe("NEW-P0-X1 boot-window race", () => {
     // Post-fix behavior: either the dispatcher is required to be present
     // before starting (so this scenario is impossible), or the resolver
     // refuses to commit when dispatcher is missing (envelope survives).
-    const pendingStillPresent =
-      store.get(`test:defer:pending:${sessionId}`) !== undefined
-    const resumedKeys = [...store.keys()].filter((k) =>
-      k.startsWith("test:defer:resumed:"),
-    )
+    const pendingStillPresent = redis.peek(parkKey(sessionId)) !== undefined
+    const resumedKeys = redis
+      .keys()
+      .filter((k) => k.startsWith(rk("defer:resumed:")))
 
     // The fix prevents silent commit when there is no dispatcher.
     // Either pending is preserved OR the resumed marker is NOT set.
@@ -212,7 +166,7 @@ describe("NEW-P0-X1 boot-window race", () => {
       nonce: "with-dispatcher-nonce-1",
     })
 
-    parkEnvelope(sessionId, envelope, "payment.confirmed")
+    await parkEnvelope(sessionId, envelope, "payment.confirmed")
     mockAdjudicate.mockReturnValue({ kind: "EXECUTE" })
 
     const dispatcher = vi.fn(async () => undefined)
@@ -220,7 +174,7 @@ describe("NEW-P0-X1 boot-window race", () => {
       await import("../subscribers/defer-resolver.js")
     // Post-fix: wire dispatcher BEFORE starting the subscriber.
     setResumeIntentDispatcher(dispatcher)
-    await startDeferResolverSubscriber()
+    await startDeferResolverSubscriber(undefined, { redis: redis.client })
 
     const [, callback] = mockSubscribeNatsEvent.mock.calls[0] as unknown as [
       string,

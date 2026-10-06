@@ -8,11 +8,15 @@
 // - Envelope shape: kind="reservation.waitlist.join", taint="UNTRUSTED", principal="llm"
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { joinWaitlist } from "../join-waitlist.js"
+import {
+  joinWaitlist,
+  joinWaitlistPreAdjudicated,
+} from "../join-waitlist.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
 const mockJoinWaitlistFromEnvelope = vi.hoisted(() => vi.fn())
+const mockJoinWaitlistSvc = vi.hoisted(() => vi.fn())
 // BKL-046: sentinel audit sink returned by the mocked `getAuditSink()`; the
 // factory-spy below asserts the tool threads it into `createReservationService`.
 const mockAuditSink = vi.hoisted(() => ({ emit: vi.fn() }))
@@ -20,6 +24,7 @@ const mockGetAuditSink = vi.hoisted(() => vi.fn(() => mockAuditSink))
 const mockCreateReservationService = vi.hoisted(() =>
   vi.fn((_options?: { auditSink?: unknown }) => ({
     joinWaitlistFromEnvelope: mockJoinWaitlistFromEnvelope,
+    joinWaitlist: mockJoinWaitlistSvc,
   })),
 )
 
@@ -134,5 +139,50 @@ describe("joinWaitlist", () => {
     expect(mockCreateReservationService).toHaveBeenCalledOnce()
     const options = mockCreateReservationService.mock.calls[0]?.[0]
     expect(options?.auditSink).toBe(mockAuditSink)
+  })
+})
+
+// BKL-243 — the conductor-dispatch entry point. Registry dispatch runs on a
+// kernel EXECUTE the Conductor already audited and ledger-claimed; re-minting an
+// envelope here adjudicated the same `reservation.waitlist.join` intent a second
+// time. Same class and same fix shape as BKL-232 (`reservation.modify`, PR #386).
+describe("joinWaitlistPreAdjudicated (BKL-243)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("writes via the bare service method and NEVER re-adjudicates", async () => {
+    mockJoinWaitlistSvc.mockResolvedValue({ waitlistId: "wl_02", position: 3 })
+
+    const result = await joinWaitlistPreAdjudicated(BASE_INPUT)
+
+    // No second envelope, no second kernel run, no second audit record.
+    expect(mockJoinWaitlistFromEnvelope).not.toHaveBeenCalled()
+    // The mutation still runs exactly once, with the customerId from the payload.
+    expect(mockJoinWaitlistSvc).toHaveBeenCalledExactlyOnceWith({
+      customerId: "cus_01",
+      timeSlotId: "ts_01",
+      partySize: 2,
+    })
+    // Same result shape + pt-BR copy as the self-adjudicating entry point.
+    expect(result.waitlistId).toBe("wl_02")
+    expect(result.position).toBe(3)
+    expect(result.message).toContain("posição 3")
+  })
+
+  it("renders the already-waiting copy for position 1, exactly as the REST path does", async () => {
+    mockJoinWaitlistSvc.mockResolvedValue({ waitlistId: "wl_02", position: 1 })
+
+    const result = await joinWaitlistPreAdjudicated(BASE_INPUT)
+
+    expect(result.message).toContain("posição: 1")
+  })
+
+  it("propagates a write failure instead of reporting a join that never happened", async () => {
+    mockJoinWaitlistSvc.mockRejectedValue(new Error("Horário não encontrado."))
+
+    await expect(joinWaitlistPreAdjudicated(BASE_INPUT)).rejects.toThrow(
+      "Horário não encontrado.",
+    )
   })
 })

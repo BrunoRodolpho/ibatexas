@@ -25,6 +25,7 @@ import {
   type IntentEnvelope,
 } from "@adjudicate/core";
 import {
+  createToolRegistry,
   handleTurn,
   type Adjudicator,
   type ChannelMessage,
@@ -36,6 +37,7 @@ import {
   type SessionPort,
   type TelemetryPort,
   type TenantResolver,
+  type ToolRegistry,
 } from "@claustrum/core";
 import { IBATEXAS_COMPOSED_PACKS } from "@ibatexas/packs-composed";
 import {
@@ -49,7 +51,11 @@ import {
   noopGroundingProvider,
 } from "../../claustrum/noop-memory-grounding.js";
 import { composeOpsConductor } from "../ops-conductor.js";
-import { createOpsToolRegistry } from "../ops-tool-registry.js";
+import { createIbatexasPromptComposer } from "../../claustrum/prompts/ibatexas-prompts.js";
+import {
+  createOpsToolRegistry,
+  listOpsToolDefinitions,
+} from "../ops-tool-registry.js";
 import { createOpsResolver } from "../ops-resolver.js";
 import type { OrderCandidate } from "../ops-order-resolution.js";
 
@@ -171,6 +177,31 @@ type FakeOpsOrder = {
   fulfillmentStatus: string | null;
 } | null;
 
+/** BKL-240 — what a failing-but-NOT-throwing ops executor hands the dispatcher. */
+const RETURNED_FAILURE = {
+  success: false,
+  message: "Não foi possível aplicar a alteração no catálogo.",
+};
+
+/** The ops registry with ONE capability's `execute` swapped for a RETURNED failure.
+ *  Everything else stays REAL — the composed router, the kernel, the resolver, the
+ *  conductor's responder wiring — so the only variable is the value the tool hands
+ *  back to @claustrum's dispatcher (which reports `executed`, since nothing threw). */
+function registryWithFailingExecute(
+  deps: Parameters<typeof createOpsToolRegistry>[0],
+  capability: string,
+): ToolRegistry {
+  const registry = createToolRegistry();
+  for (const def of listOpsToolDefinitions(deps)) {
+    registry.register(
+      String(def.capability) === capability
+        ? { ...def, execute: async () => RETURNED_FAILURE }
+        : def,
+    );
+  }
+  return registry;
+}
+
 function buildDeps(opts: {
   model: ModelProvider;
   medusaAdjudicated: ReturnType<typeof vi.fn>;
@@ -220,17 +251,22 @@ function buildDeps(opts: {
   dailySpecialList?: ReturnType<typeof vi.fn>;
   dailySpecialCreate?: ReturnType<typeof vi.fn>;
   dailySpecialUpdate?: ReturnType<typeof vi.fn>;
-  /** BKL-088 — SYSTEM-write layer spies (defaults applied when absent). */
-  resolveAlertFromEnvelope?: ReturnType<typeof vi.fn>;
-  closeIncidentFromEnvelope?: ReturnType<typeof vi.fn>;
+  /** BKL-088/BKL-260 — POST-adjudication write spies (defaults when absent). */
+  writeAdjudicatedAlertResolve?: ReturnType<typeof vi.fn>;
+  writeAdjudicatedIncidentClose?: ReturnType<typeof vi.fn>;
   /** SCN-127 — schedule-override write + cache spies (defaults applied when absent). */
   upsertOverride?: ReturnType<typeof vi.fn>;
   invalidateScheduleCache?: ReturnType<typeof vi.fn>;
   /** SCN-127 — the injected clock the resolver reads for NL-date normalization
    *  + the today-or-future reference (defaults to the DET business day). */
   now?: () => Date;
+  /** BKL-240 — replace ONE registered tool's `execute` with a RETURNED
+   *  `{ success:false }` (never a throw). That is the exact case @claustrum's
+   *  dispatcher reports as `executed`, because it decides executed-vs-failed purely
+   *  on whether `tool.execute` threw. */
+  failingCapability?: string;
 }) {
-  const tools = createOpsToolRegistry({
+  const registryDeps = {
     medusaAdjudicated: opts.medusaAdjudicated as never,
     auditSink: {} as never,
     readProductBrlVariantIds: (async () => ["variant_1"]) as never,
@@ -266,18 +302,18 @@ function buildDeps(opts: {
     },
     publishPaymentStatusChanged: opts.publishPaymentStatusChanged ?? vi.fn(),
     appendRefundEventLog: opts.appendRefundEventLog ?? vi.fn(),
-    // BKL-088 — the SYSTEM-write layers the resolution executors drive. Default
-    // spies return a resolved/closed row; a dedicated BKL-088 describe drives
-    // the full staff-verb → SYSTEM-write flow with typed spies.
+    // BKL-088/BKL-260 — the POST-adjudication writes the resolution executors
+    // drive. Default spies return the committed row; a dedicated BKL-088 describe
+    // drives the full staff-verb → write flow with typed spies.
     opsAlertSvc: {
-      resolveAlertFromEnvelope:
-        opts.resolveAlertFromEnvelope ??
-        (vi.fn(async () => ({ result: { status: "RESOLVED" } })) as never),
+      writeAdjudicatedAlertResolve:
+        opts.writeAdjudicatedAlertResolve ??
+        (vi.fn(async () => ({ status: "RESOLVED" })) as never),
     },
     incidentSvc: {
-      closeIncidentFromEnvelope:
-        opts.closeIncidentFromEnvelope ??
-        (vi.fn(async () => ({ result: { status: "RESOLVED" } })) as never),
+      writeAdjudicatedIncidentClose:
+        opts.writeAdjudicatedIncidentClose ??
+        (vi.fn(async () => ({ status: "RESOLVED" })) as never),
     },
     // SCN-127 — the schedule-override write + cache invalidation.
     scheduleSvc: {
@@ -290,7 +326,11 @@ function buildDeps(opts: {
     },
     invalidateScheduleCache:
       opts.invalidateScheduleCache ?? (vi.fn(async () => ({ ok: true })) as never),
-  });
+  };
+  const tools =
+    opts.failingCapability === undefined
+      ? createOpsToolRegistry(registryDeps)
+      : registryWithFailingExecute(registryDeps, opts.failingCapability);
   return {
     adjudicator: realKernelAdjudicator,
     memory: noopMemoryProvider(),
@@ -1376,20 +1416,17 @@ const INCIDENT_CLOSE_CALL = {
 
 /** A typed resolve/close writer spy whose `mock.calls[i][0]` is the SYSTEM
  *  envelope (an untyped vi.fn() infers a zero-arg signature). */
-function systemWriterSpy() {
+function opsWriteSpy() {
   return vi.fn(
-    async (
-      _envelope: IntentEnvelope,
-      _state: unknown,
-    ): Promise<{ result: { status: string } | null }> => ({
-      result: { status: "RESOLVED" },
+    async (_payload: unknown): Promise<{ status: string } | null> => ({
+      status: "RESOLVED",
     }),
   );
 }
 
 describe("ops conductor — ops.alert.resolve.staff reachable end-to-end (BKL-088)", () => {
   it("MANAGER 'resolve o alerta' → EXECUTE; SYSTEM write runs with staff:<id> identity + SYSTEM taint", async () => {
-    const resolveAlertFromEnvelope = systemWriterSpy();
+    const writeAdjudicatedAlertResolve = opsWriteSpy();
     const { model } = scriptedModel([ALERT_RESOLVE_CALL]);
     const deps = buildDeps({
       model,
@@ -1397,17 +1434,16 @@ describe("ops conductor — ops.alert.resolve.staff reachable end-to-end (BKL-08
       writeAdjudicatedNote: vi.fn(),
       product: null,
       alert: { id: "alert_1", status: "OPEN" },
-      resolveAlertFromEnvelope,
+      writeAdjudicatedAlertResolve,
     });
     const out = await runOpsTurn(deps, "MANAGER", "staff_2", "resolve o alerta alert_1");
     expect(out.kind).toBe("EXECUTE");
-    expect(resolveAlertFromEnvelope).toHaveBeenCalledTimes(1);
-    const [envelope] = resolveAlertFromEnvelope.mock.calls[0]!;
-    // The D10 SYSTEM-write layer: role-free system envelope, identity stamped.
-    expect(envelope.kind).toBe("ops.alert.resolve");
-    expect(envelope.actor.principal).toBe("system");
-    expect(envelope.taint).toBe("SYSTEM");
-    const p = envelope.payload as {
+    expect(writeAdjudicatedAlertResolve).toHaveBeenCalledTimes(1);
+    // BKL-260 — the write runs under the staff-verb Decision. There is no second
+    // envelope to inspect any more; what stays load-bearing is that the identity
+    // on the write payload is FORCED from the Capsule.
+    const [payload] = writeAdjudicatedAlertResolve.mock.calls[0]!;
+    const p = payload as {
       id: string;
       resolvedBy: string;
       resolutionType: string;
@@ -1419,7 +1455,7 @@ describe("ops conductor — ops.alert.resolve.staff reachable end-to-end (BKL-08
   });
 
   it("ATTENDANT → REFUSE staff_role_violation; the SYSTEM write NEVER runs", async () => {
-    const resolveAlertFromEnvelope = systemWriterSpy();
+    const writeAdjudicatedAlertResolve = opsWriteSpy();
     const { model } = scriptedModel([ALERT_RESOLVE_CALL]);
     const deps = buildDeps({
       model,
@@ -1427,18 +1463,18 @@ describe("ops conductor — ops.alert.resolve.staff reachable end-to-end (BKL-08
       writeAdjudicatedNote: vi.fn(),
       product: null,
       alert: { id: "alert_1", status: "OPEN" },
-      resolveAlertFromEnvelope,
+      writeAdjudicatedAlertResolve,
     });
     const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "resolve o alerta alert_1");
     expect(out.kind).toBe("REFUSE");
     if (out.kind === "REFUSE") {
       expect(out.refusal.code).toBe("staff_role_violation");
     }
-    expect(resolveAlertFromEnvelope).not.toHaveBeenCalled();
+    expect(writeAdjudicatedAlertResolve).not.toHaveBeenCalled();
   });
 
   it("absent alert → REFUSE not_actionable; the SYSTEM write NEVER runs", async () => {
-    const resolveAlertFromEnvelope = systemWriterSpy();
+    const writeAdjudicatedAlertResolve = opsWriteSpy();
     const { model } = scriptedModel([ALERT_RESOLVE_CALL]);
     const deps = buildDeps({
       model,
@@ -1446,18 +1482,18 @@ describe("ops conductor — ops.alert.resolve.staff reachable end-to-end (BKL-08
       writeAdjudicatedNote: vi.fn(),
       product: null,
       alert: null, // resolver ⇒ state.alert null ⇒ requireAlertActionable REFUSE
-      resolveAlertFromEnvelope,
+      writeAdjudicatedAlertResolve,
     });
     const out = await runOpsTurn(deps, "MANAGER", "staff_2", "resolve o alerta inexistente");
     expect(out.kind).toBe("REFUSE");
     if (out.kind === "REFUSE") {
       expect(out.refusal.code).toBe("ops.alert_resolve.not_actionable");
     }
-    expect(resolveAlertFromEnvelope).not.toHaveBeenCalled();
+    expect(writeAdjudicatedAlertResolve).not.toHaveBeenCalled();
   });
 
   it("already-terminal alert → REFUSE not_actionable; the SYSTEM write NEVER runs", async () => {
-    const resolveAlertFromEnvelope = systemWriterSpy();
+    const writeAdjudicatedAlertResolve = opsWriteSpy();
     const { model } = scriptedModel([ALERT_RESOLVE_CALL]);
     const deps = buildDeps({
       model,
@@ -1465,20 +1501,20 @@ describe("ops conductor — ops.alert.resolve.staff reachable end-to-end (BKL-08
       writeAdjudicatedNote: vi.fn(),
       product: null,
       alert: { id: "alert_1", status: "RESOLVED" }, // terminal ⇒ not actionable
-      resolveAlertFromEnvelope,
+      writeAdjudicatedAlertResolve,
     });
     const out = await runOpsTurn(deps, "OWNER", "staff_1", "resolve o alerta alert_1");
     expect(out.kind).toBe("REFUSE");
     if (out.kind === "REFUSE") {
       expect(out.refusal.code).toBe("ops.alert_resolve.not_actionable");
     }
-    expect(resolveAlertFromEnvelope).not.toHaveBeenCalled();
+    expect(writeAdjudicatedAlertResolve).not.toHaveBeenCalled();
   });
 });
 
 describe("ops conductor — incident.ticket.close.staff reachable end-to-end (BKL-088)", () => {
   it("OWNER 'fecha o incidente' → EXECUTE; SYSTEM write runs with staff:<id> identity", async () => {
-    const closeIncidentFromEnvelope = systemWriterSpy();
+    const writeAdjudicatedIncidentClose = opsWriteSpy();
     const { model } = scriptedModel([INCIDENT_CLOSE_CALL]);
     const deps = buildDeps({
       model,
@@ -1486,15 +1522,13 @@ describe("ops conductor — incident.ticket.close.staff reachable end-to-end (BK
       writeAdjudicatedNote: vi.fn(),
       product: null,
       incident: { id: "inc_1", status: "OPEN" },
-      closeIncidentFromEnvelope,
+      writeAdjudicatedIncidentClose,
     });
     const out = await runOpsTurn(deps, "OWNER", "staff_1", "fecha o incidente inc_1");
     expect(out.kind).toBe("EXECUTE");
-    expect(closeIncidentFromEnvelope).toHaveBeenCalledTimes(1);
-    const [envelope] = closeIncidentFromEnvelope.mock.calls[0]!;
-    expect(envelope.kind).toBe("incident.ticket.close");
-    expect(envelope.actor.principal).toBe("system");
-    const p = envelope.payload as {
+    expect(writeAdjudicatedIncidentClose).toHaveBeenCalledTimes(1);
+    const [payload] = writeAdjudicatedIncidentClose.mock.calls[0]!;
+    const p = payload as {
       id: string;
       resolvedBy: string;
       resolutionType: string;
@@ -1505,7 +1539,7 @@ describe("ops conductor — incident.ticket.close.staff reachable end-to-end (BK
   });
 
   it("ATTENDANT → REFUSE staff_role_violation; the SYSTEM write NEVER runs", async () => {
-    const closeIncidentFromEnvelope = systemWriterSpy();
+    const writeAdjudicatedIncidentClose = opsWriteSpy();
     const { model } = scriptedModel([INCIDENT_CLOSE_CALL]);
     const deps = buildDeps({
       model,
@@ -1513,18 +1547,18 @@ describe("ops conductor — incident.ticket.close.staff reachable end-to-end (BK
       writeAdjudicatedNote: vi.fn(),
       product: null,
       incident: { id: "inc_1", status: "OPEN" },
-      closeIncidentFromEnvelope,
+      writeAdjudicatedIncidentClose,
     });
     const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "fecha o incidente inc_1");
     expect(out.kind).toBe("REFUSE");
     if (out.kind === "REFUSE") {
       expect(out.refusal.code).toBe("staff_role_violation");
     }
-    expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
+    expect(writeAdjudicatedIncidentClose).not.toHaveBeenCalled();
   });
 
   it("absent incident → REFUSE not_actionable; the SYSTEM write NEVER runs", async () => {
-    const closeIncidentFromEnvelope = systemWriterSpy();
+    const writeAdjudicatedIncidentClose = opsWriteSpy();
     const { model } = scriptedModel([INCIDENT_CLOSE_CALL]);
     const deps = buildDeps({
       model,
@@ -1532,14 +1566,14 @@ describe("ops conductor — incident.ticket.close.staff reachable end-to-end (BK
       writeAdjudicatedNote: vi.fn(),
       product: null,
       incident: null,
-      closeIncidentFromEnvelope,
+      writeAdjudicatedIncidentClose,
     });
     const out = await runOpsTurn(deps, "MANAGER", "staff_2", "fecha o incidente inexistente");
     expect(out.kind).toBe("REFUSE");
     if (out.kind === "REFUSE") {
       expect(out.refusal.code).toBe("ops.incident_close.not_actionable");
     }
-    expect(closeIncidentFromEnvelope).not.toHaveBeenCalled();
+    expect(writeAdjudicatedIncidentClose).not.toHaveBeenCalled();
   });
 });
 
@@ -1709,5 +1743,258 @@ describe("ops conductor — menu.special.set reachable end-to-end (SCN-114)", ()
     // The unparseable price is DROPPED (not written as a wrong number); the verb
     // still parks for confirmation (which shows "sem desconto").
     expect(out.kind).toBe("REQUEST_CONFIRMATION");
+  });
+});
+
+// ── Wire Truth — ops REFUSE conversational recovery + truthful trace manifests ──
+//
+// Spec: ~/projects/IBX_WIRE_TRUTH_SPEC.md. A kernel-refused PROPOSED command
+// (the BKL-233 misparse class) replies to the operator; a success-claiming or
+// empty draft clamps back to the deterministic refusal line; and every ops model
+// call names its persona in the trace manifest (single catalog tag) instead of
+// emitting `[]` (the workbench's `persona ?`).
+//
+// BKL-262 STAGE 2 SUPERSEDED THE FIRST CLAUSE. Wire Truth's recovery SYNTHESIS —
+// a model-authored reply gated by a false-SUCCESS lexicon — is exactly the surface
+// that shipped fabricated facts to operators, so the reply is now COMPOSED
+// deterministically (refusal + grounded facts or a proposition-free abstention)
+// with no model call on the branch. The clamp and trace-manifest clauses stand.
+
+describe("ops conductor — Wire Truth: REFUSE recovery + trace manifests", () => {
+  // BKL-262 STAGE 2 INVERTED THIS TEST, and that inversion is the ticket.
+  //
+  // It used to assert the opposite of what it asserts now: that a kernel-refused
+  // command SYNTHESISED a model reply, explicitly `not.toBe(refusal.userFacing)`.
+  // That synthesis is the surface BKL-262 was filed against — gated only by a
+  // false-SUCCESS lexicon, it shipped fabricated hours and a false coverage denial
+  // to operators on turns where nothing had executed. Stage 2 (owner ruling,
+  // option (c)) removes the model call from the branch entirely, so the reply is
+  // now COMPOSED from the deterministic refusal plus, when they exist, grounded
+  // facts or a proposition-free abstention.
+  //
+  // "tira o X do cardápio" is MUTATION-shaped, so no abstention is appended (the
+  // operator asked for an action, not information) and the reply is the refusal
+  // alone. The sibling test below — a success-claiming draft clamping to the
+  // deterministic line — is UNCHANGED and still passes: its expected outcome was
+  // already the deterministic refusal.
+  it("a kernel-refused command (BUSINESS_RULE) replies with the DETERMINISTIC refusal, never model prose", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: {} }));
+    // Arm the model with a plausible, digit-free, success-word-free recovery. It
+    // passes every lexical guard that used to police this path — and it must still
+    // never reach the operator, because the path no longer calls the model at all.
+    const recovery = "Não encontrei esse produto no cardápio. Quer conferir o nome?";
+    const { model } = scriptedModel([AVAIL_CALL], recovery);
+    // No matching product → product_not_found (BUSINESS_RULE) — the recovery class.
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "tira o X do cardápio");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.kind).toBe("BUSINESS_RULE");
+      expect(out.response).toBe(out.refusal.userFacing);
+      expect(out.response).not.toBe(recovery);
+    }
+    // The refused executor still NEVER runs.
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
+  });
+
+  it("a success-claiming recovery draft ('Feito.') clamps back to the deterministic refusal line", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: {} }));
+    // scriptedModel's default responder text is "Feito." — a generic completion
+    // claim on a turn where NOTHING executed. The never-claim-success posture
+    // must fall back to the canned refusal.
+    const { model } = scriptedModel([AVAIL_CALL]);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "tira o X do cardápio");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.response).toBe(out.refusal.userFacing);
+    }
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
+  });
+
+  it("an AUTH refusal (role-opaque) is NEVER model-paraphrased — verbatim line, no recovery call", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: {} }));
+    const { model, complete } = scriptedModel(
+      [AVAIL_CALL],
+      "Uma paráfrase que nunca deve aparecer.",
+    );
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: { id: "prod_1", status: "published" },
+    });
+    const out = await runOpsTurn(deps, "ATTENDANT", "staff_9", "tira o X do cardápio");
+    expect(out.kind).toBe("REFUSE");
+    if (out.kind === "REFUSE") {
+      expect(out.refusal.code).toBe("staff_role_violation");
+      expect(out.response).toBe(out.refusal.userFacing);
+    }
+    // Exactly ONE model call (the planner) — no recovery synthesis ran.
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(medusaAdjudicated).not.toHaveBeenCalled();
+  });
+
+  it("ops planner + responder traces carry single-tag persona manifests (never [])", async () => {
+    const manifests: Array<ReadonlyArray<string>> = [];
+    const telemetry: TelemetryPort = {
+      emitTurn: async () => {},
+      emitMemoryAccess: async () => {},
+      emitLLMTrace: async (trace) => {
+        manifests.push((trace as { promptManifest: ReadonlyArray<string> }).promptManifest);
+      },
+    };
+    // Small talk: the planner answers with prose (no tool call — a NON-empty
+    // completion, so repair-or-refuse stays quiet) → empty plan → the
+    // conversational responder. Both calls run on injected ops personas.
+    const complete = vi.fn(async (req: CompletionRequest): Promise<Completion> => {
+      const isPlanner = (req.tools?.length ?? 0) > 0;
+      return {
+        model: "mock",
+        stopReason: "end_turn",
+        text: isPlanner ? "Saudação — nenhuma ação a propor." : "Oi! Como posso ajudar?",
+        toolCalls: [],
+        inputTokens: 5,
+        outputTokens: 4,
+      };
+    });
+    const model: ModelProvider = {
+      complete,
+      stream: () => {
+        throw new Error("stream unused");
+      },
+      embed: async () => {
+        throw new Error("embed unused");
+      },
+    };
+    const base = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(async (_args: unknown) => ({ product: {} })),
+      writeAdjudicatedNote: vi.fn(),
+      product: { id: "prod_1", status: "published" },
+    });
+    const deps = {
+      ...base,
+      telemetry,
+      promptComposer: createIbatexasPromptComposer(),
+    } as unknown as ReturnType<typeof buildDeps>;
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "oi");
+    expect(out.response).toBe("Oi! Como posso ajudar?");
+    expect(manifests.length).toBeGreaterThanOrEqual(2);
+    expect(manifests[0]).toEqual(["ops/planner.persona"]);
+    expect(manifests[manifests.length - 1]).toEqual(["ops/responder.persona"]);
+    for (const m of manifests) expect(m).not.toEqual([]);
+  });
+});
+
+// ── BKL-240 at the SEAM — the staff reply a FAILED ops tool actually delivers ──
+//
+// The renderer suite pins `renderOpsActionAnswer` directly. Per the LE2-002 lesson
+// that a renderer-level suite can be green while the behaviour through the gate is
+// unchanged, this arm drives the REAL composed conductor + REAL composed router +
+// REAL kernel + REAL handleTurn and asserts the DELIVERED `turn.response.text`. The
+// pair below is a controlled comparison: identical turn, identical fakes — the ONLY
+// difference is whether the availability tool RETURNS `{success:false}` or its real
+// result.
+
+describe("BKL-240 seam — a RETURNED tool failure never delivers the ops success template", () => {
+  const AVAIL_SUCCESS_LINE = "Pronto — produto marcado como esgotado (86).";
+  /** What the grounded ops model path voices once the deterministic render abstains. */
+  const GROUNDED_FAILURE_PROSE =
+    "Não consegui aplicar essa alteração agora. Pode tentar de novo?";
+
+  it("the executor RETURNS success:false → the delivered reply is NOT the success line", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: { id: "prod_1" } }));
+    const { model } = scriptedModel([AVAIL_CALL], GROUNDED_FAILURE_PROSE);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: { id: "prod_1", status: "published" },
+      failingCapability: "product.availability.set",
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "acabou a picanha");
+    // The kernel DID authorize and the dispatch DID run — that is the whole point:
+    // EXECUTE + an `executed` dispatch is not evidence the executor committed.
+    expect(out.kind).toBe("EXECUTE");
+    expect(out.response).not.toBe(AVAIL_SUCCESS_LINE);
+    expect(out.response).not.toContain("Pronto —");
+    expect(out.response).not.toContain("(86)");
+    expect(out.response).not.toContain("esgotado");
+    // Falls through to the honest grounded path — never an empty/ghosted staff turn.
+    expect(out.response.length).toBeGreaterThan(0);
+  });
+
+  // The REACHABLE signal, end-to-end with the REAL executor. BKL-260 removed the
+  // inner adjudication that used to produce this null (a non-EXECUTE inner decision
+  // returned no result, which the executor coerced to `status: null`), but the
+  // signal itself SURVIVES on a more production-real path: the resolve write is a
+  // conditional `updateMany` followed by a `findUnique`, and that read is `null`
+  // when the alert row does not exist — the id can vanish between the resolver's
+  // actionability projection and the write. Nothing throws ⇒ the dispatch is
+  // `executed` ⇒ pre-BKL-240 staff were told "Pronto — alerta operacional
+  // resolvido." about an alert nobody could see.
+  it("a resolve write that finds NO row → the alert-resolved line is NOT delivered", async () => {
+    const writeAdjudicatedAlertResolve = vi.fn(
+      async (_payload: unknown): Promise<{ status: string } | null> => null,
+    );
+    const { model } = scriptedModel([ALERT_RESOLVE_CALL], GROUNDED_FAILURE_PROSE);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      alert: { id: "alert_1", status: "OPEN" },
+      writeAdjudicatedAlertResolve,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "resolve o alerta alert_1");
+    // The staff verb WAS authorized and the executor DID run — only the write
+    // touched nothing, which is invisible to the dispatcher.
+    expect(out.kind).toBe("EXECUTE");
+    expect(writeAdjudicatedAlertResolve).toHaveBeenCalledTimes(1);
+    expect(out.response).not.toBe("Pronto — alerta operacional resolvido.");
+    expect(out.response).not.toContain("resolvido");
+    expect(out.response).not.toContain("Pronto —");
+    expect(out.response.length).toBeGreaterThan(0);
+  });
+
+  it("the same alert turn WITH a committed status still delivers the resolved line (control)", async () => {
+    const writeAdjudicatedAlertResolve = opsWriteSpy();
+    const { model } = scriptedModel([ALERT_RESOLVE_CALL], GROUNDED_FAILURE_PROSE);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated: vi.fn(),
+      writeAdjudicatedNote: vi.fn(),
+      product: null,
+      alert: { id: "alert_1", status: "OPEN" },
+      writeAdjudicatedAlertResolve,
+    });
+    const out = await runOpsTurn(deps, "MANAGER", "staff_2", "resolve o alerta alert_1");
+    expect(out.kind).toBe("EXECUTE");
+    expect(out.response).toBe("Pronto — alerta operacional resolvido.");
+  });
+
+  it("the SAME turn with the REAL executor still delivers the success line (control)", async () => {
+    const medusaAdjudicated = vi.fn(async (_args: unknown) => ({ product: { id: "prod_1" } }));
+    const { model } = scriptedModel([AVAIL_CALL], GROUNDED_FAILURE_PROSE);
+    const deps = buildDeps({
+      model,
+      medusaAdjudicated,
+      writeAdjudicatedNote: vi.fn(),
+      product: { id: "prod_1", status: "published" },
+    });
+    const out = await runOpsTurn(deps, "OWNER", "staff_1", "acabou a picanha");
+    expect(out.kind).toBe("EXECUTE");
+    expect(out.response).toBe(AVAIL_SUCCESS_LINE);
   });
 });

@@ -1,170 +1,133 @@
-// Tests for check_table_availability tool
-// Mock-based; no database required.
+// Tests for the check_table_availability tool WRAPPER.
 //
-// Scenarios:
-// - Happy path: returns available slots for a date
-// - Slot with insufficient covers is excluded
-// - preferredTime filter excludes non-matching slots
-// - No time slots for date → empty array + pt-BR message
+// SCOPE. `checkTableAvailability` is a ~6-line wrapper (check-availability.ts:12-26).
+// Everything it owns is asserted here and nothing else:
+//   1. the `CheckAvailabilityInputSchema` zod parse,
+//   2. constructing the service and forwarding the three POSITIONAL args,
+//   3. passing the service's slots through untouched,
+//   4. the two pt-BR messages (empty vs non-empty) and their interpolation.
+//
+// The availability ALGORITHM is not this file's business and is no longer
+// simulated here. This suite previously `vi.mock`ed `@ibatexas/domain` with no
+// `importOriginal` — so the domain package never loaded — and RE-IMPLEMENTED
+// `checkAvailability` inside its own mock factory. Its six test names claimed
+// capacity exclusion, preferredTime filtering, reserved-table exclusion and
+// location dedup, but every assertion read back the test's own construction; the
+// real `ReservationService.checkAvailability` was never executed by ANY test in
+// the repo. It had also drifted: it pinned a per-slot
+// `table.findMany({ where: { id: { notIn: [...] } } })` that production stopped
+// issuing when it moved to a single bulk `{ active: true }` fetch plus a JS
+// filter — green only because the test itself issued the call it asserted on.
+//
+// Those four behaviours now have REAL coverage against the real algorithm in
+// packages/domain/src/services/__tests__/reservation.test.ts
+// (`describe("ReservationService.checkAvailability")`), where killing the
+// production body turns 10 tests RED.
+//
+// The service method is stubbed here as a bare `vi.fn()`, matching the in-repo
+// template used by cancel-reservation.test.ts, create-reservation.test.ts and
+// join-waitlist.test.ts.
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { checkTableAvailability } from "../check-availability.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
-const mockTimeSlotFindMany = vi.hoisted(() => vi.fn())
-const mockReservationTableFindMany = vi.hoisted(() => vi.fn())
-const mockTableFindMany = vi.hoisted(() => vi.fn())
+const mockCheckAvailability = vi.hoisted(() => vi.fn())
+const mockCreateReservationService = vi.hoisted(() =>
+  vi.fn(() => ({ checkAvailability: mockCheckAvailability })),
+)
 
 vi.mock("@ibatexas/domain", () => ({
-  prisma: {
-    timeSlot: { findMany: mockTimeSlotFindMany },
-    reservationTable: { findMany: mockReservationTableFindMany },
-    table: { findMany: mockTableFindMany },
-  },
-  createReservationService: () => ({
-    checkAvailability: async (date: string, partySize: number, preferredTime?: string) => {
-      const dateObj = new Date(`${date}T00:00:00.000Z`)
-      const slots = await mockTimeSlotFindMany({ where: { date: dateObj }, orderBy: { startTime: "asc" } })
-      const result: Array<{
-        timeSlotId: string; date: string; startTime: string;
-        durationMinutes: number; availableCovers: number; tableLocations: string[];
-      }> = []
-      for (const slot of slots) {
-        const availableCovers = slot.maxCovers - slot.reservedCovers
-        if (availableCovers < partySize) continue
-        if (preferredTime && slot.startTime !== preferredTime) continue
-        const reservedTableRows = await mockReservationTableFindMany({
-          where: { reservation: { timeSlotId: slot.id, status: { notIn: ["cancelled", "no_show"] } } },
-          select: { tableId: true },
-        })
-        const reservedIds = reservedTableRows.map((rt: { tableId: string }) => rt.tableId)
-        const freeTables = await mockTableFindMany({
-          where: { active: true, id: { notIn: reservedIds } },
-          select: { location: true },
-        })
-        const uniqueLocations = [...new Set(freeTables.map((t: { location: string }) => t.location))]
-        result.push({
-          timeSlotId: slot.id, date, startTime: slot.startTime,
-          durationMinutes: slot.durationMinutes, availableCovers,
-          tableLocations: uniqueLocations as string[],
-        })
-      }
-      return result
-    },
-  }),
+  createReservationService: mockCreateReservationService,
 }))
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
 const DATE = "2026-03-15"
 
-function makeSlot(overrides: Partial<{
-  id: string; startTime: string; durationMinutes: number; maxCovers: number; reservedCovers: number
-}> = {}) {
-  return {
-    id: overrides.id ?? "ts_01",
-    date: new Date(`${DATE}T00:00:00.000Z`),
-    startTime: overrides.startTime ?? "19:30",
-    durationMinutes: overrides.durationMinutes ?? 90,
-    maxCovers: overrides.maxCovers ?? 40,
-    reservedCovers: overrides.reservedCovers ?? 0,
-    createdAt: new Date(),
-  }
+const SLOT_A = {
+  timeSlotId: "ts_lunch",
+  date: DATE,
+  startTime: "12:00",
+  durationMinutes: 90,
+  availableCovers: 40,
+  tableLocations: ["indoor", "outdoor"],
 }
 
-const FREE_TABLES = [
-  { location: "indoor" },
-  { location: "outdoor" },
-]
+const SLOT_B = {
+  timeSlotId: "ts_dinner",
+  date: DATE,
+  startTime: "19:30",
+  durationMinutes: 90,
+  availableCovers: 30,
+  tableLocations: ["indoor"],
+}
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
-describe("checkTableAvailability", () => {
+describe("checkTableAvailability (tool wrapper)", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockReservationTableFindMany.mockResolvedValue([])
-    mockTableFindMany.mockResolvedValue(FREE_TABLES)
+    mockCheckAvailability.mockResolvedValue([])
   })
 
-  it("returns available slots when capacity exists", async () => {
-    mockTimeSlotFindMany.mockResolvedValue([
-      makeSlot({ id: "ts_lunch", startTime: "12:00", maxCovers: 40, reservedCovers: 0 }),
-      makeSlot({ id: "ts_dinner", startTime: "19:30", maxCovers: 40, reservedCovers: 10 }),
-    ])
+  it("forwards date, partySize and preferredTime to the service as POSITIONAL args", async () => {
+    await checkTableAvailability({ date: DATE, partySize: 4, preferredTime: "19:30" })
+
+    expect(mockCreateReservationService).toHaveBeenCalledOnce()
+    expect(mockCheckAvailability).toHaveBeenCalledExactlyOnceWith(DATE, 4, "19:30")
+  })
+
+  it("passes preferredTime as undefined when the caller omits it", async () => {
+    await checkTableAvailability({ date: DATE, partySize: 2 })
+
+    expect(mockCheckAvailability).toHaveBeenCalledExactlyOnceWith(DATE, 2, undefined)
+  })
+
+  it("returns the service's slots unchanged", async () => {
+    mockCheckAvailability.mockResolvedValue([SLOT_A, SLOT_B])
 
     const result = await checkTableAvailability({ date: DATE, partySize: 4 })
 
-    expect(result.slots).toHaveLength(2)
-    expect(result.slots[0].startTime).toBe("12:00")
-    expect(result.slots[0].availableCovers).toBe(40)
-    expect(result.slots[1].availableCovers).toBe(30)
-    expect(result.slots[0].tableLocations).toContain("indoor")
-    expect(result.message).toContain("2 horário(s)")
+    expect(result.slots).toEqual([SLOT_A, SLOT_B])
   })
 
-  it("excludes slots where reservedCovers + partySize > maxCovers", async () => {
-    mockTimeSlotFindMany.mockResolvedValue([
-      makeSlot({ id: "ts_full", startTime: "20:00", maxCovers: 20, reservedCovers: 18 }),
-      makeSlot({ id: "ts_ok", startTime: "21:00", maxCovers: 40, reservedCovers: 0 }),
-    ])
+  it("builds the pt-BR found-message from the slot COUNT and the parsed input", async () => {
+    mockCheckAvailability.mockResolvedValue([SLOT_A, SLOT_B])
 
     const result = await checkTableAvailability({ date: DATE, partySize: 4 })
 
-    expect(result.slots).toHaveLength(1)
-    expect(result.slots[0].timeSlotId).toBe("ts_ok")
-  })
-
-  it("filters by preferredTime when provided", async () => {
-    mockTimeSlotFindMany.mockResolvedValue([
-      makeSlot({ id: "ts_lunch", startTime: "12:00" }),
-      makeSlot({ id: "ts_dinner", startTime: "19:30" }),
-    ])
-
-    const result = await checkTableAvailability({
-      date: DATE,
-      partySize: 2,
-      preferredTime: "19:30",
-    })
-
-    expect(result.slots).toHaveLength(1)
-    expect(result.slots[0].startTime).toBe("19:30")
-  })
-
-  it("returns empty list with pt-BR message when no slots exist for date", async () => {
-    mockTimeSlotFindMany.mockResolvedValue([])
-
-    const result = await checkTableAvailability({ date: DATE, partySize: 2 })
-
-    expect(result.slots).toHaveLength(0)
-    expect(result.message).toContain(DATE)
-  })
-
-  it("returns empty list with pt-BR message when all slots are full", async () => {
-    mockTimeSlotFindMany.mockResolvedValue([
-      makeSlot({ maxCovers: 10, reservedCovers: 10 }),
-    ])
-
-    const result = await checkTableAvailability({ date: DATE, partySize: 2 })
-
-    expect(result.slots).toHaveLength(0)
-    expect(result.message).toContain("Não encontrei")
-  })
-
-  it("excludes reserved table ids from free-table query", async () => {
-    mockTimeSlotFindMany.mockResolvedValue([
-      makeSlot({ id: "ts_01", maxCovers: 40, reservedCovers: 0 }),
-    ])
-    mockReservationTableFindMany.mockResolvedValue([{ tableId: "tbl_01" }])
-
-    await checkTableAvailability({ date: DATE, partySize: 4 })
-
-    expect(mockTableFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          id: expect.objectContaining({ notIn: ["tbl_01"] }),
-        }),
-      }),
+    expect(result.message).toBe(
+      `Encontrei 2 horário(s) disponível(is) para 4 pessoa(s) em ${DATE}.`,
     )
+  })
+
+  it("builds the pt-BR not-found message when the service returns no slots", async () => {
+    mockCheckAvailability.mockResolvedValue([])
+
+    const result = await checkTableAvailability({ date: DATE, partySize: 6 })
+
+    expect(result.slots).toEqual([])
+    expect(result.message).toBe(
+      `Não encontrei vagas para 6 pessoa(s) em ${DATE}. Tente outra data.`,
+    )
+  })
+
+  // ── The zod parse (the wrapper's other job) ─────────────────────────────────
+
+  it.each([
+    ["malformed date", { date: "15/03/2026", partySize: 2 }],
+    ["party size below the minimum", { date: DATE, partySize: 0 }],
+    ["non-integer party size", { date: DATE, partySize: 2.5 }],
+    ["party size above the maximum", { date: DATE, partySize: 999 }],
+    ["malformed preferredTime", { date: DATE, partySize: 2, preferredTime: "7pm" }],
+  ])("rejects %s before touching the service", async (_label, input) => {
+    await expect(
+      checkTableAvailability(input as Parameters<typeof checkTableAvailability>[0]),
+    ).rejects.toThrow()
+
+    expect(mockCreateReservationService).not.toHaveBeenCalled()
+    expect(mockCheckAvailability).not.toHaveBeenCalled()
   })
 })

@@ -111,6 +111,8 @@ export {
   type OrderReviewSubmitPayload,
   type OrderFiscalEmitPayload,
   type OrderReorderPayload,
+  type OrderReorderRequestPayload,
+  type OrderCouponSwapRequestPayload,
   type OrderState,
   type OrderStatusTransitionPayload,
   type OrderStatusReconcilePayload,
@@ -118,6 +120,7 @@ export {
 
 export {
   refuseAllergensNotExplicit,
+  refuseAmbiguousOrderReference,
   refuseAmountExceedsLimit,
   refuseCartEmpty,
   refuseCheckoutMissingPaymentMethod,
@@ -128,6 +131,9 @@ export {
   refuseInvalidRating,
   refuseNoCartId,
   refuseNoOrderToMutate,
+  refuseCouponNotUsable,
+  refuseNoPreviousOrder,
+  refuseSwapTotalUnknown,
   refuseNotAuthenticated,
   refuseOrderAlreadyCancelled,
   refuseOrderAlreadyShipped,
@@ -141,6 +147,21 @@ export {
 } from "./refusals.js"
 
 export { ordersPolicyBundle } from "./policies.js"
+
+// LE2-023 — the two sets a workflow FEASIBILITY PRE-CHECK must agree with,
+// exported so the host reads the pack's own transcription instead of making a
+// second one. See each set's comment for why a duplicate would be a real defect
+// rather than a style point.
+export {
+  CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES,
+  CUSTOMER_POST_PONR_FULFILLMENT,
+} from "./policies.js"
+
+// LE2-024 — the ONE paid-cancel confirm sentence, exported so the parity suite
+// can assert both planes render it without re-spelling it a third time. A test
+// that hard-coded the expected string would pass while both callers drifted
+// together, which is exactly the agreement this function exists to remove.
+export { paidCancelConfirmText } from "./policies.js"
 
 export {
   ORDER_TOOL_TO_INTENT,
@@ -164,6 +185,7 @@ export const ordersPack = {
   version: "1.1.0",
   contract: "v0",
   intents: [
+    // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
     "order.cart.ensure",
     "order.item.add",
     "order.item.update",
@@ -182,10 +204,15 @@ export const ordersPack = {
     "order.note.add",
     "order.review.submit",
     "order.reorder",
+    "order.reorder.request",
+    "order.coupon.swap.request",
+    "order.cancel.request",
+    "order.coupon.adjust",
     "order.projection.create",
     "order.status.transition",
     "order.status.reconcile",
     "order.fiscal.emit",
+    // ═══ END GENERATED REGION ═══
   ],
   policy: ordersPolicyBundle,
   planner: ordersCapabilityPlanner,
@@ -201,14 +228,45 @@ export const ordersPack = {
     "order.cart.empty",
     "order.cart.missing",
     "order.not_found",
+    // BKL-216 — the amend in-message order-reference ambiguity CLARIFY
+    // (`clarifyAmbiguousOrderReference`): the customer named ≥2 of their OWN
+    // orders, so the resolver bound none and this asks which.
+    "order.ambiguous_reference",
     "order.already_cancelled",
     "order.already_shipped",
+    // LE2-021 — `confirmReorderLast`'s no-history REFUSE. Declared here at the
+    // same time the builder was written, which is the whole lesson of the
+    // BKL-251 note below.
+    "order.reorder.no_history",
+    // LE2-023 — `confirmSwapForCoupon`'s two OWN refusals, declared in the same
+    // commit as their builders for the reason the BKL-251 note below records.
+    // The guard's other two exits reuse `order.reorder.no_history` and
+    // `order.past_ponr`, which are already declared here and are the same facts.
+    "order.coupon.not_usable",
+    "order.coupon.swap.total_unknown",
+    // BKL-251 — emitted since BKL-036/034-F1 but never declared here, so the
+    // AI-BOM and the config seal under-reported the Pack's refusal vocabulary.
+    // `order.past_ponr` fires from `requireCancellable` (a customer cancel past
+    // the point-of-no-return); `order.ownership_denied` from the 034-F1
+    // ownership/IDOR guard `enforceOrderOwnership`, which is inert unless the
+    // host injects `state.authority` — the reason AC-004's empty-state sampling
+    // could never reach it.
+    "order.past_ponr",
+    "order.ownership_denied",
     "order.checkout.slots_incomplete",
     "order.checkout.payment_method_missing",
     "order.checkout.payment_method_invalid",
     "order.checkout.amount_exceeds_limit",
     "order.item.allergens_not_explicit",
     "order.item.quantity_invalid",
+    // F-57 — DECLARED BUT NEVER EMITTED, and retained on purpose. No guard
+    // builds this refusal (`refuseQuantityOverLimit` has had zero call sites
+    // since the Pack's creation commit); it is held as the named refusal for
+    // the zero-`stockCap` hole recorded on `clampUpdateToStockCap`. Note the
+    // asymmetry that let it sit here unnoticed: AC-004 verifies every EMITTED
+    // code is declared, never that every DECLARED code is reachable. Do not
+    // drop it to tidy the list — this array is a sealed surface (ERDS-056) and
+    // removing an entry moves the digest and reopens F-44 (packVersion).
     "order.item.quantity_over_limit",
     "order.review.rating_invalid",
     // BKL-090 — kernel transition-legality guard refusal codes.

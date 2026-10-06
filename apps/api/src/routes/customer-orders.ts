@@ -6,12 +6,60 @@
 import type { FastifyInstance } from "fastify";
 import { getOrderHistory } from "@ibatexas/tools";
 import { Channel } from "@ibatexas/types";
-import { createOrderQueryService, createPaymentQueryService } from "@ibatexas/domain";
+import {
+  createOrderQueryService,
+  createPaymentQueryService,
+  type OrderQueryService,
+  type PaymentQueryService,
+} from "@ibatexas/domain";
 import { requireAuth } from "../middleware/auth.js";
 
-export async function customerOrderRoutes(server: FastifyInstance): Promise<void> {
-  const querySvc = createOrderQueryService();
-  const paymentQuerySvc = createPaymentQueryService();
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Both services were constructed in the plugin body, i.e. at REGISTRATION
+// time. That timing is preserved exactly: the members are factories (the
+// R5-S2 rule), and the plugin invokes them once in the same place the inline
+// `create*Service()` calls used to sit. Nothing moved to first-request.
+
+/** The domain services `customer-orders.ts` resolves through the seam. */
+export interface CustomerOrderRouteDeps {
+  /** Builds the OrderQueryService behind the projection-first history read. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the PaymentQueryService for the per-order active-payment batch. */
+  readonly paymentQueryService: () => PaymentQueryService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the call in routes/index.ts is unchanged.
+ */
+export interface CustomerOrderRoutesOptions {
+  readonly deps?: Partial<CustomerOrderRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction this file did inline. */
+function defaultCustomerOrderRouteDeps(): CustomerOrderRouteDeps {
+  return {
+    orderQueryService: () => createOrderQueryService(),
+    paymentQueryService: () => createPaymentQueryService(),
+  };
+}
+
+function resolveCustomerOrderRouteDeps(
+  options?: CustomerOrderRoutesOptions,
+): CustomerOrderRouteDeps {
+  return { ...defaultCustomerOrderRouteDeps(), ...(options?.deps ?? {}) };
+}
+
+export async function customerOrderRoutes(
+  server: FastifyInstance,
+  options?: CustomerOrderRoutesOptions,
+): Promise<void> {
+  const deps = resolveCustomerOrderRouteDeps(options);
+  const querySvc = deps.orderQueryService();
+  const paymentQuerySvc = deps.paymentQueryService();
 
   server.get(
     "/api/customer/orders",

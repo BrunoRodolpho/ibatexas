@@ -16,7 +16,7 @@
 
 import { mintBroadcastReply } from "@adjudicate/core";
 import { subscribeNatsEvent } from "@ibatexas/nats-client";
-import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender, reaisToCentavos, atomicIncr } from "@ibatexas/tools";
+import { getRedisClient, rk, PROFILE_TTL_SECONDS, getWhatsAppSender, reaisToCentavos, atomicIncr, requireExternalReferenceKey } from "@ibatexas/tools";
 import * as Sentry from "@sentry/node";
 import {
   createCustomerService,
@@ -52,7 +52,7 @@ const RECENTLY_VIEWED_MAX = 20;
 // an order-status update, receipt, or payment notice.
 const PROMOTIONAL_NOTIFICATION_TYPES = new Set<string>([
   "cart_abandoned", // cart-recovery nudge
-  "loyalty_reward", // "R$20 … FIEL20" loyalty promo
+  "loyalty_reward", // "R$20 … <promotion.loyalty-reward>" loyalty promo
   "follow_up",      // re-engagement / marketing outreach
 ]);
 
@@ -464,7 +464,12 @@ async function awardLoyaltyStamp(
       const customer = await customerSvc.getById(customerId);
       const name = customer.name;
       const namePart = name ? `, ${name}` : "";
-      const message = `Parabens${namePart}! 🎉 Voce completou 10 pedidos e ganhou R$20 de desconto! Use o codigo FIEL20 no proximo pedido.`;
+      // LE2-018: the code is the declared external reference
+      // `promotion.loyalty-reward` (WELCOME/LOYALTY codes live in config, and
+      // their existence in Medusa is a boot gate) — not a literal in a pt-BR
+      // sentence this subscriber sends to a customer who just earned it.
+      const rewardCode = requireExternalReferenceKey("promotion.loyalty-reward");
+      const message = `Parabens${namePart}! 🎉 Voce completou 10 pedidos e ganhou R$20 de desconto! Use o codigo ${rewardCode} no proximo pedido.`;
       const { publishNatsEvent } = await import("@ibatexas/nats-client");
       await publishNatsEvent("notification.send", {
         type: "loyalty_reward",

@@ -24,6 +24,14 @@
 
 import { getRedisClient, rk, medusaAdmin, medusaStore, reaisToCentavos, searchProducts } from "@ibatexas/tools";
 import { Channel, type OrderEventItem } from "@ibatexas/types";
+// LE2-023 — the pack's OWN money/PONR sets, so the feasibility projection and
+// the guards that will adjudicate the cancel read ONE transcription. See each
+// set's comment in `packages/pack-orders/src/policies.ts` for why a host-side
+// copy would be a real defect rather than a style point.
+import {
+  CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES,
+  CUSTOMER_POST_PONR_FULFILLMENT,
+} from "@ibatexas/pack-orders";
 import {
   createOrderQueryService,
   createOrderService,
@@ -33,13 +41,59 @@ import {
   prisma,
 } from "@ibatexas/domain";
 import { parseAgentSessionNamespace } from "./agent-guards.js";
+// F-9 — the ONE owner of "which cart is this conversation working on?". The
+// three cart lookups below used to spell out `rk("cart:active:session:<id>")`
+// and its fail-posture by hand; they now consume one resolution.
+import { resolveActiveCart } from "./active-cart-resolution.js";
+// LE2-021 — the single owner-scoped "last order" read, shared with the
+// workflow-scoped reorder handler so the confirm and the act cannot name
+// different orders.
+import { loadPreviousOrder, type PreviousOrder } from "./previous-order.js";
+import { projectCouponForOrder } from "./coupon-price-projection.js";
 // FE-T13 — reuse the ops-plane displayId parser (pure, no ops-specific
 // dependency) rather than re-deriving the same `#1234`-style parse rule.
-import { parseDisplayIdRef } from "../ops/ops-order-resolution.js";
+import { matchNamedOwnedOrders, parseDisplayIdRef } from "../ops/ops-order-resolution.js";
 // BKL-140 — reuse the SINGLE non-terminal-stage set the discovery-fallback read
 // already uses (turn-reads.ts), rather than re-deriving a byte-parallel copy
 // (FE-D07 duplication lesson). No cycle: turn-reads never imports this module.
 import { ACTIVE_FULFILLMENT_STAGES } from "./turn-reads.js";
+// R3-S2 — the DECLARED resolver→guard signal contract. Every honesty-floor flag
+// this module stamps onto `ctx` goes through `stampResolutionSignal` with a named
+// constant, and the guards that read them (compose-policy-packs.ts, plus
+// pack-orders for the stay-home marker) read the SAME declaration. Before it both
+// ends spelled the key as a bare string on a `Record<string, unknown>`, so a typo
+// on either end compiled clean and left the guard silently inert — PASS, i.e. an
+// un-guarded EXECUTE or a lost honesty floor.
+import {
+  ALLERGEN_MENTION_DETECTED,
+  AMEND_ITEM_UNRESOLVED,
+  AUTO_RESOLVED_MONEY_REF,
+  REVIEW_PRODUCT_UNRESOLVED,
+  SESSION_TOKENS_CONSUMED,
+  STAY_HOME_DELIVERY_MARKER,
+} from "./resolution-signals.js";
+// R3-S3/S4 — the DECLARED per-kind profile table. This module is now the
+// INTERPRETER of that table: every `X_KINDS.has(kind)` membership test below is a
+// profile-field read, and the eight kind-sets it used to hand-maintain are
+// DERIVED views re-exported at the bottom of this section for the coverage
+// contracts. What stays here — and only here — is STAGE ORDERING: the table says
+// WHAT a kind gets, never WHEN, because the sequence (renames → auto-resolve →
+// refund bind → slot resolve → loader → stamps → threading) carries real
+// dependencies a set of independent rows cannot express.
+//
+// R3-S4 closed the last stage (id-threading). This file now contains ZERO intent-
+// kind comparisons: no `kind === "…"`, no `kind.startsWith("…")`, no
+// `X_KINDS.has(kind)`. The only `kind ===` tests left are on the RESOLUTION
+// discriminants of the line-item / review resolvers (`resolution.kind === "found"`),
+// which are a different `kind` entirely — a three-way outcome, not an intent.
+import {
+  ctxLoaderConfirmsOwnership,
+  ctxLoaderFor,
+  kindMayStamp,
+  resolutionProfileFor,
+  stampProfiledSignal,
+  threadingStepsFor,
+} from "./kind-resolution-profiles.js";
 
 /**
  * Per-session LLM-token Redis counter key. Single source of truth (write side:
@@ -338,6 +392,124 @@ export function buildCartCtx(base: Ctx, payload: Ctx, cart: CartLite | null): Ct
   return ctx;
 }
 
+/**
+ * LE2-021 — PURE: the four `previousOrder*` fields for a projected last order,
+ * or `{}` when there is none.
+ *
+ * ADDITIVE by design. It is spread ONTO whatever ctx the kind's own loader
+ * already produced rather than replacing it, so no existing guard loses an input
+ * it would otherwise have had — `deferOnPendingPix`, `requireCheckoutEligibility`
+ * and the rest still see exactly the state a cart-shaped order kind always sees.
+ * This route only ADDS information to the chain; it removes none.
+ *
+ * Absence is a DECISION, not a gap: `confirmReorderLast` reads exactly these
+ * fields and REFUSEs honestly ("ainda não encontrei nenhum pedido anterior seu
+ * pra repetir") when any is missing, so an unwired host, an unauthenticated
+ * caller, a first-time customer and a failed read all converge on the same safe
+ * sentence instead of on a confirmation for a basket nobody could name.
+ */
+export function previousOrderCtxFields(previous: PreviousOrder | null): Ctx {
+  if (previous === null) return {};
+  return {
+    previousOrderId: previous.orderId,
+    previousOrderDisplayId: previous.displayId,
+    previousOrderTotalInCentavos: previous.totalInCentavos,
+    previousOrderItems: previous.items,
+    // LE2-023 — the two DERIVED booleans the swap-for-coupon route branches on
+    // and its confirm sentence states.
+    //
+    // Derived HERE, once, from the pack's OWN exported sets, so the pre-check
+    // that decides whether to offer the workflow and the guard that will decide
+    // whether to allow the cancel cannot disagree. `requireCancellable` is
+    // additionally lenient when the status is unreadable (it returns true rather
+    // than refuse a caller carrying no order state); this projection is NOT —
+    // an unreadable status leaves `previousOrderIsCancelable` false and the
+    // workflow simply is not offered. The asymmetry is correct in both
+    // directions: a guard must not refuse a legitimate direct cancel over a
+    // missing projection field, and a workflow must not OFFER to cancel
+    // something it could not read.
+    previousOrderIsCancelable:
+      previous.fulfillmentStatus !== "" &&
+      !CUSTOMER_POST_PONR_FULFILLMENT.has(previous.fulfillmentStatus),
+    previousOrderPaymentIsSettled:
+      previous.paymentStatus !== null &&
+      CANCEL_REFUND_IMPLYING_PAYMENT_STATUSES.has(previous.paymentStatus),
+  };
+}
+
+/**
+ * LE2-021 — stamp the previous-order fields onto a resolved ctx, in place.
+ *
+ * Gated on `isAuthenticated` the same way `loadCustomerCtx` is, and for the same
+ * reason rather than as an optimisation: an unauthenticated caller has no
+ * `customerId` an owner-scoped read could mean, so the query could only ever
+ * return nothing. Skipping it keeps the guest path free of a pointless
+ * round-trip AND keeps "this read is owner-scoped" true of every call rather
+ * than true-because-the-filter-matched-nothing.
+ *
+ * Works identically on the RESUME path. `enrichResumeState` calls
+ * `resolveAndAssemble` with no `sessionId` and no `utteranceText`, and this read
+ * needs neither — only `customerId` — so the confirming turn's fresh
+ * adjudication sees the previous order exactly as the selecting turn did. That
+ * matters: the receipt only satisfies the "ask first" threshold, every guard
+ * re-runs, and a `confirmReorderLast` that could not see the projection on
+ * resume would REFUSE the customer's own "sim".
+ */
+async function stampPreviousOrderCtx(
+  ctx: Ctx,
+  base: Ctx,
+  kind: string,
+  customerId: string,
+): Promise<void> {
+  if (!resolutionProfileFor(kind).ctxProjections.includes("previous-order")) return;
+  if (base.isAuthenticated !== true) return;
+  Object.assign(ctx, previousOrderCtxFields(await loadPreviousOrder(customerId)));
+}
+
+/**
+ * LE2-023 — stamp the three coupon fields `confirmSwapForCoupon` reads.
+ *
+ * Runs AFTER {@link stampPreviousOrderCtx} and depends on it: the new total is
+ * the PREVIOUS ORDER's total minus the promotion's discount, so the order this
+ * projection prices is the one that projection just resolved. Sequencing it the
+ * other way would price a coupon against `undefined` and stamp no total, which
+ * the guard would then refuse — a silent, always-on failure of exactly the kind
+ * `predicate-fact-unknown` exists to prevent one layer up.
+ *
+ * ── WHY THE CODE COMES OFF THE PAYLOAD AND THE SPELLING DOES NOT ────────────
+ *
+ * The code is a customer-authored SLOT, so the payload is the only place it can
+ * come from — there is no owner-scoped read that could produce "the coupon this
+ * customer meant". What does NOT come off the payload is the spelling the guard
+ * quotes: `projectCouponForOrder` returns the code the STORE matched, which
+ * differs whenever the customer typed lower case, and quoting the store's own
+ * spelling keeps an untrusted string out of the one sentence the customer
+ * approves a cancellation against.
+ *
+ * BEST-EFFORT and total, like every other stamp here: `projectCouponForOrder`
+ * swallows its own IO failure and returns `{}`, so a Medusa outage leaves every
+ * coupon field ABSENT, the guard refuses honestly, and nothing destructive runs.
+ */
+async function stampCouponSwapCtx(
+  ctx: Ctx,
+  base: Ctx,
+  kind: string,
+  payload: Ctx,
+): Promise<void> {
+  if (!resolutionProfileFor(kind).ctxProjections.includes("coupon-swap")) return;
+  if (base.isAuthenticated !== true) return;
+  const code = typeof payload.code === "string" ? payload.code : "";
+  if (code === "") return;
+  const total = ctx.previousOrderTotalInCentavos;
+  Object.assign(
+    ctx,
+    await projectCouponForOrder({
+      code,
+      orderTotalInCentavos: typeof total === "number" ? total : undefined,
+    }),
+  );
+}
+
 async function loadCart(cartId: string): Promise<CartLite> {
   try {
     const data = (await medusaStore(`/store/carts/${cartId}`)) as { cart?: MedusaCartShape };
@@ -352,42 +524,71 @@ export async function loadCartCtx(
   payload: Ctx,
   opts: { sessionId?: string; cartId?: string },
 ): Promise<Ctx> {
-  // HTTP supplies cartId explicitly; the conductor resolves it from the session key.
+  // HTTP supplies cartId explicitly; the conductor resolves it from the session
+  // key via `active-cart-resolution.ts`, the ONE owner of that lookup.
+  //
+  // POSTURE: ABSENT and UNAVAILABLE both fold to "no cart", because this loader's
+  // consumers are GUARDS — `requireCartItemsForCheckout` and friends REFUSE on a
+  // null cart either way, so an unresolvable cart is an honest stop rather than a
+  // mutation aimed at a cart nobody could name. (`""` stays a cart id here, as it
+  // was before — see the module's empty-string note.)
   let cartId = opts.cartId ?? null;
   if (cartId === null && opts.sessionId !== undefined) {
-    try {
-      const redis = await getRedisClient();
-      cartId = await redis.get(rk(`cart:active:session:${opts.sessionId}`));
-    } catch {
-      cartId = null;
-    }
+    const resolution = await resolveActiveCart({ sessionId: opts.sessionId });
+    cartId = resolution.outcome === "resolved" ? resolution.cartId : null;
   }
   if (cartId === null) return buildCartCtx(base, payload, null);
   return buildCartCtx(base, payload, await loadCart(cartId));
 }
 
-/**
+/* NOTE — this doc block belongs to `hasNonEmptyActiveCart` (below
+ * `readSessionCartId`), not to the function immediately following it.
+ *
  * FE-T09b review fix (MAJOR-1) — "does this session have a cart with items
- * in it RIGHT NOW?" Reuses the exact same BKL-028 active-cart key + fetch
- * as `loadCartCtx` (never a second source of truth for "what is the
- * active cart"). Exported for `amend-preference-correction.ts`'s
- * both-states disambiguation: a bare "no pedido" reference from a
- * mid-cart customer ("põe mais uma coca no pedido") colloquially means
- * their IN-PROGRESS cart, not a placed order — favor the cart. Fail-
- * CLOSED to `false` (no cart) on any read error, same posture as
- * `loadCartCtx` itself.
+ * in it RIGHT NOW?" Resolves the active cart through the SAME
+ * `active-cart-resolution.ts` seam `loadCartCtx` uses (never a second source of
+ * truth for "what is the active cart"). Exported for
+ * `amend-preference-correction.ts`'s both-states disambiguation: a bare "no
+ * pedido" reference from a mid-cart customer ("põe mais uma coca no pedido")
+ * colloquially means their IN-PROGRESS cart, not a placed order — favor the
+ * cart. Fail-CLOSED to `false` (no cart) on an unresolvable read, same posture
+ * as `loadCartCtx` itself.
  */
+/**
+ * The cart id this session is currently working on, or `undefined` — LE2-023.
+ *
+ * Resolved through `active-cart-resolution.ts`, the ONE owner of the
+ * session→active-cart lookup (`getOrCreateCart` / `order.reorder`'s handler are
+ * its writers). Exported so the workflow composition can stamp a `cartId` onto
+ * an activity payload without re-deriving the lookup.
+ *
+ * FAIL-CLOSED to `undefined` on an unresolvable read, the same posture as
+ * `loadCartCtx` and `hasNonEmptyActiveCart`: an unresolvable cart makes the
+ * guard REFUSE, which is an honest stop rather than a mutation aimed at a cart
+ * nobody could name. This is ALSO the one site that reads `""` as "no cart" —
+ * preserved verbatim, see the resolution module's empty-string note.
+ */
+export async function readSessionCartId(
+  sessionId: string | undefined,
+): Promise<string | undefined> {
+  if (sessionId === undefined) return undefined;
+  const resolution = await resolveActiveCart({ sessionId });
+  if (resolution.outcome !== "resolved") return undefined;
+  return resolution.cartId === "" ? undefined : resolution.cartId;
+}
+
 export async function hasNonEmptyActiveCart(sessionId: string | undefined): Promise<boolean> {
   if (sessionId === undefined) return false;
-  try {
-    const redis = await getRedisClient();
-    const cartId = await redis.get(rk(`cart:active:session:${sessionId}`));
-    if (cartId === null) return false;
-    const { cart } = await loadCart(cartId);
-    return cart !== null && !cart.completed_at && (cart.items?.length ?? 0) > 0;
-  } catch {
-    return false;
-  }
+  const resolution = await resolveActiveCart({ sessionId });
+  // ABSENT and UNAVAILABLE both fold to "no cart" — this is a TIE-BREAKER
+  // (cart-vs-placed-order), and failing to the order side on an unreadable cart
+  // is the safer half of the tie.
+  if (resolution.outcome !== "resolved") return false;
+  // No catch around the fetch: `loadCart` swallows its own IO failure and
+  // returns `{cart: null}`, so the only throw the old try/catch could ever have
+  // caught was the Redis read now folded into `resolution`.
+  const { cart } = await loadCart(resolution.cartId);
+  return cart !== null && !cart.completed_at && (cart.items?.length ?? 0) > 0;
 }
 
 // ── Reservations (reservation.* targeting a slot / existing reservation) ─────
@@ -550,93 +751,179 @@ export function isAllergenMentionUtterance(text: string | undefined): boolean {
   return typeof text === "string" && ALLERGEN_MENTION_PATTERN.test(text);
 }
 
-// Order kinds resolved by id (→ loadOrderCtx, which confirms customer ownership
-// and sets resourceOwnerConfirmed). 034-F1: every OWNERSHIP_GATED order kind MUST
-// be here (or a payment.* kind, handled by loadPaymentCtx) — otherwise it falls to
-// the cart loader, resourceOwnerConfirmed stays unset, `owned` is empty, and the
-// kernel ownership guard REFUSEs the resource's TRUE owner. The granular amend
-// kinds (add_item/update_qty/remove_item) require an orderId and amend an existing
-// order, so they resolve by id exactly like order.amend.request. The
-// ownership-coverage test guards this invariant against drift.
-export const ORDER_BY_ID_KINDS = new Set([
-  "order.cancel",
-  "order.amend.request",
-  "order.amend.add_item",
-  "order.amend.update_qty",
-  "order.amend.remove_item",
-  "order.note.add",
-  "order.review.submit",
-  "order.address.change",
-  "order.type.switch",
-]);
+/**
+ * BKL-280 — the STAY-HOME / DELIVERY-REQUEST marker net, and the deterministic
+ * detector `confirmDeliveryContradiction` (pack-orders/src/policies.ts) reads
+ * through the `stayHomeDeliveryMarker` ctx flag stamped in `resolveAndAssemble`.
+ *
+ * ── WHAT DEFECT THIS EXISTS FOR ──────────────────────────────────────────────
+ *
+ * V7-proven (bkl278, 2026-07-27, epoch 54cf4353d5a32564): on the utterance
+ * "não vou poder sair de casa hoje, fecha aí, pago em dinheiro na entrega" the
+ * 4B emits `order.checkout.create {delivery_type: "pickup", payment_method:
+ * "cash"}` — a VALID capability carrying a WRONG payload, so it EXECUTEs. The
+ * customer who just said they cannot leave home is signed up to collect their
+ * order in person. It reproduces under EVERY prompt arm measured (V1/V2/V5/V7/
+ * V8/STOCK/PATCHED), so it is a decision-boundary binding failure, not a
+ * persona bug — owner ruling 2026-07-27 chose OPTION B, a deterministic
+ * pack-side contradiction guard, precisely because prompts cannot stabilize it
+ * and a guard outside the model is inherited by every future engine.
+ *
+ * ── WHY A LITERAL MARKER NET AND NOT A CLASSIFIER ────────────────────────────
+ *
+ * The flag must be UNFORGEABLE by the model: it is derived here, at resolve
+ * time, from the customer's OWN utterance text, and never from anything the
+ * model emitted. A probabilistic detector would re-introduce the very failure
+ * mode the guard exists to bound (SDD §H, data-independence). So the net is a
+ * closed list of explicit literal substrings — no fuzzy matching, no stemming,
+ * no scoring.
+ *
+ * ── WHY DIACRITICS ARE FOLDED (and why that is safe HERE) ────────────────────
+ *
+ * The evidence corpus is 100% accent-correct ("não" 2252 occurrences, "nao"
+ * zero), but real WhatsApp customers type both. Folding NFD combining marks
+ * lets ONE ASCII marker match both spellings instead of maintaining a
+ * two-spelling table (the `al[eé]rg` lesson above, generalized). This is NOT
+ * the `canonicalizeUtterance` seam — that one PRESERVES diacritics on purpose
+ * because it disambiguates place names (Ibaté ≠ Ibate). Nothing here resolves
+ * an entity; folding only widens a safety net, so a fold that over-matches
+ * costs a question and never a wrong execution.
+ *
+ * ── HOW THE NET WAS SIZED (measured, not guessed) ────────────────────────────
+ *
+ * Swept against the LIVE catalog (Postgres :5433 — 283 product/category/
+ * variant/ingredient rows: ZERO hits), 1439 real `conversation_messages`, and
+ * 431 in-repo corpus utterances. Against the 26-case governance-tier
+ * `order.checkout.create` extraction corpus the net scores 11/11 on the
+ * delivery cases and 0/11 on the pickup cases — no false negatives, no false
+ * positives. Two measured corrections are baked in and must not be reverted
+ * without re-running that sweep:
+ *   - the bare English "delivery" marker was REMOVED: its only corpus
+ *     occurrence is the NEGATED "não quero delivery não, fecha em dinheiro,
+ *     vou retirar" — a genuine pickup, which it turned into a false positive.
+ *   - "receber em casa" was ADDED: "…gostaria de receber em casa" is a
+ *     delivery checkout the first net silently missed (a false NEGATIVE, the
+ *     expensive direction — a missed contradiction is a wrong EXECUTE).
+ *
+ * The asymmetry is deliberate and is the whole design rule here: a false
+ * positive costs one extra question (annoying, safe); a false negative costs a
+ * wrong executed checkout (the defect). Bias toward asking.
+ */
+function foldForMarkers(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
 
-// Order/booking intents whose target ("meu pedido" / "minha reserva") the
-// customer may leave implicit: when it was NOT given explicitly, auto-resolve to
-// the customer's most-recent target and FORCE a REQUEST_CONFIRMATION (via the
-// confirm-on-autoresolve guard) so a wrong guess can never auto-execute — the
-// user sees the resolved target and confirms/denies. BKL-038 adds the in-flight
-// modify kinds (amend/note/address/type) so "adiciona uma coca no meu pedido" /
-// "muda o endereço do meu pedido" resolve to the most-recent order instead of
-// dead-ending. MUST stay in lockstep with AUTORESOLVE_CONFIRM_KINDS
-// (compose-policy-packs.ts): a kind auto-resolved here but not confirmed there
-// would EXECUTE against a silently-guessed target.
+/**
+ * FAMILY A — explicit statements of being unable/unwilling to LEAVE THE HOUSE.
+ * Negated-verb forms ("não vou poder sair") rather than a bare "sair de casa",
+ * which a legitimate pickup customer could say ("vou sair de casa pra buscar").
+ */
+const STAY_HOME_MARKERS: readonly string[] = [
+  "nao vou poder sair",
+  "nao vou conseguir sair",
+  "nao posso sair",
+  "nao vou sair",
+  "nao consigo sair",
+  "nao da pra sair",
+  "nao tenho como sair",
+  "sem poder sair",
+  "sem sair de casa",
+  "estou em casa",
+  "to em casa",
+  "tou em casa",
+  "fico em casa",
+  "ficar em casa",
+  "preso em casa",
+  "presa em casa",
+];
+
+/**
+ * FAMILY B — explicit asks to RECEIVE the order at an address. Phrase-level,
+ * never the bare word "entrega": "endereço de entrega incorreto" (a cancel
+ * reason) and "vocês entregam em Ibaté?" (a coverage question) both contain it
+ * and neither is a delivery REQUEST.
+ */
+const DELIVERY_REQUEST_MARKERS: readonly string[] = [
+  "na entrega",
+  "pra entrega",
+  "para entrega",
+  "quero entrega",
+  "queria entrega",
+  "com entrega",
+  "entregar aqui",
+  "entregar em casa",
+  "entrega em casa",
+  "entregar na minha casa",
+  "entrega na minha casa",
+  "me entrega",
+  "entrega pra mim",
+  "manda pra minha casa",
+  "manda pra casa",
+  "manda aqui",
+  "mandar aqui",
+  "traz aqui",
+  "trazer aqui",
+  "trazer em casa",
+  "receber em casa",
+  "recebo em casa",
+  "receber aqui",
+  "aqui em casa",
+  "na minha casa",
+  "pra minha casa",
+  "meu endereco",
+];
+
+/** The two families, as ONE closed list. Exported for the marker-table test. */
+export const STAY_HOME_DELIVERY_MARKERS: readonly string[] = [
+  ...STAY_HOME_MARKERS,
+  ...DELIVERY_REQUEST_MARKERS,
+];
+
+/**
+ * Pure — no IO/clock/RNG. TRUE when the utterance carries an explicit stay-home
+ * OR delivery-request marker. Either family alone is sufficient: the second
+ * V7-class failing row ("pode fechar, pago no pix e manda pra minha casa")
+ * carries NO stay-home phrase and no `entrega*` token at all, so an
+ * A-AND-B conjunction would miss it.
+ */
+export function hasStayHomeDeliveryMarker(text: string | undefined): boolean {
+  if (typeof text !== "string") return false;
+  const folded = foldForMarkers(text);
+  return STAY_HOME_DELIVERY_MARKERS.some((m) => folded.includes(m));
+}
+
+// ── The derived kind-set views (R3-S3) ──────────────────────────────────────
 //
-// FE-T09 (D-a, the amend inversion): the granular amend kinds
-// (add_item/update_qty/remove_item) are now MODEL-proposable — the model is
-// never shown an `orderId` field (it is Identity-class, forbidden by
-// `order-amend-granular.schema.ts`), so unlike the old assumption ("they
-// carry an explicit orderId from the amend flow"), a model-driven granular
-// amend needs the SAME "most-recent order" auto-resolve `order.amend.request`
-// already gets. Added here alongside it.
-const ORDER_AUTORESOLVE_KINDS = new Set([
-  "order.cancel",
-  "payment.pix.regenerate",
-  "order.amend.request",
-  "order.amend.add_item",
-  "order.amend.update_qty",
-  "order.amend.remove_item",
-  "order.note.add",
-  "order.address.change",
-  "order.type.switch",
-  // FE-D28 — order.review.submit's orderId is Identity-class (never model-
-  // emitted); the reviewed order is auto-resolved to the customer's most-recent
-  // order (or an explicit `orderReference` display number — see
-  // `applyAutoResolve`'s review special-case). Same confirm-first posture as
-  // the modify kinds: the customer sees the resolved order + product before a
-  // public review posts. MUST stay in lockstep with AUTORESOLVE_CONFIRM_KINDS.
-  "order.review.submit",
-]);
-// FE-T14 — reservation.modify's schema never shows the model a
-// `reservationId` field (Identity-class, forbidden) and, before this
-// change, had NO auto-resolve path at all: `resolveReservationId` below is
-// only invoked for kinds in this set, so `reservation.modify` could never
-// reach a reservationId from chat despite being advertised
-// (plannerAdvertisedBy, definitions.ts) and offered on the customer
-// planner's allowed-intent set (surfaces.json) — a live, customer-facing
-// gap. Added alongside reservation.cancel with IDENTICAL semantics: resolve
-// to the customer's one active reservation when unambiguous (never a guess
-// among several), forcing a confirm (AUTORESOLVE_CONFIRM_KINDS,
-// compose-policy-packs.ts, mirrors this addition).
-const RESERVATION_AUTORESOLVE_KINDS = new Set(["reservation.cancel", "reservation.modify"]);
+// These six sets were hand-maintained declarations here. They are now DERIVED
+// from `KIND_RESOLUTION_PROFILES` (kind-resolution-profiles.ts) and re-exported
+// under their historical names, so the coverage contracts that import them —
+// 034-F1's `ownership-gating-coverage.test.ts` (ORDER_BY_ID_KINDS) and R3-S1's
+// `autoresolve-confirm-lockstep.test.ts` (ORDER_AUTORESOLVE_KINDS /
+// RESERVATION_AUTORESOLVE_KINDS) — keep pinning the same relations. What changed
+// is WHAT they pin: not two hand-copies agreeing, but one table's derivation.
+//
+// Nothing in this file reads them any more; the interpreter below reads profile
+// fields directly. The per-kind reasoning each set's comment used to carry (why
+// order.review.submit auto-resolves, why the granular amend kinds resolve by id,
+// why a refund binds ownership without forcing a confirm) now lives on the rows
+// and the strategy vocabulary in kind-resolution-profiles.ts.
+export {
+  ORDER_BY_ID_KINDS,
+  ORDER_AUTORESOLVE_KINDS,
+  ORDER_NAMED_REFERENCE_KINDS,
+  RESERVATION_AUTORESOLVE_KINDS,
+  RESERVATION_SLOT_RESOLVE_KINDS,
+  REFUND_OWNERSHIP_KINDS,
+  PREVIOUS_ORDER_CTX_KINDS,
+  COUPON_SWAP_CTX_KINDS,
+} from "./kind-resolution-profiles.js";
 
-// FE-D27 — the kinds whose timeSlotId may be grounded from an NL date/time pair
-// (the pure-chat "mesa pra 4 sexta às 20h" path) instead of a listed slot id.
-// reservation.modify is handled separately (its slot key is `newTimeSlotId`).
-const RESERVATION_SLOT_RESOLVE_KINDS = new Set([
-  "reservation.create",
-  "reservation.waitlist.join",
-]);
 /** The ISO calendar-date shape check_availability's own `date` field uses (YYYY-MM-DD). */
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-// 034-F1 (review finding 6/7): refund payloads (PaymentRefundIssuePayload /
-// PaymentRefundConfirmPayload) carry ONLY paymentId — never orderId. Since
-// ownership flows through the order, the kernel ownership guard had no resource to
-// bind and ran INERT for every refund. These kinds resolve their owning orderId
-// from the paymentId so loadPaymentCtx can confirm ownership and the authority
-// graph engages. This is an ownership BINDING only — the refund target stays the
-// explicit paymentId — so it does NOT force a confirm like the NL autoresolve path.
-const REFUND_OWNERSHIP_KINDS = new Set(["payment.refund.issue", "payment.refund.confirm"]);
 
 /**
  * NL→id: explicit orderId wins; else auto-resolve the customer's most-recent
@@ -858,6 +1145,80 @@ export async function resolveCustomerOrderReference(
   return resolveIdless(await loadCustomerOrderRows(customerId, 20));
 }
 
+/** BKL-216 — the outcome of resolving an amend's target order. `orderId: null` with
+ *  a non-empty `ambiguousDisplayIds` is the CLARIFY case; `autoResolved` marks the
+ *  blind most-recent fallback (the only branch that forces a confirm). */
+export interface ResolvedAmendOrderReference {
+  readonly orderId: string | null;
+  readonly autoResolved: boolean;
+  /** The ≥2 OWNED display numbers the message named (CLARIFY case only). */
+  readonly ambiguousDisplayIds: readonly number[];
+}
+
+/**
+ * BKL-216 — the MUTATION-plane order-reference resolution for `order.amend.*`
+ * ({@link ORDER_NAMED_REFERENCE_KINDS}). The sibling of the READ-plane BKL-203 fix
+ * (#350): a customer who NAMES one of their orders must amend THAT order, not
+ * whichever one is newest.
+ *
+ * Precedence, and what each branch preserves:
+ *   1. an EXPLICIT `payload.orderId` wins, unchanged ({@link resolveOrderId}).
+ *   2. the message names exactly ONE of the customer's OWN orders by display
+ *      number → bind it. `autoResolved` is FALSE: nothing was guessed, so the
+ *      confirm-on-autoresolve gate (whose shared prompt asserts "o seu pedido mais
+ *      RECENTE" — compose-policy-packs.ts) must not fire and assert a falsehood
+ *      about a named older order. This mirrors branch 1's posture for an explicit
+ *      id, and it is NOT a money-safety relaxation: `order.amend.add_item` still
+ *      confirms via its own `requireAmendItemDisambiguation` guard, and the Inv 11
+ *      amount bands are untouched.
+ *   3. the message names ≥2 of them → resolve NOTHING and stamp
+ *      `orderReferenceAmbiguousCount` + `orderReferenceAmbiguousDisplayIds` so the
+ *      pack-side `clarifyAmbiguousOrderReference` guard asks WHICH order (the
+ *      BKL-223 reservation idiom). Never a guess between two named orders.
+ *   4. no owned order is named → the pre-existing blind most-recent auto-resolve,
+ *      byte-for-byte (`autoResolved: true` → the confirm still gates it).
+ *
+ * IDOR-safe BY CONSTRUCTION: the candidate set is `listByCustomer`'s owner-scoped
+ * rows and the match runs through the SHARED {@link matchNamedOwnedOrders}, so a
+ * message naming ANOTHER customer's display number matches nothing and lands in
+ * branch 4 — it can never bind, and the customer still sees a confirm naming their
+ * own resolved order before anything mutates. Fail-safe: a read error yields no
+ * rows (`loadCustomerOrderRows`), i.e. the same `orderId: null` `resolveOrderId`
+ * returns on a throw.
+ */
+export async function resolveAmendOrderReference(
+  payload: Ctx,
+  customerId: string,
+  utteranceText: string | undefined,
+): Promise<ResolvedAmendOrderReference> {
+  if (typeof payload.orderId === "string") {
+    return { orderId: payload.orderId, autoResolved: false, ambiguousDisplayIds: [] };
+  }
+  // Same owner-scoped read + limit the id-less read plane uses (resolveIdless), so
+  // `rows[0]` IS the most-recent order branch 4 falls back to.
+  const rows = await loadCustomerOrderRows(customerId, 20);
+  const mostRecent: ResolvedAmendOrderReference = {
+    orderId: rows[0]?.id ?? null,
+    autoResolved: rows.length > 0,
+    ambiguousDisplayIds: [],
+  };
+  if (typeof utteranceText !== "string" || utteranceText.trim() === "") {
+    return mostRecent;
+  }
+  const named = matchNamedOwnedOrders(rows, utteranceText);
+  if (named.length === 1) {
+    return { orderId: named[0]!.id, autoResolved: false, ambiguousDisplayIds: [] };
+  }
+  if (named.length >= 2) {
+    return {
+      orderId: null,
+      autoResolved: false,
+      ambiguousDisplayIds: named.map((o) => o.displayId),
+    };
+  }
+  return mostRecent;
+}
+
 /** 034-F1: resolve the orderId that OWNS a payment, for the refund ownership
  *  binding (finding 6/7). Fail-safe to null → resolver leaves the guard inert
  *  (service-layer scoping still applies) rather than REFUSE-ing on a read error. */
@@ -963,15 +1324,22 @@ async function applyAutoResolve(
   kind: string,
   payload: Ctx,
   customerId: string,
+  utteranceText: string | undefined,
 ): Promise<{ payload: Ctx; autoResolvedMoneyRef: boolean }> {
-  if (ORDER_AUTORESOLVE_KINDS.has(kind)) {
+  // R3-S3 — the four branches this function used to reach through NESTED set
+  // membership (`ORDER_AUTORESOLVE` → `kind === review` → `ORDER_NAMED_REFERENCE`,
+  // with `RESERVATION_AUTORESOLVE` on the else) are now the four values of ONE
+  // declared field. The nesting encoded a partition — a kind took exactly one
+  // branch — that nothing enforced; reading a strategy makes the partition
+  // structural, because a kind cannot have two `targetResolution` values.
+  switch (resolutionProfileFor(kind).targetResolution) {
     // FE-D28 — order.review.submit resolves its reviewed order via the FE-T13
     // display-number path: an explicit `orderReference` ("pedido 1234") is
     // looked up authoritatively + IDOR-checked, falling back to the customer's
     // most-recent order when absent/unmatched. Either way the turn confirms the
     // resolved target (a public review posts against it), so `autoResolvedMoneyRef`
     // is set whenever an order was resolved — not only on the blind fallback.
-    if (kind === "order.review.submit") {
+    case "order-display-reference": {
       const r = await resolveCustomerOrderReference(
         typeof payload.orderReference === "string" ? payload.orderReference : undefined,
         customerId,
@@ -981,33 +1349,69 @@ async function applyAutoResolve(
       }
       return { payload, autoResolvedMoneyRef: false };
     }
-    const r = await resolveOrderId(payload, customerId);
-    if (r.autoResolved && r.orderId !== null) {
-      return { payload: { ...payload, orderId: r.orderId }, autoResolvedMoneyRef: true };
+    // BKL-216 — the amend kinds honor an EXPLICITLY-NAMED owned order before
+    // falling back to the (unchanged) blind most-recent resolution. Every other
+    // autoresolve kind keeps `resolveOrderId` verbatim.
+    case "order-named-reference": {
+      const r = await resolveAmendOrderReference(payload, customerId, utteranceText);
+      if (r.ambiguousDisplayIds.length >= 2) {
+        // ≥2 OWNED orders named: stamp the ambiguity markers (the BKL-223 shape) so
+        // the pack-side `clarifyAmbiguousOrderReference` guard asks which one. NOT an
+        // autoresolve — orderId stays unstamped so `requireOrderIdForMutation` still
+        // fails closed if the clarify guard is ever unwired.
+        return {
+          payload: {
+            ...payload,
+            orderReferenceAmbiguousCount: r.ambiguousDisplayIds.length,
+            orderReferenceAmbiguousDisplayIds: [...r.ambiguousDisplayIds],
+          },
+          autoResolvedMoneyRef: false,
+        };
+      }
+      if (r.orderId !== null) {
+        return {
+          payload: { ...payload, orderId: r.orderId },
+          // A NAMED order was given, not guessed → no forced confirm (the shared
+          // prompt would claim "mais recente"). Only the blind fallback confirms.
+          autoResolvedMoneyRef: r.autoResolved,
+        };
+      }
+      return { payload, autoResolvedMoneyRef: false };
     }
-  } else if (RESERVATION_AUTORESOLVE_KINDS.has(kind)) {
-    const r = await resolveReservationId(payload, customerId);
-    if (r.autoResolved && r.reservationId !== null) {
-      return {
-        payload: { ...payload, reservationId: r.reservationId },
-        autoResolvedMoneyRef: true,
-      };
+    case "order-most-recent": {
+      const r = await resolveOrderId(payload, customerId);
+      if (r.autoResolved && r.orderId !== null) {
+        return { payload: { ...payload, orderId: r.orderId }, autoResolvedMoneyRef: true };
+      }
+      break;
     }
-    // BKL-223 — ≥2 active reservations: stamp the ambiguity marker (mirrors
-    // `resolveReservationSlot`'s `slotAmbiguous*`) so the pack-side
-    // `clarifyAmbiguousReservation` guard voices the candidates as a CLARIFY
-    // instead of a bare not_found REFUSE. NOT an autoresolve (no forced confirm) —
-    // the reservationId stays unstamped so the present/slot guards fail closed.
-    if (r.ambiguousLabels !== undefined && r.ambiguousLabels.length >= 2) {
-      return {
-        payload: {
-          ...payload,
-          reservationAmbiguousCount: r.ambiguousLabels.length,
-          reservationAmbiguousLabels: r.ambiguousLabels,
-        },
-        autoResolvedMoneyRef: false,
-      };
+    case "reservation-active": {
+      const r = await resolveReservationId(payload, customerId);
+      if (r.autoResolved && r.reservationId !== null) {
+        return {
+          payload: { ...payload, reservationId: r.reservationId },
+          autoResolvedMoneyRef: true,
+        };
+      }
+      // BKL-223 — ≥2 active reservations: stamp the ambiguity marker (mirrors
+      // `resolveReservationSlot`'s `slotAmbiguous*`) so the pack-side
+      // `clarifyAmbiguousReservation` guard voices the candidates as a CLARIFY
+      // instead of a bare not_found REFUSE. NOT an autoresolve (no forced confirm) —
+      // the reservationId stays unstamped so the present/slot guards fail closed.
+      if (r.ambiguousLabels !== undefined && r.ambiguousLabels.length >= 2) {
+        return {
+          payload: {
+            ...payload,
+            reservationAmbiguousCount: r.ambiguousLabels.length,
+            reservationAmbiguousLabels: r.ambiguousLabels,
+          },
+          autoResolvedMoneyRef: false,
+        };
+      }
+      break;
     }
+    case "none":
+      break;
   }
   return { payload, autoResolvedMoneyRef: false };
 }
@@ -1020,11 +1424,11 @@ async function applyAutoResolve(
  * honest refuse downstream).
  */
 async function resolveSlotPartySize(
-  kind: string,
+  isModify: boolean,
   payload: Ctx,
   customerId: string,
 ): Promise<number | undefined> {
-  if (kind === "reservation.modify") {
+  if (isModify) {
     if (typeof payload.newPartySize === "number") return payload.newPartySize;
     const rid = typeof payload.reservationId === "string" ? payload.reservationId : null;
     if (rid === null) return undefined;
@@ -1058,9 +1462,14 @@ export async function resolveReservationSlot(
   payload: Ctx,
   customerId: string,
 ): Promise<Ctx> {
-  const isCreate = RESERVATION_SLOT_RESOLVE_KINDS.has(kind);
-  const isModify = kind === "reservation.modify";
-  if (!isCreate && !isModify) return payload;
+  // R3-S3 — the create/modify split was two DIFFERENT tests (a kind-set for
+  // create, a `kind === "reservation.modify"` string for modify) deciding one
+  // question: which slot KEY GROUP this kind grounds under. It is now one field
+  // whose value names the group, so "grounds a slot" and "under which keys" can
+  // no longer be answered inconsistently.
+  const slotResolution = resolutionProfileFor(kind).slotResolution;
+  if (slotResolution === "none") return payload;
+  const isModify = slotResolution === "modify-keys";
 
   const slotKey = isModify ? "newTimeSlotId" : "timeSlotId";
   const dateKey = isModify ? "newDate" : "date";
@@ -1070,7 +1479,7 @@ export async function resolveReservationSlot(
 
   const date = payload[dateKey];
   if (typeof date !== "string" || !ISO_DATE_RE.test(date)) return payload;
-  const partySize = await resolveSlotPartySize(kind, payload, customerId);
+  const partySize = await resolveSlotPartySize(isModify, payload, customerId);
   if (partySize === undefined) return payload;
   const time = typeof payload[timeKey] === "string" ? payload[timeKey] : undefined;
 
@@ -1105,7 +1514,7 @@ export async function resolveReservationSlot(
  */
 async function bindRefundOwnership(kind: string, payload: Ctx): Promise<Ctx> {
   if (
-    REFUND_OWNERSHIP_KINDS.has(kind) &&
+    resolutionProfileFor(kind).ownershipBinding === "refund-payment-order" &&
     typeof payload.orderId !== "string" &&
     typeof payload.paymentId === "string"
   ) {
@@ -1192,8 +1601,7 @@ function normalizeSynonymValue(value: string, synonyms: ReadonlyMap<string, stri
  * auto-resolve, no ownership binding) — called first, before
  * `applyAutoResolve`.
  */
-function mapCheckoutPaymentMethodWireField(kind: string, payload: Ctx): Ctx {
-  if (kind !== "order.checkout.create") return payload;
+function mapCheckoutPaymentMethodWireField(payload: Ctx): Ctx {
   if (typeof payload.payment_method !== "string") return payload;
   // Defensive: a caller that already set the internal key (never happens on
   // the real model-facing path — the extraction schema simply never declares
@@ -1232,8 +1640,7 @@ function mapCheckoutPaymentMethodWireField(kind: string, payload: Ctx): Ctx {
  * guards — no new confirm path, no guard changes, the same ladder the HTTP
  * route always had.
  */
-function mapCheckoutDeliveryTypeWireField(kind: string, payload: Ctx): Ctx {
-  if (kind !== "order.checkout.create") return payload;
+function mapCheckoutDeliveryTypeWireField(payload: Ctx): Ctx {
   if (typeof payload.delivery_type !== "string") return payload;
   if (typeof payload.deliveryType === "string") return payload;
   const { delivery_type: wireValue, ...rest } = payload;
@@ -1256,8 +1663,7 @@ function mapCheckoutDeliveryTypeWireField(kind: string, payload: Ctx): Ctx {
  * compose.ts) already reads. Pure rename, unconditional, called first
  * alongside the checkout renames — before `applyAutoResolve`.
  */
-function mapPreferencesUpdateWireFields(kind: string, payload: Ctx): Ctx {
-  if (kind !== "customer.preferences.update") return payload;
+function mapPreferencesUpdateWireFields(payload: Ctx): Ctx {
   let out = payload;
   if (Array.isArray(out.dietary_restrictions) && typeof out.dietaryFlags === "undefined") {
     const { dietary_restrictions: wireValue, ...rest } = out;
@@ -1270,21 +1676,6 @@ function mapPreferencesUpdateWireFields(kind: string, payload: Ctx): Ctx {
   return out;
 }
 
-/**
- * F3/L1 (D-014) — thread resolved ids from ctx back onto the outgoing payload.
- *
- * The Conductor hands the executor tool `envelope.payload`, but the session
- * cartId is resolved into ctx (not the payload), so a cart mutation EXECUTEs and
- * then the tool throws a ZodError on the missing `cartId` — the customer can
- * never add an item / apply a coupon / check out by message. Copy the resolved
- * ids from ctx onto the payload for the kinds whose executor schema requires
- * them, WITHOUT overriding an explicitly-supplied value.
- *
- * `ctx.cartId` is a string ONLY for the cart-op order.* kinds (they route
- * through loadCartCtx); order-by-id kinds (cancel/amend) get `cartId: null` from
- * loadOrderCtx, so this is self-scoping — it only fires when a cart was resolved.
- * reservation.* executors require `customerId` (identity, never LLM-supplied).
- */
 /** First non-empty trimmed string among the candidates, else undefined. */
 function firstString(...vals: unknown[]): string | undefined {
   for (const v of vals) {
@@ -1743,6 +2134,321 @@ async function resolveReviewedProduct(
   }
 }
 
+// ── R3-S4: the id-threading STEP BODIES ──────────────────────────────────────
+//
+// Each function below is the body of one gate that used to open with
+// `if (kind === "…")` / `if (kind.startsWith("…"))`. The gate moved to the table
+// (`threadingSteps` + DOMAIN_DEFAULT_THREADING_STEPS); NOTHING ELSE MOVED. No
+// body knows its kind, and none writes to ctx.
+//
+// WHERE A BODY'S RUNTIME GUARD LIVES follows one rule: inside the body when
+// nothing depends on it (so the function is TOTAL and the interpreter reads as a
+// flat list of selections), and in the interpreter when another step NESTS inside
+// it. Two do nest — the quantity coercion inside each line-item resolution, and
+// the review honesty-floor stamp inside the review resolution — and nesting is
+// sequence, which is the interpreter's job and not a fact a row can state.
+
+/** F3/L1 (D-014) — `thread-cart-id`. Self-scoping twice over: only when a cart
+ *  was actually resolved into ctx, and never over an explicit value. */
+function threadSessionCartId(payload: Ctx, ctxCartId: unknown): Ctx {
+  if (typeof ctxCartId !== "string" || typeof payload.cartId === "string") return payload;
+  return { ...payload, cartId: ctxCartId };
+}
+
+/** F3/L1 (D-014) — `thread-reservation-customer-id`. Reservation executors require
+ *  `customerId` (identity, never LLM-supplied). */
+function threadReservationCustomerId(payload: Ctx, customerId: string): Ctx {
+  if (typeof payload.customerId === "string" || !customerId) return payload;
+  return { ...payload, customerId };
+}
+
+/**
+ * BKL-103 — `stamp-cancel-actor`: the PROPOSER stamp (Identity class,
+ * resolver-owned).
+ *
+ * `order.cancel` is a RESUMABLE escalation kind: a >=R$1.000 PAID cancel
+ * ESCALATEs, parks, and an OWNER may approve it, at which point
+ * `gatePaidCancel`'s overlay (`@ibatexas/pack-orders`) compares
+ * `approval.approverId !== payload.actorId`. That comparand only exists if the
+ * AUTHENTICATED write side stamps it — the HTTP plane does so in
+ * routes/order-actions.ts, and this is the conversational plane's equivalent.
+ * Without it the overlay refuses to convert (it requires a non-empty proposer),
+ * so an approved big-ticket cancel could never resume.
+ *
+ * Always OVERWRITTEN from the Capsule's authenticated `customerId`, never
+ * conditional on what arrived: `actorId` is in `FORBIDDEN_EXTRACTION_FIELD_NAMES`
+ * so no extraction schema can offer it to the model, and an unconditional
+ * overwrite means even a smuggled value cannot survive (the `allergens`
+ * provenance lesson below — a "fill only if absent" test is exactly what a
+ * well-formed adversarial completion defeats). A forged proposer would not grant
+ * a bypass (it makes the inequality trivially TRUE, i.e. it would let a
+ * self-approving owner convert), which is precisely why provenance is forced here.
+ *
+ * It doubles as the customer scope the resume re-projection reads
+ * (`escalationResumeSeedState`), because the conversational envelope's
+ * `actor.sessionId` is a CONVERSATION id, not a customer id.
+ */
+function stampCancelActorId(payload: Ctx, customerId: string): Ctx {
+  if (!customerId) return payload;
+  return { ...payload, actorId: customerId };
+}
+
+/**
+ * BKL-061 + BKL-067 + FE-T09 + BKL-199 — `hydrate-product-with-allergens`, for
+ * order.item.add (cart) and order.amend.add_item (a placed order): resolve a
+ * loose product name to the product (READ) and inject variantId + the product's
+ * EXPLICIT allergens (pack-orders requireExplicitAllergens; Hard Rule #1) +
+ * the stated quantity, so the executor schema AND the allergen guard are
+ * satisfiable from the 4B's loose emission. cartId comes from BKL-028 (session
+ * cart) which BKL-066 ensures exists; order.amend.add_item instead carries
+ * orderId (already resolved upstream by applyAutoResolve — the model is never
+ * shown orderId, per order-amend-granular.schema.ts).
+ *
+ * Review finding (post-#264, MAJOR): `allergens` used to fill only when
+ * `!Array.isArray(out.allergens)` — a well-formed-but-adversarial completion
+ * smuggling `allergens: []` (or any array) past the extraction schema was
+ * treated as "already resolved" and SURVIVED untouched, and
+ * `requireExplicitAllergens` (pack-orders) only checks the SHAPE (is it an
+ * array?), never the provenance — so a smuggled array defeated the authoritative
+ * fill entirely (Hard Rule #1 / AC3: allergens must be impossible for the model
+ * to populate). Fixed: `allergens` is UNCONDITIONALLY stripped from whatever the
+ * payload carries and refilled ONLY from the resolved product — a resolution miss
+ * leaves it absent (never falls back to the stripped value), so
+ * `requireExplicitAllergens` correctly REFUSEs rather than trusting an unverified
+ * array. `variantId` keeps its original conditional-preserve behavior (an
+ * explicit, non-NL variantId is a legitimate non-model input elsewhere — see
+ * "does not override an explicit variantId"); only `allergens` is in this
+ * review's "same one-line class" scope.
+ *
+ * R3-S4 moved the kind gate to the table and NOTHING ELSE: the strip/refill order
+ * is the same, so the resolved product's array reaches the payload byte-identical.
+ */
+async function hydrateProductWithAllergens(
+  payload: Ctx,
+  channel: string,
+  sessionId: string | undefined,
+  customerId: string,
+  utteranceText: string | undefined,
+): Promise<Ctx> {
+  const needsVariant = typeof payload.variantId !== "string";
+  const { allergens: _modelSuppliedAllergens, ...strippedOfAllergens } = payload;
+  let out: Ctx = strippedOfAllergens;
+  const name = firstString(out.item, out.product, out.productName, out.name, out.query);
+  if (name) {
+    const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
+    if (resolved !== undefined) {
+      if (needsVariant && resolved.variantId !== undefined) {
+        out = { ...out, variantId: resolved.variantId };
+      }
+      if (Array.isArray(resolved.allergens)) {
+        out = { ...out, allergens: resolved.allergens };
+      }
+    }
+  }
+  // Review B3 + BKL-199: the 4B emits quantity as a STRING ("2") OR — the
+  // common live failure — DROPS the stated number entirely ("dois
+  // Refrigerantes"/"40 Brisket" → quantity absent → 1), silently
+  // under-delivering and making the ≥R$1k confirm band unreachable.
+  // `deriveItemQuantity` recovers the customer's stated count deterministically
+  // from their own words (the NL→variantId discipline for the integer), with
+  // coerceQuantity's string-coerce/default-1 as the fall-through. A present
+  // but invalid value with no parseable NL quantity is still left untouched so
+  // AddToCartInputSchema refuses loudly — never a silently different quantity.
+  return { ...out, quantity: deriveItemQuantity(out.quantity, name, utteranceText) };
+}
+/**
+ * FE-T09 (D-a) — `resolve-order-line-item`, for order.amend.update_qty /
+ * order.amend.remove_item: resolve the model's NL `item` reference against the
+ * LIVE order's line items (never a catalog-wide guess) via `resolveOrderLineItem`,
+ * mirroring amend-order.ts's existing title-match semantics with two safety
+ * upgrades over the legacy exact-first-match: zero matches leave itemId
+ * unresolved so the executor reports an honest not-found (never executing against
+ * a guessed line); MULTIPLE matches stamp `itemAmbiguousCount` on the payload
+ * (never `ctx.autoResolvedMoneyRef` — see the docblock on `resolveOrderLineItem`
+ * for why that would be dishonest here) so the executor can surface a specific
+ * disambiguation reply instead of guessing between e.g. two "coca" lines.
+ */
+async function resolveOrderLineItemIntoPayload(
+  payload: Ctx,
+  orderId: string,
+  customerId: string,
+  channel: string,
+  sessionId: string | undefined,
+): Promise<Ctx> {
+  // Always decided fresh below (found/ambiguous/not_found) — never
+  // preserved from a pre-existing value, so there is nothing here for an
+  // adversarial completion to smuggle in and have survive unexamined.
+  const { itemAmbiguousCount: _staleAmbiguousCount, ...strippedOfAmbiguity } = payload;
+  let out: Ctx = strippedOfAmbiguity;
+  const name = firstString(out.item, out.product, out.name, out.query);
+  if (name) {
+    const resolution = await resolveOrderLineItem(orderId, name, customerId, channel, sessionId);
+    if (resolution.kind === "found") {
+      out = { ...out, itemId: resolution.itemId };
+    } else if (resolution.kind === "ambiguous") {
+      out = { ...out, itemAmbiguousCount: resolution.count };
+    }
+    // resolution.kind === "not_found": itemId stays unresolved — the
+    // executor reports an honest not-found rather than guessing.
+  }
+  return out;
+}
+
+/**
+ * FE-T14 — `resolve-cart-line-item`, for order.item.update / order.item.remove:
+ * the same NL→itemId shape as the granular amend step above, but resolved against
+ * the ACTIVE CART (`resolveCartLineItem`) rather than a placed order —
+ * `update_cart`/`remove_from_cart`'s wire schema requires a real Medusa cart
+ * line-item id, and the extraction schema only ever gives the model a loose NL
+ * `item` reference (identifiers are model-forbidden).
+ *
+ * Deliberately NOT merged with its order-side twin. The two differ only in which
+ * store they consult, but they are two DECLARED steps precisely so a kind cannot
+ * quietly resolve a cart id against a placed order; collapsing them into one body
+ * with a store parameter would put that choice back inside the interpreter.
+ */
+async function resolveCartLineItemIntoPayload(
+  payload: Ctx,
+  cartId: string,
+  channel: string,
+  sessionId: string | undefined,
+  customerId: string,
+): Promise<Ctx> {
+  const { itemAmbiguousCount: _staleAmbiguousCount, ...strippedOfAmbiguity } = payload;
+  let out: Ctx = strippedOfAmbiguity;
+  const name = firstString(out.item, out.product, out.name, out.query);
+  if (name) {
+    const resolution = await resolveCartLineItem(cartId, name, channel, sessionId, customerId);
+    if (resolution.kind === "found") {
+      out = { ...out, itemId: resolution.itemId };
+    } else if (resolution.kind === "ambiguous") {
+      out = { ...out, itemAmbiguousCount: resolution.count };
+    }
+    // resolution.kind === "not_found": itemId stays unresolved — the
+    // executor reports an honest not-found rather than guessing.
+  }
+  return out;
+}
+
+/** Review B3 — `coerce-line-item-quantity`: positive-integer coercion for the
+ *  kinds that carry a quantity. See the step's declaration for why it is nested
+ *  inside a line-item resolution rather than run on its own. */
+function coerceLineItemQuantity(payload: Ctx): Ctx {
+  return { ...payload, quantity: coerceQuantity(payload.quantity) };
+}
+
+/**
+ * FE-D28 — `resolve-review-product`, for order.review.submit: resolve the
+ * (Identity-class) productId from the reviewed order's OWN line items (a
+ * purchase-bound review), keyed off the model's optional NL `item` reference.
+ * orderId was already resolved by applyAutoResolve's display-reference strategy
+ * (`resolveCustomerOrderReference` — an explicit `orderReference` display number
+ * or the most-recent fallback). A single-product order resolves without an item
+ * reference; a multi-product order needs one.
+ *
+ * NEVER guesses. Returns `resolved: false` on ambiguous/no-match so the
+ * INTERPRETER can stamp `ctx.reviewProductUnresolved` and the kernel REFUSEs
+ * honestly (refuseUnresolvedReviewProductGuard, compose-policy-packs.ts) rather
+ * than parking a doomed "Confirma?" behind confirmOnAutoResolveGuard — the same
+ * honest-floor posture as order.amend.add_item's FE-D18 guard. The flag is the
+ * interpreter's to write because it is a ctx side-channel, not a payload edit.
+ *
+ * The model's `item`/`orderReference` reference fields ride along unstripped (the
+ * wire tool's SubmitReviewInputSchema.parse drops them from the Prisma write);
+ * keeping them mirrors the granular-amend `item` precedent and preserves the
+ * audited extraction IR.
+ */
+async function resolveReviewProductIntoPayload(
+  payload: Ctx,
+  orderId: string,
+  customerId: string,
+): Promise<{ readonly payload: Ctx; readonly resolved: boolean }> {
+  const name = firstString(payload.item, payload.product, payload.name, payload.query);
+  const resolution = await resolveReviewedProduct(orderId, name, customerId);
+  if (resolution.kind === "found") {
+    return { payload: { ...payload, productId: resolution.productId }, resolved: true };
+  }
+  return { payload, resolved: false };
+}
+
+/**
+ * FE-T14 — `refill-allergen-exclusions`, for customer.preferences.update:
+ * `allergenExclusions` is REQUIRED on the wire (`CustomerPreferencesUpdatePayload`)
+ * and the executor (update-preferences.ts) hard-REFUSEs when it is not an explicit
+ * array — but it is NEVER on this capability's extraction schema
+ * (safety-critical, Hard Rule #1: allergens are never model-inferred from
+ * conversation text). UNCONDITIONALLY stripped from whatever the payload carries
+ * (mirroring the `hydrate-product-with-allergens` precedent — a smuggled array
+ * must never survive unexamined) and refilled from the customer's CURRENT saved
+ * preferences, so an ordinary "sou vegetariano" (touching only
+ * dietaryFlags/favoriteCategories) can never silently wipe out an already-declared
+ * allergy. A customer with no saved preferences row yet defaults to `[]` (the same
+ * "no exclusions" default the domain service's own upsert path uses) — never
+ * REFUSEs the turn just because the customer never explicitly set allergens before.
+ */
+async function refillAllergenExclusions(payload: Ctx, customerId: string): Promise<Ctx> {
+  const { allergenExclusions: _modelSuppliedAllergenExclusions, ...strippedOfAllergens } = payload;
+  try {
+    const { customerPrefs } = await createCustomerService().getProfileData(customerId);
+    return {
+      ...strippedOfAllergens,
+      allergenExclusions: Array.isArray(customerPrefs?.allergenExclusions)
+        ? customerPrefs.allergenExclusions
+        : [],
+    };
+  } catch {
+    // Fail-closed to the safest "no exclusions known" default rather than
+    // leaving the field unresolved — the executor REFUSEs on a missing
+    // array either way, so a transient read error degrades to the same
+    // honest REFUSE the guard already produces for a genuinely new
+    // customer, never a silent bypass.
+    return { ...strippedOfAllergens, allergenExclusions: [] };
+  }
+}
+
+/**
+ * F3/L1 (D-014) — thread resolved ids from ctx back onto the outgoing payload.
+ *
+ * The Conductor hands the executor tool `envelope.payload`, but the session
+ * cartId is resolved into ctx (not the payload), so a cart mutation EXECUTEs and
+ * then the tool throws a ZodError on the missing `cartId` — the customer can
+ * never add an item / apply a coupon / check out by message. This stage copies
+ * the resolved ids onto the payload, and hydrates the NL references the executor
+ * schemas cannot accept (a product name where a variantId is required, an "a
+ * coca" where a line-item id is required).
+ *
+ * R3-S4 — THE INTERPRETER of the table's `threadingSteps` axis. Until this slice
+ * it was the last stage still gated by intent kind: fourteen `kind === "…"` /
+ * `kind.startsWith("…")` tests, several nested inside each other, which is why
+ * "does this kind hydrate allergens?" could only be answered by reading 250 lines
+ * of control flow. Now the selection is one table read and this function is the
+ * SEQUENCE — including the two places a step nests inside another's runtime guard.
+ *
+ * Three things stay here and are not expressible as a row:
+ *
+ *  1. ORDER. The cart-line resolution needs the cartId thread to have run first
+ *     (it resolves against `out.cartId`); the order-line resolution needs the
+ *     orderId `applyAutoResolve` produced a stage earlier.
+ *  2. THE NESTING. `coerce-line-item-quantity` runs INSIDE a line-item
+ *     resolution's guard, and the review honesty floor inside the review
+ *     resolution's. Hoisting either to the top level would change behaviour: the
+ *     coercion has never run on a turn that arrived with an explicit `itemId`.
+ *  3. THE CTX WRITES. Both honesty-floor stamps are side-channel writes to `ctx`,
+ *     never payload edits, so no step body performs one.
+ *
+ * The two stamps' PER-KIND selection is nonetheless declared, not written twice —
+ * but by two different mechanisms, and the difference is deliberate:
+ *
+ *   `amendItemUnresolved` is gated by `kindMayStamp`, because its step is shared
+ *     with a kind that must NOT stamp it (order.item.add REFUSEs honestly on its
+ *     own, having no confirm to park it first). The row's `signals` IS that gate,
+ *     the same collapse R3-S3 applied to the allergen and stay-home stamps.
+ *   `reviewProductUnresolved` is stamped unguarded, because its step is declared
+ *     by exactly one kind — so the STEP is the gate, and a second one would be a
+ *     lie. If a future row ever declared the step without the signal,
+ *     `stampProfiledSignal` THROWS, which is the fail-closed direction; a
+ *     `kindMayStamp` guard there would silently skip an honesty floor instead.
+ */
 async function threadResolvedIdsIntoPayload(
   kind: string,
   payload: Ctx,
@@ -1752,73 +2458,21 @@ async function threadResolvedIdsIntoPayload(
   sessionId: string | undefined,
   utteranceText: string | undefined,
 ): Promise<Ctx> {
+  const steps = threadingStepsFor(kind);
   let out = payload;
-  if (
-    kind.startsWith("order.") &&
-    typeof ctx.cartId === "string" &&
-    typeof out.cartId !== "string"
-  ) {
-    out = { ...out, cartId: ctx.cartId };
+
+  if (steps.has("thread-cart-id")) {
+    out = threadSessionCartId(out, ctx.cartId);
   }
-  if (
-    kind.startsWith("reservation.") &&
-    typeof out.customerId !== "string" &&
-    customerId
-  ) {
-    out = { ...out, customerId };
+  if (steps.has("thread-reservation-customer-id")) {
+    out = threadReservationCustomerId(out, customerId);
   }
-  // BKL-061 + BKL-067 + FE-T09: order.item.add (cart) / order.amend.add_item
-  // (a placed order) — resolve a loose product name to the product (READ)
-  // and inject variantId + the product's EXPLICIT allergens (pack-orders
-  // requireExplicitAllergens; Hard Rule #1) + default quantity, so the
-  // executor schema AND the allergen guard are satisfiable from the 4B's
-  // loose emission. cartId comes from BKL-028 (session cart) which BKL-066
-  // ensures exists; order.amend.add_item instead carries orderId (already
-  // resolved above by applyAutoResolve's ORDER_AUTORESOLVE_KINDS handling —
-  // the model is never shown orderId, per order-amend-granular.schema.ts).
-  //
-  // Review finding (post-#264, MAJOR): `allergens` used to fill only when
-  // `!Array.isArray(out.allergens)` — a well-formed-but-adversarial
-  // completion smuggling `allergens: []` (or any array) past the extraction
-  // schema was treated as "already resolved" and SURVIVED untouched, and
-  // `requireExplicitAllergens` (pack-orders) only checks the SHAPE (is it
-  // an array?), never the provenance — so a smuggled array defeated the
-  // authoritative fill entirely (Hard Rule #1 / AC3: allergens must be
-  // impossible for the model to populate). Fixed: `allergens` is now
-  // UNCONDITIONALLY stripped from whatever the payload carries and refilled
-  // ONLY from the resolved product — a resolution miss leaves it absent
-  // (never falls back to the stripped value), so `requireExplicitAllergens`
-  // correctly REFUSEs rather than trusting an unverified array. `variantId`
-  // keeps its original conditional-preserve behavior (an explicit, non-NL
-  // variantId is a legitimate non-model input elsewhere — see "does not
-  // override an explicit variantId"); only `allergens` is in this review's
-  // "same one-line class" scope.
-  if (kind === "order.item.add" || kind === "order.amend.add_item") {
-    const needsVariant = typeof out.variantId !== "string";
-    const { allergens: _modelSuppliedAllergens, ...strippedOfAllergens } = out;
-    out = strippedOfAllergens;
-    const name = firstString(out.item, out.product, out.productName, out.name, out.query);
-    if (name) {
-      const resolved = await resolveProductForItem(name, channel, sessionId, customerId);
-      if (resolved !== undefined) {
-        if (needsVariant && resolved.variantId !== undefined) {
-          out = { ...out, variantId: resolved.variantId };
-        }
-        if (Array.isArray(resolved.allergens)) {
-          out = { ...out, allergens: resolved.allergens };
-        }
-      }
-    }
-    // Review B3 + BKL-199: the 4B emits quantity as a STRING ("2") OR — the
-    // common live failure — DROPS the stated number entirely ("dois
-    // Refrigerantes"/"40 Brisket" → quantity absent → 1), silently
-    // under-delivering and making the ≥R$1k confirm band unreachable.
-    // `deriveItemQuantity` recovers the customer's stated count deterministically
-    // from their own words (the NL→variantId discipline for the integer), with
-    // coerceQuantity's string-coerce/default-1 as the fall-through. A present
-    // but invalid value with no parseable NL quantity is still left untouched so
-    // AddToCartInputSchema refuses loudly — never a silently different quantity.
-    out = { ...out, quantity: deriveItemQuantity(out.quantity, name, utteranceText) };
+  if (steps.has("stamp-cancel-actor")) {
+    out = stampCancelActorId(out, customerId);
+  }
+
+  if (steps.has("hydrate-product-with-allergens")) {
+    out = await hydrateProductWithAllergens(out, channel, sessionId, customerId, utteranceText);
     // FE-D18 — no-match honesty floor for the amend path. The cart sibling
     // order.item.add already REFUSEs honestly on an unresolvable item (it is
     // NOT in AUTORESOLVE_CONFIRM_KINDS → immediate adjudication → the
@@ -1831,145 +2485,51 @@ async function threadResolvedIdsIntoPayload(
     // Fires ONLY on this stamped-flag path: variantId still absent after
     // hydration (name absent, no catalog match, or the lexical-overlap floor
     // refused an arbitrary Typesense hit). An explicit non-model variantId
-    // (needsVariant was false) — including the resolved variantId the resume
-    // leg carries — leaves variantId present, so the flag is never stamped and
-    // the resume re-adjudicates normally.
-    if (kind === "order.amend.add_item" && typeof out.variantId !== "string") {
-      ctx.amendItemUnresolved = true;
+    // — including the resolved variantId the resume leg carries — leaves
+    // variantId present, so the flag is never stamped and the resume
+    // re-adjudicates normally.
+    if (kindMayStamp(kind, AMEND_ITEM_UNRESOLVED) && typeof out.variantId !== "string") {
+      stampProfiledSignal(ctx, kind, AMEND_ITEM_UNRESOLVED, true);
     }
   }
-  // FE-T09 (D-a) — order.amend.update_qty / order.amend.remove_item: resolve
-  // the model's NL `item` reference against the LIVE order's line items
-  // (never a catalog-wide guess) via `resolveOrderLineItem`, mirroring
-  // amend-order.ts's existing title-match semantics with two safety
-  // upgrades over the legacy exact-first-match: zero matches leave itemId
-  // unresolved so the executor reports an honest not-found (never executing
-  // against a guessed line); MULTIPLE matches stamp `itemAmbiguousCount` on
-  // the payload (never `ctx.autoResolvedMoneyRef` — see the docblock on
-  // `resolveOrderLineItem` for why that would be dishonest here) so the
-  // executor can surface a specific disambiguation reply instead of
-  // guessing between e.g. two "coca" lines. Requires orderId to already be
-  // present (resolved above).
+
+  // Requires the orderId resolved a stage earlier by applyAutoResolve.
   if (
-    (kind === "order.amend.update_qty" || kind === "order.amend.remove_item") &&
+    steps.has("resolve-order-line-item") &&
     typeof out.itemId !== "string" &&
     typeof out.orderId === "string"
   ) {
-    const orderId = out.orderId;
-    // Always decided fresh below (found/ambiguous/not_found) — never
-    // preserved from a pre-existing value, so there is nothing here for an
-    // adversarial completion to smuggle in and have survive unexamined.
-    const { itemAmbiguousCount: _staleAmbiguousCount, ...strippedOfAmbiguity } = out;
-    out = strippedOfAmbiguity;
-    const name = firstString(out.item, out.product, out.name, out.query);
-    if (name) {
-      const resolution = await resolveOrderLineItem(orderId, name, customerId, channel, sessionId);
-      if (resolution.kind === "found") {
-        out = { ...out, itemId: resolution.itemId };
-      } else if (resolution.kind === "ambiguous") {
-        out = { ...out, itemAmbiguousCount: resolution.count };
-      }
-      // resolution.kind === "not_found": itemId stays unresolved — the
-      // executor reports an honest not-found rather than guessing.
-    }
-    if (kind === "order.amend.update_qty") {
-      out = { ...out, quantity: coerceQuantity(out.quantity) };
-    }
+    out = await resolveOrderLineItemIntoPayload(out, out.orderId, customerId, channel, sessionId);
+    if (steps.has("coerce-line-item-quantity")) out = coerceLineItemQuantity(out);
   }
-  // FE-T14 — order.item.update / order.item.remove: same NL→itemId shape as
-  // the granular amend block above, but resolved against the ACTIVE CART
-  // (resolveCartLineItem) rather than a placed order — `update_cart`/
-  // `remove_from_cart`'s wire schema requires a real Medusa cart line-item
-  // id, and the extraction schema only ever gives the model a loose NL
-  // `item` reference (identifiers are model-forbidden). Requires cartId to
-  // already be present (threaded above by the `kind.startsWith("order.")`
-  // block).
+
+  // Requires the cartId threaded by the first step above.
   if (
-    (kind === "order.item.update" || kind === "order.item.remove") &&
+    steps.has("resolve-cart-line-item") &&
     typeof out.itemId !== "string" &&
     typeof out.cartId === "string"
   ) {
-    const cartId = out.cartId;
-    const { itemAmbiguousCount: _staleAmbiguousCount, ...strippedOfAmbiguity } = out;
-    out = strippedOfAmbiguity;
-    const name = firstString(out.item, out.product, out.name, out.query);
-    if (name) {
-      const resolution = await resolveCartLineItem(cartId, name, channel, sessionId, customerId);
-      if (resolution.kind === "found") {
-        out = { ...out, itemId: resolution.itemId };
-      } else if (resolution.kind === "ambiguous") {
-        out = { ...out, itemAmbiguousCount: resolution.count };
-      }
-      // resolution.kind === "not_found": itemId stays unresolved — the
-      // executor reports an honest not-found rather than guessing.
-    }
-    if (kind === "order.item.update") {
-      out = { ...out, quantity: coerceQuantity(out.quantity) };
-    }
+    out = await resolveCartLineItemIntoPayload(out, out.cartId, channel, sessionId, customerId);
+    if (steps.has("coerce-line-item-quantity")) out = coerceLineItemQuantity(out);
   }
-  // FE-D28 — order.review.submit: resolve the (Identity-class) productId from
-  // the reviewed order's OWN line items (a purchase-bound review), keyed off the
-  // model's optional NL `item` reference. orderId was already resolved by
-  // applyAutoResolve's review special-case (resolveCustomerOrderReference — an
-  // explicit `orderReference` display number or the most-recent fallback). A
-  // single-product order resolves without an item reference; a multi-product
-  // order needs one. NEVER guesses: an ambiguous/no-match resolution leaves
-  // productId unset AND stamps `ctx.reviewProductUnresolved`, so the kernel
-  // REFUSEs honestly (refuseUnresolvedReviewProductGuard, compose-policy-packs.ts)
-  // rather than parking a doomed "Confirma?" behind confirmOnAutoResolveGuard —
-  // the same honest-floor posture as order.amend.add_item's FE-D18 guard. The
-  // model's `item`/`orderReference` reference fields ride along unstripped (the
-  // wire tool's SubmitReviewInputSchema.parse drops them from the Prisma write);
-  // keeping them mirrors the granular-amend `item` precedent and preserves the
-  // audited extraction IR. When orderId did NOT resolve, the flag is left unset
-  // so requireOrderIdForMutation surfaces the specific "which order?" reply.
+
   if (
-    kind === "order.review.submit" &&
+    steps.has("resolve-review-product") &&
     typeof out.productId !== "string" &&
     typeof out.orderId === "string"
   ) {
-    const name = firstString(out.item, out.product, out.name, out.query);
-    const resolution = await resolveReviewedProduct(out.orderId, name, customerId);
-    if (resolution.kind === "found") {
-      out = { ...out, productId: resolution.productId };
-    } else {
-      ctx.reviewProductUnresolved = true;
-    }
+    const review = await resolveReviewProductIntoPayload(out, out.orderId, customerId);
+    out = review.payload;
+    // When orderId did NOT resolve the guard above is false and the flag is left
+    // unset, so requireOrderIdForMutation surfaces the specific "which order?"
+    // reply instead of this stage's "which product?" one.
+    if (!review.resolved) stampProfiledSignal(ctx, kind, REVIEW_PRODUCT_UNRESOLVED, true);
   }
-  // FE-T14 — customer.preferences.update: `allergenExclusions` is REQUIRED
-  // on the wire (`CustomerPreferencesUpdatePayload`) and the executor
-  // (update-preferences.ts) hard-REFUSEs when it is not an explicit array —
-  // but it is NEVER on this capability's extraction schema (safety-critical,
-  // Hard Rule #1: allergens are never model-inferred from conversation
-  // text). UNCONDITIONALLY stripped from whatever the payload carries
-  // (mirroring the order.item.add allergens precedent above — a smuggled
-  // array must never survive unexamined) and refilled from the customer's
-  // CURRENT saved preferences, so an ordinary "sou vegetariano" (touching
-  // only dietaryFlags/favoriteCategories) can never silently wipe out an
-  // already-declared allergy. A customer with no saved preferences row yet
-  // defaults to `[]` (the same "no exclusions" default the domain service's
-  // own upsert path uses) — never REFUSEs the turn just because the
-  // customer never explicitly set allergens before.
-  if (kind === "customer.preferences.update") {
-    const { allergenExclusions: _modelSuppliedAllergenExclusions, ...strippedOfAllergens } = out;
-    out = strippedOfAllergens;
-    try {
-      const { customerPrefs } = await createCustomerService().getProfileData(customerId);
-      out = {
-        ...out,
-        allergenExclusions: Array.isArray(customerPrefs?.allergenExclusions)
-          ? customerPrefs.allergenExclusions
-          : [],
-      };
-    } catch {
-      // Fail-closed to the safest "no exclusions known" default rather than
-      // leaving the field unresolved — the executor REFUSEs on a missing
-      // array either way, so a transient read error degrades to the same
-      // honest REFUSE the guard already produces for a genuinely new
-      // customer, never a silent bypass.
-      out = { ...out, allergenExclusions: [] };
-    }
+
+  if (steps.has("refill-allergen-exclusions")) {
+    out = await refillAllergenExclusions(out, customerId);
   }
+
   return out;
 }
 
@@ -2130,12 +2690,12 @@ function partySizeFromUtterance(utterance: string | undefined): number | undefin
   return undefined;
 }
 
-/** BKL-227 — for reservation.modify only, stamp a utterance-recovered
- *  `newPartySize` when the model didn't emit one, so the change actually applies.
- *  Byte-identical for every other kind and whenever the model DID emit the field
- *  (its value wins) or the utterance carries no parseable party size. */
-function recoverModifyPartySize(kind: string, payload: Ctx, utteranceText: string | undefined): Ctx {
-  if (kind !== "reservation.modify") return payload;
+/** BKL-227 — stamp a utterance-recovered `newPartySize` when the model didn't emit
+ *  one, so the change actually applies. Selected by the `modify-party-size`
+ *  normalizer (kind-resolution-profiles.ts) for `reservation.modify` alone; a
+ *  no-op whenever the model DID emit the field (its value wins) or the utterance
+ *  carries no parseable party size. */
+function recoverModifyPartySize(payload: Ctx, utteranceText: string | undefined): Ctx {
   if (typeof payload.newPartySize === "number") return payload;
   const n = partySizeFromUtterance(utteranceText);
   if (n === undefined) return payload;
@@ -2143,8 +2703,49 @@ function recoverModifyPartySize(kind: string, payload: Ctx, utteranceText: strin
 }
 
 /**
- * Dispatch by kind to the right loader. Unknown / whatsapp kinds get the identity
- * base only (guards needing entity state see null → REFUSE cleanly, never panic).
+ * R3-S3 — the NORMALIZATION STAGE interpreter: apply exactly the payload
+ * normalizers this kind's profile declares.
+ *
+ * Each of these four was a pure transform wearing its own `if (kind !== "…")
+ * return payload` gate, so the answer to "which kinds normalize?" was four
+ * function bodies scattered across 900 lines. The gates moved to the table; the
+ * transforms stayed pure functions, which is what the R3 brief means by
+ * SELECTION-only — no implementation was folded into the profile.
+ *
+ * THE ORDER IS THE INTERPRETER'S, NOT THE TABLE'S, and it is the pre-migration
+ * order verbatim: payment-method → delivery-type → preferences → party-size. The
+ * table declares `payloadNormalizers` as a list, but that list is a SET of
+ * selections — this switch decides sequence, so re-ordering a row's array cannot
+ * change what runs when. (The four are in fact mutually independent: each touches
+ * only its own keys and no kind declares two that could interact. The fixed order
+ * is kept anyway, because "they happen not to interact today" is not a property a
+ * future normalizer inherits.)
+ */
+function applyPayloadNormalizers(
+  kind: string,
+  payload: Ctx,
+  utteranceText: string | undefined,
+): Ctx {
+  const selected = resolutionProfileFor(kind).payloadNormalizers;
+  let out = payload;
+  if (selected.includes("checkout-payment-method")) out = mapCheckoutPaymentMethodWireField(out);
+  if (selected.includes("checkout-delivery-type")) out = mapCheckoutDeliveryTypeWireField(out);
+  if (selected.includes("preferences-wire-fields")) out = mapPreferencesUpdateWireFields(out);
+  if (selected.includes("modify-party-size")) out = recoverModifyPartySize(out, utteranceText);
+  return out;
+}
+
+/**
+ * Dispatch to the right loader. Unknown / whatsapp kinds get the identity base
+ * only (guards needing entity state see null → REFUSE cleanly, never panic).
+ *
+ * R3-S3 — WHICH loader is now `ctxLoaderFor` (kind-resolution-profiles.ts): a
+ * row's declared override, else the domain prefix ladder this chain used to
+ * inline. Only ONE branch of the old chain was ever per-kind
+ * (`ORDER_BY_ID_KINDS`), and it is the override; the four prefix tests are the
+ * ladder. What stays here is HOW each loader is called — the arguments differ per
+ * loader (an id, a payload, a session) and that is interpreter business, not a
+ * fact about a kind.
  */
 async function loadCtxForKind(
   kind: string,
@@ -2154,28 +2755,26 @@ async function loadCtxForKind(
   orderId: string | null,
   sessionId: string | undefined,
 ): Promise<Ctx> {
-  if (kind.startsWith("payment.")) {
-    return loadPaymentCtx(base, customerId, orderId);
+  switch (ctxLoaderFor(kind)) {
+    case "payment":
+      return loadPaymentCtx(base, customerId, orderId);
+    case "order-by-id":
+      return loadOrderCtx(base, customerId, orderId);
+    case "reservation":
+      return loadReservationCtx(base, customerId, resolvedPayload);
+    case "customer":
+      return loadCustomerCtx(base, customerId);
+    case "cart":
+      // Remaining order.* are cart/draft ops (ensure/item.*/checkout/coupon).
+      return loadCartCtx(base, resolvedPayload, {
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(typeof resolvedPayload.cartId === "string"
+          ? { cartId: resolvedPayload.cartId }
+          : {}),
+      });
+    case "base":
+      return { ...base, cartId: null, orderId, items: undefined };
   }
-  if (ORDER_BY_ID_KINDS.has(kind)) {
-    return loadOrderCtx(base, customerId, orderId);
-  }
-  if (kind.startsWith("reservation.")) {
-    return loadReservationCtx(base, customerId, resolvedPayload);
-  }
-  if (kind.startsWith("customer.")) {
-    return loadCustomerCtx(base, customerId);
-  }
-  if (kind.startsWith("order.")) {
-    // Remaining order.* are cart/draft ops (ensure/item.*/checkout/coupon).
-    return loadCartCtx(base, resolvedPayload, {
-      ...(sessionId === undefined ? {} : { sessionId }),
-      ...(typeof resolvedPayload.cartId === "string"
-        ? { cartId: resolvedPayload.cartId }
-        : {}),
-    });
-  }
-  return { ...base, cartId: null, orderId, items: undefined };
 }
 
 /**
@@ -2186,28 +2785,30 @@ async function loadCtxForKind(
 export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledResolution> {
   const { kind, payload, customerId, channel, sessionId, utteranceText } = args;
   const base = identityCtx(customerId, channel);
-  base.sessionTokensConsumed = await readSessionTokensConsumed(channel, customerId);
+  // The one UNIVERSAL signal: read back for EVERY envelope so the F4 budget guard
+  // sees a real total. Declared as universal in kind-resolution-profiles.ts rather
+  // than on every row — gating a cost cap per kind would silently disable it for
+  // anything unlisted, which is the wrong direction for a fail-closed default.
+  stampProfiledSignal(
+    base,
+    kind,
+    SESSION_TOKENS_CONSUMED,
+    await readSessionTokensConsumed(channel, customerId),
+  );
 
   // T3-4 — agent-session budget read into ctx.agentTokensConsumed (undefined for
   // a normal conversational turn).
   const agentTokens = await readAgentSessionTokens(channel, sessionId);
   if (agentTokens !== undefined) base.agentTokensConsumed = agentTokens;
 
-  // FE-T12/FE-T14 — wire→internal field renames, first and unconditional
-  // (no dependency on auto-resolve/ownership). Every rename is independent
-  // on the SAME payload — order between them doesn't matter (each only
-  // touches its own key(s), and each is a no-op for every OTHER kind).
-  const normalizedPayload = recoverModifyPartySize(
-    kind,
-    mapPreferencesUpdateWireFields(
-      kind,
-      mapCheckoutDeliveryTypeWireField(kind, mapCheckoutPaymentMethodWireField(kind, payload)),
-    ),
-    utteranceText,
-  );
+  // FE-T12/FE-T14/BKL-227 — the NORMALIZATION stage: wire→internal field renames
+  // plus the party-size recovery, first and unconditional (no dependency on
+  // auto-resolve/ownership). WHICH normalizers run is the kind's declared
+  // `payloadNormalizers`; the order is fixed by the interpreter.
+  const normalizedPayload = applyPayloadNormalizers(kind, payload, utteranceText);
 
   // NL→id resolution (confirm-first) then the 034-F1 refund ownership binding.
-  const auto = await applyAutoResolve(kind, normalizedPayload, customerId);
+  const auto = await applyAutoResolve(kind, normalizedPayload, customerId, utteranceText);
   const autoResolvedMoneyRef = auto.autoResolvedMoneyRef;
   const boundPayload = await bindRefundOwnership(kind, auto.payload);
   // FE-D27 — ground an NL date/time to a REAL timeSlotId (create/waitlist) or
@@ -2227,7 +2828,7 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
     sessionId,
   );
 
-  if (autoResolvedMoneyRef) ctx.autoResolvedMoneyRef = true;
+  if (autoResolvedMoneyRef) stampProfiledSignal(ctx, kind, AUTO_RESOLVED_MONEY_REF, true);
 
   // FE-T14 — stamp the allergen-mention ctx flag `refuseAllergenMentionGuard`
   // (compose-policy-packs.ts, an ADOPTER business guard) reads to REFUSE an
@@ -2235,9 +2836,54 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // the unconditional allergenExclusions strip+refill above silently
   // succeed as a no-op on exactly the turn where the customer asked to
   // change their allergies.
-  if (kind === "customer.preferences.update" && isAllergenMentionUtterance(utteranceText)) {
-    ctx.allergenMentionDetected = true;
+  //
+  // R3-S3 — the kind gate IS the signal declaration, so it is read from the
+  // table rather than written twice. `customer.preferences.update` is the only
+  // kind whose row declares `allergenMentionDetected`; a kind that stopped
+  // declaring it would stop stamping it, which is the same fact stated once.
+  if (kindMayStamp(kind, ALLERGEN_MENTION_DETECTED) && isAllergenMentionUtterance(utteranceText)) {
+    stampProfiledSignal(ctx, kind, ALLERGEN_MENTION_DETECTED, true);
   }
+
+  // BKL-280 — stamp the stay-home/delivery-request ctx flag
+  // `confirmDeliveryContradiction` (pack-orders/src/policies.ts) reads to ask a
+  // customer whether they really meant RETIRADA, when their own words asked for
+  // entrega but the model filled `delivery_type: pickup`.
+  //
+  // Derived from the customer's OWN utterance, NEVER from the model's payload —
+  // the flag is the one input in this decision the model cannot author, which is
+  // the entire point of moving the check outside it (owner ruling, Option B).
+  //
+  // Stamped ONLY for `order.checkout.create`: the marker words are ordinary
+  // Portuguese and appear in cancel reasons ("endereço de entrega incorreto")
+  // and coverage questions ("vocês entregam em Ibaté?"), so a kind gate keeps
+  // the flag off every envelope whose guard could not use it anyway.
+  //
+  // ABSENT ON THE RESUME PATH BY CONSTRUCTION, and that is correct rather than a
+  // gap: `enrichResumeState` (claustrum-bootstrap.ts) re-adjudicates a PARKED
+  // envelope by calling `resolveAndAssemble` with no `utteranceText`, so the flag
+  // is undefined, the guard returns null, and a confirm-resume behaves EXACTLY as
+  // it does today. That is what keeps this change purely ADDITIVE — the money
+  // band ladder and every existing checkout verdict are untouched on resume.
+  //
+  // R3-S3 — same collapse as the allergen stamp above: the `order.checkout.create`
+  // gate is now that kind's `signals` declaration, read from the table. The "kind
+  // gate keeps the flag off every envelope whose guard could not use it anyway"
+  // reasoning is unchanged; it is simply stated in the row instead of here.
+  if (kindMayStamp(kind, STAY_HOME_DELIVERY_MARKER) && hasStayHomeDeliveryMarker(utteranceText)) {
+    // The one signal whose reader lives in a PUBLISHED PACK (pack-orders cannot
+    // import from apps/api), so the contract derives both the key name and the
+    // value type from `OrderState` — see STAY_HOME_DELIVERY_MARKER's docblock.
+    stampProfiledSignal(ctx, kind, STAY_HOME_DELIVERY_MARKER, true);
+  }
+
+  // LE2-021 — the reorder-last anchor's grounding read. Additive, owner-scoped,
+  // auth-gated, and identical on the resume path (see the helper's own doc).
+  await stampPreviousOrderCtx(ctx, base, kind, customerId);
+
+  // LE2-023 — the swap-for-coupon anchor's coupon read. ORDER-DEPENDENT: it
+  // prices the coupon against the total the stamp above just resolved.
+  await stampCouponSwapCtx(ctx, base, kind, resolvedPayload);
 
   // 034-F1: the ownership-confirmed resource set for the kernel authority graph.
   // ONLY ids the customer-scoped load actually returned (resourceOwnerConfirmed)
@@ -2252,9 +2898,13 @@ export async function resolveAndAssemble(args: ResolveArgs): Promise<AssembledRe
   // the resolver so it leaves the guard inert instead of REFUSE-ing the TRUE owner
   // on a transient DB error. (A genuine cross-principal id yields false, not
   // undefined → owned=[] → correct REFUSE — unaffected.)
+  // R3-S3 — "the only loaders that set resourceOwnerConfirmed" was open-coded here
+  // as a prefix test OR-ed with a set membership, i.e. a SECOND copy of the loader
+  // dispatch that could drift from the first. It is now a question asked of the
+  // loader itself, so rerouting a kind cannot leave a stale ownership answer.
   const ownershipIndeterminate =
     orderId !== null &&
-    (kind.startsWith("payment.") || ORDER_BY_ID_KINDS.has(kind)) &&
+    ctxLoaderConfirmsOwnership(kind) &&
     ctx.resourceOwnerConfirmed === undefined;
 
   // F3/L1 (D-014): thread the session-resolved cartId (and reservation

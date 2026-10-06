@@ -47,10 +47,12 @@ ibx dev start --with-stripe      # also start Stripe webhook listener
 ibx dev start --no-tui           # plain log output
 ibx dev start commerce api       # only named services + dependencies
 ibx dev start --skip-docker      # skip docker compose (infra running)
+ibx dev start --no-observability # skip the obs stack (see the warning below)
 
 ibx dev stop                     # stop all + Docker
 ibx dev stop web                 # stop one service
-ibx dev stop -f                  # force-kill ports
+ibx dev stop tunnel              # stop only the ngrok tunnel
+ibx dev stop -f                  # force-kill ports (skips process-compose)
 
 ibx dev restart                  # restart all app services
 ibx dev restart api              # restart one service
@@ -63,12 +65,32 @@ ibx dev test @ibatexas/cli       # run tests for a specific package
 
 `ibx dev start` launches [process-compose](https://github.com/F1bonacc1/process-compose), which orchestrates:
 1. Docker infrastructure (Postgres 5433, Redis 6379, Typesense 8108, NATS 4222)
-2. Commerce (Medusa) — waits for Docker healthy
-3. API — waits for Commerce healthy
-4. Web + Admin — wait for Docker healthy
-5. (optional) ngrok tunnel + Stripe listener — wait for API healthy
+2. Observability (VictoriaLogs 9428, VictoriaMetrics 8428, Grafana 3030) — a **default** service
+3. Commerce (Medusa) — waits for Docker healthy
+4. API — waits for Commerce healthy
+5. Web + Admin — wait for Docker healthy
+6. (optional) ngrok tunnel + Stripe listener — wait for API healthy
 
 After startup, the TUI shows all processes with per-service logs. Press Ctrl+C for graceful shutdown.
+
+#### Why observability is a default service
+
+VictoriaLogs is not just a log viewer — it is the **only** record of a zero-call
+funnel turn. L0 / L1 / L2-fallback / ALIAS turns make no model call, so by design
+they write **no `turn_trace` row**; the pino log line *is* the record. When
+VictoriaLogs is down those turns are never written anywhere, so the evidence is
+lost permanently rather than merely delayed (BKL-266; measured ~6h on 2026-07-04
+and ~15h on 2026-07-26).
+
+Two consequences for the dev workflow:
+
+- `--no-observability` skips the obs stack, and `--skip-docker` skips it too
+  (it is a Docker one-shot). Both print a yellow `Observability OFF` line in the
+  start plan — that is not cosmetic, it means funnel records are being dropped.
+- The API prints **one** `[funnel-sink]` warning at boot when `VICTORIALOGS_URL`
+  is unset or the endpoint does not answer `/health`. It never refuses boot and
+  never retries; steady-state detection belongs to the 5-minute watchdog in
+  `apps/api/src/jobs/observability-liveness-checker.ts`.
 
 ### Services — `ibx svc`
 
@@ -436,6 +458,12 @@ Use this for testing WhatsApp webhooks locally. Requires `ngrok` (`brew install 
 
 > **Recommended:** Use `ibx dev start --with-tunnel` to integrate the tunnel into the dev TUI. `ibx tunnel` still works standalone.
 
+> **Orphaned agents / `ERR_NGROK_334`:** if a new tunnel refuses to start because
+> "the endpoint is already online", an earlier ngrok agent is still holding the
+> account's reserved domain — typically one orphaned to pid 1 when its supervisor
+> was killed. `ibx dev stop tunnel` (or `ibx dev stop -f`) now clears it, by both
+> the :4040 sweep and an argv match on `ngrok http 3001`.
+
 ### Chat — `ibx chat`
 
 ```bash
@@ -527,16 +555,18 @@ ibx infra status                       # deployment health dashboard
 ibx infra status --json                # machine-readable output for CI
 ibx infra checklist                    # numbered 12-step deployment checklist
 ibx infra explain                      # diagnose why a deploy is failing (root cause chain)
-ibx infra doctor                       # deep diagnostics (ECR, CloudWatch, Cloud Map, SGs)
+ibx infra doctor                       # deep diagnostics (ECR images + standard checks)
 
 # Operations
-ibx infra logs api                     # tail CloudWatch logs for a service
+ibx infra logs api                     # tail `docker logs` for a service via SSM Run Command
 ibx infra logs nats --lines 100        # tail with custom line count
 ibx infra deploy                       # push current branch to dev
 ibx infra deploy --target main         # push to main (production)
 ibx infra deploy --watch               # push + poll status + health check
 ibx infra deploy --watch --timeout 20m # custom timeout for first deploy
-ibx infra destroy                      # ⚠  destroy all infrastructure (requires typing env name)
+ibx infra destroy                      # ⚠  destroy all Terraform-tracked infra (requires typing env name)
+                                        #    does NOT touch the Route53 zone (prevent_destroy — see dns.tf)
+                                        #    or any SSM parameter not declared in Terraform
 
 # Cost — pause/resume the dev EC2 host
 ibx infra idle                         # stop the dev host (pauses compute billing; EBS + EIP still charged)
@@ -703,6 +733,10 @@ ibx obs payments                   # recent checkout/payment webhook events (--s
 ibx obs payments --pi pi_123       # trace one Stripe payment_intent across all stages
 ibx obs payments -f                # live tail
 ibx obs funnel                     # checkout funnel — stage counts + drop-off / stranded orders (--since)
+ibx obs undelivered                # WhatsApp replies that never landed — Twilio failed/undelivered, or no
+                                   # delivery callback past a threshold (--threshold min, --since, -n).
+                                   # Reads whatsapp_delivery (Postgres); works in prod, unlike the
+                                   # dev-only RCA workbench view of the same rows.
 ```
 
 ### Jobs — `ibx jobs`
@@ -729,6 +763,32 @@ ibx policy export --no-source      # structure only, skip source locations (fast
 ibx policy export --strict         # exit non-zero if any intent kind has no applicable guards
 ibx policy diff <baseline>         # diff the live manifest against a committed baseline JSON
 ```
+
+---
+
+### Alias gazetteer — `ibx alias`
+
+Offline mining of the colloquial names customers use for products, into a ranked
+owner-approval report. Reads recorded turns; **writes no catalog data** — approved
+rows land by editing `packages/catalog/src/alias-gazetteer.ts` in a normal PR.
+
+```bash
+ibx alias mine                     # mine + write the report to scratch/language-engine-2/results/
+ibx alias mine --since 7d          # narrow the labelled-event (VictoriaLogs) window
+ibx alias mine --limit 20000       # widen the transcript read
+ibx alias mine --min-evidence 3    # only recurring candidates
+ibx alias mine --no-embed          # deterministic frequency ranking, no embedder
+ibx alias mine --stdout            # print instead of writing a file
+ibx alias mine --out ./report.md   # write somewhere else
+```
+
+Requires Postgres (`:5433`). VictoriaLogs (`:9428`, from
+`docker-compose.observability.yml`) and the embedder (`OLLAMA_EMBED_URL`) are
+optional — the report states per source what was reachable and which ranking mode
+produced it.
+
+Full runbook, run cadence and row-type reference:
+[docs/ops/runbooks/alias-mining.md](../ops/runbooks/alias-mining.md).
 
 ---
 

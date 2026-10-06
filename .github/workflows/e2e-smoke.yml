@@ -46,6 +46,10 @@ on:
       - "scripts/test-stack-down.sh"
       - "scripts/test-stack/**"
       - "scripts/gen-env-test.sh"
+      # BKL-263: the test-plane env CONTRACT, not just its generator. It carries
+      # the declared external references the api refuses to boot without, so a
+      # change here can break this stack without touching a line of app code.
+      - ".env.test.example"
       - ".github/workflows/e2e-smoke.yml"
   workflow_dispatch: {}
 
@@ -98,7 +102,9 @@ jobs:
           echo "${PROCESS_COMPOSE_SHA256}  /tmp/pc.tar.gz" | sha256sum -c -
           tar -xzf /tmp/pc.tar.gz -C /tmp process-compose
           sudo mv /tmp/process-compose /usr/local/bin/process-compose
-          process-compose version
+          # BKL-288: `-L` — a bare `version` truncates process-compose's shared
+          # per-user log, which the test-stack supervisor also used to write to.
+          process-compose version -L /tmp/pc-version-smoke.log
 
       - name: Install Playwright chromium (+ system deps)
         run: pnpm exec playwright install --with-deps chromium

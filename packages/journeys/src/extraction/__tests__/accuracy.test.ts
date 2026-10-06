@@ -22,10 +22,26 @@ import {
 // as empty; see the dedicated "unreadable" test below for THAT behavior).
 let emptyWaiversDir: string
 let EMPTY_WAIVERS_PATH: string
+/** Waives EVERY case of `order.status.transition` — used by the LE2-05
+ *  unscoreable test to prove a MISSING measurement is never excused. */
+let WAIVED_ALL_WAIVERS_PATH: string
 beforeAll(async () => {
   emptyWaiversDir = await mkdtemp(join(tmpdir(), "accuracy-empty-waivers-"))
   EMPTY_WAIVERS_PATH = join(emptyWaiversDir, "waivers.json")
   await writeFile(EMPTY_WAIVERS_PATH, "[]")
+  WAIVED_ALL_WAIVERS_PATH = join(emptyWaiversDir, "waived-all.json")
+  await writeFile(
+    WAIVED_ALL_WAIVERS_PATH,
+    JSON.stringify([
+      {
+        capability: "order.status.transition",
+        caseId: "*",
+        category: "waived-known-model-limitation",
+        reason: "scripted fixture",
+        addedAt: "2026-07-24",
+      },
+    ]),
+  )
 })
 afterAll(async () => {
   await rm(emptyWaiversDir, { recursive: true, force: true })
@@ -78,9 +94,69 @@ describe("computeAccuracyReport — scoring", () => {
       ],
       waiversPath: EMPTY_WAIVERS_PATH,
     })
+    // LE2-05 extended `CapabilityAccuracy` additively with unscoreable /
+    // scoreable / scoreableRatio. For every pre-LE2 producer (this fixture
+    // included) `unscoreable` is 0, so `scoreable === total` and
+    // `scoreableRatio === ratio` — the pre-LE2 numbers are untouched.
     expect(report.byCapability).toEqual([
-      { capability: "aaa.first.capability", total: 1, passing: 1, ratio: 1 },
-      { capability: "order.status.transition", total: 3, passing: 2, ratio: 2 / 3 },
+      {
+        capability: "aaa.first.capability",
+        total: 1,
+        passing: 1,
+        ratio: 1,
+        unscoreable: 0,
+        scoreable: 1,
+        scoreableRatio: 1,
+      },
+      {
+        capability: "order.status.transition",
+        total: 3,
+        passing: 2,
+        ratio: 2 / 3,
+        unscoreable: 0,
+        scoreable: 3,
+        scoreableRatio: 2 / 3,
+      },
+    ])
+  })
+
+  it("LE2-05 backward-compat: a result set with no `unscoreable` flag scores exactly as before", async () => {
+    const report = await computeAccuracyReport({
+      results: [
+        result({ capability: "order.status.transition", caseId: "a", ok: true }),
+        result({ capability: "order.status.transition", caseId: "b", ok: false }),
+      ],
+      waiversPath: EMPTY_WAIVERS_PATH,
+    })
+    expect(report.cases.map((c) => c.state)).toEqual(["passing", "failing"])
+    for (const row of report.byCapability) {
+      expect(row.unscoreable).toBe(0)
+      expect(row.scoreable).toBe(row.total)
+      expect(row.scoreableRatio).toBe(row.ratio)
+    }
+  })
+
+  it("LE2-05: an `unscoreable` result lands in its own state — never passing, never failing, and never excused by a waiver", async () => {
+    const report = await computeAccuracyReport({
+      results: [
+        { ...result({ capability: "order.status.transition", caseId: "a", ok: false }), unscoreable: true },
+        result({ capability: "order.status.transition", caseId: "b", ok: true }),
+      ],
+      // Waives EVERY case of the capability — the unscoreable one must still
+      // read as unscoreable: a MISSING measurement is not an excused failure.
+      waiversPath: WAIVED_ALL_WAIVERS_PATH,
+    })
+    expect(report.cases.map((c) => c.state)).toEqual(["unscoreable", "waived-known-model-limitation"])
+    expect(report.byCapability).toEqual([
+      {
+        capability: "order.status.transition",
+        total: 2,
+        passing: 0,
+        ratio: 0,
+        unscoreable: 1,
+        scoreable: 1,
+        scoreableRatio: 0,
+      },
     ])
   })
 

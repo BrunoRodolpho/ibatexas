@@ -81,6 +81,7 @@ import { createSystemTaintPolicy } from "@adjudicate/primitives"
 import { MONEY_BAND_1000_CENTAVOS } from "@ibatexas/types"
 
 export type PaymentIntentKind =
+  // ═══ GENERATED — regenerate via `pnpm --filter @ibatexas/packs-composed run regen:intent-kinds` after editing packages/catalog/src/capability-definitions/definitions.ts. DO NOT HAND-EDIT BELOW THIS LINE. ═══
   | "payment.create"
   | "payment.pix.regenerate"
   | "payment.method.switch"
@@ -93,6 +94,7 @@ export type PaymentIntentKind =
   | "payment.status.force"
   | "payment.status.transition"
   | "payment.status.reconcile"
+  // ═══ END GENERATED REGION ═══
 
 // ── Payloads ────────────────────────────────────────────────────────────
 

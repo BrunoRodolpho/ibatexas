@@ -40,6 +40,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@ibatexas/types";
 import { handleTurn, type ChannelMessage, type Conductor } from "@claustrum/core";
+import { runTurnWithContexts } from "../claustrum/turn-context.js";
 import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { createStaffService } from "@ibatexas/domain";
 import type {
@@ -49,15 +50,21 @@ import type {
 import { getOpsConductorFactory } from "../claustrum-bootstrap.js";
 import { acquireAgentLock, releaseAgentLock } from "../whatsapp/session.js";
 import { sendText } from "../whatsapp/client.js";
-import { appendOpsMessages, buildOpsHistoryBlock } from "./ops-history.js";
 import {
-  OPS_NEGATIVE_DECLINE_ACK_PTBR,
-  opsNegativeDeclineTarget,
-  opsSoftAffirmativeRestateNotice,
-  opsStaleResumeNotice,
-  pruneExpiredOpsParks,
-} from "./ops-system-channel.js";
+  opsParkTriagePolicy,
+  triageParkReply,
+  unparkParks,
+  type ParkTriageBranch,
+} from "../claustrum/park-reply-triage.js";
+import { appendOpsMessages, buildOpsHistoryBlock } from "./ops-history.js";
 import { excludedKindsForScope } from "./ops-verb-scope.js";
+import {
+  OPS_WHATSAPP_CHANNEL,
+  closeOpsIncidentOnDeliveredReply,
+  recordOpsTurnDelivery,
+  recordOpsTurnFailure,
+  type OpsTurnContext,
+} from "./ops-turn-incident.js";
 import type { OpsConductorContext } from "./ops-conductor.js";
 
 type LogFn = {
@@ -73,6 +80,17 @@ const OPS_TURN_FAILED_PTBR =
   "Não consegui processar seu comando agora. Tente novamente.";
 const OPS_EMPTY_INPUT_PTBR =
   'Não entendi o comando. Envie a instrução em texto (ex.: "86 a picanha").';
+
+/** The structured-event namespace this SURFACE stamps on a triage verdict. */
+const OPS_WA_TRIAGE_EVENT_PREFIX = "ops_wa";
+
+/** Per-branch non-fatal warn for a failed triage-notice history append. The
+ *  history thread is best-effort at every site — it must never break the turn. */
+const OPS_WA_TRIAGE_APPEND_FAILED: Readonly<Record<ParkTriageBranch, string>> = {
+  "stale-resume": "[ops-wa] stale-notice history append failed (non-fatal)",
+  "soft-affirmative-restate": "[ops-wa] soft-restate history append failed (non-fatal)",
+  "negative-decline": "[ops-wa] decline-ack history append failed (non-fatal)",
+};
 
 /** The minimal Staff-row projection the allowlist gate reads. */
 export interface StaffAllowlistRow {
@@ -198,7 +216,7 @@ async function runOpsTurn(
     readonly log: LogFn;
   },
 ): Promise<void> {
-  const { staffId, actor, command, hash, log } = ctx;
+  const { staffId, actor, command, phone, hash, log } = ctx;
 
   // History (best-effort, both appends): render the PRIOR-turns block BEFORE
   // appending the current message (so the live message is the inbound, not a
@@ -228,14 +246,52 @@ async function runOpsTurn(
   }
 
   const conversationId = `admin:${staffId}`;
+  // BKL-235 — the per-inbound ref doubles as the incident dedup key when no
+  // `capsule.turnId` is in scope (the catch path), mirroring the customer webhook's
+  // use of `body.MessageSid`. Hoisted so both uses read the SAME value.
+  const turnRef = randomUUID();
   const inbound: ChannelMessage = {
     channel: "system",
     customerId: `staff:${staffId}`,
     conversationId,
-    externalId: randomUUID(),
+    externalId: turnRef,
     text: command,
     receivedAt: new Date().toISOString(),
     locale: "pt-BR",
+  };
+
+  // ── BKL-235 incident wiring state ───────────────────────────────────────────
+  // `sendEntered` / `sendCompleted` feed the SHARED `classifyCatchError`, which
+  // needs them to tell a pre-send death (the staffer was ghosted → incident) from a
+  // post-send throw (already served → F2 exclusion, no incident). They MUST be set
+  // around the real send, never by wrapping-and-swallowing it.
+  let sendEntered = false;
+  let sendCompleted = false;
+  let turnId: string | undefined;
+  const incidentCtx = (): OpsTurnContext => ({
+    staffId,
+    channel: OPS_WHATSAPP_CHANNEL,
+    turnId: turnId ?? null,
+    messageRef: turnRef,
+    // Channel-addressable, so a manager can reply to the ghosted staffer from the
+    // admin Incidentes inbox (same shape the customer plane stores).
+    senderRef: `whatsapp:${phone}`,
+    phoneHash: hash,
+    log,
+  });
+
+  /**
+   * BKL-235 — every DELIVERED ops reply is recovery proof, so all four delivery
+   * sites (the three pre-turn notices + the turn reply) route through here and the
+   * delivered-reply auto-close can never be forgotten at one of them. The honest
+   * FALLBACK is deliberately NOT routed here: "não consegui processar" is an error
+   * surface, not a recovery, and must never self-heal an incident.
+   */
+  const sendReplyAndHeal = async (text: string): Promise<void> => {
+    sendEntered = true;
+    await deps.sendReply(text);
+    sendCompleted = true;
+    if (turnId) await closeOpsIncidentOnDeliveredReply(staffId, turnId, log);
   };
 
   try {
@@ -251,144 +307,131 @@ async function runOpsTurn(
       },
       inbound,
     });
+    // BKL-235 — audit correlation for the incident + the auto-close eventId.
+    turnId = capsule.turnId;
     try {
-      // FE-D13 — honest stale-resume (with BKL-086 parity). Drop the out-of-scope
-      // money verbs FIRST (excludedKindsForScope — the SAME set scopeResumeChannel
-      // hides from matchToParked), so WhatsApp never restates a dashboard-only park
-      // it could not resume; then, if the reply signals a resume of an EXPIRED
-      // in-scope park, send the honest expiry restatement instead of running the
-      // fresh loop. The turn is SKIPPED on a notice (no turn_trace row) — emit a
-      // structured warn for forensics and append the reply to history.
+      // ── PARK-REPLY TRIAGE (R4-S1) ──────────────────────────────────────────
+      // ONE decision, owned by ../claustrum/park-reply-triage.ts: stale-resume
+      // (FE-D13) → soft-affirmative restate (FE-D32) → pure-negative decline
+      // (BKL-191) → run the turn. The branch ORDER and the fail-honest unpark
+      // contract are documented there, once. This surface declares the OPS policy
+      // with the WHATSAPP verb scope — the SAME set scopeResumeChannel hides from
+      // matchToParked — so WhatsApp never restates, prunes, or declines a
+      // dashboard-only money park it could not resume in the first place (BKL-086
+      // parity). A skip-with-reply verdict SKIPS the turn (no turn_trace row), so
+      // this ingress emits the verdict's structured event for forensics and
+      // appends the reply to the staff history thread it shares with the dashboard.
       const pending = capsule.loadedSession?.pendingConfirmations ?? [];
-      const waExcluded = excludedKindsForScope("whatsapp");
-      const staleNotice = opsStaleResumeNotice({
+      const triage = triageParkReply({
         text: command,
         pendingConfirmations: pending,
         nowIso: inbound.receivedAt,
-        excludedKinds: waExcluded,
+        policy: opsParkTriagePolicy({
+          excludedKinds: excludedKindsForScope("whatsapp"),
+          eventPrefix: OPS_WA_TRIAGE_EVENT_PREFIX,
+        }),
       });
-      if (staleNotice !== undefined) {
-        // FE-D33 — prune the now-inert expired IN-SCOPE parks (hygiene; the FE-D13
-        // partition is the enforcement point, so a prune failure is non-fatal). The
-        // SAME whatsapp exclusion is applied, so an out-of-scope dashboard-only money
-        // park is never pruned from here (BKL-086 parity). capsule.session.unpark is
-        // the sanctioned durable mutation; the Conductor re-reads on close.
+      if (triage.kind === "skip-with-reply") {
+        // FE-D33 — prune the now-inert expired IN-SCOPE parks the verdict names
+        // (hygiene; the freshness partition is the enforcement point, so a prune
+        // failure is non-fatal). capsule.session.unpark is the sanctioned durable
+        // mutation; the Conductor re-reads on close.
         let pruned = 0;
-        if (capsule.loadedSession) {
+        if (triage.prune.length > 0 && capsule.loadedSession) {
           try {
             pruned = (
-              await pruneExpiredOpsParks({
+              await unparkParks({
                 session: capsule.session,
                 sessionId: capsule.loadedSession.id,
-                pendingConfirmations: pending,
-                nowIso: inbound.receivedAt,
-                excludedKinds: waExcluded,
+                parks: triage.prune,
               })
             ).length;
           } catch (err) {
             log.warn(err, "[ops-wa] expired-park prune failed (non-fatal)");
           }
         }
-        log.warn(
-          {
-            event: "ops_wa.stale_park_notice",
-            staff_id: staffId,
-            phone_hash: hash,
-            pending: pending.length,
-            pruned,
-          },
-          "[ops-wa] stale confirm-park resume — restating expiry, pruning zombies, skipping the turn",
-        );
-        try {
-          await deps.appendHistory(staffId, [
-            { role: "assistant", content: staleNotice },
-          ]);
-        } catch (err) {
-          log.warn(err, "[ops-wa] stale-notice history append failed (non-fatal)");
-        }
-        await deps.sendReply(staleNotice);
-        return;
-      }
 
-      // FE-D32 — a bare SOFT affirmative ("pode"/"ok"/…) aimed at a still-FRESH
-      // in-scope park is too weak to EXECUTE: restate the parked action and ask for
-      // an explicit "sim"/"confirmo". Do NOT prune/unpark — the fresh park survives
-      // so a follow-up "sim" executes it. The turn is SKIPPED (no turn_trace row).
-      const softRestate = opsSoftAffirmativeRestateNotice({
-        text: command,
-        pendingConfirmations: pending,
-        nowIso: inbound.receivedAt,
-        excludedKinds: waExcluded,
-      });
-      if (softRestate !== undefined) {
-        log.warn(
-          {
-            event: "ops_wa.soft_affirm_restate",
-            staff_id: staffId,
-            phone_hash: hash,
-            pending: pending.length,
-          },
-          "[ops-wa] soft affirmative on a fresh park — restating, awaiting explicit confirm, skipping the turn",
-        );
-        try {
-          await deps.appendHistory(staffId, [
-            { role: "assistant", content: softRestate },
-          ]);
-        } catch (err) {
-          log.warn(err, "[ops-wa] soft-restate history append failed (non-fatal)");
+        // The verdict's `unpark` is LOAD-BEARING: the decline acknowledgment
+        // asserts the pending action was cancelled, so it may only be sent once the
+        // unpark STUCK. Fail-honest — a failure (or no loaded session) falls
+        // through to the normal loop, where claustrum's own deny path still
+        // unparks, rather than claiming a cancellation that did not stick.
+        let deliverNotice = true;
+        if (triage.unpark.length > 0) {
+          deliverNotice = false;
+          if (capsule.loadedSession) {
+            try {
+              await unparkParks({
+                session: capsule.session,
+                sessionId: capsule.loadedSession.id,
+                parks: triage.unpark,
+              });
+              deliverNotice = true;
+            } catch (err) {
+              log.warn(
+                err,
+                "[ops-wa] negative-decline unpark failed — falling through to the normal loop (BKL-191)",
+              );
+            }
+          }
         }
-        await deps.sendReply(softRestate);
-        return;
-      }
 
-      // BKL-191 — a PURE-negative reply on a fresh in-scope park DECLINES it at
-      // the ingress: unpark + acknowledge, SKIP the turn (the planner never sees
-      // the negative text — claustrum's own deny path re-plans it into the live
-      // re-prompt). Scope-filtered like every park read here (BKL-086 parity).
-      // Fail-honest: unpark failure falls through to the normal loop.
-      const declineTarget = opsNegativeDeclineTarget({
-        text: command,
-        pendingConfirmations: pending,
-        nowIso: inbound.receivedAt,
-        excludedKinds: waExcluded,
-      });
-      if (declineTarget !== undefined && capsule.loadedSession) {
-        let unparked = false;
-        try {
-          await capsule.session.unpark(
-            capsule.loadedSession.id,
-            declineTarget.envelope.intentHash,
-          );
-          unparked = true;
-        } catch (err) {
-          log.warn(
-            err,
-            "[ops-wa] negative-decline unpark failed — falling through to the normal loop (BKL-191)",
-          );
-        }
-        if (unparked) {
-          log.warn(
-            {
-              event: "ops_wa.negative_declined_park",
-              staff_id: staffId,
-              phone_hash: hash,
-              kind: String(declineTarget.envelope.kind),
-            },
-            "[ops-wa] negative reply on a fresh park — declined + unparked, skipping the turn (BKL-191)",
-          );
+        if (deliverNotice) {
+          switch (triage.branch) {
+            case "stale-resume":
+              log.warn(
+                {
+                  event: triage.event,
+                  staff_id: staffId,
+                  phone_hash: hash,
+                  pending: pending.length,
+                  pruned,
+                },
+                "[ops-wa] stale confirm-park resume — restating expiry, pruning zombies, skipping the turn",
+              );
+              break;
+            case "soft-affirmative-restate":
+              log.warn(
+                {
+                  event: triage.event,
+                  staff_id: staffId,
+                  phone_hash: hash,
+                  pending: pending.length,
+                },
+                "[ops-wa] soft affirmative on a fresh park — restating, awaiting explicit confirm, skipping the turn",
+              );
+              break;
+            case "negative-decline":
+              log.warn(
+                {
+                  event: triage.event,
+                  staff_id: staffId,
+                  phone_hash: hash,
+                  kind: String(triage.unpark[0]!.envelope.kind),
+                },
+                "[ops-wa] negative reply on a fresh park — declined + unparked, skipping the turn (BKL-191)",
+              );
+              break;
+          }
           try {
             await deps.appendHistory(staffId, [
-              { role: "assistant", content: OPS_NEGATIVE_DECLINE_ACK_PTBR },
+              { role: "assistant", content: triage.notice },
             ]);
           } catch (err) {
-            log.warn(err, "[ops-wa] decline-ack history append failed (non-fatal)");
+            log.warn(err, OPS_WA_TRIAGE_APPEND_FAILED[triage.branch]);
           }
-          await deps.sendReply(OPS_NEGATIVE_DECLINE_ACK_PTBR);
+          await sendReplyAndHeal(triage.notice);
           return;
         }
       }
 
-      const turn = await handleTurn(capsule, inbound);
+      // The ops plane's per-turn context subset is `wire-only` — wire truth, no
+      // workflow binding, no funnel publish. Both omissions are DECLARED with their
+      // by-design records in ../claustrum/turn-context.ts's TURN_CONTEXT_SUBSETS.
+      const turn = await runTurnWithContexts({
+        subset: "wire-only",
+        thunk: () => handleTurn(capsule, inbound),
+      });
       // Persist the assistant reply AFTER a successful turn (best-effort).
       try {
         await deps.appendHistory(staffId, [
@@ -398,8 +441,9 @@ async function runOpsTurn(
         log.warn(err, "[ops-wa] assistant-reply history append failed (non-fatal)");
       }
       const replyText = turn.response.text ?? "";
+      let fallbackDelivered = false;
       if (replyText.trim().length > 0) {
-        await deps.sendReply(replyText);
+        await sendReplyAndHeal(replyText);
       } else {
         // The ops responder always produces staff-facing text; a blank completion
         // would ghost the owner — send the honest fallback instead of silence.
@@ -407,15 +451,49 @@ async function runOpsTurn(
           { phone_hash: hash, staff_id: staffId, decision: turn.decision.kind },
           "[ops-wa] empty ops completion — sending fallback",
         );
-        await deps.sendError(OPS_TURN_FAILED_PTBR).catch(() => {});
+        // BKL-235 — track whether the fallback LANDED: a delivered fallback is
+        // degraded (`customerImpacted:false`), a failed one is a full ghost. Still
+        // fully swallowed, so it can never mask the governed open below.
+        try {
+          await deps.sendError(OPS_TURN_FAILED_PTBR);
+          fallbackDelivered = true;
+        } catch {
+          // Twilio down — the staffer got silence.
+        }
       }
+      // BKL-235 — the governed incident, LAST (after the send) so a substitution
+      // bug can never mask emission, exactly as the customer webhook orders it. A
+      // no-op on a delivered reply; opens on an empty/whitespace completion.
+      await recordOpsTurnDelivery({
+        ctx: incidentCtx(),
+        replyText,
+        replyDelivered: sendCompleted,
+        fallbackDelivered,
+        decisionKind: turn.decision.kind,
+      });
     } finally {
       await conductor.closeCapsule(capsule);
     }
   } catch (err) {
     // Never fabricate success: an honest 502-equivalent pt-BR message.
     log.error(err, "[ops-wa] ops conductor turn failed");
-    await deps.sendError(OPS_TURN_FAILED_PTBR).catch(() => {});
+    let fallbackDelivered = false;
+    try {
+      await deps.sendError(OPS_TURN_FAILED_PTBR);
+      fallbackDelivered = true;
+    } catch {
+      // Twilio down — the staffer got silence.
+    }
+    // BKL-235 — a PRE-send death ghosted the staffer → governed incident (the
+    // shared classifier maps it into the frozen `send_failed`/`timeout` taxonomy).
+    // A POST-send throw is excluded: the reply was already delivered.
+    await recordOpsTurnFailure({
+      ctx: incidentCtx(),
+      error: err,
+      sendEntered,
+      sendCompleted,
+      fallbackDelivered,
+    });
   }
 }
 

@@ -8,15 +8,37 @@
 // Previously this tool wrote `prisma.orderNote.create` directly. Per
 // investigation 03 P0 #2, that bypass meant the orderProjection.version
 // counter was not updated and there was no kernel adjudication of the
-// intent. The tool now routes through `OrderCommandService.addNoteFromEnvelope`
-// which:
+// intent. The tool routes through `OrderCommandService` so the write happens
+// at the domain chokepoint rather than from the tools package.
 //
-//   - Adjudicates via @ibatexas/pack-orders' `order.note.add` policy
-//   - Emits a governance audit record via the configured AuditSink
-//   - Persists the note row via the service (same Prisma write, but
-//     wrapped at the chokepoint)
+// ── BKL-242 — this tool is dispatch-only, and dispatch is post-decision ───
+//
+// The claustrum tool registry (apps/api/src/tools/register-ibatexas-tool-packs.ts)
+// is this handler's ONLY caller — there is no REST `add order note` route
+// reaching it — and the registry dispatches it on a kernel EXECUTE the
+// Conductor has ALREADY adjudicated and ledger-claimed. So there is no second
+// caller to keep a self-adjudicating entry point for, and the tool is converted
+// in place rather than split into a twin the way `reservation.cancel` was.
+//
+// Pre-fix this handler minted a SECOND `order.note.add` envelope
+// (`nonce: randomUUID()`) and re-adjudicated it via `addNoteFromEnvelope`. That
+// second adjudication was AUDIT-BLIND: `createOrderCommandService()` was called
+// with no `auditSink`, so the inner run emitted NO governance record. Live proof
+// is the missing row, not a duplicate one — conductor EXECUTE `intent_audit`
+// 5278 with the note row written 9ms later and no second audit row anywhere. An
+// inner REFUSE would therefore have silently contradicted the audited EXECUTE
+// with nothing in the trail to show for it.
+//
+// `writeAdjudicatedNote` (order-command.service.ts) is the sanctioned
+// post-decision persistence body, extracted for exactly this shape in BKL-083b
+// and already used by the governed ops-plane note path. Its contract — THE
+// CALLER MUST HOLD A POSITIVE composed-router `Decision` for `order.note.add` —
+// is what registry dispatch supplies.
+//
+// The tool-boundary guards below (auth, content length, ownership,
+// `canPerformAction`) are NOT kernel guards and are unchanged: they run on
+// every call, before the write, exactly as they did.
 
-import { randomUUID } from "node:crypto";
 import {
   NonRetryableError,
   canPerformAction,
@@ -24,8 +46,7 @@ import {
   type OrderFulfillmentStatus,
 } from "@ibatexas/types";
 import { createOrderQueryService, createOrderCommandService } from "@ibatexas/domain";
-import { buildEnvelope } from "@adjudicate/core";
-import { type OrderNoteAddPayload, type OrderState } from "@ibatexas/pack-orders";
+import { type OrderNoteAddPayload } from "@ibatexas/pack-orders";
 import { publishNatsEvent } from "@ibatexas/nats-client";
 
 interface AddOrderNoteInput {
@@ -65,57 +86,22 @@ export async function addOrderNote(
     return { success: false, message: check.reason };
   }
 
-  // ── Build the IntentEnvelope ────────────────────────────────────────
-  // The LLM-tool dispatch path is UNTRUSTED — the customer (via the LLM)
-  // is proposing the mutation. `actor.principal = "llm"` per the
-  // CLAUDE.md rule #9 LLM-authority discipline. The audit trail carries
-  // the customer's id in the session.
+  // ── Persist under the Conductor's decision ──────────────────────────
+  // BKL-242: no envelope is minted here and no second adjudication runs. The
+  // registry dispatched this handler because the kernel already returned
+  // EXECUTE for this `order.note.add` intent and claimed its execution-ledger
+  // key; `writeAdjudicatedNote` is the post-decision persistence body for
+  // exactly that caller.
   const payload: OrderNoteAddPayload = {
     orderId: input.orderId,
     body: input.content,
   };
-  // Build OrderState the way @ibatexas/pack-orders policies expect it.
-  // ctx.customerId is set (auth check above); orderId is the in-flight one.
-  // Other Pack-policy-relevant fields are read off the order row.
-  const orderState: OrderState = {
-    ctx: {
-      channel: "whatsapp",
-      customerId: ctx.customerId,
-      cartId: null,
-      orderId: input.orderId,
-      paymentMethod: (order.paymentMethod as "pix" | "card" | "cash" | null) ?? null,
-      paymentStatus: order.paymentStatus,
-      totalInCentavos: order.totalInCentavos,
-    },
-  };
-  const envelope = buildEnvelope({
-    kind: "order.note.add" as const,
-    payload,
-    nonce: randomUUID(),
-    actor: {
-      principal: "llm",
-      sessionId: ctx.sessionId ?? `customer:${ctx.customerId}`,
-    },
-    taint: "UNTRUSTED",
-  });
 
   const orderCmdSvc = createOrderCommandService();
-  const result = await orderCmdSvc.addNoteFromEnvelope(
-    envelope,
-    orderState,
-    { author: "customer", authorId: ctx.customerId },
-  );
-
-  if (result.decision.kind !== "EXECUTE" && result.decision.kind !== "REWRITE") {
-    // Surface the kernel's pt-BR refusal copy. The mutation did NOT run.
-    const message =
-      result.decision.kind === "REFUSE"
-        ? result.decision.refusal.userFacing
-        : "Não foi possível adicionar a observação no momento.";
-    return { success: false, message };
-  }
-
-  const note = result.result!;
+  const note = await orderCmdSvc.writeAdjudicatedNote(payload, {
+    author: "customer",
+    authorId: ctx.customerId,
+  });
 
   await publishNatsEvent("order.note_added", {
     eventType: "order.note_added",

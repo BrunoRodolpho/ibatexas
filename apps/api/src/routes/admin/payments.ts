@@ -49,6 +49,11 @@ import {
   prisma,
   type PaymentRefundIssuePayload,
   type PaymentStatusTransitionPayload,
+  type OrderCommandService,
+  type OrderEventLogService,
+  type OrderQueryService,
+  type PaymentCommandService,
+  type PaymentQueryService,
 } from "@ibatexas/domain";
 import { getAuditSink } from "@ibatexas/audit-sink";
 import {
@@ -261,8 +266,99 @@ async function rollbackDailyRefundReservation(
 const REFUND_DRIP_CAP_PT_BR =
   "Limite diário de reembolsos sem confirmação atingido. Esta operação requer confirmação de outro operador.";
 
-export async function adminPaymentRoutes(server: FastifyInstance): Promise<void> {
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Factories, not instances (the R5-S2 rule), and here that property is
+// load-bearing rather than stylistic: the two command-service members close
+// over `getAuditSink()` calls that MUST NOT run until the onReady hook — this
+// file is the canonical fix site the T8 gate's failure message points at.
+// Because the members are factories, resolving the dep set in the plugin body
+// constructs nothing and calls nothing, so the sink is still resolved inside
+// onReady, after bootstrapAuditSinkDI(). The gate
+// (src/__tests__/bypass-detection/audit-sink-bootstrap-order-conformance.test.ts)
+// scans the plugin-body prefix with onReady bodies blotted out, and this block
+// lives at MODULE level, outside that prefix.
+//
+// The other three keep their registration-time construction timing exactly.
+
+/** The domain services `admin/payments.ts` resolves through the seam. */
+export interface AdminPaymentRouteDeps {
+  /**
+   * Builds the audit-wired PaymentCommandService carrying BKL-074's
+   * staffRoleGuard + BKL-075's payment banding. Invoked from the onReady hook
+   * ONLY — calling it during plugin-body execution would throw
+   * AuditSinkNotInitializedError and crash production boot.
+   */
+  readonly paymentCommandService: () => PaymentCommandService;
+  /**
+   * Builds the audit-wired OrderCommandService for the W7-P4
+   * `addNoteFromEnvelope` path. onReady-only, same reason.
+   */
+  readonly orderCommandService: () => OrderCommandService;
+  /** Builds the PaymentQueryService behind the active-payment loads. */
+  readonly paymentQueryService: () => PaymentQueryService;
+  /** Builds the OrderQueryService behind the order-existence loads. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the OrderEventLogService for the refund/force audit trail. */
+  readonly orderEventLogService: () => OrderEventLogService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/admin/index.ts is unchanged.
+ */
+export interface AdminPaymentRoutesOptions {
+  readonly deps?: Partial<AdminPaymentRouteDeps>;
+}
+
+/**
+ * The production set — byte-for-byte the construction this file did inline.
+ * Takes `server` because three of the five constructions bind `server.log`.
+ */
+function defaultAdminPaymentRouteDeps(
+  server: FastifyInstance,
+): AdminPaymentRouteDeps {
+  return {
+    // BKL-074: inject the kernel-level staff-role backstop into both command
+    // services (payment + the note-path order service). `staffRoleGuard` is
+    // inert for non-`admin:` envelopes, so it REFUSES a mis-scoped staff role
+    // at the kernel without touching system/customer/agent mutations.
+    paymentCommandService: () =>
+      createPaymentCommandService(server.log, {
+        auditSink: getAuditSink(),
+        // BKL-074 staffRoleGuard + BKL-075 payment banding (force/waive → OWNER).
+        authGuards: [staffRoleGuard, paymentTransitionBandGuard],
+      }),
+    // W7-P4: addNoteFromEnvelope path needs an audit-wired OrderCommandService.
+    orderCommandService: () =>
+      createOrderCommandService(server.log, {
+        auditSink: getAuditSink(),
+        authGuards: [staffRoleGuard],
+      }),
+    paymentQueryService: () => createPaymentQueryService(),
+    orderQueryService: () => createOrderQueryService(),
+    orderEventLogService: () => createOrderEventLogService(server.log),
+  };
+}
+
+function resolveAdminPaymentRouteDeps(
+  server: FastifyInstance,
+  options?: AdminPaymentRoutesOptions,
+): AdminPaymentRouteDeps {
+  return { ...defaultAdminPaymentRouteDeps(server), ...(options?.deps ?? {}) };
+}
+
+export async function adminPaymentRoutes(
+  server: FastifyInstance,
+  options?: AdminPaymentRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so NOTHING is
+  // constructed here — which is what keeps the two `getAuditSink()` calls
+  // inside the onReady hook below. See AdminPaymentRouteDeps above.
+  const deps = resolveAdminPaymentRouteDeps(server, options);
   // Defer audit-sink resolution to onReady. Plugin bodies execute during
   // await server.register() inside buildServer(), which runs BEFORE
   // bootstrapAuditSinkDI() in index.ts:start(). Calling getAuditSink()
@@ -272,27 +368,15 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
   // the sink is initialized by then. Tests masked this previously
   // because apps/api/src/__tests__/setup.ts pre-wires noop deps at
   // module load.
-  let paymentCmdSvc!: ReturnType<typeof createPaymentCommandService>;
-  let orderCmdSvc!: ReturnType<typeof createOrderCommandService>;
+  let paymentCmdSvc!: PaymentCommandService;
+  let orderCmdSvc!: OrderCommandService;
   server.addHook("onReady", async () => {
-    // BKL-074: inject the kernel-level staff-role backstop into both command
-    // services (payment + the note-path order service). `staffRoleGuard` is
-    // inert for non-`admin:` envelopes, so it REFUSES a mis-scoped staff role
-    // at the kernel without touching system/customer/agent mutations.
-    paymentCmdSvc = createPaymentCommandService(server.log, {
-      auditSink: getAuditSink(),
-      // BKL-074 staffRoleGuard + BKL-075 payment banding (force/waive → OWNER).
-      authGuards: [staffRoleGuard, paymentTransitionBandGuard],
-    });
-    // W7-P4: addNoteFromEnvelope path needs an audit-wired OrderCommandService.
-    orderCmdSvc = createOrderCommandService(server.log, {
-      auditSink: getAuditSink(),
-      authGuards: [staffRoleGuard],
-    });
+    paymentCmdSvc = deps.paymentCommandService();
+    orderCmdSvc = deps.orderCommandService();
   });
-  const paymentQuerySvc = createPaymentQueryService();
-  const orderQuerySvc = createOrderQueryService();
-  const eventLogSvc = createOrderEventLogService(server.log);
+  const paymentQuerySvc = deps.paymentQueryService();
+  const orderQuerySvc = deps.orderQueryService();
+  const eventLogSvc = deps.orderEventLogService();
   const confirmationStore = createAdminConfirmationStore();
 
   // Behavior-preserving extraction of the order-existence + active-payment
@@ -684,12 +768,35 @@ export async function adminPaymentRoutes(server: FastifyInstance): Promise<void>
       // fallback `${id}:refund:${refundAmount}:${staffId}` when no
       // header was supplied. PR #62 review found that fallback
       // collides for two LEGITIMATE sequential partial refunds of the
-      // same amount on the same order by the same staff within the
-      // Execution Ledger's 14-day default TTL: the second refund's
-      // intentHash matches the first, the ledger SETNX returns
-      // "exists", the kernel flips EXECUTE → REPLAY_SUPPRESSED, the
-      // route returns 200 but no Stripe money movement happens. The
-      // customer never receives the second refund.
+      // same amount on the same order by the same staff: both derive the
+      // same nonce, so both build the same `intentHash`.
+      //
+      // BKL-244 — this block previously claimed the collision made "the
+      // ledger SETNX return exists" and "the kernel flip EXECUTE →
+      // REPLAY_SUPPRESSED". It does not, on THIS path. The route calls
+      // `paymentCmdSvc.issueRefundFromEnvelope` → `withAdjudicate`
+      // (packages/domain/src/services/__shared__/with-adjudicate.ts),
+      // which runs the PURE `adjudicate()` and emits a best-effort audit
+      // record. No execution ledger is wired into the domain/HTTP plane —
+      // `adjudicateOptions` in payment-command.service.ts carries only
+      // auditSink/authGuards/log — so a duplicate `intentHash` is never
+      // replay-suppressed here and REPLAY_SUPPRESSED is unreachable on
+      // this route. (The ledger is wired on the conversational plane, in
+      // claustrum-bootstrap.ts.)
+      //
+      // What a colliding nonce actually costs here:
+      //   1. Traceability. The nonce is an `intentHash` input, so two
+      //      distinct refunds become indistinguishable in `intent_audit`.
+      //      The audit unique index is (intent_hash, recorded_at)
+      //      (audit-postgres migration 009), which only DO-NOTHINGs a
+      //      re-emit at the SAME instant — and the emit is
+      //      fire-and-forget, so it gates nothing.
+      //   2. Balance is the only execution-level stop.
+      //      `executeRefundIssue` re-reads the payment row inside its
+      //      `$transaction` and throws on terminal status or
+      //      `refundAmountCentavos > refundable`. That defeats a replayed
+      //      FULL refund; a replayed PARTIAL refund still fits the
+      //      remaining balance and would execute a second time.
       //
       // Fix: require the `Idempotency-Key` header on every refund.
       // Admin tooling should already be idempotency-aware; absence is

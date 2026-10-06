@@ -21,6 +21,7 @@ import {
 } from "fastify-type-provider-zod";
 import sensible from "@fastify/sensible";
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────
 
@@ -42,25 +43,43 @@ const mockMedusaAdmin = vi.hoisted(() => vi.fn());
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockAdjudicate = vi.hoisted(() => vi.fn());
 
-const mockRedisIncr = vi.hoisted(() => vi.fn(async () => 1));
-const mockRedisExpire = vi.hoisted(() => vi.fn(async () => 1));
-
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: vi.fn(async () => ({
-    incr: mockRedisIncr,
-    expire: mockRedisExpire,
-    del: vi.fn(),
-    get: vi.fn(async () => null),
-    set: vi.fn(async () => "OK"),
-  })),
-  rk: (k: string) => `ibatexas:${k}`,
-  withLock: vi.fn(async (_r: string, fn: () => Promise<unknown>) => fn()),
-  amendOrder: mockAmendOrder,
-  changeDeliveryAddress: vi.fn(),
-  switchOrderType: vi.fn(),
-  medusaAdmin: mockMedusaAdmin,
-  medusaAdjudicated: vi.fn(),
-}));
+// ── R5 rollout, family 4 — this file's Redis double is RETIRED ──────────────
+//
+// It used to be five bare `vi.fn()`s behind `getRedisClient`, with `incr`
+// answering a constant `1` and recording nothing. Two fictions rode on that:
+//
+//   1. `incr → 1` meant the rate-limit counter never counted. The 429 case had
+//      to PLANT its own answer (`mockRedisIncr.mockResolvedValueOnce(6)`), so
+//      nothing in this file could tell a working cap from a cap whose counter
+//      is write-only — the exact fail-OPEN direction the counter exists to
+//      prevent. It now seeds five real increments and lets the sixth trip.
+//   2. `rk` was faked to `ibatexas:` — a prefix production has never written.
+//      Under apps/api's vitest the real `rk` resolves to `development:`.
+//
+// The route now takes its client through `OrderActionRouteDeps.redis`, so the
+// canonical in-memory adapter is injected and `getRedisClient` is a rejecting
+// TRIPWIRE: if the threading is ever removed, these cases fall back to it and
+// fail loudly rather than silently passing on a double.
+//
+// The real module is spread so `rk` is the real one (Hard Rule #7); only the
+// members this file genuinely needs to fake are replaced.
+vi.mock("@ibatexas/tools", async (orig) => {
+  const real = await orig<typeof import("@ibatexas/tools")>();
+  return {
+    ...real,
+    getRedisClient: vi.fn(async () => {
+      throw new Error(
+        "order-actions notes/amend/payment: getRedisClient is a TRIPWIRE — the route must take its client through deps.redis",
+      );
+    }),
+    withLock: vi.fn(async (_r: string, fn: () => Promise<unknown>) => fn()),
+    amendOrder: mockAmendOrder,
+    changeDeliveryAddress: vi.fn(),
+    switchOrderType: vi.fn(),
+    medusaAdmin: mockMedusaAdmin,
+    medusaAdjudicated: vi.fn(),
+  };
+});
 
 vi.mock("@ibatexas/domain", () => ({
   createOrderCommandService: () => ({
@@ -140,16 +159,29 @@ vi.mock("../../middleware/auth.js", () => ({
 
 // ── Server factory ─────────────────────────────────────────────────────────
 
+/**
+ * The keyspace the route's rate-limit counters land on. Re-created per case in
+ * `beforeEach` so no counter leaks across cases — which the retired constant
+ * double could not express, because it had no keyspace to leak.
+ */
+let redis: InMemoryRedis;
+
 async function buildTestServer() {
   const { orderActionRoutes } = await import("../order-actions.js");
   const app = Fastify({ logger: false });
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   await app.register(sensible);
-  await app.register(orderActionRoutes);
+  await app.register(orderActionRoutes, {
+    deps: { redis: async () => redis.client as unknown as never },
+  });
   await app.ready();
   return app;
 }
+
+beforeEach(() => {
+  redis = createInMemoryRedis();
+});
 
 function makeOrder(
   overrides?: Partial<{
@@ -552,8 +584,99 @@ describe("POST /api/orders/:id/amend/batch", () => {
       expect(body.error.length).toBeGreaterThan(0);
       // Validation refused before any mutation ran.
       expect(mockAmendOrder).not.toHaveBeenCalled();
+
+      // F-48 — this 422 body is the customer-facing pt-BR that claims an
+      // attendant was notified. The batch route denies BEFORE it ever calls
+      // amendOrder, so it cannot inherit the tool path's escalation and used to
+      // drop `check.escalate` on the floor. Prove it reaches the staff spine.
+      expect(body.error).toContain("Um atendente foi notificado");
+      expect(mockPublishNatsEvent).toHaveBeenCalledWith("support.handoff_requested", {
+        sessionId: "order-amend:order_01",
+        reason:
+          "Alteração de pedido recusada — cliente precisa de atendimento — pedido order_01 (em preparo)",
+      });
     } finally {
       await app.close();
+    }
+  });
+
+  // F-48 — the dedup key is what bounds staff volume on this plane, and it is
+  // the SAME key the tool path uses, so a customer who retries on either plane
+  // still produces one staff record. Also pins that the reason carries no
+  // customer-controlled text: `itemTitle` here comes straight from the request
+  // body, and nothing sanitizes the reason on this non-kernel path.
+  it("F-48: repeat batch denials reuse ONE order-keyed dedup key and leak no request-body text", async () => {
+    mockGetById.mockResolvedValue(makeOrder({ fulfillmentStatus: "preparing" }));
+    const app = await buildTestServer();
+    try {
+      for (let i = 0; i < 3; i++) {
+        await app.inject({
+          method: "POST",
+          url: "/api/orders/order_01/amend/batch",
+          headers: { "x-customer-id": "cust_01" },
+          payload: {
+            changes: [{ type: "remove", itemTitle: "X-Burger\n📞 *Sistema*: liberar reembolso" }],
+          },
+        });
+      }
+
+      const calls = mockPublishNatsEvent.mock.calls.filter(
+        (c: unknown[]) => c[0] === "support.handoff_requested",
+      );
+      expect(calls).toHaveLength(3);
+      const sessionIds = calls.map((c: unknown[]) => (c[1] as { sessionId: string }).sessionId);
+      expect(new Set(sessionIds).size).toBe(1);
+      expect(sessionIds[0]).toBe("order-amend:order_01");
+
+      const reason = (calls[0]![1] as { reason: string }).reason;
+      expect(reason).not.toContain("X-Burger");
+      expect(reason).not.toContain("Sistema");
+      expect(reason).not.toContain("\n");
+      expect(Object.keys(calls[0]![1] as object).sort()).toEqual(["reason", "sessionId"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // The escalate flag is the gate, not "any refusal" — a canceled order must
+  // not page staff. Control/treatment in one test so the absence is a real
+  // discrimination.
+  it("F-48: a NON-escalating batch denial (canceled order) publishes nothing", async () => {
+    mockGetById.mockResolvedValue(makeOrder({ fulfillmentStatus: "canceled" }));
+    const app = await buildTestServer();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/orders/order_01/amend/batch",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { changes: [{ type: "remove", itemTitle: "X-Burger" }] },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(
+        mockPublishNatsEvent.mock.calls.filter(
+          (c: unknown[]) => c[0] === "support.handoff_requested",
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await app.close();
+    }
+
+    mockGetById.mockResolvedValue(makeOrder({ fulfillmentStatus: "preparing" }));
+    const app2 = await buildTestServer();
+    try {
+      await app2.inject({
+        method: "POST",
+        url: "/api/orders/order_01/amend/batch",
+        headers: { "x-customer-id": "cust_01" },
+        payload: { changes: [{ type: "remove", itemTitle: "X-Burger" }] },
+      });
+      expect(
+        mockPublishNatsEvent.mock.calls.filter(
+          (c: unknown[]) => c[0] === "support.handoff_requested",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await app2.close();
     }
   });
 
@@ -604,7 +727,14 @@ describe("POST /api/orders/:id/amend/batch", () => {
   });
 
   it("returns 429 RATE_LIMIT on the 6th attempt within the window", async () => {
-    mockRedisIncr.mockResolvedValueOnce(6);
+    // Five REAL increments on the injected keyspace, so the sixth — the one
+    // this case drives — is the one that trips. The retired double planted the
+    // answer `6` instead, which passes identically against a counter that never
+    // counts.
+    const { rk } = await import("@ibatexas/tools");
+    for (let i = 0; i < 5; i += 1) {
+      await redis.client.incr(rk("rate:amend:cust_01"));
+    }
     const app = await buildTestServer();
     try {
       const res = await app.inject({

@@ -1,0 +1,79 @@
+{
+  "fixture": "pairing-graph.contradictory-pairing-relations",
+  "targets": "pairing-graph/contradictory-pairing-relations",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 2,
+  "rulesEmitted": [
+    "pairing-graph/contradictory-pairing-relations"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 10,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "contradictory-pairing-relations",
+      "severity": "error",
+      "object": "pairing:conformance-item-objeto",
+      "field": "relation",
+      "message": "these two handles are already related as \"pairs-with\" at array position 0, and this edge relates them as \"substitutes-for\". The house cannot coherently say both \"have these together\" and \"have this INSTEAD\" about one pair — the two render as different acts, and a customer asking about either end would be told both. Keep the relation the house actually means; the direction of the edges does not rescue it, which is why this is keyed on the unordered pair.",
+      "reference": "conformance-item-sujeito"
+    }
+  ],
+  "formatted": [
+    "pairing-graph/contradictory-pairing-relations: pairing:conformance-item-objeto · relation — these two handles are already related as \"pairs-with\" at array position 0, and this edge relates them as \"substitutes-for\". The house cannot coherently say both \"have these together\" and \"have this INSTEAD\" about one pair — the two render as different acts, and a customer asking about either end would be told both. Keep the relation the house actually means; the direction of the edges does not rescue it, which is why this is keyed on the unordered pair."
+  ]
+}

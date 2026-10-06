@@ -48,11 +48,52 @@
 // buffer, a process restart with a populated spill list would re-emit
 // unredacted records to NATS and Postgres after recovery.
 //
-// Bypass-detection: the only public entry point is `getAuditSink()`
-// (re-exported from `@ibatexas/audit-sink`). Every IbateXas call site
-// routes through this getter, so no caller can construct a raw multiSink
-// and bypass the redactor. The grep-test
-// (audit-redaction-contract.test.ts) asserts this invariant.
+// ── Bypass-detection: what is enforced, and where ─────────────────────────
+//
+// The invariant: no IbateXas code may construct a raw sink and emit past the
+// redactor. `@adjudicate/audit`'s root export publicly ships the primitives
+// that would allow it — `multiSink`, `multiSinkLossy`, `multiSinkStrict`,
+// `bufferedSink`, `persistentBufferedSink`, `createConsoleSink`,
+// `createNatsSink` — so "everyone just calls `getAuditSink()`" is a convention
+// until something enforces it. Two gates do, with DIFFERENT reach; neither
+// alone covers the invariant, so do not cite one as proof of the whole:
+//
+//   1. ESLint `no-restricted-imports` — REPO-WIDE. The ban is defined once in
+//      `@ibatexas/eslint-config/restricted-imports.js`
+//      (`AUDIT_RAW_SINK_IMPORT_BAN`). Do not take a coverage count from this
+//      comment: `scripts/check-audit-sink-import-ban.mjs` (a CI step) is the
+//      authority, and it re-measures every workspace's EFFECTIVE config on
+//      each run, failing if one stops inheriting the ban.
+//      Two ways a workspace silently falls out, both of which that guard
+//      catches: it declares its own `no-restricted-imports` (ESLint REPLACES
+//      rule options rather than merging them, so the base ban vanishes for
+//      that whole workspace), or it is built on a different base config and
+//      never inherited it at all. Either way the fix is to splice
+//      `AUDIT_RAW_SINK_IMPORT_BAN` into that workspace's own `paths`.
+//      Exactly one file is allowlisted: `packages/audit-sink/src/index.ts`,
+//      the composer that wires redactor -> persistentBufferedSink -> multiSink
+//      and hands the result out via `getAuditSink()`. The allowlist lives in
+//      this package's `eslint.config.mjs` and is hand-written; adding a file to
+//      it IS the act of authorising a new unredacted-emit path.
+//      Scope of the rule, measured: it catches named AND namespace
+//      (`import * as audit`) imports, but NOT `await import("...")` — ESLint
+//      has no importNames-aware check for an ImportExpression. That vector is
+//      closed by a source scan in the same guard script rather than by a second
+//      lint rule, which would carry the same inheritance hazard again.
+//
+//   2. The grep-test in `audit-redaction-contract.test.ts` — THIS PACKAGE ONLY.
+//      Its walker roots at `packages/audit-sink/src`, so it says nothing about
+//      any other workspace. It was previously cited here as proof of the
+//      repo-wide property; it never checked that (F-53). Measured: a bypass
+//      probe placed in this package fails it, and the byte-identical probe in
+//      apps/api passed it. It is kept as a package-local second layer, and
+//      because it catches emit shapes an import ban does not (e.g. reaching a
+//      primitive through a re-export).
+//
+// This package's public surface deliberately does NOT re-export the raw
+// primitives — only the `AuditSink` TYPE — so a direct `@adjudicate/audit`
+// import is the only way to reach them, which is what makes an import ban a
+// sufficient chokepoint rather than a partial one.
 
 // ── Intra-package imports (claustrum-on-dev WS1) ──────────────────────────
 //

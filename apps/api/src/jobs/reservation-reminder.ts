@@ -19,8 +19,39 @@ let queue: Queue | null = null
 let worker: Worker | null = null
 let logger: FastifyBaseLogger | null = null
 
+// ── The Redis client seam (R5 rollout, jobs/subscribers family) ──────────────
+//
+// Named-type deps bag, per the `SweeperRedis` precedent in this same directory.
+//
+// FAIL-CLOSED PICK ANALYSIS (R5-S12's rule):
+//   • commands ISSUED here: `set` (SET NX EX — the whole idempotency guard).
+//   • commands consumed DOWNSTREAM: none. The client is never handed on;
+//     `createCustomerService()` and `sendReservationReminder()` reach Postgres
+//     and WhatsApp respectively, not Redis.
+//   • feature detection: none in this module's graph (measured).
+// So the Pick is exactly {set}.
+//
+// SWALLOWING: the `set` is NOT inside the per-reservation try/catch — that block
+// starts after the idempotency decision — so a client that cannot serve `set`
+// throws out of `sendReminders` to BullMQ rather than silently re-sending every
+// reminder. That is the safe direction and is asserted, not assumed.
+
+/** The node-redis v4 surface this job's idempotency guard uses. */
+export type ReservationReminderRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "set"
+>
+
+export interface SendRemindersDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: ReservationReminderRedis
+}
+
 /** Core job logic — exported for direct testing. */
-export async function sendReminders(log?: FastifyBaseLogger | null): Promise<void> {
+export async function sendReminders(
+  log?: FastifyBaseLogger | null,
+  deps: SendRemindersDeps = {},
+): Promise<void> {
   const effectiveLogger = log ?? logger
   const today = new Date()
   const todayStr = today.toISOString().split("T")[0]
@@ -31,7 +62,7 @@ export async function sendReminders(log?: FastifyBaseLogger | null): Promise<voi
 
   if (candidates.length === 0) return
 
-  const redis = await getRedisClient()
+  const redis: ReservationReminderRedis = deps.redis ?? (await getRedisClient())
   let sent = 0
 
   for (const reservation of candidates) {

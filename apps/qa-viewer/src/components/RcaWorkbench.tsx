@@ -10,12 +10,17 @@
 // Requires the dev bridge (VITE_QA_CONTROL_BASE/_TOKEN); without it the section
 // shows a configuration hint and the viewer stays a pure artifact browser.
 
-import { Fragment, useEffect, useMemo, useState, type KeyboardEvent } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { currentRoute, navigate, replaceRoute } from "../lib/nav"
 import {
   buildLinks,
+  buildWireSections,
+  claimsFlow,
+  conductorDecision,
   derivePipeline,
-  fetchConversations,
+  draftVsShipped,
+  fetchConversationPage,
+  fetchSpanAttribution,
   fetchStatus,
   fetchTranscript,
   fetchTurn,
@@ -23,8 +28,14 @@ import {
   findMessages,
   mergeTimeline,
   rcaConfigured,
+  replyProvenance,
+  SpansUnsupportedError,
+  stageFacts,
+  templateRef,
   type RcaConversation,
+  type RcaConversationGroup,
   type RcaFindHit,
+  type RcaSpanAttribution,
   type RcaStatus,
   type RcaTranscript,
   type RcaTurnDetail,
@@ -111,6 +122,10 @@ interface PersistedState {
   channels?: string[]
   selConv?: string | null
   selTurn?: string | null
+  live?: boolean
+  /** LE2-031 — which customer rows the investigator left expanded. Keyed by
+   *  the server's stable groupKey, so a restore lands on the same rows. */
+  openGroups?: string[]
 }
 function loadPersisted(): PersistedState {
   try {
@@ -139,8 +154,13 @@ export function RcaWorkbench() {
   const [toLocal, setToLocal] = useState(saved.toLocal ?? "")
   const [channelSel, setChannelSel] = useState<ReadonlySet<string>>(new Set(saved.channels ?? []))
 
-  // navigation
+  // navigation — the rail reads as CUSTOMERS (groups, server-built) whose
+  // sub-rows are the sessions of `convs`; the flat list still feeds the
+  // previews and the channel facet counts.
   const [convs, setConvs] = useState<RcaConversation[]>([])
+  const [groups, setGroups] = useState<RcaConversationGroup[]>([])
+  const [ungrouped, setUngrouped] = useState(false)
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set(saved.openGroups ?? []))
   const [convErr, setConvErr] = useState<string | null>(null)
   const [selConv, setSelConv] = useState<string | null>(
     hashHasSel ? (hashRoute.conv ?? null) : (saved.selConv ?? null),
@@ -157,12 +177,18 @@ export function RcaWorkbench() {
   const [loading, setLoading] = useState(false)
   const [vlWindow, setVlWindow] = useState<string>("auto")
   const [refreshTick, setRefreshTick] = useState(0)
+  // live auto-refresh — scoped to the current selection (turn > conv > list)
+  const [live, setLive] = useState(saved.live ?? true)
 
   // timeline view controls
   const [laneOff, setLaneOff] = useState<ReadonlySet<TimelineSource>>(new Set())
   const [evFilter, setEvFilter] = useState("")
   const [absTime, setAbsTime] = useState(false)
-  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
+  // Expanded rows key by stable event identity (source|ts|text), NOT index —
+  // a live re-fetch that inserts rows must not shift which rows stay open.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+  // Donut drill-down: the focused pipeline stage (evidence + timeline filter)
+  const [selStage, setSelStage] = useState<string | null>(null)
 
   // preflight store probes (re-run on manual refresh)
   const [status, setStatus] = useState<RcaStatus | null>(null)
@@ -187,13 +213,15 @@ export function RcaWorkbench() {
       channels: [...channelSel],
       selConv,
       selTurn,
+      live,
+      openGroups: [...openGroups],
     }
     try {
       sessionStorage.setItem(STORE_KEY, JSON.stringify(s))
     } catch {
       /* storage full/blocked — persistence is best-effort */
     }
-  }, [q, fromLocal, toLocal, preset, channelSel, selConv, selTurn])
+  }, [q, fromLocal, toLocal, preset, channelSel, selConv, selTurn, live, openGroups])
 
   // Deep-link plumbing: reflect the selection into the URL (replace — no
   // history spam; replaceState never fires hashchange, so no listener loop),
@@ -232,14 +260,18 @@ export function RcaWorkbench() {
   const toIso = useMemo(() => (preset === "custom" ? dtLocalToIso(toLocal) : null), [preset, toLocal])
 
   // conversations (debounced on filters)
+  const applyPage = (p: { conversations: RcaConversation[]; groups: RcaConversationGroup[]; ungrouped: boolean }) => {
+    setConvs(p.conversations)
+    setGroups(p.groups)
+    setUngrouped(p.ungrouped)
+    setConvErr(null)
+  }
+
   useEffect(() => {
     if (cfg === null) return
     const t = setTimeout(() => {
-      fetchConversations(cfg, { q, from: fromIso, to: toIso, channels: [...channelSel] })
-        .then((c) => {
-          setConvs(c)
-          setConvErr(null)
-        })
+      fetchConversationPage(cfg, { q, from: fromIso, to: toIso, channels: [...channelSel] })
+        .then(applyPage)
         .catch((e: unknown) => setConvErr((e as Error).message))
     }, 200)
     return () => clearTimeout(t)
@@ -257,22 +289,90 @@ export function RcaWorkbench() {
       })
   }, [cfg, selConv])
 
+  // Switching turns resets the view state; a background re-fetch of the SAME
+  // turn must not (rows the investigator opened stay open across live ticks).
+  useEffect(() => {
+    setExpanded(new Set())
+    setSelStage(null)
+  }, [selTurn])
+
   // detail of the selected turn (re-fetched on window change / manual refresh)
   useEffect(() => {
     if (cfg === null || selTurn === null) return
     setLoading(true)
     setDetailErr(null)
     fetchTurn(cfg, selTurn, vlWindow === "auto" ? null : vlWindow)
-      .then((d) => {
-        setDetail(d)
-        setExpanded(new Set())
-      })
+      .then(setDetail)
       .catch((e: unknown) => {
         setDetail(null)
         setDetailErr((e as Error).message)
       })
       .finally(() => setLoading(false))
   }, [cfg, selTurn, vlWindow, refreshTick])
+
+  // Span attribution — a lazy, per-turn classifier replay (server-side, pure).
+  // Keyed on the turn id, NOT the detail object: the 5s live tick re-fetches
+  // the detail, but the classification of a fixed inbound text never changes.
+  const [spans, setSpans] = useState<RcaSpanAttribution | null>(null)
+  const [spansState, setSpansState] = useState<"idle" | "loading" | "loaded" | "unsupported" | "error">(
+    "idle",
+  )
+  const spansTurnId = detail?.context.turnId ?? null
+  useEffect(() => {
+    if (cfg === null || spansTurnId === null) {
+      setSpans(null)
+      setSpansState("idle")
+      return
+    }
+    let alive = true
+    setSpans(null)
+    setSpansState("loading")
+    fetchSpanAttribution(cfg, spansTurnId)
+      .then((s) => {
+        if (!alive) return
+        setSpans(s)
+        setSpansState("loaded")
+      })
+      .catch((e: unknown) => {
+        if (!alive) return
+        setSpansState(e instanceof SpansUnsupportedError ? "unsupported" : "error")
+      })
+    return () => {
+      alive = false
+    }
+  }, [cfg, spansTurnId])
+
+  // Live auto-refresh: a 5s tick scoped to the current selection — with a turn
+  // open it re-reads only that turn (+ its conversation's turn list); with only
+  // a conversation open, only that turn list; with nothing selected, the
+  // conversation list. Silent on transient errors (the manual path surfaces
+  // them), paused while the tab is hidden.
+  useEffect(() => {
+    if (cfg === null || !live) return
+    const tick = () => {
+      if (document.visibilityState !== "visible") return
+      if (selTurn !== null) {
+        fetchTurn(cfg, selTurn, vlWindow === "auto" ? null : vlWindow)
+          .then(setDetail)
+          .catch(() => {})
+        if (selConv !== null) {
+          fetchTurns(cfg, selConv)
+            .then(setTurns)
+            .catch(() => {})
+        }
+      } else if (selConv !== null) {
+        fetchTurns(cfg, selConv)
+          .then(setTurns)
+          .catch(() => {})
+      } else {
+        fetchConversationPage(cfg, { q, from: fromIso, to: toIso, channels: [...channelSel] })
+          .then(applyPage)
+          .catch(() => {})
+      }
+    }
+    const t = setInterval(tick, 5_000)
+    return () => clearInterval(t)
+  }, [cfg, live, selTurn, selConv, vlWindow, q, fromIso, toIso, channelSel])
 
   // A bare #rca/turn/<id> deep link resolves its conversation from the loaded
   // detail — adopt it so the rail highlights and loads the turn list.
@@ -281,6 +381,25 @@ export function RcaWorkbench() {
     const conv = detail.context.conversationId
     if (conv !== null) setSelConv((prev) => (prev === conv ? prev : conv))
   }, [detail])
+
+  // LE2-031 — reveal the selection: a deep link (or a find-hit jump) addresses
+  // a SESSION, which now lives one level down, so open its customer row. Once
+  // per selection (a ref, not a groups dependency) — the 5s live tick hands us
+  // a fresh groups array every time, and re-running would fight the
+  // investigator every time they collapse a row.
+  const revealedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (selConv === null || revealedFor.current === selConv) return
+    const g = groups.find((x) => x.sessionIds.includes(selConv))
+    if (g === undefined) return // groups not loaded yet — retry on the next page
+    revealedFor.current = selConv
+    setOpenGroups((prev) => {
+      if (prev.has(g.groupKey)) return prev
+      const next = new Set(prev)
+      next.add(g.groupKey)
+      return next
+    })
+  }, [selConv, groups])
 
   // preflight probes — on mount and on every manual refresh
   useEffect(() => {
@@ -339,14 +458,31 @@ export function RcaWorkbench() {
   const timeline = detail !== null ? mergeTimeline(detail) : []
   const pipeline = detail !== null ? derivePipeline(detail) : []
   const links = detail !== null ? buildLinks(detail.context) : null
+  // RCA-legibility derivations (all pure over the loaded detail — no fetch)
+  const provenance = detail !== null ? replyProvenance(detail) : null
+  const dvs = detail !== null ? draftVsShipped(detail) : null
+  const flow = detail !== null ? claimsFlow(detail) : null
+  const decision = detail !== null ? conductorDecision(detail) : null
+  const shippedTemplateId =
+    detail?.vl.find((l) => l.fields?.event === "claims.template_selected")?.fields?.templateId ?? null
+  const shippedTemplateRef = shippedTemplateId !== null ? templateRef(shippedTemplateId) : null
   const firstMs = timeline.find((e) => Number.isFinite(e.tMs))?.tMs ?? Number.NaN
 
   const laneCounts = new Map<TimelineSource, number>()
   for (const e of timeline) laneCounts.set(e.source, (laneCounts.get(e.source) ?? 0) + 1)
   const evNeedle = evFilter.trim().toLowerCase()
+  // Stable row identity (before any filtering, so filters can't shift keys);
+  // duplicate identities disambiguate by occurrence order.
+  const seenKeys = new Map<string, number>()
   const visible = timeline
-    .map((e, i) => ({ e, i }))
+    .map((e) => {
+      const base = `${e.source}|${e.ts}|${e.text}`
+      const n = seenKeys.get(base) ?? 0
+      seenKeys.set(base, n + 1)
+      return { e, k: n === 0 ? base : `${base}#${n}` }
+    })
     .filter(({ e }) => !laneOff.has(e.source))
+    .filter(({ e }) => selStage === null || e.stage === selStage)
     .filter(({ e }) => evNeedle === "" || e.text.toLowerCase().includes(evNeedle))
 
   const channelItems = (() => {
@@ -364,6 +500,20 @@ export function RcaWorkbench() {
     setDetail(null)
     setTurnsErr(null)
   }
+
+  // Session lookup for the sub-rows — the group carries the ids, the flat list
+  // carries the previews. Openness is the investigator's alone (the reveal
+  // effect above opens the row a deep link lands in, and they can close it
+  // again); the disclosure state never overrides what is selected.
+  const convById = new Map(convs.map((c) => [c.sessionId, c]))
+  const groupOpen = (g: RcaConversationGroup): boolean => openGroups.has(g.groupKey)
+  const toggleGroup = (groupKey: string) =>
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupKey)) next.delete(groupKey)
+      else next.add(groupKey)
+      return next
+    })
 
   const rail = (
     <>
@@ -468,69 +618,112 @@ export function RcaWorkbench() {
           searches archived message content, both roles · honors the time range above
         </p>
       </RailSection>
-      <RailSection title="Conversations">
+      {/* LE2-031 — the rail reads as CUSTOMERS: one row per identity, its
+          sessions as expandable sub-rows, its turns one level below that. Rows
+          are keyed by data identity at every level (groupKey / sessionId /
+          turnId), never by index, so a live tick that reorders or inserts rows
+          cannot shift what is open or what is selected. */}
+      <RailSection title="Customers">
         {convErr !== null && <div className="rail__empty">error: {convErr}</div>}
+        {ungrouped && convs.length > 0 && (
+          <p className="rail__note">
+            this API build does not group — one row per session (not a claim that they are
+            unidentified)
+          </p>
+        )}
         <div className="conv-tree">
-          {convs.map((c) => (
-            <div key={c.sessionId}>
-              <div
-                className={`conv-tree__conv ${selConv === c.sessionId ? "conv-tree__conv--sel" : ""}`}
-                role="button"
-                tabIndex={0}
-                onClick={() => selectConv(c.sessionId)}
-                onKeyDown={keyActivate(() => selectConv(c.sessionId))}
-                style={{ cursor: "pointer" }}
-              >
-                <div className="conv-tree__head">
-                  <b>{c.channel}</b> · {c.turnCount} turn(s)
-                  <span className="conv-tree__time">{shortDateTime(c.lastAt)}</span>
-                </div>
-                <div className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
-                  {c.sessionId.slice(0, 20)}…
-                </div>
-                {c.lastText != null && (
-                  <div className="conv-tree__preview" title={c.lastText}>
-                    {c.lastRole !== null ? `${c.lastRole}: ` : ""}
-                    {c.lastText}
+          {groups.map((g) => {
+            const open = groupOpen(g)
+            return (
+              <div key={g.groupKey}>
+                <div
+                  className={`conv-tree__cust conv-tree__cust--${g.kind} ${open ? "conv-tree__cust--open" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={open}
+                  onClick={() => toggleGroup(g.groupKey)}
+                  onKeyDown={keyActivate(() => toggleGroup(g.groupKey))}
+                  title={`${g.groupKey} · ${g.sessionCount} session(s)`}
+                >
+                  <div className="conv-tree__head">
+                    <span className="conv-tree__caret">{open ? "▾" : "▸"}</span>
+                    <span className={`grp-chip grp-chip--${g.kind}`}>{g.kind}</span>
+                    <b className="conv-tree__cust-label">{g.label}</b>
+                    <span className="conv-tree__time">{shortDateTime(g.lastAt)}</span>
                   </div>
-                )}
-              </div>
-              {selConv === c.sessionId && turnsErr !== null && (
-                <div className="rail__empty">turns error: {turnsErr}</div>
-              )}
-              {selConv === c.sessionId &&
-                turns.map((t) => (
-                  <div
-                    key={t.turnId}
-                    className={`conv-tree__turn ${selTurn === t.turnId ? "conv-tree__turn--sel" : ""}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelTurn(t.turnId)}
-                    onKeyDown={keyActivate(() => setSelTurn(t.turnId))}
-                  >
-                    <span
-                      className="conv-tree__dot"
-                      style={{
-                        background: t.responderEmpty ? "var(--warn)" : "var(--ok)",
-                      }}
-                    />
-                    <span className="conv-tree__label">
-                      <span className="tid">
-                        {t.turnId.slice(0, 12)}
-                        {t.decision != null && (
-                          <span className={`dec-chip dec-chip--${t.decision}`}>{t.decision}</span>
+                  <div className="conv-tree__cust-meta">
+                    {g.sessionCount} session(s) · {g.turnCount} turn(s) · {g.channels.join(", ")}
+                  </div>
+                </div>
+                {open &&
+                  g.sessionIds.map((sid) => {
+                    const c = convById.get(sid)
+                    return (
+                      <div key={sid} className="conv-tree__sess">
+                        <div
+                          className={`conv-tree__conv ${selConv === sid ? "conv-tree__conv--sel" : ""}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => selectConv(sid)}
+                          onKeyDown={keyActivate(() => selectConv(sid))}
+                          style={{ cursor: "pointer" }}
+                        >
+                          <div className="conv-tree__head">
+                            <b>{c?.channel ?? "?"}</b> · {c?.turnCount ?? 0} turn(s)
+                            <span className="conv-tree__time">{shortDateTime(c?.lastAt)}</span>
+                          </div>
+                          <div className="mono" style={{ fontSize: 10, opacity: 0.7 }}>
+                            {sid.slice(0, 20)}…
+                          </div>
+                          {c?.lastText != null && (
+                            <div className="conv-tree__preview" title={c.lastText}>
+                              {c.lastRole !== null ? `${c.lastRole}: ` : ""}
+                              {c.lastText}
+                            </div>
+                          )}
+                        </div>
+                        {selConv === sid && turnsErr !== null && (
+                          <div className="rail__empty">turns error: {turnsErr}</div>
                         )}
-                      </span>
-                      <span className="txt" title={t.userText ?? undefined}>
-                        {t.userText ?? `${t.callCount} call(s)`}
-                      </span>
-                    </span>
-                    <span className="conv-tree__time">{shortDateTime(t.startedAt)}</span>
-                  </div>
-                ))}
-            </div>
-          ))}
-          {convs.length === 0 && convErr === null && (
+                        {selConv === sid &&
+                          turns.map((t) => (
+                            <div
+                              key={t.turnId}
+                              className={`conv-tree__turn ${selTurn === t.turnId ? "conv-tree__turn--sel" : ""}`}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => setSelTurn(t.turnId)}
+                              onKeyDown={keyActivate(() => setSelTurn(t.turnId))}
+                            >
+                              <span
+                                className="conv-tree__dot"
+                                style={{
+                                  background: t.responderEmpty ? "var(--warn)" : "var(--ok)",
+                                }}
+                              />
+                              <span className="conv-tree__label">
+                                <span className="tid">
+                                  {t.turnId.slice(0, 12)}
+                                  {t.decision != null && (
+                                    <span className={`dec-chip dec-chip--${t.decision}`}>
+                                      {t.decision}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="txt" title={t.userText ?? undefined}>
+                                  {t.userText ?? `${t.callCount} call(s)`}
+                                </span>
+                              </span>
+                              <span className="conv-tree__time">{shortDateTime(t.startedAt)}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )
+                  })}
+              </div>
+            )
+          })}
+          {groups.length === 0 && convErr === null && (
             <div className="rail__empty">no conversations</div>
           )}
         </div>
@@ -549,6 +742,25 @@ export function RcaWorkbench() {
   return (
     <Workbench rail={rail}>
       <div className="rca">
+        <div className="rca__toolbar">
+          <button
+            type="button"
+            className={`chip ${live ? "chip--on" : ""}`}
+            onClick={() => setLive((v) => !v)}
+            title="Auto-refresh every 5s, scoped to the selection (turn ▸ conversation ▸ list) — pauses while the tab is hidden"
+          >
+            {live ? "● live 5s" : "live off"}
+          </button>
+          <span className="hint">
+            {live
+              ? selTurn !== null
+                ? "auto-refreshing the selected turn"
+                : selConv !== null
+                  ? "auto-refreshing the selected conversation"
+                  : "auto-refreshing the conversation list"
+              : "manual refresh only"}
+          </span>
+        </div>
         {status !== null && (
           <div className="preflight">
             <span className="preflight__title">preflight</span>
@@ -614,8 +826,33 @@ export function RcaWorkbench() {
                       duration <b>{detail.context.durationMs}ms</b>
                     </span>
                   )}
+                  {/* LE2-014 — the catalog version this turn ran under. Read-only,
+                      and rendered UNCONDITIONALLY (unlike duration above): when a
+                      turn has no stamp, "catalog —" is itself the finding — either
+                      the turn predates the stamp or the writer never resolved a
+                      catalog. Hiding the chip would make an unreplayable turn look
+                      identical to a replayable one. */}
+                  <span title="@ibatexas/catalog version this turn ran under (turn_trace.catalog_version)">
+                    catalog <b>{detail.context.catalogVersion ?? "—"}</b>
+                  </span>
+                  {/* Decision hygiene — the conductor's turn-level decisionKind is
+                      the kernel verdict on the MUTATION PLAN, and a zero-envelope
+                      turn always logs REFUSE (fail-closed empty-plan literal), so
+                      a healthy read turn must not wear a red REFUSE chip. Rendered
+                      UNCONDITIONALLY (— is the finding), like the catalog chip. */}
+                  {decision !== null && (
+                    <span
+                      className={`dec-chip ${
+                        decision.synthetic ? "" : decision.kind !== null ? `dec-chip--${decision.kind}` : ""
+                      }`}
+                      title={decision.title}
+                    >
+                      {decision.label}
+                    </span>
+                  )}
                   {detail.degraded?.adj === true && <span className="degraded-chip">ADJ lane degraded</span>}
                   {detail.degraded?.vl === true && <span className="degraded-chip">VL lane degraded</span>}
+                  {detail.degraded?.wire === true && <span className="degraded-chip">WIRE lane degraded</span>}
                 </div>
               </div>
               <button
@@ -628,7 +865,7 @@ export function RcaWorkbench() {
               </button>
             </div>
 
-            {(detail.degraded?.adj === true || detail.degraded?.vl === true) && (
+            {(detail.degraded?.adj === true || detail.degraded?.vl === true || detail.degraded?.wire === true) && (
               <div className="callout callout--warn">
                 A lane degraded to empty because its store was unreachable — absence is <b>not</b> a
                 signal on this view. Retry once the store is back.
@@ -639,7 +876,7 @@ export function RcaWorkbench() {
             <div className="card">
               <div className="card__hd">
                 <h2>Execution pipeline</h2>
-                <span className="hint">tri-state · derived (absence-is-signal)</span>
+                <span className="hint">tri-state · derived (absence-is-signal) · click a stage for its evidence</span>
               </div>
               <div className="pipe">
                 {pipeline.map((s, i) => (
@@ -651,13 +888,196 @@ export function RcaWorkbench() {
                         }`}
                       />
                     )}
-                    <div className={`pipe__node pipe__node--${s.state}`}>
+                    <div
+                      className={`pipe__node pipe__node--${s.state} ${
+                        selStage === s.key ? "pipe__node--sel" : ""
+                      }`}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={selStage === s.key}
+                      onClick={() => setSelStage((prev) => (prev === s.key ? null : s.key))}
+                      onKeyDown={keyActivate(() => setSelStage((prev) => (prev === s.key ? null : s.key)))}
+                      title={selStage === s.key ? "clear stage focus" : `focus ${s.label}: evidence + filtered timeline`}
+                    >
                       <div className="pipe__badge">{STAGE_GLYPH[s.state]}</div>
                       <div className="pipe__name">{s.label}</div>
                       <div className="pipe__sub">{s.sub}</div>
                     </div>
                   </div>
                 ))}
+              </div>
+              {selStage !== null && (
+                <div className="pipe__evidence">
+                  <div className="pipe__evidence-hd">
+                    <b>{pipeline.find((s) => s.key === selStage)?.label ?? selStage}</b> — stage evidence
+                    <span className="hint">merged timeline below is filtered to this stage</span>
+                    <button type="button" className="chip chip--mini" onClick={() => setSelStage(null)}>
+                      ✕ clear
+                    </button>
+                  </div>
+                  {stageFacts(detail, selStage).map((f, i) => (
+                    <div key={i} className="pipe__evidence-row">
+                      {f}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* reply provenance (RCA-legibility) — who authored the shipped text */}
+            <div className="card">
+              <div className="card__hd">
+                <h2>Reply</h2>
+                <span className="hint">
+                  who authored the shipped text · draft vs shipped · rendered UNCONDITIONALLY (— is the finding)
+                </span>
+              </div>
+              <div className="card__body">
+                <div className="chips" style={{ marginBottom: 8 }}>
+                  <span
+                    className={`prov-chip prov-chip--${provenance?.author ?? "unknown"}`}
+                    title="Reply author path — validated_render (claims), safe_template (proposition-free terminal), responder_prose (model draft), funnel_canned (L0/L1)"
+                  >
+                    {provenance?.author ?? "provenance —"}
+                  </span>
+                  <span className="prov-detail">{provenance?.detail ?? "—"}</span>
+                  {provenance !== null && provenance.mechanism !== null && (
+                    <span className="chip chip--mini" title="claims.render_precedence lattice rule">
+                      rule: {provenance.mechanism}
+                    </span>
+                  )}
+                  {provenance !== null && (
+                    <span
+                      className={`chip chip--mini ${provenance.confidence !== "proven" ? "chip--dim" : ""}`}
+                      title={
+                        provenance.confidence === "proven"
+                          ? "attributed from this turn's own precedence/template events"
+                          : provenance.confidence === "inferred"
+                            ? "inferred from claims.terminal alone (turn predates the provenance telemetry)"
+                            : "not attributable — signals absent or lane degraded"
+                      }
+                    >
+                      {provenance.confidence}
+                    </span>
+                  )}
+                </div>
+
+                {flow !== null && flow.outOfEnum !== null && flow.outOfEnum.length > 0 && (
+                  <div className="callout callout--warn" style={{ marginBottom: 8 }}>
+                    <b>OUT-OF-ENUM claim type dropped:</b> {flow.outOfEnum.join(", ")} — the model
+                    invented a type name; the constrained-generation wall dropped it
+                    {flow.forcedTerminal !== null ? (
+                      <>
+                        {" "}
+                        and the P4 completeness wall forced <b>{flow.forcedTerminal}</b>
+                      </>
+                    ) : null}
+                    .
+                  </div>
+                )}
+
+                {shippedTemplateId !== null && (
+                  <div className="tmpl-ref" style={{ marginBottom: 8 }}>
+                    template <b>{shippedTemplateId}</b>
+                    {shippedTemplateRef !== null && (
+                      <>
+                        {" · "}
+                        {shippedTemplateRef.source} <CopyId value={shippedTemplateRef.source} />
+                        {shippedTemplateRef.ticket !== null && (
+                          <span className="hint"> · {shippedTemplateRef.ticket}</span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                <details className="wire-x__block">
+                  <summary>
+                    draft vs shipped — <b>{dvs?.verdict ?? "unknowable"}</b>
+                    {dvs !== null && dvs.rule !== null ? ` (rule: ${dvs.rule})` : ""}
+                  </summary>
+                  {dvs !== null && (dvs.verdict === "unknowable" || dvs.verdict === "identical_prefix") && (
+                    <div className="callout callout--warn" style={{ margin: "6px 0" }}>
+                      Both sides are independently redacted and clipped (draft: 500 chars at trace
+                      write; shipped: 280 chars on the conductor line; web turns log no reply.sent) —
+                      only <b>prefix</b> equality is decidable, never byte-equality.
+                    </div>
+                  )}
+                  <div className="reply-vs">
+                    <div>
+                      <div className="reply-vs__hd">responder draft (turn_trace)</div>
+                      <pre className="tl-detail">{dvs?.draft ?? "— no responder draft"}</pre>
+                    </div>
+                    <div>
+                      <div className="reply-vs__hd">shipped (conductor turn line)</div>
+                      <pre className="tl-detail">{dvs?.shipped ?? "— no turn-line response"}</pre>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            {/* span attribution (RCA-legibility) — why the message routed this way */}
+            <div className="card">
+              <div className="card__hd">
+                <h2>Span attribution</h2>
+                <span className="hint">deterministic classifier replay on the archived inbound text</span>
+              </div>
+              <div className="card__body">
+                {spansState === "loading" && <div className="hint">classifying…</div>}
+                {spansState === "idle" && <div className="hint">—</div>}
+                {spansState === "unsupported" && (
+                  <div className="hint">
+                    span attribution unavailable — no trace rows for this turn (L0/L1 funnel turns
+                    have nothing to attribute), or the API predates the spans route
+                  </div>
+                )}
+                {spansState === "error" && (
+                  <div className="callout callout--warn">span attribution fetch failed — retry via ↻</div>
+                )}
+                {spansState === "loaded" && spans !== null && (
+                  <>
+                    {spans.confidence === "none" ? (
+                      <div className="hint">
+                        no archived user message found in the association window — nothing to classify
+                      </div>
+                    ) : (
+                      <>
+                        {spans.confidence === "ambiguous" && (
+                          <div className="callout callout--warn" style={{ marginBottom: 8 }}>
+                            ≥2 user messages in the association window (conversation_messages carries
+                            no turn id) — the latest one was classified, but the attribution is a
+                            heuristic here.
+                          </div>
+                        )}
+                        <div className="chips" style={{ marginBottom: 6 }}>
+                          {spans.spanClasses.length > 0 ? (
+                            spans.spanClasses.map((c) => (
+                              <span key={c} className="chip chip--on" title="decomposer span class (required-claim-decomposer.ts)">
+                                {c}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="hint">no span nets fired — the turn rode the model path</span>
+                          )}
+                        </div>
+                        <div className="prov-detail" style={{ marginBottom: 6 }}>
+                          required claims:{" "}
+                          {spans.requiredTypes !== null && spans.requiredTypes.length > 0
+                            ? spans.requiredTypes.join(", ")
+                            : "—"}
+                          {" · classify-only eligible: "}
+                          <b>{spans.classifyOnlyEligible ? "yes" : "no"}</b>
+                        </div>
+                        {spans.snippet !== null && (
+                          <div className="hint">
+                            “{spans.snippet}”{spans.matchedMessageAt !== null ? ` · ${shortDateTime(spans.matchedMessageAt)}` : ""}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
               </div>
             </div>
 
@@ -772,6 +1192,16 @@ export function RcaWorkbench() {
                       {lane} {laneCounts.get(lane) ?? 0}
                     </button>
                   ))}
+                  {selStage !== null && (
+                    <button
+                      type="button"
+                      className="chip chip--on"
+                      onClick={() => setSelStage(null)}
+                      title="showing only this stage's rows — click to clear"
+                    >
+                      stage: {selStage} ✕
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={`chip ${absTime ? "chip--on" : ""}`}
@@ -813,8 +1243,8 @@ export function RcaWorkbench() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visible.map(({ e, i }) => (
-                    <Fragment key={i}>
+                  {visible.map(({ e, k }) => (
+                    <Fragment key={k}>
                       <tr
                         className={`${e.gap === true ? "trace-row--gap" : ""} ${
                           e.detail !== undefined ? "trace-row--expandable" : ""
@@ -823,8 +1253,8 @@ export function RcaWorkbench() {
                           if (e.detail === undefined) return
                           setExpanded((prev) => {
                             const next = new Set(prev)
-                            if (next.has(i)) next.delete(i)
-                            else next.add(i)
+                            if (next.has(k)) next.delete(k)
+                            else next.add(k)
                             return next
                           })
                         }}
@@ -853,14 +1283,69 @@ export function RcaWorkbench() {
                             </button>
                           )}
                           {e.detail !== undefined && (
-                            <span className="expand-hint">{expanded.has(i) ? "▾" : "▸"}</span>
+                            <span className="expand-hint">{expanded.has(k) ? "▾" : "▸"}</span>
                           )}
                         </td>
                       </tr>
-                      {expanded.has(i) && e.detail !== undefined && (
+                      {expanded.has(k) && e.detail !== undefined && (
                         <tr className="trace-row--detail">
                           <td colSpan={3}>
-                            <pre className="tl-detail">{e.detail}</pre>
+                            {e.detail.length > 0 && <pre className="tl-detail">{e.detail}</pre>}
+                            {e.source === "LLM" && e.wire === undefined && (
+                              <div className="wire-x__head wire-x__head--absent">
+                                no wire capture for this call
+                                {detail?.degraded?.wire === true
+                                  ? " — the wire store was unreachable (retry once it is back)"
+                                  : " — the turn predates Wire Truth capture"}
+                              </div>
+                            )}
+                            {e.wire?.map((x) => {
+                              const s = buildWireSections(x)
+                              return (
+                                <div key={x.seq} className="wire-x">
+                                  <div className="wire-x__head">
+                                    wire seq {x.seq}
+                                    {x.requestHash !== null && ` · ${x.requestHash.slice(0, 12)}…`}
+                                    {s.truncated.request && " · request TRUNCATED"}
+                                    {s.truncated.response && " · response TRUNCATED"}
+                                  </div>
+                                  <div className="wire-x__params">{s.params}</div>
+                                  {s.raw !== undefined && (
+                                    <pre className="tl-detail">{s.raw}</pre>
+                                  )}
+                                  {s.messages.map((m, mi) =>
+                                    m.role === "system" ? (
+                                      <details key={mi} className="wire-x__block">
+                                        <summary>system ({m.content.length} chars)</summary>
+                                        <pre className="tl-detail">{m.content}</pre>
+                                      </details>
+                                    ) : (
+                                      <div key={mi} className="wire-x__block">
+                                        <span className="wire-x__role">{m.role}</span>
+                                        <pre className="tl-detail">{m.content}</pre>
+                                      </div>
+                                    ),
+                                  )}
+                                  {s.tools.length > 0 && (
+                                    <details className="wire-x__block">
+                                      <summary>
+                                        tools ({s.tools.map((t) => t.name).join(", ")})
+                                      </summary>
+                                      {s.tools.map((t) => (
+                                        <div key={t.name}>
+                                          <span className="wire-x__role">{t.name}</span>
+                                          <pre className="tl-detail">{t.schema}</pre>
+                                        </div>
+                                      ))}
+                                    </details>
+                                  )}
+                                  <details className="wire-x__block" open={s.messages.length === 0}>
+                                    <summary>raw response</summary>
+                                    <pre className="tl-detail">{s.response}</pre>
+                                  </details>
+                                </div>
+                              )
+                            })}
                           </td>
                         </tr>
                       )}

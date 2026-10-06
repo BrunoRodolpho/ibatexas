@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useTranslations } from "next-intl"
-import { useChat, useChatStore } from '@/domains/chat'
+import { useChat, useChatStore, CHAT_RESTART_LABEL_PTBR } from '@/domains/chat'
 import { useCartStore } from '@/domains/cart'
 import { useSessionStore } from '@/domains/session'
 import { useUIStore } from '@/domains/ui'
@@ -19,7 +19,8 @@ export function ChatWidget() {
   const messages = useChatStore((s) => s.messages)
   const isLoading = useChatStore((s) => s.isLoading)
   const error = useChatStore((s) => s.error)
-  const { sendMessage } = useChat()
+  const errorCanRestart = useChatStore((s) => s.errorCanRestart)
+  const { sendMessage, startNewConversation } = useChat()
   const hasCartItems = useCartStore((s) => s.items.length > 0)
 
   // ── Auto-hide FAB on scroll down, show on scroll up ──────
@@ -159,7 +160,15 @@ export function ChatWidget() {
             )}
             {error && (
               <div className="rounded-lg bg-accent-red/10 p-3 text-[13px] text-accent-red border border-accent-red/10">
-                {error}
+                <p>{error}</p>
+                {errorCanRestart && (
+                  <button
+                    onClick={startNewConversation}
+                    className="mt-2 min-h-[44px] rounded-md bg-charcoal-900 px-3 py-2 text-[13px] font-medium text-white hover:bg-charcoal-700 transition-colors duration-500 ease-luxury"
+                  >
+                    {CHAT_RESTART_LABEL_PTBR}
+                  </button>
+                )}
               </div>
             )}
             <div ref={messagesEnd} />

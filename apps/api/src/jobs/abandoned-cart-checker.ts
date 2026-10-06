@@ -24,7 +24,44 @@ interface ActiveCartEntry {
   lastActivity: number; // epoch ms
 }
 
-type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+// ── The Redis client seam (R5 rollout, jobs/subscribers family) ──────────────
+//
+// Named-type deps bag, per the `SweeperRedis` precedent in this same directory.
+//
+// FAIL-CLOSED PICK ANALYSIS (R5-S12's rule) — this module is the family's
+// instance of the DOWNSTREAM-CONSUMER case, and the interesting one:
+//
+//   • commands ISSUED here: `hScan` (the active:carts walk), `exists` + `ttl`
+//     (the legacy session-TTL proxy), `hDel` (evict), `get` (session owner +
+//     nudge tier), `hGet` (profile phone), `hSet` (re-arm).
+//   • commands consumed DOWNSTREAM: `lRange`. `processCartEntry` calls
+//     `loadSession(entry.cartId, { client: redis })`, and `loadSession`'s own
+//     client type is `Pick<…, "lRange">` — a command this file never names.
+//   • feature detection: none in this module's graph (measured).
+//
+// So the honest Pick is {issued} ∪ {lRange}, and the union is what
+// `AbandonedCartRedis` declares. The "declare only what this module issues"
+// reading compiles, typechecks, and SILENTLY KILLS THE JOB: `loadSession`'s
+// `lRange` throws, `processCartEntry` propagates, and `checkAbandonedCarts`'s
+// per-cart `try/catch` swallows it into a log line — so every cart looks like an
+// error, `cart.abandoned` is never published for ANY cart, and the sweep still
+// reports success. That degrade is measured in the seam test, not asserted here.
+
+/**
+ * The node-redis v4 surface the sweep needs — its OWN commands union the one
+ * `session/store.ts`'s `loadSession` issues on the client it is handed.
+ */
+export type AbandonedCartRedis = Pick<
+  Awaited<ReturnType<typeof getRedisClient>>,
+  "hScan" | "exists" | "ttl" | "hDel" | "get" | "hGet" | "hSet" | "lRange"
+>;
+
+export interface CheckAbandonedCartsDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: AbandonedCartRedis;
+}
+
+type RedisClient = AbandonedCartRedis;
 
 let queue: Queue | null = null;
 let worker: Worker | null = null;
@@ -66,7 +103,9 @@ async function processCartEntry(
   const idleMs = Date.now() - entry.lastActivity;
   if (idleMs < IDLE_THRESHOLD_MS) return false;
 
-  const history = await loadSession(entry.cartId);
+  // The client threads THROUGH — this is why `AbandonedCartRedis` carries an
+  // `lRange` this module never issues itself.
+  const history = await loadSession(entry.cartId, { client: redis });
   if (history.length === 0) {
     await redis.hDel(activeCartsKey, cartId);
     return false;
@@ -115,9 +154,12 @@ async function processCartEntry(
 }
 
 /** Core job logic — exported for direct testing. */
-export async function checkAbandonedCarts(log?: FastifyBaseLogger | null): Promise<void> {
+export async function checkAbandonedCarts(
+  log?: FastifyBaseLogger | null,
+  deps: CheckAbandonedCartsDeps = {},
+): Promise<void> {
   const effectiveLogger = log ?? logger;
-  const redis = await getRedisClient();
+  const redis: AbandonedCartRedis = deps.redis ?? (await getRedisClient());
   const activeCartsKey = rk("active:carts");
   let abandonedCount = 0;
 

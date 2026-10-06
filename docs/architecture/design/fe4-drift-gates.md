@@ -1,7 +1,9 @@
 # FE-4 drift-gate classification (FE-4.3 / FE-T25 / FE-T26 CONTRACT)
 
-FE-4's consolidation (`~/projects/IBX_LANGUAGE_ENGINE_SPEC.md` §"FE-4 — Capability
-metadata consolidation") replaces ~16 hand-maintained lists with generators derived
+FE-4's consolidation (originally specified in `IBX_LANGUAGE_ENGINE_SPEC.md` §"FE-4 —
+Capability metadata consolidation" — that spec doc was lost from disk 2026-07-21 and is
+not reconstituted; surviving authority = the FE rows in `~/projects/ibx-master-tracker.yaml`
+plus this file, per the tracker's header note) replaces ~16 hand-maintained lists with generators derived
 from a single `CapabilityDefinition` registry
 (`packages/packs-composed/src/capability-definitions/`). FE-T19 through FE-T24
 authored and freshness-gated those generators alongside the hand lists they mirror
@@ -249,6 +251,10 @@ graph does not distinguish `dependencies` from `devDependencies`).
   `buildGeneratedRegion()` output between the committed `GENERATED_BEGIN`/
   `GENERATED_END` markers, and writes the file back. Idempotent — a no-op
   regen logs "already up to date" and produces a zero-diff write.
+  **R6 legs 1a + 1b extended this same script to THIRTEEN target files** — it
+  now also splices each of the six packs' own `xxxPack.intents` arrays (leg 1a,
+  family member 3) and each pack's own kind TYPE UNION in `src/types.ts` (leg
+  1b) — both below. One command, one marker pair, one CI gate per target group.
 - `packages/packs-composed/src/__tests__/regen-intent-kinds-freshness.test.ts`
   — the CI freshness gate: (1) the committed `GENERATED_BEGIN`..`GENERATED_END`
   region is byte-identical to a fresh in-memory `buildGeneratedRegion()` call,
@@ -271,6 +277,228 @@ consumer's import path — is unchanged, per the explicit design goal of "makes
 a stale hand-edit impossible" without an "expect wide but mechanical diffs"
 across 12+ leaf-package consumer files that a full deletion-and-inline-call
 approach would have forced.
+
+## R6 leg 1a — the same region pattern applied to the packs' own `intents[]`
+
+Family member 3 (each Pack's own `xxxPack.intents` literal) was, until R6 leg
+1a, still hand-authored and guarded only by an array-equality freshness test:
+adding a kind meant hand-editing a mirror a generator could write. It is now a
+GENERATED region in each of the six `packages/pack-*/src/index.ts` files, using
+the identical marker pair and the identical relative-filesystem-path,
+no-new-dependency-edge design proved above — the packs gain no dependency on
+`@ibatexas/packs-composed`; markers are comments and generation is offline.
+
+- `packages/packs-composed/src/codegen/build-pack-intents-region.ts` —
+  `buildPackIntentsRegion(target)`, plus `PACK_INTENTS_TARGETS` (the six packs)
+  and the per-kind **annotations table**.
+- `packages/packs-composed/src/__tests__/regen-pack-intents-freshness.test.ts`
+  — the CI gate: byte-identity per pack, markers exactly once, plus STRUCTURAL
+  bracket-adjacency assertions (the region begins immediately after
+  `intents: [` and ends immediately before `],`), because the region is spliced
+  inside a live object literal next to hand-maintained `basisCodes`/`policy`/
+  `planner` members and byte-identity alone would not prove it still covers the
+  right bytes.
+
+Two findings worth carrying forward:
+
+1. **"Structurally identical data" is not "identical source text."**
+   `generate-pack-intent-kinds.ts`'s doc claim (verified byte-for-byte for the
+   KIND LISTS) does not extend to the files' text: `pack-payments` carries a
+   2-line BKL-176 note explaining an ABSENCE, and `pack-ops` carries FOUR notes
+   genuinely INTERLEAVED between elements (NEW-004, SCN-114, BKL-088, SCN-127).
+   None of that text exists in `CAPABILITY_DEFINITIONS`, so a generator emitting
+   bare `"kind",` lines would have silently DELETED five blocks of rationale.
+   They live in the annotations table now, and the gate asserts each note is
+   still attached to its own kind — position, not mere presence.
+2. **The array-equality test in `capability-definitions.intent-identity-family.test.ts`
+   is KEPT, not superseded.** It reads the RUNTIME-LOADED `xxxPack.intents`
+   value; the new gate reads committed SOURCE TEXT. Measured during the
+   revert-to-red proof: corrupting a kind in `pack-orders/src/index.ts` left the
+   runtime test GREEN (it resolves `@ibatexas/pack-orders` to `dist/`, which was
+   stale) while the source-text gate went red. The complement holds in reverse —
+   a `dist` that disagrees with the registry fails the runtime test and is
+   invisible to the source-text one. Neither gate subsumes the other.
+
+## R6 leg 1b — the same region pattern applied to the packs' kind TYPE UNIONS
+
+The last hand mirror of the intent-identity family: each pack's own
+`OrderIntentKind`/`ReservationIntentKind`/… union in
+`packages/pack-*/src/types.ts`. It was the EXPENSIVE one — `intent-kinds/src/index.ts`
+closes each of its six generated arrays with
+`as const satisfies readonly OrderIntentKind[]`, so a union that had not been
+hand-updated broke the workspace build (TS2820). Adding a capability was a data
+edit in `definitions.ts` PLUS a hand edit in a second package purely to stop the
+compiler complaining. Now it is the data edit and a regen. Same marker pair,
+same relative-filesystem-path/no-new-dependency-edge design; the six unions
+bring `regenerate-intent-kinds.ts` to **thirteen** target files under one
+command.
+
+- `packages/packs-composed/src/codegen/annotated-member-region.ts` —
+  `renderAnnotatedMemberRegion()`, extracted from leg 1a: the ONE definition of
+  "a GENERATED region that is a list of per-kind members, some carrying
+  hand-written rationale comments". Both `buildPackIntentsRegion` and
+  `buildPackKindUnionRegion` call it, so the two family members cannot drift in
+  comment handling. The extraction is byte-safe by construction, not by
+  inspection — leg 1a's gate diffs the committed arrays against the refactored
+  builder's output, and the first regen after the extraction was a 13-file no-op.
+- `packages/packs-composed/src/codegen/build-pack-kind-union-region.ts` —
+  `buildPackKindUnionRegion(target)`, `PACK_KIND_UNION_TARGETS`, and the
+  union-side annotations table.
+- `packages/packs-composed/src/__tests__/regen-pack-unions-freshness.test.ts`
+  — the CI gate (24 tests): byte-identity per pack, markers exactly once, plus
+  STRUCTURAL declaration/tail assertions.
+
+Three findings worth carrying forward:
+
+1. **Derivability was CHECKED, not assumed.** A union could legitimately have
+   outlived the definitions — `pack-payments`' own BKL-176 note documents 5
+   RETIRED `payment.charge.*` kinds — and absorbing such a member into a
+   generated region would DELETE it on the next regen: a type-level regression
+   dressed up as codegen. Measured against the real projection first: all six
+   unions are exactly `generatePackIntents(CAPABILITY_DEFINITIONS, pack)`, same
+   members, same order, 62 total, **zero union-only members in any pack** (the
+   retired `payment.charge.*` kinds are absent from the unions too). Nothing was
+   absorbed, and the finding is now an executable test case rather than a claim
+   in a comment.
+2. **The annotations table is per FAMILY MEMBER, not per kind.** Leg 1a found
+   five rationale blocks inside the `intents[]` arrays (payments' BKL-176, ops'
+   four). The unions carry rationale too — and it is DIFFERENT rationale in a
+   DIFFERENT pack: `pack-whatsapp`'s union carries two interleaved blocks (W5-6
+   on `conversation.message.append`, F5/L3/BKL-030 on
+   `whatsapp.handoff.request`, 8 lines) that appear in neither
+   `CAPABILITY_DEFINITIONS` nor `pack-whatsapp/src/index.ts`, while the packs
+   whose arrays carry notes carry NONE inside their unions. Note text is a
+   property of the (FILE, kind) pair. One table keyed by kind alone would have
+   invented committed bytes in one direction or the other, so there are two
+   tables behind one renderer.
+3. **A union has no closing token, so the tail needs two pins.** Leg 1a could
+   lean on `],`; a union ends where its members stop. "END marker followed by a
+   blank line" alone leaves a real hole — blank lines are whitespace to
+   TypeScript, so a member hand-added BELOW the blank line is still part of the
+   type and the gate would stay green. The gate therefore also asserts the first
+   non-blank line after the region does not continue the union with another `|`.
+
+**The TS2820 compile-time leg is KEPT, and is genuinely complementary.** It
+proves the TYPE the application compiles against; the source gate proves the
+committed text is what the generator would write. Each sees what the other
+cannot: markers and rationale comments are type-invisible (a corrupted marker or
+a deleted note compiles perfectly), and conversely an ADDED union member
+type-checks fine because `satisfies` only requires the array to be a SUBSET of
+the union — a hand-widened union is invisible to `tsc` and caught only by the
+source gate. Both directions are asserted in that file's last describe block.
+
+## R6 leg 2 — the six capability-count literals become one pin
+
+Six independently-written spellings of the registry's size, in four files across
+three packages, none of them referring to the others:
+
+| Site | Was | Now |
+|---|---|---|
+| `capability-definitions.intent-identity-family.test.ts` (×2) | `62`, `62` | `EXPECTED_CAPABILITY_COUNT` |
+| `capability-definitions.tool-driving-family.test.ts` (×2) | `66`, `62` | `EXPECTED_CAPABILITY_COUNT (+ externals)` |
+| `regen-pack-unions-freshness.test.ts` | `62` | `EXPECTED_CAPABILITY_COUNT` |
+| `packages/cli/.../kernel.test.ts` | `66` | `EXPECTED_CAPABILITY_COUNT + externals` |
+| `packages/journeys/src/gates/lint.ts` (comment) | "the full 66-kind union" | pointer, no number |
+| `capability-definitions/index.ts` (doc) | "62 — 20 chat-tier, 42 identity-tier" | pointer, no number |
+
+`EXPECTED_CAPABILITY_COUNT` lives in `definitions.ts`, immediately above
+`CAPABILITY_DEFINITIONS`, and stays a **hand-written literal**. Writing
+`= CAPABILITY_DEFINITIONS.length` would assert `x === x`: every gate reading it
+would go green for any registry, including one a bad merge halved. The number
+must be written by a human who intended it, so that changing the registry
+*without* intending to change its size is what goes red.
+
+Three things the consolidation surfaced, each of which is the argument for doing
+it — every one had been sitting green:
+
+1. **The six sites disagreed about what they pinned.** Four pinned the registry
+   (62); two pinned the composed union (66 = 62 + the 4 external pix/loyalty
+   kinds). Nothing said so, and the two families were being maintained as if
+   they were the same number.
+2. **Two carried stale prose.** `kernel.test.ts`'s history comment stopped at
+   "63 → 65" while its literal said `66`, and its sibling case was *titled*
+   "includes all 65 KNOWN_INTENT_KINDS" — a case that asserts membership and
+   never a count, so nothing was ever going to catch it.
+3. **`capability-definitions/index.ts` documented a tier split of "20 chat-tier,
+   42 identity-tier"; the real split is 19/43.** That doc line has now gone
+   stale three times (FE-T19/T20's "18 + 48", then the LE2 spec's ratified
+   "59/20/39"). It is replaced by a pointer rather than a fourth number: a count
+   nothing gates on rots.
+
+The union's size is spelled as the arithmetic it is —
+`EXPECTED_CAPABILITY_COUNT + PIX_INTENT_KINDS.length + LOYALTY_INTENT_KINDS.size`
+— rather than as a second magic `66`. Deriving the *external* term is not the
+self-reference trap the registry term avoids: those two sets are hand-authored in
+`@ibatexas/intent-kinds` and are deliberately outside the catalog, so the
+assertion still compares a generated union against something a human wrote.
+
+**Measured tripwire behaviour** (add a 63rd capability, run
+`regen:intent-kinds`, do not bump the pin): 4 count assertions go red across 3
+files, every one of them reporting `63 to be 62` / `67 to be 66` against
+`EXPECTED_CAPABILITY_COUNT`, and **one bump to that single line clears all four**
+(packs-composed back to 187/187). Three further reds in the same simulation are
+*not* count-pin failures and are correct to fire: `kernel.test.ts`'s
+per-domain-prefix pins (`order (26)` → 27) and the `pack-bom` committed
+governance baseline. Those per-domain counts are a genuinely separate pin family
+— being per-prefix, they cannot read one registry-wide constant — and are left
+hand-authored.
+
+## R6 leg 3 — the audit-redactor PII classification is NOT projected (decided by measurement)
+
+The review proposed a declared per-kind judgment slot so the redactor's PII
+classification becomes a catalog projection. **It is not built, and must not be**,
+for a reason that is measurable rather than stylistic.
+
+`packages/audit-sink/src/audit-redactor.ts` classifies every kind into
+`INTENT_KIND_FIELD_RULES` (40 keys) or `PII_FREE_KIND_ALLOWLIST` (46 entries).
+Only the catalog-kind subset could ever be projected: **24 of those 86 entries
+are non-catalog** and stay hand-declared regardless — 4 HTTP-plane `staff.*`
+kinds, 13 `medusa.*` / 3 `stripe.*` / 1 `twilio.*` egress-wrapper kinds, 2
+`validation.*` synthesised events, 3 `pix.*` and 1 `loyalty.*` external kinds.
+
+**Why the projection is worse than the status quo.** The F-5 sentinel's whole
+value is that it compares **two independently-authored artifacts**: the kind
+union and the classification. `KNOWN_INTENT_KINDS` is *already* regenerated from
+`CAPABILITY_DEFINITIONS`. Projecting the allowlist from the same source makes
+both sides of that comparison projections of one input, and the gate becomes
+analytically incapable of failing on a catalog kind. Simulated over the real
+corpus — add a capability, run the regen, classify nothing:
+
+| | conformance verdict |
+|---|---|
+| today (hand-declared allowlist) | **RED**, naming the unclassified kind |
+| with the proposed projection | **GREEN** — the projection absorbed it |
+
+A new capability would ship auto-declared "PII-free" with no human ever having
+named its payload's PII surface. That is precisely the regression class F-5 is,
+re-created at the root.
+
+Two independent reasons point the same way. `CapabilityDefinition` models **no
+payload shape at all** — the rule *values* are payload field paths (`body`,
+`comment`, `lastMessage`, `note`, `otpToken`, `reason`, `specialRequests`,
+`text`), so projecting them means inventing a payload-shape axis the codebase
+does not otherwise model, which is the fabrication FE-4.1 forbids and which
+`opsForbiddenDestructive`'s own doc cites as the reason `WA_EXCLUDED_OPS_KINDS`
+was traced but not generated. And the allowlist's code-review-enforced "1-line
+WHY comment naming the payload's PII surface" would follow the R6-S1/S2 pattern
+into a generator-side annotations table — moving a security control's
+justification *away* from both the control and the definition.
+
+**The agreement gate the review offered as the fallback already exists and is
+strictly stronger than a catalog-scoped one.**
+`apps/api/src/__tests__/audit-2026-05-24/per-intent-redactor-conformance.test.ts`
+already iterates `KNOWN_INTENT_KINDS ∪ HTTP_PLANE_GOVERNED_KINDS` (70 kinds, vs
+the 62 a catalog-scoped gate would cover) and requires each to be classified.
+Measured: deleting one catalog kind (`order.item.add`) from the allowlist turns
+2 cases red, naming the kind, with a file:line pointer. All 62 catalog kinds are
+classified today (21 ruled, 41 PII-free), and `catalog kinds ⊄ KNOWN_INTENT_KINDS`
+is itself gated by the intent-identity family's set-equality test. No new gate was
+added: a second assertion green-by-entailment would fail this doc's own standard
+(leg 1a/1b kept two legs only because each catches a drift the other cannot).
+
+`audit-sink` therefore gains **no dependency on `@ibatexas/catalog`** — which
+matters independently: `audit-sink` is on the kernel path, consumed by `apps/api`
+and by `@ibatexas/tools` (the widest-blast-radius package in the workspace).
 
 ## Tautological-gate retirements (FE-4.3's own named risk)
 

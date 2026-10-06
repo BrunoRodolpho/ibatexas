@@ -18,6 +18,7 @@ import {
   type TelemetryPort,
 } from "@claustrum/core";
 import { manifestWithHashes } from "./prompts/ibatexas-prompts.js";
+import { sealWireCall } from "./wire-capture.js";
 
 export interface ModelCallTraceArgs {
   readonly telemetry: TelemetryPort | undefined;
@@ -73,6 +74,11 @@ export async function emitModelCallTrace(args: ModelCallTraceArgs): Promise<void
       ...(args.intentHash === undefined ? {} : { intentHash: args.intentHash }),
     });
     await telemetry.emitLLMTrace(trace);
+    // Wire Truth — seal this call's pending wire exchanges under the turn.
+    // Seal order equals emit order equals the flush's call_index assignment,
+    // so the stamped callIndex aligns with the trace row exactly. Placed
+    // AFTER the emit so a throwing telemetry port leaves nothing half-sealed.
+    sealWireCall(args.turnId);
   } catch {
     // Telemetry must never break a turn.
   }

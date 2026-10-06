@@ -88,6 +88,34 @@ type Fixture = {
       | "REQUEST_CONFIRMATION"
       | "ESCALATE"
     readonly refusalCode?: string
+    /**
+     * The pt-BR sentence the refusal carries — pins WHICH producer fired when
+     * several share one `refusalCode`.
+     *
+     * `refusalCode` alone cannot do this: `refuseRefundAmountInvalid` and
+     * `refuseRefundOverBalance` both emit `refund.amount_invalid`, so a
+     * code-only `expect` block is byte-identical for both and neither
+     * discriminates. Measured on this branch: swapping the factory at
+     * `policies.ts:421` (telling an over-balance requester their amount is
+     * "inválido") left all 136 pack tests GREEN, and so did the reverse swap
+     * at `:387`.
+     *
+     * This is the field that catches that swap. `basisReason` below CANNOT:
+     * the basis is a separate argument to `decisionRefuse(...)`, so it does
+     * not move when the refusal factory is swapped. The user-visible sentence
+     * is both the actual harm (it reaches the operator via
+     * `claustrum-bootstrap.ts` → `refusal.userFacing`, as no `refund.*` entry
+     * exists in `@adjudicate/locales-pt-br`) and the only discriminator of it.
+     */
+    readonly refusalUserFacing?: string
+    /**
+     * A `detail.reason` that must appear among the decision's basis entries —
+     * pins which GUARD BRANCH fired, the audit-record counterpart to the
+     * sentence above. Independent channel: a basis can drift away from its
+     * refusal (and vice versa) without either pin noticing the other, which is
+     * exactly why both are pinned.
+     */
+    readonly basisReason?: string
     readonly signal?: string
     readonly escalateTo?: "human" | "supervisor"
   }
@@ -245,7 +273,13 @@ const corpus: ReadonlyArray<Fixture> = [
     expect: { kind: "REFUSE", refusalCode: "payment.terminal_state" },
   },
   {
-    name: "REFUSE: payment.refund.issue with non-positive amount",
+    // `refund.amount_invalid` is emitted by TWO producers (see the census in
+    // the PR): `refuseRefundAmountInvalid` here and `refuseRefundOverBalance`
+    // in the next fixture. The code is therefore NOT a discriminator — the
+    // `refusalUserFacing` pin is what names which one fired.
+    name:
+      "REFUSE: payment.refund.issue with non-positive amount — " +
+      "refuseRefundAmountInvalid fired (not refuseRefundOverBalance)",
     envelope: env("payment.refund.issue", {
       paymentId: "pay-1",
       refundAmountCentavos: -100,
@@ -255,10 +289,21 @@ const corpus: ReadonlyArray<Fixture> = [
       actor: "admin",
     }, "TRUSTED"),
     state: existsState({ refundedAmountCentavos: 0 }),
-    expect: { kind: "REFUSE", refusalCode: "refund.amount_invalid" },
+    expect: {
+      kind: "REFUSE",
+      refusalCode: "refund.amount_invalid",
+      refusalUserFacing: "Valor de reembolso inválido.",
+      basisReason: "refund_amount_invalid",
+    },
   },
   {
-    name: "REFUSE: payment.refund.issue over refundable balance",
+    // The money-adjacent half of the pair: R$600 asked against a R$500
+    // balance. If this fixture ever renders "Valor de reembolso inválido."
+    // the operator is told the AMOUNT was malformed rather than that it
+    // exceeded the balance — a different, wrong fact about their money.
+    name:
+      "REFUSE: payment.refund.issue over refundable balance — " +
+      "refuseRefundOverBalance fired (not refuseRefundAmountInvalid)",
     envelope: env("payment.refund.issue", {
       paymentId: "pay-1",
       refundAmountCentavos: 60_000,
@@ -268,7 +313,12 @@ const corpus: ReadonlyArray<Fixture> = [
       actor: "admin",
     }, "TRUSTED"),
     state: existsState({ refundedAmountCentavos: 0 }),
-    expect: { kind: "REFUSE", refusalCode: "refund.amount_invalid" },
+    expect: {
+      kind: "REFUSE",
+      refusalCode: "refund.amount_invalid",
+      refusalUserFacing: "Esse valor de reembolso é maior do que o disponível.",
+      basisReason: "refund_over_balance",
+    },
   },
   {
     name: "REFUSE: payment.refund.issue with divergent state (concurrent partial refund)",
@@ -494,6 +544,14 @@ describe("paymentsPack — corpus (30+ cases across 4 decision kinds)", () => {
       expect(decision.kind).toBe(fixture.expect.kind)
       if (fixture.expect.refusalCode && decision.kind === "REFUSE") {
         expect(decision.refusal.code).toBe(fixture.expect.refusalCode)
+      }
+      if (fixture.expect.refusalUserFacing && decision.kind === "REFUSE") {
+        expect(decision.refusal.userFacing).toBe(fixture.expect.refusalUserFacing)
+      }
+      if (fixture.expect.basisReason && decision.kind === "REFUSE") {
+        expect(decision.basis.map((b) => b.detail?.reason)).toContain(
+          fixture.expect.basisReason,
+        )
       }
       if (fixture.expect.signal && decision.kind === "DEFER") {
         expect(decision.signal).toBe(fixture.expect.signal)

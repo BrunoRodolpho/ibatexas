@@ -6,9 +6,19 @@
 // the REAL `buildToolSurface`, driven via `createIbatexasPlanner` — never a
 // reimplementation) PLUS the `OPS_PLANNER_PERSONA` excerpt describing this
 // capability. This is "the thing a rollout slice (T11-14) would accidentally
-// drift": editing `order-status-transition.schema.ts`, `wire-schemas.ts`'s
-// registry, `buildToolSurface`'s composition, or the persona paragraph for
-// THIS capability all change this byte-identical fixture.
+// drift": editing `wire-schemas.ts`'s registry MEMBERSHIP, `buildToolSurface`'s
+// composition, or the persona paragraph for THIS capability all change this
+// byte-identical fixture.
+//
+// SCOPE NARROWED (BKL-255a): editing `order-status-transition.schema.ts`'s
+// FIELDS no longer moves this fixture. The authored payload schemas used to
+// ride the wire as `allOf`/`if-then` clauses, but the engine dropped them at
+// decode (LE2-004) and `buildToolSurface` no longer emits them — so the
+// fragment now pins the capability enum, the tool description and the persona,
+// not the payload shape. Payload-shape drift is caught elsewhere: the
+// per-capability `*.schema.test.ts` files, `schema-lint-gate.test.ts`, and the
+// "the authored schema exposes ONLY …" case below, which reads the registry
+// directly.
 //
 // Mirrors the codegen-freshness gate idiom (FE-4.3 — "regenerate in a clean
 // tree; fail on any diff from the committed generated artifacts"): a
@@ -54,15 +64,18 @@ describe("extraction-prompt golden byte-identity gate (order.status.transition)"
     expect(canonicalize(fresh)).toBe(readGoldenRaw());
   });
 
-  it("RED: a mutated wire schema (an extra enum value) is NOT byte-identical to the golden fixture", async () => {
+  it("RED: a mutated wire schema (an extra capability in the enum) is NOT byte-identical to the golden fixture", async () => {
     const fresh = await computeOrderStatusTransitionExtractionPromptFragment();
     const mutated: ExtractionPromptFragment = JSON.parse(JSON.stringify(fresh)) as ExtractionPromptFragment;
     const schema = mutated.expressIntentTool.inputSchema as {
-      allOf: Array<{ then: { properties: { payload: { properties: { newStatus: { enum: string[] } } } } } }>;
+      properties: { capability: { enum: string[] } };
     };
-    // Simulates a rollout slice accidentally widening the enum (or any other
-    // schema-registry drift) — the golden gate must catch it.
-    schema.allOf[0]!.then.properties.payload.properties.newStatus.enum.push("archived");
+    // BKL-255a — this used to widen the payload's own `newStatus` enum, which
+    // is no longer on the wire (the engine dropped the `allOf` carrying it at
+    // decode — LE2-004). The CAPABILITY enum is still on the wire and is still
+    // what a rollout slice drifts; widening it is the same drift class the
+    // golden gate must catch.
+    schema.properties.capability.enum.push("order.cancel");
     expect(canonicalize(mutated)).not.toBe(readGoldenRaw());
   });
 

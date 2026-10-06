@@ -1,0 +1,79 @@
+{
+  "fixture": "pairing-graph.self-referential-pairing-edge",
+  "targets": "pairing-graph/self-referential-pairing-edge",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/self-referential-pairing-edge"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 5,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "self-referential-pairing-edge",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "object",
+      "message": "this edge relates a handle to itself. Neither relation can mean anything about one thing: 'vai bem com' would suggest what the customer already asked about, and 'no lugar' would offer the unavailable item as its own stand-in — an answer that reads as helpful and tells the customer nothing.",
+      "reference": "conformance-item-sujeito"
+    }
+  ],
+  "formatted": [
+    "pairing-graph/self-referential-pairing-edge: pairing:conformance-item-sujeito · object — this edge relates a handle to itself. Neither relation can mean anything about one thing: 'vai bem com' would suggest what the customer already asked about, and 'no lugar' would offer the unavailable item as its own stand-in — an answer that reads as helpful and tells the customer nothing."
+  ]
+}

@@ -34,6 +34,61 @@ function processedKey(eventKey: string): string {
   return rk(`nats:processed:${eventKey}`);
 }
 
+// ── The Redis client seam (R5 rollout, the dedup family) ─────────────────────
+//
+// Named types, following `SweeperRedis` / the outreach family rather than an
+// inline `readonly redis?: {...}` bag. This module is the widest blast radius in
+// class (d): every NATS subscriber in the app routes through it, and its
+// contract is FAIL-CLOSED, so a client that cannot serve a command here does not
+// degrade — it stops the handler.
+//
+// FAIL-CLOSED PICK ANALYSIS (R5-S12's rule, applied per entry point):
+//   • `isNewEvent` / `markProcessed` — issue `set`; hand the client to nothing.
+//   • `releaseClaim` (private)       — issues `del`; hands the client to nothing.
+//   • `withDedup`                    — issues `set` itself AND FORWARDS ITS DEPS
+//     BAG to `markProcessed` (`set`) and `releaseClaim` (`del`), so whatever
+//     client it is handed reaches both. Its honest Pick is
+//     {set} ∪ {set, del} = {set, del}. The `del` is the one a naive "declare
+//     what this function's own body issues" reading would miss, and dropping it
+//     does NOT crash: `releaseClaim` wraps its own body in a swallowing
+//     `try/catch` ("the in-flight TTL guarantees the claim eventually
+//     expires"), so the claim would simply STAND and the event that just failed
+//     would stay suppressed for the whole in-flight TTL, suite green.
+//   • Commands consumed downstream by the HANDLER: none — `withDedup` invokes
+//     `handler()` with NO arguments, so a caller's closure resolves its own
+//     client and never receives this one. Verified by reading the call sites,
+//     not inferred from the signature.
+//   • Feature detection: none. `typeof … === "function"` was swept over
+//     `apps/api/src/{subscribers,jobs,lib}` and `packages/tools/src` — zero hits
+//     in this module's graph (F-22).
+
+/** The node-redis v4 surface a single-phase claim needs. */
+export type DedupClaimRedis = Pick<Awaited<ReturnType<typeof getRedisClient>>, "set">;
+
+/** The surface a claim RELEASE needs. */
+export type DedupReleaseRedis = Pick<Awaited<ReturnType<typeof getRedisClient>>, "del">;
+
+/**
+ * `withDedup`'s union: what it issues itself, plus what it hands to
+ * `markProcessed` and `releaseClaim`.
+ */
+export type WithDedupRedis = DedupClaimRedis & DedupReleaseRedis;
+
+export interface IsNewEventDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: DedupClaimRedis;
+}
+
+export interface MarkProcessedDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: DedupClaimRedis;
+}
+
+export interface WithDedupDeps {
+  /** Injected for tests. Defaults to the shared Redis client. */
+  readonly redis?: WithDedupRedis;
+}
+
 /**
  * NATS idempotency guard — single-phase claim (at-most-once).
  * Marks the event processed immediately (full TTL) and returns true if this
@@ -42,8 +97,11 @@ function processedKey(eventKey: string): string {
  * Throws if Redis is unreachable — the caller decides how to react (fail-open
  * vs fail-closed) in its own try/catch.
  */
-export async function isNewEvent(eventKey: string): Promise<boolean> {
-  const redis = await getRedisClient();
+export async function isNewEvent(
+  eventKey: string,
+  deps: IsNewEventDeps = {},
+): Promise<boolean> {
+  const redis: DedupClaimRedis = deps.redis ?? (await getRedisClient());
   const result = await redis.set(processedKey(eventKey), "1", { EX: NATS_DEDUP_TTL, NX: true });
   return result === "OK";
 }
@@ -53,8 +111,11 @@ export async function isNewEvent(eventKey: string): Promise<boolean> {
  * fully processed. Idempotent: uses SET (no NX) so it overwrites the short
  * in-flight marker left by the claim phase.
  */
-export async function markProcessed(eventKey: string): Promise<void> {
-  const redis = await getRedisClient();
+export async function markProcessed(
+  eventKey: string,
+  deps: MarkProcessedDeps = {},
+): Promise<void> {
+  const redis: DedupClaimRedis = deps.redis ?? (await getRedisClient());
   await redis.set(processedKey(eventKey), "1", { EX: NATS_DEDUP_TTL });
 }
 
@@ -62,9 +123,12 @@ export async function markProcessed(eventKey: string): Promise<void> {
  * Release a claim so a redelivery can reprocess the event. Best-effort —
  * if it fails, the short in-flight TTL still lets the claim expire naturally.
  */
-async function releaseClaim(eventKey: string): Promise<void> {
+async function releaseClaim(
+  eventKey: string,
+  deps: { readonly redis?: DedupReleaseRedis } = {},
+): Promise<void> {
   try {
-    const redis = await getRedisClient();
+    const redis: DedupReleaseRedis = deps.redis ?? (await getRedisClient());
     await redis.del(processedKey(eventKey));
   } catch {
     // Best-effort — the in-flight TTL guarantees the claim eventually expires.
@@ -93,11 +157,12 @@ async function releaseClaim(eventKey: string): Promise<void> {
 export async function withDedup(
   eventKey: string,
   handler: () => Promise<void>,
+  deps: WithDedupDeps = {},
 ): Promise<boolean> {
   // ── Phase 1: claim (fail CLOSED on Redis error) ──────────────────────────
   let claimed: boolean;
   try {
-    const redis = await getRedisClient();
+    const redis: WithDedupRedis = deps.redis ?? (await getRedisClient());
     const result = await redis.set(processedKey(eventKey), "1", {
       EX: NATS_INFLIGHT_TTL,
       NX: true,
@@ -118,7 +183,14 @@ export async function withDedup(
     // Handler failed — release the claim so a redelivered / re-published event
     // can reprocess (no AUTO-redelivery on Core NATS — see the header caveat),
     // then rethrow so the subscriber routes it to the DLQ.
-    await releaseClaim(eventKey);
+    // `deps` is forwarded WHOLE rather than the already-resolved client: on the
+    // default path `deps.redis` is `undefined`, so `releaseClaim` resolves the
+    // singleton itself — exactly the number of resolutions this module made
+    // before the seam existed. Handing the resolved client down would collapse
+    // three default-path resolutions into one, which is a behaviour change
+    // smuggled under a refactor (the standing rule from R5 family 1's
+    // `trackCartId`). When a client IS threaded, this is what carries it.
+    await releaseClaim(eventKey, deps);
     throw err;
   }
 
@@ -126,7 +198,8 @@ export async function withDedup(
   // Best-effort: if the promote fails, the in-flight claim still suppresses
   // duplicates until its short TTL expires.
   try {
-    await markProcessed(eventKey);
+    // Forwarded whole, for the reason stated on the release path above.
+    await markProcessed(eventKey, deps);
   } catch {
     // Non-fatal — handler already succeeded; worst case is a re-process after
     // the short in-flight TTL, which the handler's own idempotency absorbs.

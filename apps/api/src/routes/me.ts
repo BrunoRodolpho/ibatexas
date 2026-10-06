@@ -52,7 +52,11 @@ import { Channel } from "@ibatexas/types";
 // re-exports `apps/api/src/adapters/park-nx.ts`). me.ts's DEFER call sites
 // (LGPD-grace / PIX-pending parks) and the quota-metric hook must share the
 // same park-nx module instance — see kernel-bootstrap.ts.
+// F-22: `getParkRedisCapabilities()` is the composition root for this path's
+// Redis surface — it validates the client and returns one whose atomic members
+// are REQUIRED. Never hand `parkDeferredIntentWithNxGuard` a bare client.
 import {
+  getParkRedisCapabilities,
   parkDeferredIntentWithNxGuard,
   PARK_COLLISION_REFUSAL_PT_BR,
 } from "../adapters/park-deferred-intent-nx.js";
@@ -63,6 +67,9 @@ import {
   exportCustomerData,
   anonymizeCustomer,
   anonymizeCustomerFromEnvelope,
+  type CustomerService,
+  type OrderQueryService,
+  type LoyaltyService,
 } from "@ibatexas/domain";
 import {
   customerOnboardingPolicyBundle,
@@ -194,10 +201,166 @@ function epochHour(): number {
   return Math.floor(Date.now() / (60 * 60 * 1000));
 }
 
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// Every construction in this file was PER-REQUEST, inline in a handler
+// (`await createCustomerService().updateProfile(...)` and friends). The
+// members are therefore factories called at each of those same sites, so each
+// handler still builds its own instance on the request that needs it — no
+// service is hoisted to registration and nothing becomes shared across
+// requests. That is the R5-S2 factories-not-instances rule doing its actual
+// job here rather than as a formality.
+//
+// All three defaults are BARE constructions (no audit sink), matching the
+// inline calls they replace: the audited writes in this file go through
+// `runCustomerIntent` / the customer-intent gateway, not through these.
+
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+// ── R5 rollout, family 4 — this route's Redis client seam ──────────────────
+//
+// The three `getRedisClient()` calls this module used to make directly now
+// resolve through `MeRouteDeps.redis`. Per-consumer types below are the R5-S1
+// NARROWING rule applied one site at a time: each declares the commands ITS
+// site issues, so a client that cannot serve that site is a `tsc` error rather
+// than a runtime `TypeError`.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the R5-S12 / #539 / #543 rule) ───────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream} — read what
+// the module hands its client TO, not just what it calls. MEASURED for this
+// module: the downstream half is EMPTY, and that is a measurement, not an
+// assumption. All three sites bind the client to a handler-local `const redis`
+// and issue every command on it directly; no site passes `redis` to anything.
+//
+// Two callees LOOK like client hand-offs and are NOT — checked by reading the
+// callee, per #543's negative-measurement rule:
+//
+//   • `withLock(resource, fn, ttlSeconds)` (used at the LGPD export + anonymize
+//     paths) takes NO client and invokes `fn()` with **no arguments**. It
+//     resolves its own client per command through `packages/tools`'
+//     `singletonLockClient`. Its release IS a CAD `eval` — but that `eval` is
+//     issued against a client this seam never supplies, so it is NOT downstream
+//     of this Pick and does not make this module Lua-gated.
+//   • `getParkRedisCapabilities()` (the DEFER park path) is a SEPARATE
+//     composition root — F-22's — and resolves its own validated client. Its
+//     `redis` local is a `ParkRedisCapabilities`, not this seam's client.
+//     Collapsing the two would drag `eval`/`evalIncrCheck` into the union below
+//     and make this whole route un-servable by the in-memory adapter, for zero
+//     gain: nothing here needs the park's client.
+//
+// ── Feature detection: MEASURED, none ──────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/middleware` and `packages/tools/src`. Zero live Redis probes;
+// the only hits in those trees are COMMENTS describing the F-22 rule. So the
+// class that made `evalIncrCheck` degrade silently does not occur here.
+//
+// ── Swallowing consumers: TWO, and they are why the seam is born guarded ────
+//
+// Two of the three sites are wrapped in a `catch` that turns a client which
+// cannot serve them into a no-op rather than an error, so a dropped command
+// degrades SILENTLY:
+//
+//   • the profile-cache refresh — `catch { request.log.warn }`, then the
+//     handler returns 200 anyway. A missing `hSet`/`expire` leaves the agent
+//     plane serving STALE preferences with the web save reported successful.
+//   • the `defer:pending` clear — `catch {}` ("best-effort — sweeper will clean
+//     it up"). A missing `del` leaves the parked-deletion marker standing.
+//
+// The seam suite therefore asserts each command landed on the INJECTED
+// keyspace, which a silent degradation cannot fake.
+
+/**
+ * The profile-cache refresh after a preferences save — the `customer:profile:*`
+ * hash write plus its TTL refresh. Wrapped in a swallowing `catch`.
+ */
+type ProfileCacheRefreshRedis = Pick<RedisClient, "hSet" | "expire">;
+
+/**
+ * The profile-update rate-limit marker: the `get` that projects the last-update
+ * epoch into the kernel's `ctx`, and the `set` the executor writes after the
+ * update lands. Both on the same handler-scoped client, as before.
+ */
+type ProfileUpdateRateRedis = Pick<RedisClient, "get" | "set">;
+
+/** The `defer:pending:<customerId>` clear on a cancelled deletion. */
+type PendingDeletionClearRedis = Pick<RedisClient, "del">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route issues — the type
+ * `MeRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived as an intersection of the
+ * per-consumer types above: a derived union can never disagree with its
+ * consumers, so it could not catch a consumer that grew a command nobody
+ * declared (F-14). Widen this only by adding a command this route genuinely
+ * issues — and note that adding `eval` would move this file into the
+ * owner-gated Lua bucket, so a future hand-off to `withLock` or the park
+ * capabilities is a CLASSIFICATION change, not a widening.
+ */
+export type MeRouteRedisClient = Pick<
+  RedisClient,
+  "get" | "set" | "del" | "hSet" | "expire"
+>;
+
+/** The domain services `me.ts` resolves through the seam. */
+export interface MeRouteDeps {
+  /**
+   * Builds the CustomerService behind the profile, preferences and address
+   * handlers. Called per handler invocation, as the inline construction was.
+   */
+  readonly customerService: () => CustomerService;
+  /** Builds the OrderQueryService behind the single-order read. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the LoyaltyService behind the balance read. */
+  readonly loyaltyService: () => LoyaltyService;
+  /**
+   * Resolves the Redis client the three sites above issue against.
+   *
+   * A FACTORY returning a promise, not an instance, so every site keeps its
+   * `await` exactly where it was — including the two inside swallowing
+   * `try/catch`es, whose resolution therefore stays INSIDE the catch as it was
+   * before. An instance would hoist the resolution to registration and change
+   * when (and whether) a Redis outage surfaces.
+   */
+  readonly redis: () => Promise<MeRouteRedisClient>;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface MeRoutesOptions {
+  readonly deps?: Partial<MeRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction this file did inline. */
+function defaultMeRouteDeps(): MeRouteDeps {
+  return {
+    customerService: () => createCustomerService(),
+    orderQueryService: () => createOrderQueryService(),
+    loyaltyService: () => createLoyaltyService(),
+    redis: () => getRedisClient(),
+  };
+}
+
+function resolveMeRouteDeps(options?: MeRoutesOptions): MeRouteDeps {
+  return { ...defaultMeRouteDeps(), ...(options?.deps ?? {}) };
+}
+
 // ── Plugin ─────────────────────────────────────────────────────────────────────
 
-export async function meRoutes(server: FastifyInstance): Promise<void> {
+export async function meRoutes(
+  server: FastifyInstance,
+  options?: MeRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so nothing is
+  // constructed here — see the MeRouteDeps block above.
+  const deps = resolveMeRouteDeps(options);
 
   // ── GET /api/me/data ────────────────────────────────────────────────────────
 
@@ -263,7 +426,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const customerId = request.customerId!;
-      const balance = await createLoyaltyService().getBalance(customerId);
+      const balance = await deps.loyaltyService().getBalance(customerId);
       return reply.send({
         stamps: balance.stamps,
         stampsNeeded: balance.stampsNeeded,
@@ -338,7 +501,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         executor: async () => {
           // EXECUTE: persist via the bare service method (the sanctioned executor
           // for the envelope wrapper). Adjudication already ran in runCustomerIntent.
-          persistedPrefs = await createCustomerService().updatePreferences(customerId, {
+          persistedPrefs = await deps.customerService().updatePreferences(customerId, {
             allergenExclusions: [...body.allergenExclusions],
             ...(body.dietaryFlags ? { dietaryRestrictions: [...body.dietaryFlags] } : {}),
             ...(body.favoriteCategories ? { favoriteCategories: [...body.favoriteCategories] } : {}),
@@ -362,7 +525,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         // refresh failure must not fail the request (TTL bounds staleness).
         if (persistedPrefs !== null) {
           try {
-            const redis = await getRedisClient();
+            const redis: ProfileCacheRefreshRedis = await deps.redis();
             const profileKey = rk(`customer:profile:${customerId}`);
             await redis.hSet(profileKey, "preferences", JSON.stringify(persistedPrefs));
             await redis.expire(profileKey, PROFILE_TTL_SECONDS);
@@ -427,7 +590,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         reply.code(403).send({ statusCode: 403, error: "Forbidden", message });
 
       // Owner-scoped read: null for a non-owner / unattributed order (Inv 2).
-      const order = await createOrderQueryService().getById(orderId, { customerId });
+      const order = await deps.orderQueryService().getById(orderId, { customerId });
       if (!order) {
         return refuse403("Pedido não encontrado para esta conta.");
       }
@@ -508,7 +671,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       );
 
       // Keep the rate-limit guard live: project the last-update epoch from Redis.
-      const redis = await getRedisClient();
+      const redis: ProfileUpdateRateRedis = await deps.redis();
       const lastRaw = await redis.get(profileLastUpdateKey(customerId));
       const lastProfileUpdateAt = lastRaw ? Number(lastRaw) : null;
 
@@ -540,7 +703,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         state,
         policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
         executor: async () => {
-          await createCustomerService().updateProfile(customerId, {
+          await deps.customerService().updateProfile(customerId, {
             ...(body.name === undefined ? {} : { name: body.name }),
             ...(body.email === undefined ? {} : { email: body.email }),
           });
@@ -608,7 +771,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const customerId = request.customerId!;
-      const addresses = await createCustomerService().listAddresses(customerId);
+      const addresses = await deps.customerService().listAddresses(customerId);
       return reply.send({ addresses });
     },
   );
@@ -657,7 +820,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         nonce: deriveMeNonce(idempotencyKey),
         customerId,
       });
-      const svc = createCustomerService();
+      const svc = deps.customerService();
       let created: Awaited<ReturnType<typeof svc.addAddress>> | undefined;
       const out = await runCustomerIntent({
         envelope,
@@ -724,7 +887,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         state: buildCustomerAuthState(customerId),
         policy: customerOnboardingPolicyBundle as unknown as Parameters<typeof runCustomerIntent>[0]["policy"],
         executor: async () => {
-          const r = await createCustomerService().removeAddress(customerId, addressId);
+          const r = await deps.customerService().removeAddress(customerId, addressId);
           removedCount = r.count;
           return r;
         },
@@ -794,7 +957,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
 
       // Load the customer's phone for Twilio. We do this AFTER auth so
       // the JWT cookie has been validated upstream.
-      const customerSvc = createCustomerService();
+      const customerSvc = deps.customerService();
       let phone: string;
       try {
         const customer = await customerSvc.getById(customerId);
@@ -901,7 +1064,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
       }
 
       // Look up phone for Twilio Verify.
-      const customerSvc = createCustomerService();
+      const customerSvc = deps.customerService();
       let phone: string;
       try {
         const customer = await customerSvc.getById(customerId);
@@ -1059,7 +1222,11 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
           | { code: "quota_exceeded" | "collision"; message: string }
           | null = null;
         try {
-          const redis = await getRedisClient();
+          // F-22 — composition root: proves the client can serve the park
+          // path's atomicity (Lua CAD release + atomic quota check-and-incr)
+          // and fails CLOSED here if it cannot. The catch below turns that
+          // into the same 503 + pt-BR refusal a park failure already produces.
+          const redis = await getParkRedisCapabilities();
           const ttlSeconds = ANONYMIZE_GRACE_TTL_SECONDS + 60;
           const parkResult = await parkDeferredIntentWithNxGuard({
             envelope: {
@@ -1494,7 +1661,7 @@ export async function meRoutes(server: FastifyInstance): Promise<void> {
         // intent (cancel) is honored at the route layer.
         await clearPendingDeletion(customerId);
         try {
-          const redis = await getRedisClient();
+          const redis: PendingDeletionClearRedis = await deps.redis();
           await redis.del(rk(`defer:pending:${customerId}`));
         } catch {
           // Best-effort — sweeper will clean it up eventually.

@@ -36,17 +36,42 @@ import { logger } from "../lib/logger.js";
 import {
   decideRenderPrecedence,
   type RenderPrecedenceContext,
+  type RenderPrecedenceSignals,
 } from "./claims-render-precedence.js";
 import {
   type ActiveResourceOwnership,
   checkRequiredClaimCompleteness,
   classifyRequestSpans,
   decomposeRequiredClaims,
-  isAllergenFamilyAsk,
+  isCouponValidityAsk,
+  isDeliveryCoverageAsk,
+  isDietQualifiedAsk,
   isMedicalEmergencyAsk,
 } from "./required-claim-decomposer.js";
 import { PROVABLY_EMPTY_KIND } from "./ibatexas-claims-kernel-deps.js";
-import { render } from "./renderer-from-claims.js";
+import { render, type RenderedLine, type RenderResult } from "./renderer-from-claims.js";
+import {
+  REGISTRY_SPECS,
+  type RegistryClaimSpec,
+  type RegistryClaimType,
+} from "./claim-registry.js";
+import {
+  SAFE_UNKNOWN_ALLERGEN_TEMPLATE,
+  renderPropositionFreeText,
+  type Template,
+} from "./slot-grammar.js";
+
+/**
+ * LE2-012 — the CUSTOMER-SCOPED registry types, derived from the ONE source of
+ * truth (`REGISTRY_SPECS[type].customerScoped`) so a future customer-scoped type
+ * is covered automatically. Consumed ONLY by the
+ * {@link IbatexasClaimsRendererOptions.customerScopedCompanionsApply} gate below.
+ */
+const CUSTOMER_SCOPED_REQUIRED_TYPES: ReadonlySet<string> = new Set(
+  Object.entries(REGISTRY_SPECS)
+    .filter(([, spec]) => spec.customerScoped)
+    .map(([type]) => type),
+);
 
 /** De-dupe a type-name list, preserving first-seen order (deterministic). */
 function distinctTypes(types: readonly string[]): string[] {
@@ -89,6 +114,46 @@ function distinctTypes(types: readonly string[]): string[] {
  * `turnId` field WHEN PRESENT; absent (seam unwired / pre-0.8.0) → the field is
  * omitted → byte-identical to the pre-BKL-117 log line.
  */
+/**
+ * RCA-legibility — pair a turn's `ClaimsKernelResult` with its turnId so
+ * {@link emitRenderPrecedence} can stamp the join key. handleTurn passes the SAME
+ * `claims` object first to the renderer (which receives `ClaimsRenderContext.turnId`)
+ * and then to the precedence seam (whose published ctx carries no turnId — the
+ * claustrum seam-bump this used to wait on). Keyed on the object, not a scalar
+ * stash, so interleaved concurrent turns can never cross-attribute; WeakMap, so a
+ * finished turn's entry is collectable with the result itself.
+ */
+const turnIdByClaims = new WeakMap<ClaimsKernelResult, string>();
+
+/**
+ * RCA-legibility — the "why these exact words" half of the reply-provenance work:
+ * one observe-only line naming WHICH safe template voiced a non-RENDER terminal
+ * (`__SAFE_CLARIFY__`, the allergen/emergency/CEP/coupon variants, …). Only fires
+ * off the RENDER path — a VALIDATED_RENDER has no terminal template, and its
+ * provenance is already fully described by `claims.terminal`. PII-free: template
+ * id + terminal only, never the rendered text.
+ */
+function emitTemplateSelected(
+  result: RenderResult,
+  degraded: boolean,
+  turnId?: string,
+): void {
+  if (result.terminal === "RENDER") return;
+  const templateId =
+    result.lines.find((l) => l.kind === "TERMINAL")?.claimType ?? null;
+  logger.info(
+    {
+      component: "claims",
+      event: "claims.template_selected",
+      ...(turnId === undefined ? {} : { turnId }),
+      terminal: result.terminal,
+      templateId,
+      degradedFromRender: degraded,
+    },
+    `claims terminal template selected (${templateId ?? "?"})`,
+  );
+}
+
 function emitClaimsTerminal(
   claims: ClaimsKernelResult,
   degraded: boolean,
@@ -193,13 +258,6 @@ export function ownershipFromActiveResources(
 /** Construction opts for the ibatexas claims renderer. */
 export interface IbatexasClaimsRendererOptions {
   /**
-   * BKL-152-edge — set `true` ONLY where the adopter wired the RenderCarriersForTurn
-   * seam (claustrum-bootstrap), so the completeness gate can read the seam's
-   * clock-resolved `resolvedQueryDate` for the EXACT weekday==today STORE_OPEN_NOW
-   * decision. Default (unset / tests) → the pure #301 date-anchor rule, byte-identical.
-   */
-  readonly renderCarriersActive?: boolean;
-  /**
    * BKL-209 — a best-effort, fire-and-forget SAFETY sink invoked when the render
    * resolves to a medical-EMERGENCY ESCALATE (deterministic net + ESCALATE
    * terminal). The adapter never awaits it and swallows nothing of the returned
@@ -210,13 +268,43 @@ export interface IbatexasClaimsRendererOptions {
    * (a throw here would break the render); wire it to swallow its own errors.
    */
   readonly onSafetyEmergency?: (ctx: { readonly turnId?: string }) => void;
+  /**
+   * LE2-012 — the PLANE's validated-template table (customer ∪ plane). Defaults to
+   * the customer grammar, so every existing composition is byte-identical.
+   */
+  readonly templates?: Readonly<Record<string, Template>>;
+  /**
+   * LE2-012 — does the §O#15 required-claim gate's CUSTOMER-SCOPED companion set
+   * apply on this plane? Default `true` (the customer plane — byte-identical).
+   *
+   * The OPS plane passes `false`. Its principal is a STAFF actor (`admin:<staffId>`)
+   * who, by construction, owns NO customer order / payment / reservation / cart —
+   * so every `customerScoped` companion the customer span classifier force-requires
+   * is CATEGORICALLY unsatisfiable there. Left applying, the classifier's keyword
+   * nets fire on ordinary STORE-LEVEL staff questions ("quantos pedidos hoje?" trips
+   * ORDER_STATUS_Q; "quais reservas hoje?" trips RESERVATION_STATUS_Q) and the gate
+   * degrades an otherwise-VALIDATED ops render to UNKNOWN for a companion that could
+   * never have resolved.
+   *
+   * SOUNDNESS: this only ever REMOVES a required companion — it adds no claim, sets
+   * no verdict and grants no prose authority. Every rendered proposition still comes
+   * from an independently-VALIDATED claim (Inv 6), and a dropped companion is a
+   * claim about a CUSTOMER's own resource, which is not a half of the staff
+   * question being answered. BOUNDED RESIDUAL, stated openly: a MIXED staff turn
+   * ("quantos pedidos hoje? e o pedido #4242 já saiu?") renders the store-level half
+   * without an honest UNKNOWN for the owner-scoped half — that half is answered on
+   * the ops plane by the deterministic ops read/verb roster, never by a
+   * customer-scoped claim, so no customer-scoped answer is being suppressed.
+   */
+  readonly customerScopedCompanionsApply?: boolean;
 }
 
 export function createIbatexasClaimsRenderer(
   opts?: IbatexasClaimsRendererOptions,
 ): ClaimsRendererPort {
-  const renderCarriersActive = opts?.renderCarriersActive === true;
   const onSafetyEmergency = opts?.onSafetyEmergency;
+  const templates = opts?.templates;
+  const customerScopedCompanionsApply = opts?.customerScopedCompanionsApply !== false;
   return {
     render(
       claims: ClaimsKernelResult,
@@ -226,19 +314,22 @@ export function createIbatexasClaimsRenderer(
       // the #8 ownership signal (provable-empty sentinels on `activeResources`) drops
       // an ownership-gated companion the customer PROVABLY cannot have; undefined
       // (seam unwired) keeps the pre-#8 over-including behavior byte-identical.
-      // BKL-152-edge: the dateAnchor signal (seam-active + the 0.8.0 clock-resolved
-      // resolvedQueryDate) makes the date-anchor STORE_OPEN_NOW suppression exact on
-      // weekday==today; seam-inactive falls back to the pure #301 rule.
-      const required = decomposeRequiredClaims(
+      // F-12: this gate takes NO clock. It calls the same 2-arg decomposition the
+      // claim planner and the classify-only gate call, so the required set it checks
+      // completeness against is the same set the other two built candidates for — by
+      // construction, not by convention. See `decomposeRequiredClaims`'s header for
+      // the weekday==today degrade the old clock-aware third argument caused.
+      const decomposed = decomposeRequiredClaims(
         classifyRequestSpans(context?.requestText ?? ""),
         ownershipFromActiveResources(context?.activeResources),
-        {
-          seamActive: renderCarriersActive,
-          ...(context?.resolvedQueryDate === undefined
-            ? {}
-            : { resolvedQueryDate: context.resolvedQueryDate }),
-        },
       );
+      // LE2-012 — on a plane whose actor owns no customer resources (ops), drop the
+      // CUSTOMER-SCOPED companions the customer span classifier force-required. See
+      // {@link IbatexasClaimsRendererOptions.customerScopedCompanionsApply}: removal
+      // only, never an addition; the customer plane keeps the set verbatim.
+      const required = customerScopedCompanionsApply
+        ? decomposed
+        : new Set([...decomposed].filter((t) => !CUSTOMER_SCOPED_REQUIRED_TYPES.has(t)));
       // §O#15 completeness reads a per-TYPE verdict map. When one turn resolves
       // MULTIPLE claims of the SAME type (e.g. a multi-order request that binds two
       // ORDER_FULFILLMENT_STAGE instances to distinct owned subjects), a later
@@ -266,11 +357,19 @@ export function createIbatexasClaimsRenderer(
       // reads only structural identity and never the rendered text. BKL-117 — thread
       // the turnId (0.8.0 ClaimsRenderContext) so the terminal joins to turn_trace.
       emitClaimsTerminal(claims, degrade, context?.turnId);
+      // RCA-legibility — pair this claims object with its turnId for the precedence
+      // emitter (handleTurn hands it the SAME object right after this render).
+      if (context?.turnId !== undefined) turnIdByClaims.set(claims, context.turnId);
 
       // BKL-209 — deterministic medical-emergency detection (the SAME net the
       // planner uses to force the §O#9 ESCALATE), for the emergency template +
       // the staff-surface sink. Absent requestText → false → byte-identical.
       const emergencyAsk = isMedicalEmergencyAsk(context?.requestText ?? "");
+      // BKL-270 — the DIET net (allergen family ∪ the non-allergen conditions:
+      // diabetes/sugar, celiac, intolerance). Hoisted like `emergencyAsk` above
+      // because it is now needed TWICE: once for the abstain copy selector, and once
+      // for the answer-with-abstention append below.
+      const dietAsk = isDietQualifiedAsk(context?.requestText ?? "");
       const result = render(
         // inv.17 — the renderer's REQUIRED input is the kernel-MINTED CanonicalClaim
         // set (`renderableCanonical`, 1:1 with `renderable`), NOT the raw renderable
@@ -286,15 +385,36 @@ export function createIbatexasClaimsRenderer(
         // specific handles. Absent → the generic clarify (byte-identical). Only ever
         // voiced on a CLARIFY terminal; ignored on every other terminal.
         context?.disambiguationCandidates ?? [],
-        // BKL-184 — an allergen-family ask landing on UNKNOWN renders the
+        // BKL-184 — a dietary ask landing on UNKNOWN renders the
         // abstain-plus-handoff-offer variant (the classifier's own net decides;
         // absent requestText → false → generic UNKNOWN, byte-identical).
-        isAllergenFamilyAsk(context?.requestText ?? ""),
+        //
+        // BKL-270 WIDENED this from `isAllergenFamilyAsk` to the diet net, and the
+        // reason is not symmetry: the READ guard now abstains for diabetes and celiac
+        // too, so leaving the COPY on the narrow net would hand a diabetic the generic
+        // "Não localizei essa informação confirmada agora" with NO handoff offer —
+        // strictly worse than the allergen path, and a regression introduced by a
+        // safety fix. The gate stays at resolution; only the copy selector widens,
+        // which keeps the ruling's "allergenAsk stays cosmetic" constraint intact.
+        dietAsk,
         // BKL-209 — a medical-emergency ask landing on ESCALATE renders the
         // emergency safe variant (deterministic net; absent requestText → false →
         // generic escalate, byte-identical).
         emergencyAsk,
+        // LE2-012 — the PLANE's template table (customer ∪ plane). `undefined`
+        // selects `render`'s own default (the customer grammar) — byte-identical.
+        templates,
+        // LE2-002 — a delivery-COVERAGE ask landing on CLARIFY renders the
+        // ask-for-the-CEP variant (the classifier's own net decides; absent
+        // requestText → false → generic clarify, byte-identical).
+        isDeliveryCoverageAsk(context?.requestText ?? ""),
+        // LE2-019 — a coupon-VALIDITY ask landing on CLARIFY renders the
+        // ask-for-the-code variant (the classifier's own net decides; absent
+        // requestText → false → generic clarify, byte-identical).
+        isCouponValidityAsk(context?.requestText ?? ""),
       );
+      // RCA-legibility — name the safe template that voiced a non-RENDER terminal.
+      emitTemplateSelected(result, degrade, context?.turnId);
       // BKL-209 — fire the best-effort SAFETY sink when the turn resolved to a
       // medical-emergency ESCALATE, so staff are notified ("vou avisar nossa
       // equipe" is TRUE). Fire-and-forget + never throws into the render path.
@@ -305,19 +425,68 @@ export function createIbatexasClaimsRenderer(
           // Observe-side channel — a sink failure never breaks the customer render.
         }
       }
-      return { text: result.text };
+      // BKL-270 — `answer-with-abstention`: the customer gets BOTH halves.
+      //
+      // CART_CONTENTS is the only family with this posture (owner ruling
+      // 2026-07-27). The cart is the customer's OWN prior act, so refusing to show
+      // it because they mentioned an allergy is a severe degradation for exactly the
+      // customer who most needs to check it — but returning it as the answer to "o
+      // que tem no meu carrinho QUE SEJA SEM GLÚTEN?" would assert those items are
+      // safe, which is BKL-143's forbidden implication about food they are about to
+      // eat. So: render the fact, and refuse the FILTER in the same breath.
+      //
+      // This is a NEW composition shape for the claims renderer, and it is worth
+      // being explicit about that: every other safety variant (BKL-184 allergen,
+      // BKL-209 emergency, LE2-002 CEP, LE2-019 coupon) is a template REPLACEMENT
+      // reachable only on a non-RENDER terminal — `renderRenderables` forks on
+      // `terminal !== "RENDER"` before any of them. None of them can express
+      // "answer AND abstain", which is why the append lives here in the adapter
+      // rather than in the renderer core: the kernel and `renderer-from-claims.ts`
+      // stay untouched, and the appended sentence is the RATIFIED BKL-184 copy read
+      // from the same template constant, never a second hand-typed literal that
+      // could drift from it.
+      //
+      // Gated on all three of: the turn named a diet, the turn actually RENDERED,
+      // and a line of an `answer-with-abstention` type really asserted (read off
+      // `result.lines`, so it is PROVEN rather than inferred from the claim set).
+      const text =
+        dietAsk && result.terminal === "RENDER" && rendersAnswerWithAbstention(result.lines)
+          ? `${result.text} ${renderPropositionFreeText(SAFE_UNKNOWN_ALLERGEN_TEMPLATE)}`
+          : result.text;
+      return { text };
     },
   };
+}
+
+/**
+ * BKL-270 — did any line in this render ASSERT a claim whose registry spec declares
+ * `dietaryPosture: "answer-with-abstention"`?
+ *
+ * Registry-driven rather than a hardcoded `=== "CART_CONTENTS"`: a second family
+ * given this posture is covered the moment it declares one, which is the property
+ * Option C exists to buy. Checks `kind === "ASSERTION"` specifically — an ABSTENTION
+ * or UNFILLABLE line for the same type means the fact did NOT reach the customer, so
+ * there is nothing to qualify and the generic abstain already stands on its own.
+ */
+function rendersAnswerWithAbstention(lines: readonly RenderedLine[]): boolean {
+  return lines.some((line) => {
+    if (line.kind !== "ASSERTION" || line.claimType === undefined) return false;
+    const spec: RegistryClaimSpec | undefined = REGISTRY_SPECS[
+      line.claimType as RegistryClaimType
+    ];
+    return spec?.kind === "read_claim" && spec.dietaryPosture === "answer-with-abstention";
+  });
 }
 
 /**
  * BKL-155/153 — emit the ONE structured `claims.render_precedence` signal per turn
  * the 0.7.0 precedence seam is consulted (i.e. a claims result exists AND
  * `claimsRenderer` is wired — the exact `handleTurn` 6a gate that also emits the
- * companion `claims.terminal`). The two lines fire adjacently for the SAME turn, so
- * `kernelTerminal` is the practical JOIN KEY across them (the published seam ctx
- * carries no turnId — same limitation `claims.terminal` documents; closing it needs
- * a claustrum change to thread turnId into the seam context).
+ * companion `claims.terminal`). The published seam ctx still carries no turnId, but
+ * the line now stamps one via {@link turnIdByClaims} — the renderer pairs the
+ * `claims` object with the turnId it received, and handleTurn hands this seam the
+ * SAME object — so the id join to `turn_trace`/`claims.terminal` no longer needs
+ * the adjacency/`kernelTerminal` heuristic (kept as fields for older logs).
  *
  * OBSERVE-ONLY + PII-FREE (same contract as {@link emitClaimsTerminal}): it reads
  * only the turn's STRUCTURAL identity — the seam decision, the deciding rule
@@ -328,11 +497,20 @@ export function createIbatexasClaimsRenderer(
 function emitRenderPrecedence(
   ctx: RenderPrecedenceContext,
   verdict: ReturnType<typeof decideRenderPrecedence>,
+  plane: string,
 ): void {
+  const turnId = turnIdByClaims.get(ctx.claims);
   logger.info(
     {
       component: "claims",
       event: "claims.render_precedence",
+      // RCA-legibility — the turn_trace join key, recovered via the renderer's
+      // {@link turnIdByClaims} pairing; omitted when the renderer saw no turnId.
+      ...(turnId === undefined ? {} : { turnId }),
+      // LE2 decision 6 — BOTH planes now consult this seam, so the line must say
+      // WHICH one decided (otherwise a converged-ops verdict is indistinguishable
+      // from a customer one in the same log stream).
+      plane,
       // The seam outcome + WHICH lattice rule produced it (rules 1-4).
       decision: verdict.decision,
       mechanism: verdict.mechanism,
@@ -346,24 +524,66 @@ function emitRenderPrecedence(
   );
 }
 
+/** Construction opts for the ibatexas render-precedence seam. */
+export interface IbatexasClaimsRenderPrecedenceOptions {
+  /**
+   * Which plane composed this seam — an observability label only (it appears on the
+   * `claims.render_precedence` line and steers NO decision). Defaults to
+   * `"customer"`, so the customer wiring is byte-identical apart from the new field.
+   */
+  readonly plane?: string;
+  /**
+   * LE2 decision 6 — resolve the per-turn
+   * {@link RenderPrecedenceSignals.deterministicReadRender} signal at decision time.
+   * The OPS composition passes a closure over its per-turn read-capture buffer, so a
+   * degenerate claims render never clobbers the deterministic BKL-100 read answer.
+   * Absent (customer plane) → no signal → the lattice is byte-identical.
+   */
+  readonly hasDeterministicReadRender?: () => boolean;
+  /**
+   * BKL-262 Stage 1 — enable the WRITE-TWIN READ RESCUE (lattice rule 2a) on this
+   * plane. The OPS composition passes `true`; the customer plane passes nothing, so
+   * its verdicts are byte-identical. See `ops-write-twin-rescue.ts` for the declared
+   * twin table and the five-conjunct predicate.
+   */
+  readonly writeTwinReadRescue?: boolean;
+}
+
 /**
  * Build the ibatexas `ClaimsRenderPrecedence` seam (@claustrum/core 0.7.0). PAIRED
  * with {@link createIbatexasClaimsRenderer}: `buildClaimsSeams` wires the two
- * together so the RENDER-vs-DRAFT decision is only ever consulted on the claims-ON
- * customer plane where the renderer also runs. handleTurn calls this AFTER invoking
- * the render (so `claims.terminal` telemetry + observability side-effects already
+ * together so the RENDER-vs-DRAFT decision is only ever consulted on a claims-ON
+ * plane where the renderer also runs. handleTurn calls this AFTER invoking the
+ * render (so `claims.terminal` telemetry + observability side-effects already
  * fired); the seam gates ONLY whether that render OVERWRITES the responder draft.
  *
  * Thin bridge: it evaluates the PURE {@link decideRenderPrecedence} lattice, emits
  * the observe-only `claims.render_precedence` telemetry, and returns the seam
  * `"render" | "keep_draft"`. All policy lives in the pure lattice; this adds only
- * the side-channel log. Absent seam (flag OFF) → core defaults to "render" →
- * byte-identical to 0.6.0's unconditional supersession.
+ * the side-channel log and (LE2 decision 6) the per-turn plane SIGNAL lookup. Absent
+ * seam (flag OFF) → core defaults to "render" → byte-identical to 0.6.0's
+ * unconditional supersession.
+ *
+ * LE2 decision 6 — the OPS conductor composes this SAME factory (it no longer
+ * "keeps its own render path"): one lattice, one telemetry line, two planes.
  */
-export function createIbatexasClaimsRenderPrecedence(): ClaimsRenderPrecedence {
+export function createIbatexasClaimsRenderPrecedence(
+  opts?: IbatexasClaimsRenderPrecedenceOptions,
+): ClaimsRenderPrecedence {
+  const plane = opts?.plane ?? "customer";
+  const hasDeterministicReadRender = opts?.hasDeterministicReadRender;
+  const writeTwinReadRescue = opts?.writeTwinReadRescue === true;
   return (ctx) => {
-    const verdict = decideRenderPrecedence(ctx);
-    emitRenderPrecedence(ctx, verdict);
+    const signals: RenderPrecedenceSignals = {
+      ...(hasDeterministicReadRender === undefined
+        ? {}
+        : { deterministicReadRender: hasDeterministicReadRender() }),
+      // BKL-262 Stage 1 — omitted entirely unless the plane opted in, so the customer
+      // signal set stays byte-identical to the pre-BKL-262 shape.
+      ...(writeTwinReadRescue ? { writeTwinReadRescue: true } : {}),
+    };
+    const verdict = decideRenderPrecedence(ctx, signals);
+    emitRenderPrecedence(ctx, verdict, plane);
     return verdict.decision;
   };
 }

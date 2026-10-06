@@ -1,0 +1,79 @@
+{
+  "fixture": "pairing-graph.unknown-pairing-relation",
+  "targets": "pairing-graph/unknown-pairing-relation",
+  "ok": false,
+  "capabilities": 1,
+  "externalReferences": 0,
+  "aliases": 0,
+  "workflows": 0,
+  "pairings": 1,
+  "rulesEmitted": [
+    "pairing-graph/unknown-pairing-relation"
+  ],
+  "passes": [
+    {
+      "pass": "referential-integrity",
+      "checked": 2,
+      "diagnostics": 0
+    },
+    {
+      "pass": "slot-dataflow",
+      "checked": 22,
+      "diagnostics": 0
+    },
+    {
+      "pass": "conversation-projection",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "alias-gazetteer",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "safety-implication-edges",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "terminal-coverage",
+      "checked": 3,
+      "diagnostics": 0
+    },
+    {
+      "pass": "external-references",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-shape",
+      "checked": 1,
+      "diagnostics": 0
+    },
+    {
+      "pass": "workflow-runtime-shape",
+      "checked": 0,
+      "diagnostics": 0
+    },
+    {
+      "pass": "pairing-graph",
+      "checked": 5,
+      "diagnostics": 1
+    }
+  ],
+  "diagnostics": [
+    {
+      "pass": "pairing-graph",
+      "rule": "unknown-pairing-relation",
+      "severity": "error",
+      "object": "pairing:conformance-item-sujeito",
+      "field": "relation",
+      "message": "\"goes-nicely-with\" is not a pairing relation (expected one of pairs-with, substitutes-for). The relation selects which sentence the read renders — 'vai bem com' invites an addition, 'no lugar' answers an absence — so an unknown one is an edge with no way to be spoken. Adding a relation is a template change and a claim-type conversation, not a row.",
+      "reference": "goes-nicely-with"
+    }
+  ],
+  "formatted": [
+    "pairing-graph/unknown-pairing-relation: pairing:conformance-item-sujeito · relation — \"goes-nicely-with\" is not a pairing relation (expected one of pairs-with, substitutes-for). The relation selects which sentence the read renders — 'vai bem com' invites an addition, 'no lugar' answers an absence — so an unknown one is an edge with no way to be spoken. Adding a relation is a template change and a claim-type conversation, not a row."
+  ]
+}

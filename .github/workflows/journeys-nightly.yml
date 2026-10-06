@@ -99,7 +99,9 @@ jobs:
           echo "${PROCESS_COMPOSE_SHA256}  /tmp/pc.tar.gz" | sha256sum -c -
           tar -xzf /tmp/pc.tar.gz -C /tmp process-compose
           sudo mv /tmp/process-compose /usr/local/bin/process-compose
-          process-compose version
+          # BKL-288: `-L` — a bare `version` truncates process-compose's shared
+          # per-user log, which the test-stack supervisor also used to write to.
+          process-compose version -L /tmp/pc-version-smoke.log
 
       # gen-env-test.sh generates EVERY secret per run (JWTs, DB/Redis
       # passwords, AUDIT_REDACT_SECRET, the IBX_TEST_FINGERPRINT, ...) and

@@ -22,43 +22,7 @@
         "capability",
         "payload"
       ],
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "capability": {
-                "const": "order.status.transition"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "payload": {
-                "type": "object",
-                "properties": {
-                  "newStatus": {
-                    "type": "string",
-                    "enum": [
-                      "confirmed",
-                      "preparing",
-                      "ready",
-                      "in_delivery",
-                      "delivered",
-                      "canceled"
-                    ],
-                    "description": "Status alvo — EXATAMENTE um destes valores em inglês (contrato fechado; o guard não normaliza)."
-                  }
-                },
-                "required": [
-                  "newStatus"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        }
-      ]
+      "additionalProperties": false
     }
   },
   "personaExcerpt": "Em order.status.transition, preencha APENAS `newStatus` — NUNCA um campo `orderId` (o\nsistema sempre identifica o pedido automaticamente: o último pedido ativo). Use\nEXATAMENTE um destes valores em inglês — copie a string, NÃO traduza nem invente:\nconfirmed, preparing, ready, in_delivery, delivered, canceled. Mapeie a fala do\nfuncionário para o valor: aceitar/confirmar => confirmed; mandar preparar/pra cozinha =>\npreparing; ficou pronto => ready; saiu pra entrega => in_delivery; entregue => delivered;\ncancelar => canceled. Ex.: \"muda o status do último pedido pra pronto\" =>\norder.status.transition com payload { newStatus: \"ready\" } (sem `orderId`) — o sistema\nvai pedir confirmação antes de aplicar, porque o pedido foi identificado automaticamente."

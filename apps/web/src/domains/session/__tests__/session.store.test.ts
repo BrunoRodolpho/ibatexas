@@ -101,6 +101,37 @@ describe('initSession', () => {
   })
 })
 
+// ── resetSession (BKL-286) ──────────────────────────────────────────────
+
+describe('resetSession', () => {
+  it('ALWAYS rotates the session ID, unlike initSession', () => {
+    useSessionStore.setState({ sessionId: 'aabbccdd-1122-3344-5566-778899aabbcc' })
+    mockRandomUUID.mockReturnValueOnce('12121212-3434-5656-7878-909090909090')
+
+    useSessionStore.getState().resetSession()
+
+    expect(useSessionStore.getState().sessionId).toBe('12121212-3434-5656-7878-909090909090')
+  })
+
+  it('leaves auth state alone — starting a new conversation is not a logout', () => {
+    useSessionStore.setState({
+      sessionId: 'aabbccdd-1122-3344-5566-778899aabbcc',
+      customerId: 'cus_1',
+      userType: 'customer',
+      permissions: ['orders:read'],
+    })
+    mockRandomUUID.mockReturnValueOnce('55555555-6666-7777-8888-999999999999')
+
+    useSessionStore.getState().resetSession()
+
+    const state = useSessionStore.getState()
+    expect(state.sessionId).toBe('55555555-6666-7777-8888-999999999999')
+    expect(state.customerId).toBe('cus_1')
+    expect(state.userType).toBe('customer')
+    expect(state.permissions).toEqual(['orders:read'])
+  })
+})
+
 // ── login ───────────────────────────────────────────────────────────────
 
 describe('login', () => {

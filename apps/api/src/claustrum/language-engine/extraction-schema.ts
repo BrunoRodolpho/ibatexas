@@ -62,7 +62,23 @@ export interface ExtractionFieldSpec {
   readonly required: boolean;
 }
 
-/** A concrete worked example pairing an utterance with its expected payload. */
+/**
+ * A concrete worked example pairing an utterance with its expected payload.
+ *
+ * AUTHOR-FACING ONLY — this never reaches the model. {@link toPayloadJsonSchema}
+ * is the sole schema→wire converter and it builds the advertised object from
+ * `schema.fields` alone; `example` is not read on any production path (F-65
+ * measured it: the only reads repo-wide are in `__tests__`, and rendering the
+ * wire schema for reservation.create/modify and check_availability contains
+ * none of their example literals). It documents intent for the next author and
+ * gives the per-schema unit tests something to pin.
+ *
+ * Two consequences worth keeping straight:
+ *  - A DATE in an `example` cannot bias extraction — it is not in the prompt.
+ *    Do not "fix" a stale one; it is illustrative by construction.
+ *  - A field `description` is the opposite: it IS copied onto the wire, so a
+ *    date there is live prompt text AND a digested parse-cache key component.
+ */
 export interface ExtractionSchemaExample {
   readonly utterance: string;
   readonly payload: Readonly<Record<string, unknown>>;

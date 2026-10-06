@@ -59,7 +59,13 @@ const OBSERVED = [
   { intentKind: "order.cart.ensure", decision: "EXECUTE" },
   { intentKind: "order.item.add", decision: "EXECUTE" }, // makes the REFUSE optional
   { intentKind: "order.checkout.create", decision: "EXECUTE" },
-  { intentKind: "order.cancel", decision: "REQUEST_CONFIRMATION" },
+  // LE2-024 — was `order.cancel`. It left the chat tier with the ad-hoc
+  // paid-cancel retirement, and the journey lint correctly began reporting
+  // `expectation_unreachable` ("not producible by any declared act surface")
+  // for a chat journey expecting it — the gate doing its job. Re-pointed at a
+  // kind that is still chat-producible; nothing here is about cancel semantics,
+  // this row exists to give the scaffolder a REQUEST_CONFIRMATION tuple.
+  { intentKind: "order.item.update", decision: "REQUEST_CONFIRMATION" },
 ]
 
 // ── Pure scaffolder ──────────────────────────────────────────────────────────
@@ -107,7 +113,7 @@ describe("scaffoldJourneyFromAudit", () => {
       { intentKind: "order.cart.ensure", decision: "EXECUTE" },
       { intentKind: "order.item.add", decision: "EXECUTE" },
       { intentKind: "order.checkout.create", decision: "EXECUTE" },
-      { intentKind: "order.cancel", decision: "REQUEST_CONFIRMATION" },
+      { intentKind: "order.item.update", decision: "REQUEST_CONFIRMATION" },
     ])
   })
 
@@ -146,12 +152,12 @@ describe("scaffoldJourneyFromAudit", () => {
       sessionId: RAW_SESSION_ID,
       transcript: TRANSCRIPT,
       observed: [
-        { intentKind: "order.cancel", decision: "EXECUTE" },
+        { intentKind: "order.item.update", decision: "EXECUTE" },
         { intentKind: "order.status.transition", decision: "EXECUTE" },
       ],
     })
     expect(withInner.journey.expects).toEqual([
-      { intentKind: "order.cancel", decision: "EXECUTE" },
+      { intentKind: "order.item.update", decision: "EXECUTE" },
       { intentKind: "order.status.transition", decision: "EXECUTE", optional: true },
     ])
   })
@@ -203,12 +209,12 @@ describe("scaffold passes `ibx journey lint` (as blocked)", () => {
 describe("observedDecisionsFromRecords", () => {
   it("projects envelope.kind × decision.kind in order", () => {
     const records = [
-      { envelope: { kind: "order.cancel" }, decision: { kind: "REQUEST_CONFIRMATION" } },
-      { envelope: { kind: "order.cancel" }, decision: { kind: "EXECUTE" } },
+      { envelope: { kind: "order.item.update" }, decision: { kind: "REQUEST_CONFIRMATION" } },
+      { envelope: { kind: "order.item.update" }, decision: { kind: "EXECUTE" } },
     ] as unknown as Parameters<typeof observedDecisionsFromRecords>[0]
     expect(observedDecisionsFromRecords(records)).toEqual([
-      { intentKind: "order.cancel", decision: "REQUEST_CONFIRMATION" },
-      { intentKind: "order.cancel", decision: "EXECUTE" },
+      { intentKind: "order.item.update", decision: "REQUEST_CONFIRMATION" },
+      { intentKind: "order.item.update", decision: "EXECUTE" },
     ])
   })
 })
@@ -313,7 +319,7 @@ describe("scaffoldFromAuditSession", () => {
     const { pool, calls } = oracleDouble({
       auditRows: [
         auditRow(HASHED, "order.checkout.create", "EXECUTE", "2026-06-01T12:00:00.000Z"),
-        auditRow(HASHED, "order.cancel", "REQUEST_CONFIRMATION", "2026-06-01T12:01:00.000Z"),
+        auditRow(HASHED, "order.item.update", "REQUEST_CONFIRMATION", "2026-06-01T12:01:00.000Z"),
       ],
       transcriptRows: [
         { customerId: "cus-fixture-001", role: "user", content: "quero fechar o pedido" },
@@ -338,7 +344,7 @@ describe("scaffoldFromAuditSession", () => {
     expect(result.journey.params?.["authenticated"]).toBe(true)
     expect(result.journey.expects).toEqual([
       { intentKind: "order.checkout.create", decision: "EXECUTE" },
-      { intentKind: "order.cancel", decision: "REQUEST_CONFIRMATION" },
+      { intentKind: "order.item.update", decision: "REQUEST_CONFIRMATION" },
     ])
     expect(result.yaml).toContain(HASHED)
     expect(result.yaml).not.toContain(REDACT_SECRET)
@@ -357,7 +363,7 @@ describe("scaffoldFromAuditSession", () => {
 
   it("requires a transcript when audit rows exist (acts come from the user side)", async () => {
     const { pool } = oracleDouble({
-      auditRows: [auditRow(HASHED, "order.cancel", "EXECUTE", "2026-06-01T12:00:00.000Z")],
+      auditRows: [auditRow(HASHED, "order.item.update", "EXECUTE", "2026-06-01T12:00:00.000Z")],
       transcriptRows: [],
     })
     await expect(
@@ -367,7 +373,7 @@ describe("scaffoldFromAuditSession", () => {
 
   it("accepts an injected chat-dump transcript (Redis-only sessions)", async () => {
     const { pool } = oracleDouble({
-      auditRows: [auditRow(HASHED, "order.cancel", "REQUEST_CONFIRMATION", "2026-06-01T12:00:00.000Z")],
+      auditRows: [auditRow(HASHED, "order.item.update", "REQUEST_CONFIRMATION", "2026-06-01T12:00:00.000Z")],
       transcriptRows: [], // Postgres conversation row already expired/never written
     })
     const transcript = transcriptFromChatDumpJson(
@@ -377,7 +383,7 @@ describe("scaffoldFromAuditSession", () => {
     expect(result.chatActs).toBe(1)
     expect(result.journey.params?.["authenticated"]).toBe(false)
     expect(result.journey.expects).toEqual([
-      { intentKind: "order.cancel", decision: "REQUEST_CONFIRMATION" },
+      { intentKind: "order.item.update", decision: "REQUEST_CONFIRMATION" },
     ])
   })
 

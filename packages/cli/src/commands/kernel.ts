@@ -111,13 +111,25 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   // authoritative. The legacy `IBX_KERNEL_SHADOW` / `IBX_KERNEL_ENFORCE`
   // env-var surface and the `getKillSwitchState()` operator handle were
   // removed — there is no shadow / enforce / kill-switch state to query.
-  // NEW-P1-ENV: parseBoolEnv accepts the canonical truthy lexicon
-  // (true/1/yes/on, any case) and defaults to false for unset/typo
-  // inputs. The CLI agrees with the runtime sites that read these same
-  // env vars (kernel-bootstrap, intent-audit-wiring, intent-ledger).
-  const ledgerEnabled = parseBoolEnv(process.env.IBX_LEDGER_ENABLED, false)
-  const ledgerEnforce = parseBoolEnv(process.env.IBX_LEDGER_ENFORCE, false)
-  const ledgerFailOpen = parseBoolEnv(process.env.IBX_LEDGER_FAIL_OPEN, false)
+  //
+  // BKL-244: the same is true of the execution ledger, and this command
+  // used to deny it. It read IBX_LEDGER_ENABLED / IBX_LEDGER_ENFORCE /
+  // IBX_LEDGER_FAIL_OPEN — three vars that exist nowhere else in the repo
+  // (not in .env.example, not at any runtime site) and all defaulted to
+  // false, so `ibx kernel status` reported "enabled: não" on a healthy
+  // deployment whose ledger was in fact running. The ledger is ALWAYS-ON
+  // and FAIL-CLOSED per CLAUDE.md Hard Rule #9, wired unconditionally in
+  // apps/api/src/claustrum-bootstrap.ts (createRedisLedger, no env gate).
+  // The reads are gone; these constants are the runtime contract.
+  //
+  // Reported statically, without a Redis probe: `status` is a local,
+  // always-executable command, and the header comment on the
+  // @ibatexas/tools import documents how a real client.connect() on a CI
+  // runner hangs the hermetic tests. Ledger REACHABILITY is an api-side
+  // runtime concern — an outage surfaces as a `policy_not_ready` refusal
+  // (see docs/ops/runbooks/kernel-operations.md), not as CLI state.
+  const LEDGER_ALWAYS_ON = true
+  const LEDGER_FAIL_CLOSED = true
   // audit-2026-05-25 (I13): the IBX_AUDIT_POSTGRES_ENABLED env var was
   // deleted in the H2 cutover (audit-postgres is unconditionally part
   // of the sink fan-out per CLAUDE.md rule #9). The CLI's pre-cutover
@@ -138,9 +150,9 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
         kinds: [...KNOWN_INTENT_KINDS].sort((a, b) => a.localeCompare(b)),
       },
       ledger: {
-        enabled: ledgerEnabled,
-        enforce: ledgerEnforce,
-        failOpen: ledgerFailOpen,
+        alwaysOn: LEDGER_ALWAYS_ON,
+        failClosed: LEDGER_FAIL_CLOSED,
+        backend: "redis",
       },
       audit: {
         postgresEnabled,
@@ -173,9 +185,15 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   console.log()
 
   console.log(chalk.bold("── Execution Ledger ─────────────────────────────"))
-  console.log(`  enabled    : ${ledgerEnabled ? chalk.green("sim") : chalk.dim("não")}`)
-  console.log(`  enforce    : ${ledgerEnforce ? chalk.green("sim") : chalk.dim("não")}`)
-  console.log(`  fail-open  : ${ledgerFailOpen ? chalk.yellow("sim") : chalk.dim("não")}`)
+  console.log(`  estado     : ${chalk.green("sempre ativo")}  ${chalk.dim("(Hard Rule #9 — sem env-var, sem kill switch)")}`)
+  console.log(`  falha      : ${chalk.green("fail-closed")}  ${chalk.dim("(Redis indisponível ⇒ recusa, nunca bypass de dedup)")}`)
+  console.log(`  backend    : ${chalk.cyan("redis")}`)
+  console.log(
+    chalk.dim("  Conectividade não é checada aqui — uma queda do Redis aparece como"),
+  )
+  console.log(
+    chalk.dim("  recusa `policy_not_ready` na api (docs/ops/runbooks/kernel-operations.md)."),
+  )
   console.log()
 
   console.log(chalk.bold("── Audit sink ───────────────────────────────────"))
@@ -1845,6 +1863,22 @@ async function loadPacksForGovernance(
  * (JSON / full text). Returns true on a baseline mismatch. Shared by the pack
  * and the managed-agent loops so the comparison logic lives in one place.
  */
+/**
+ * BKL-268 — the pack-bom gate's terminal verdict goes to STDOUT (the report),
+ * never only to stderr, so a captured report can never read green while the
+ * exit code says red. Detail lines stay on stderr.
+ */
+function packBomVerdictFail(line: string): void {
+  console.log(chalk.red(`✗ ${line}`))
+  process.exitCode = 1
+}
+
+/**
+ * Report one component against the baseline. Returns the failure REASON
+ * (BKL-268: the reason is named in the terminal verdict, so the report on
+ * stdout states the failure instead of leaving it stranded on stderr), or
+ * `undefined` when the component matches.
+ */
 function reportBomDigest(
   packId: string,
   digest: string,
@@ -1852,44 +1886,45 @@ function reportBomDigest(
   json: boolean,
   bom: unknown,
   printFull: () => void,
-): boolean {
+): string | undefined {
   if (baseline === undefined) {
     if (json) {
       console.log(JSON.stringify(bom, null, 2))
     } else {
       printFull()
     }
-    return false
+    return undefined
   }
   const want = baseline[packId]
   if (want === undefined) {
     console.error(chalk.red(`✗ ${packId}: sem entrada na baseline`))
-    return true
+    return `${packId} (sem entrada na baseline)`
   }
   if (want === digest) {
     console.log(chalk.green(`✓ ${packId} → ${digest.slice(0, 16)}…`))
-    return false
+    return undefined
   }
   console.error(
     chalk.red(
       `✗ ${packId}: bomDigest divergente (baseline ${want.slice(0, 12)}…, atual ${digest.slice(0, 12)}…)`,
     ),
   )
-  return true
+  return `${packId} (bomDigest divergente)`
 }
 
-/** Generate + report the AI-BOM for every first-party pack. Returns true on a
- *  baseline mismatch. Mutates `digests` with each pack's digest. */
+/** Generate + report the AI-BOM for every first-party pack. Returns the list of
+ *  baseline-mismatch REASONS (empty ⇒ clean). Mutates `digests` with each
+ *  pack's digest. */
 async function appendPackBoms(
   packs: GovernancePack[],
   baseline: Record<string, string> | undefined,
   json: boolean,
   digests: Record<string, string>,
-): Promise<boolean> {
+): Promise<string[]> {
   const { generateAiBom, runConformance, scorePackHealth } = await import(
     "@adjudicate/conformance"
   )
-  let mismatch = false
+  const failures: string[] = []
   for (const pack of packs) {
     const conformance = runConformance(pack as never)
     const manifest = {
@@ -1915,7 +1950,7 @@ async function appendPackBoms(
       kernelVersion: KERNEL_VERSION,
     })
     digests[pack.id] = bom.bomDigest
-    const isMismatch = reportBomDigest(
+    const failure = reportBomDigest(
       pack.id,
       bom.bomDigest,
       baseline,
@@ -1933,30 +1968,29 @@ async function appendPackBoms(
         )
       },
     )
-    if (isMismatch) mismatch = true
+    if (failure !== undefined) failures.push(failure)
   }
-  return mismatch
+  return failures
 }
 
 /** Generate + report the AI-BOM for every managed agent, running the
- *  roster-drift gate first (fail-closed in every mode). Returns true on a
- *  baseline mismatch or roster drift. Mutates `digests`. */
+ *  roster-drift gate first (fail-closed in every mode). Returns the list of
+ *  baseline-mismatch / roster-drift REASONS (empty ⇒ clean). Mutates
+ *  `digests`. */
 async function appendAgentBoms(
   baseline: Record<string, string> | undefined,
   json: boolean,
   digests: Record<string, string>,
-): Promise<boolean> {
+): Promise<string[]> {
   const { AGENT_REGISTRY, agentRosterDrift, generateAgentAiBom } =
     await import("@ibatexas/agents")
-  let mismatch = false
+  const failures: string[] = []
   const driftFindings = agentRosterDrift()
-  if (driftFindings.length > 0) {
-    for (const f of driftFindings) {
-      console.error(
-        chalk.red(`✗ agent-roster drift [${f.agentId}] ${f.code}: ${f.detail}`),
-      )
-    }
-    mismatch = true
+  for (const f of driftFindings) {
+    console.error(
+      chalk.red(`✗ agent-roster drift [${f.agentId}] ${f.code}: ${f.detail}`),
+    )
+    failures.push(`agent-roster drift [${f.agentId}] ${f.code}`)
   }
   for (const def of AGENT_REGISTRY) {
     const bom = generateAgentAiBom(def, {
@@ -1965,7 +1999,7 @@ async function appendAgentBoms(
       kernelMinVersion: KERNEL_MIN_VERSION,
     })
     digests[bom.packId] = bom.bomDigest
-    const isMismatch = reportBomDigest(
+    const failure = reportBomDigest(
       bom.packId,
       bom.bomDigest,
       baseline,
@@ -1986,9 +2020,9 @@ async function appendAgentBoms(
         )
       },
     )
-    if (isMismatch) mismatch = true
+    if (failure !== undefined) failures.push(failure)
   }
-  return mismatch
+  return failures
 }
 
 async function runPackBom(opts: {
@@ -1999,8 +2033,9 @@ async function runPackBom(opts: {
   const packs = await loadPacksForGovernance(opts.pack)
   if (packs.length === 0) {
     const scope = opts.pack ? ` para ${opts.pack}` : ""
-    console.error(chalk.red(`Nenhum pack encontrado${scope}.`))
-    process.exitCode = 1
+    packBomVerdictFail(
+      `pack-bom: nenhum pack encontrado${scope} — verificação NÃO realizada.`,
+    )
     return
   }
 
@@ -2012,15 +2047,16 @@ async function runPackBom(opts: {
         string
       >
     } catch {
-      console.error(chalk.red(`Baseline ilegível: ${opts.verifyFile}`))
-      process.exitCode = 1
+      packBomVerdictFail(
+        `pack-bom: baseline ilegível: ${opts.verifyFile} — verificação NÃO realizada.`,
+      )
       return
     }
   }
 
   const json = opts.json === true
   const digests: Record<string, string> = {}
-  let mismatch = await appendPackBoms(packs, baseline, json, digests)
+  const failures = await appendPackBoms(packs, baseline, json, digests)
 
   // ── Managed agents (T3-3) ──────────────────────────────────────────────
   // The agent roster is part of the AI-BOM: each AgentDefinition in
@@ -2031,7 +2067,7 @@ async function runPackBom(opts: {
   // never be baselined or verified green). Skipped only under `--pack`,
   // which scopes the command to one pack explicitly.
   if (opts.pack === undefined) {
-    if (await appendAgentBoms(baseline, json, digests)) mismatch = true
+    failures.push(...(await appendAgentBoms(baseline, json, digests)))
   }
 
   // When neither verifying nor emitting full JSON, print the digest-lock so an
@@ -2043,7 +2079,27 @@ async function runPackBom(opts: {
     )
     console.log(JSON.stringify(digests, null, 2))
   }
-  if (mismatch) process.exitCode = 1
+
+  // ── BKL-268: terminal verdict, ON STDOUT ───────────────────────────────────
+  // Before this the gate emitted per-component ✓ lines to stdout and every ✗ to
+  // stderr, with no summary at all — so `pack-bom --verify-file > report.txt`
+  // on a DRIFTING tree produced an all-checkmark report while the process
+  // exited 1. The exit code was honest; the report was the liar. The verdict
+  // now lives in the report, names every failing component, and is the same
+  // decision the exit code carries.
+  if (opts.verifyFile !== undefined) {
+    if (failures.length > 0) {
+      packBomVerdictFail(
+        `pack-bom: FALHOU — ${failures.length} de ${Object.keys(digests).length} componente(s) divergem da baseline: ${failures.join("; ")}`,
+      )
+      return
+    }
+    console.log(
+      chalk.green(
+        `✓ pack-bom: OK — ${Object.keys(digests).length} componente(s) conferem com a baseline.`,
+      ),
+    )
+  }
 }
 
 async function runAnalyze(opts: {

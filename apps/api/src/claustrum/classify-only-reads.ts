@@ -67,7 +67,10 @@
 // the narrow eligible set.
 
 import type { CandidateClaim, EvidenceLedger } from "@adjudicate/core";
-import { orderReferenceAppearsInMessage } from "../ops/ops-order-resolution.js";
+import {
+  matchNamedOwnedOrders,
+  type OwnedOrderRef,
+} from "../ops/ops-order-resolution.js";
 import {
   ownerScopedBaseKey,
   selectCandidateClaim,
@@ -76,6 +79,8 @@ import {
   type RegistryClaimType,
 } from "./claim-registry.js";
 import type { EvidenceLedgerLike } from "./ibatexas-claims-kernel-deps.js";
+import { DELIVERY_NEEDS_CEP_MARKER_KEY } from "./delivery-coverage-resolver.js";
+import { COUPON_NEEDS_CODE_MARKER_KEY } from "./coupon-validity-resolver.js";
 import type { ClaimAuthContext } from "./ibatexas-planner.js";
 import {
   classifyRequestSpans,
@@ -162,12 +167,98 @@ export const CLASSIFY_ONLY_ELIGIBLE_TYPES: ReadonlySet<RegistryClaimType> =
     // BKL-214 — MENU_DIETARY is PUBLIC per-item (subject = the dietary TAG the
     // investigator records under `menu:dietary:{tag}` after deterministic tag detection;
     // presentPublicItemIds resolves it, like the menu-item claims). A dietary-preference
-    // question rides classify-only deterministically; the allergen-adjacent diets never
-    // reach here (the span gate). FE-D12 residual widens identically (a dietary-read
-    // classify-only turn skips the model's §O#9 self-report — but such an ask carries no
-    // safety marker; an allergen-adjacent one is excluded upstream).
+    // question rides classify-only deterministically. FE-D12 residual widens identically
+    // (a dietary-read classify-only turn skips the model's §O#9 self-report — but such an
+    // ask carries no safety marker; an allergen-adjacent one is excluded upstream by the
+    // `isAllergenFamilyAsk` decline in `classifyOnlyRequiredTypes`).
+    //
+    // BKL-273 CORRECTION: this used to attribute the exclusion to "the span gate". That
+    // span condition was REMOVED by PR #441 — the diets reach the span on purpose now,
+    // and the protection is the ROUTE decline above plus the read-level abstain. The
+    // OUTCOME is unchanged; only the stated mechanism was wrong.
     "MENU_DIETARY",
     "STORE_INFO",
+    // LE2-002 / NEW-007 — the PUBLIC delivery-coverage PAIR joins the eligible set
+    // (the same conscious growth this header documents). Both are FIXED single-key
+    // public types (`delivery:coverage` / `delivery:no_coverage`, ownership
+    // `not_applicable`, no perResourceKey), so the candidate subject is "" and the
+    // spec is never parameterized — exactly the MENU_OVERVIEW / STORE_INFO shape.
+    // They join in LOCKSTEP: the DELIVERY_COVERAGE_Q closure row requires BOTH
+    // (the complementary pair), and `classifyOnlyRequiredTypes` declines WHOLESALE
+    // when any required type is outside this set — omitting one would silently
+    // disable the deterministic path for every coverage question. FE-D12 residual
+    // grows identically (a pure coverage-read turn skips the model's §O#9
+    // self-report); a coverage ask carries no safety marker, and an allergen-
+    // adjacent one is already excluded by the wholesale allergen carve-out.
+    "DELIVERY_COVERAGE",
+    "DELIVERY_NO_COVERAGE",
+    // LE2-019 — the PUBLIC coupon-validity PAIR joins the eligible set (the same
+    // conscious growth this header documents). Both are FIXED single-key public
+    // types (`coupon:valid` / `coupon:invalid`, ownership `not_applicable`, no
+    // perResourceKey), so the candidate subject is "" and the spec is never
+    // parameterized — exactly the DELIVERY_COVERAGE / STORE_INFO shape. They join
+    // in LOCKSTEP: the COUPON_VALIDITY_Q closure row requires BOTH (the
+    // complementary pair), and `classifyOnlyRequiredTypes` declines WHOLESALE when
+    // any required type is outside this set — omitting one would silently disable
+    // the deterministic path for every coupon question. FE-D12 residual grows
+    // identically (a pure coupon-read turn skips the model's §O#9 self-report); a
+    // coupon ask carries no safety marker, and an allergen-adjacent one is already
+    // excluded by the wholesale allergen carve-out.
+    "COUPON_VALID",
+    "COUPON_INVALID",
+    // LE2-029 — the pairing pair, on the same footing: PUBLIC store knowledge
+    // (ownership `not_applicable`, no owner-scoped key prefix), so a classify-only
+    // turn may resolve them without an authenticated customer.
+    "MENU_PAIRINGS",
+    "MENU_SUBSTITUTIONS",
+    // BKL-222 — the DAY-SPECIFIC hours family joins the eligible set, so an
+    // "qual o horário de domingo?" stops riding the 4B read-dispatch and gets the
+    // same determinism BKL-183 bought the menu family (SCN-002 degraded on one
+    // pass precisely because this family was model-dispatched).
+    //
+    // STORE_HOURS_FOR_DATE is PUBLIC PER-ITEM, on the MENU_ITEM_PRICE footing:
+    // `perResourceKey: true` with every evidence row `not_applicable`, so
+    // `publicPerItemBaseKey` yields "schedule:store_hours" and the subject is the
+    // `{date}` suffix of the PRESENT `schedule:store_hours:{date}` read. The
+    // LEDGER names the date, never the model — and the date itself comes from
+    // `resolveQueriedScheduleDate` (schedule-date-resolver.ts), a pure regex+clock
+    // parser the investigator and the model-path planner ALREADY both call over
+    // the same `perception.text` (the planner DISCARDS the model's subject for
+    // this type). So there is no model-authored input anywhere on this path —
+    // the criterion this set exists to enforce.
+    "STORE_HOURS_FOR_DATE",
+    // STORE_OPEN_NOW joins ONLY as that family's COMPANION, never as its own
+    // entry point — `classifyOnlyRequiredTypes` declines any turn that requires it
+    // WITHOUT the date type (see the guard there).
+    //
+    // F-12 CHANGED WHY THIS ENTRY EXISTS, and shrank what it does. It used to be
+    // load-bearing: the BKL-152 suppression deleted the open-now companion only for
+    // a CONFIRMED non-today date, so on the day the named weekday IS today the
+    // companion STAYED, and this text-pure gate had to build it or DISAGREE with the
+    // renderer's §O#15 gate — which re-decomposed with a live clock and would have
+    // found it ABSENT and degraded the turn, an intermittent day-of-week-dependent
+    // regression. F-12 removed the clock from the decomposition entirely, so both
+    // gates now compute the same required set from the span classes alone and a
+    // date-anchored ask never requires the companion on ANY day.
+    //
+    // The entry is therefore now UNREACHABLE-BY-CONSTRUCTION rather than
+    // load-bearing: a date-anchored ask suppresses it, a PICKUP_Q ask declines
+    // wholesale by name above, and a BARE open-now ask is declined by the
+    // date-type-less guard. It is KEPT as defense-in-depth — the eligibility loop
+    // below is a fail-closed roster, and removing a name from it can only ever turn
+    // a future required set into a silent wholesale decline.
+    //
+    // FE-D12 residual grows as it does for every addition (a pure hours-read turn
+    // skips the model's §O#9 self-report); an hours ask carries no safety marker,
+    // and an allergen-adjacent one is already excluded by the wholesale carve-out.
+    //
+    // KNOWN, ACCEPTED: the ADDITIVE `STORE_HOURS` (today's hours) proposal is a
+    // model-path-only extra (it sits in RELEVANCE_GOVERNED_TYPES but in NO closure
+    // row), so it does not render on a classify-only hours turn. That is CONSISTENT
+    // with BKL-152 rather than a loss: on a date-anchored question, today's window
+    // is not the subject — which is why that ticket suppresses the open-now
+    // companion in the first place.
+    "STORE_OPEN_NOW",
   ]);
 
 /**
@@ -197,8 +288,36 @@ export function classifyOnlyRequiredTypes(
   // silently answers around it). Deterministic, word-bounded net; a false
   // positive only costs the model path (never a wrong render).
   if (isAllergenFamilyAsk(text)) return undefined;
-  const required = decomposeRequiredClaims(classifyRequestSpans(text));
+  const spans = classifyRequestSpans(text);
+  // BKL-222 — PICKUP_Q declines WHOLESALE, and now does so by NAME rather than as
+  // a by-product of STORE_OPEN_NOW being ineligible. The reason is the #8 guest
+  // carve-out: `ActiveResourceOwnership` is what drops the ORDER_FULFILLMENT_STAGE
+  // companion for a customer who provably owns no order, and this gate calls the
+  // 1-ownership-argument-free decomposition, so that carve-out cannot run here.
+  // Without this line, a date-anchored pickup ask ("que horas posso retirar
+  // amanhã?") from a GUEST would ride the deterministic path, bind an empty
+  // subject for the order companion, and lose its answerable open-now/hours half
+  // to a proposition-free UNKNOWN — reintroducing #8a on the classify-only path.
+  if (spans.includes("PICKUP_Q")) return undefined;
+  // F-12 — the SAME 2-arg decomposition the renderer's §O#15 completeness gate
+  // calls. This used to pass a seam-active signal with no resolved date (the
+  // conservative "the queried date might be today" branch) precisely because that
+  // gate re-decomposed with a LIVE CLOCK and the two could otherwise disagree. The
+  // decomposition no longer takes a clock, so "must not build a subset of what the
+  // gate will require" is now an IDENTITY rather than an invariant somebody has to
+  // maintain — see `decomposeRequiredClaims`'s header.
+  const required = decomposeRequiredClaims(spans);
   if (required.size === 0) return undefined;
+  // BKL-222 — STORE_OPEN_NOW is eligible ONLY as the date family's companion. A
+  // BARE schedule question ("vocês estão abertos agora?", "que horas fecham?")
+  // requires it ALONE and keeps the model path exactly as before this ticket: its
+  // markers (`abert`/`fechad`/`que horas`/`funciona`/`hor[áa]rio`) are broad
+  // unanchored substrings, and admitting them would widen the deterministic
+  // surface — and the FE-D12 no-safety-marker residual with it — far beyond the
+  // day-specific family this ticket is scoped to.
+  if (required.has("STORE_OPEN_NOW") && !required.has("STORE_HOURS_FOR_DATE")) {
+    return undefined;
+  }
   for (const type of required) {
     if (!CLASSIFY_ONLY_ELIGIBLE_TYPES.has(type)) return undefined;
   }
@@ -209,9 +328,42 @@ export function classifyOnlyRequiredTypes(
  * Build the deterministic candidate claims for a classify-only-eligible
  * required set — the classify-only REPLACEMENT for the model's
  * `propose_claim` tool call. Mirrors `ibatexas-planner.ts`'s FIX 1 (actor) +
- * FIX 2 (subject) resolution EXACTLY, minus the "honor the model's subject if
- * it happens to name an owned resource" branch — there is no model subject
- * here, so that branch is vacuous by construction, not omitted behavior:
+ * FIX 2 (subject) resolution, minus the "honor the model's subject if it
+ * happens to name an owned resource" branch — there is no model subject here,
+ * so that branch is vacuous by construction, not omitted behavior:
+ *
+ * PARITY IS NOT EXACT, and is no longer asserted only here. This comment used
+ * to claim the mirror was EXACT; measured under R7, it was not, in two places —
+ * this path resolved an explicitly-NAMED owned order at ≥2-owned (BKL-203) where
+ * the model path dead-ended in its ambiguity CLARIFY, and it derived
+ * MENU_DIETARY's subject from the ledger where the model path had no branch and
+ * passed the model's string through. Both were fail-safe; both are PINNED
+ * (parity where it holds, characterized where it does not) by
+ * `__tests__/r7-cross-path-subject-parity.test.ts`; the measurements and the
+ * reason the two homes were NOT merged are recorded in
+ * `docs/architecture/design/r7-candidate-assembly.md`. Change either path's
+ * disposition and that test tells you what the other one does.
+ *
+ * F-19 + F-20 CLOSED BOTH GAPS — in the direction of THIS path, whose behavior is
+ * unchanged by either (parity was reached by moving the model route here, never by
+ * meeting in the middle):
+ *
+ *   - F-19: the model route now reaches the same named-owned-order subject by
+ *     consuming the RESULT of {@link resolveNamedOwnedOrderSubject} (this module's
+ *     own resolver, called once per turn by the claim-planner adapter and handed
+ *     over as `auth.namedOwnedSubjectByBaseKey`). There is still exactly ONE
+ *     display-number heuristic in the codebase; the model route did not grow a
+ *     second one, and the 0-or-≥2-match ambiguity contract is shared rather than
+ *     duplicated.
+ *   - F-20: the model route derives MENU_DIETARY's subject from
+ *     `detectDietaryPreferenceTags` — the SAME pure detector the investigator keys
+ *     its `menu:dietary:{tag}` read by — so both paths reach the identical tag from
+ *     their different inputs (this path from the ledger, that one from the text),
+ *     and the ≥2 case drops + CLARIFYs on both, mirroring `publicAmbiguity` below.
+ *
+ * What REMAINS structurally different is the INPUT, not the answer: this path names
+ * a public per-item subject from the ledger, the model path re-derives it from the
+ * text, because `proposeClaims` still receives no `EvidenceLedger`.
  *
  *   - actor: the AUTHENTICATED principal (never model/session output — FIX 1).
  *   - subject: resolved ONLY from `auth.ownedByBaseKey` (FIX 2) — exactly ONE
@@ -310,6 +462,12 @@ const ORDER_SUBJECT_BASE_KEYS: ReadonlySet<string> = new Set([
  *
  * Returns the SINGLE matched owned id, or `undefined` (0 or ≥2 matches → the
  * caller keeps the ambiguity CLARIFY — never a guess). Pure over (data, ledger).
+ *
+ * BKL-216 — the match itself now runs through the SHARED
+ * {@link matchNamedOwnedOrders} (ops-order-resolution.ts), so the mutation plane's
+ * amend resolver reuses this exact heuristic rather than growing a second one.
+ * This function keeps its ledger-shaped contract: extract the owned
+ * `(id, displayId)` pairs from the PRESENT owner-scoped entries, then match.
  */
 export function resolveNamedOwnedOrderSubject(
   baseKey: string,
@@ -318,18 +476,57 @@ export function resolveNamedOwnedOrderSubject(
   messageText: string,
 ): string | undefined {
   if (!ORDER_SUBJECT_BASE_KEYS.has(baseKey)) return undefined;
-  const text = messageText.trim();
-  if (text === "") return undefined;
-  const matched: string[] = [];
+  const owned: OwnedOrderRef[] = [];
   for (const id of ownedIds) {
     const res = ledger.resolve(`${baseKey}:${id}`);
     if (res.state !== "present") continue;
     const displayId = (res.entry?.value as { displayId?: unknown } | undefined)
       ?.displayId;
     if (typeof displayId !== "number") continue;
-    if (orderReferenceAppearsInMessage(String(displayId), text)) matched.push(id);
+    owned.push({ id, displayId });
   }
-  return matched.length === 1 ? matched[0] : undefined;
+  const matched = matchNamedOwnedOrders(owned, messageText);
+  return matched.length === 1 ? matched[0]?.id : undefined;
+}
+
+/**
+ * LE2-002 — is THIS turn a coverage question that must ASK for the CEP? True iff
+ * the coverage span pulled the delivery pair into the required set AND the
+ * investigator recorded the needs-CEP marker PRESENT. Pure over (data, ledger).
+ *
+ * This is the third branch of spec Implementation Decision 4 expressed at the
+ * planner seam: the resolver refuses to nearest-neighbour an unrecognised place
+ * onto the closest zone, so instead of a claim the turn gets a forced CLARIFY and
+ * the renderer's delivery-CEP ask. It is a CLARIFY, not an UNKNOWN, because the
+ * turn is not ignorant — it knows exactly which one datum would settle the answer.
+ */
+export function deliveryCoverageNeedsCep(
+  required: ReadonlySet<RegistryClaimType>,
+  ledger: EvidenceLedgerLike | undefined,
+): boolean {
+  if (ledger === undefined) return false;
+  if (!required.has("DELIVERY_COVERAGE")) return false;
+  return ledger.resolve(DELIVERY_NEEDS_CEP_MARKER_KEY).state === "present";
+}
+
+/**
+ * LE2-019 — is THIS turn a coupon question that must ASK for the code? True iff
+ * the coupon span pulled the pair into the required set AND the investigator
+ * recorded the needs-code marker PRESENT. Pure over (data, ledger).
+ *
+ * The `deliveryCoverageNeedsCep` shape, for the same reason: the resolver refuses
+ * to guess WHICH coupon an ambiguous utterance meant, so instead of a claim the
+ * turn gets a forced CLARIFY and the renderer's coupon-code ask. It is a CLARIFY,
+ * not an UNKNOWN, because the turn is not ignorant — it knows exactly which one
+ * datum would settle the answer.
+ */
+export function couponValidityNeedsCode(
+  required: ReadonlySet<RegistryClaimType>,
+  ledger: EvidenceLedgerLike | undefined,
+): boolean {
+  if (ledger === undefined) return false;
+  if (!required.has("COUPON_VALID")) return false;
+  return ledger.resolve(COUPON_NEEDS_CODE_MARKER_KEY).state === "present";
 }
 
 export function buildClassifyOnlyCandidates(
@@ -417,7 +614,21 @@ export function buildClassifyOnlyCandidates(
     // always yields a candidate — the guard is defense-in-depth.
     if (candidate !== undefined) candidates.push(candidate);
   }
-  const forcedClarify = ambiguousOwnedSets.length > 0 || publicAmbiguity;
+  // LE2-002 / NEW-007 — the needs-CEP CLARIFY. Structurally the SAME "we will not
+  // guess" disposition as the ≥2-owned / ≥2-public ambiguities above: the candidate
+  // claims stay in the batch (they resolve honest UNKNOWN off their absent keys) and
+  // the turn is FORCED to CLARIFY, so the renderer asks for the CEP instead of
+  // picking a nearby zone. Additive: on every non-coverage turn the marker is absent
+  // and this is byte-identical to before.
+  const needsCep = deliveryCoverageNeedsCep(required, ledger);
+  // LE2-019 — the needs-CODE CLARIFY, structurally identical to the needs-CEP one
+  // above: the candidate claims stay in the batch (they resolve honest UNKNOWN off
+  // their absent keys) and the turn is FORCED to CLARIFY, so the renderer asks for
+  // the code instead of answering about a coupon nobody named. Additive: on every
+  // non-coupon turn the marker is absent and this is byte-identical to before.
+  const needsCode = couponValidityNeedsCode(required, ledger);
+  const forcedClarify =
+    ambiguousOwnedSets.length > 0 || publicAmbiguity || needsCep || needsCode;
   return forcedClarify
     ? {
         candidates,

@@ -8,7 +8,10 @@
 // - Happy path → {success: true, reservation: dto}, NATS published, envelope routed
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { modifyReservation } from "../modify-reservation.js"
+import {
+  modifyReservation,
+  modifyReservationPreAdjudicated,
+} from "../modify-reservation.js"
 
 // ── Hoisted mocks ──────────────────────────────────────────────────────────────
 
@@ -21,9 +24,11 @@ const mockSendReservationModified = vi.hoisted(() => vi.fn())
 // factory-spy below asserts the tool threads it into `createReservationService`.
 const mockAuditSink = vi.hoisted(() => ({ emit: vi.fn() }))
 const mockGetAuditSink = vi.hoisted(() => vi.fn(() => mockAuditSink))
+const mockModify = vi.hoisted(() => vi.fn())
 const mockCreateReservationService = vi.hoisted(() =>
   vi.fn((_options?: { auditSink?: unknown }) => ({
     modifyFromEnvelope: mockModifyFromEnvelope,
+    modify: mockModify,
   })),
 )
 
@@ -260,5 +265,77 @@ describe("modifyReservation", () => {
     expect(mockCreateReservationService).toHaveBeenCalledOnce()
     const options = mockCreateReservationService.mock.calls[0]?.[0]
     expect(options?.auditSink).toBe(mockAuditSink)
+  })
+})
+
+// BKL-232 — the conductor-dispatch entry point. A single customer confirm on a
+// parked `reservation.modify` produced TWO `reservation.modify` EXECUTE rows
+// because this tool re-minted its own envelope and adjudicated it a second time
+// (live intent_audit 6942/6944). The Conductor's decision is the authorization on
+// that path, so the second adjudication must not happen. The end-to-end proof is
+// `apps/api/src/__tests__/reservation-modify-resume-dedup.e2e.test.ts`; this arm
+// pins the tool-level contract the fix rests on.
+describe("modifyReservationPreAdjudicated (BKL-232)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("writes via the bare service method and NEVER re-adjudicates", async () => {
+    mockReservationFindUnique.mockResolvedValue(EXISTING_RESERVATION_FULL)
+    mockModify.mockResolvedValue(MOCK_DTO)
+    mockSendReservationModified.mockResolvedValue(undefined)
+    mockPublishNatsEvent.mockResolvedValue(undefined)
+
+    const result = await modifyReservationPreAdjudicated({
+      customerId: "cus_01",
+      reservationId: "res_01",
+      newTimeSlotId: "ts_02",
+      newPartySize: 4,
+    })
+
+    // No second envelope, no second kernel run, no second audit record.
+    expect(mockModifyFromEnvelope).not.toHaveBeenCalled()
+    // The mutation still runs exactly once, with the confirmed changes.
+    expect(mockModify).toHaveBeenCalledExactlyOnceWith("res_01", "cus_01", {
+      newTimeSlotId: "ts_02",
+      newPartySize: 4,
+    })
+    // Same success shape + side effects as the self-adjudicating entry point.
+    expect(result.success).toBe(true)
+    expect(result.message).toContain("modificada")
+    expect(mockSendReservationModified).toHaveBeenCalledOnce()
+    expect(mockPublishNatsEvent).toHaveBeenCalledWith(
+      "reservation.modified",
+      expect.objectContaining({ eventType: "reservation.modified" }),
+    )
+  })
+
+  it("still runs the SEC-002 ownership guard before any write", async () => {
+    mockReservationFindUnique.mockResolvedValue({
+      ...EXISTING_RESERVATION_FULL,
+      customerId: "cus_OTHER",
+    })
+
+    await expect(
+      modifyReservationPreAdjudicated({
+        customerId: "cus_01",
+        reservationId: "res_01",
+        newPartySize: 4,
+      }),
+    ).rejects.toThrow("outro cliente")
+    expect(mockModify).not.toHaveBeenCalled()
+  })
+
+  it("the REST entry point still adjudicates (unchanged — the route has no kernel decision behind it)", async () => {
+    setupHappyPath()
+
+    await modifyReservation({
+      customerId: "cus_01",
+      reservationId: "res_01",
+      newTimeSlotId: "ts_02",
+    })
+
+    expect(mockModifyFromEnvelope).toHaveBeenCalledOnce()
+    expect(mockModify).not.toHaveBeenCalled()
   })
 })

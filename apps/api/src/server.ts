@@ -18,7 +18,7 @@ import { registerErrorHandler } from "./errors/handler.js";
 import { registerRoutes } from "./routes/index.js";
 import { metricsRoutes } from "./routes/metrics.js";
 import { requireSecret } from "./utils/require-secret.js";
-import { buildMultistreamLogger } from "./observability/log-streams.js";
+import { buildMultistreamLogger, warnIfFunnelSinkAbsent } from "./observability/log-streams.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   // When the obs stack is up (VICTORIALOGS_URL set), log through a multistream
@@ -61,6 +61,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   }
 
   const server = Fastify(serverOptions);
+
+  // BKL-266 — ONE loud warn line if the funnel telemetry sink is absent (unset
+  // or unreachable). Fire-and-forget: it never blocks boot, never refuses it,
+  // and never retries. See warnIfFunnelSinkAbsent for why zero-call funnel
+  // turns make this outage class unrecoverable rather than merely delayed.
+  void warnIfFunnelSinkAbsent({ log: server.log });
 
   // SIGNAL-1: signal-only access log (replaces Fastify's disabled autolog).
   // Emits ONE line per request, tagged `component:http` so VMUI can slice it,

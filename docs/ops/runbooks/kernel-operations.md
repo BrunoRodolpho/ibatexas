@@ -161,10 +161,34 @@ is producing bad decisions in production:
    [BrunoRodolpho/adjudicate](https://github.com/BrunoRodolpho/adjudicate) so the
    regression is fixed upstream.
 
-**Redis outage (ledger offline):** `adjudicate()` REFUSES mutations with
-`code: "ledger_unavailable"`. This is by design — the execution ledger is
-fail-closed (a duplicate financial mutation is worse than a brief refusal
-storm). Restore Redis to unblock.
+**Redis outage (ledger offline):** mutations are REFUSED. This is by design —
+the execution ledger is fail-closed (a duplicate financial mutation is worse
+than a brief refusal storm). Restore Redis to unblock.
+
+The refusal you will actually see is **kind `SECURITY`, code
+`policy_not_ready`** — there is no `ledger_unavailable` code anywhere in the
+stack. The mechanism: `checkLedger` rejects while Redis is unreachable,
+`adjudicateAndAudit` does not catch ledger throws, and the bridge's
+`safeAuditedAdjudicate` catch (`apps/api/src/claustrum-bootstrap.ts:1274-1276`)
+degrades the throw to the refusal built at `:1208-1219`. Customers see its
+pt-BR message, "Não consigo concluir essa ação no momento. Tente novamente em
+instantes."; the internal reason string is `adjudicateAndAudit threw: …`.
+
+Two operational consequences worth knowing before you triage:
+
+- **`policy_not_ready` is not ledger-specific.** The same code covers a
+  malformed PolicyBundle (`:1231`) and any other kernel/audit throw. Confirm
+  Redis is the cause from the reason string in the logs rather than assuming it.
+- **No Prometheus metric fires on this path.** The ledger throw precedes the
+  kernel's MetricsSink emit, and the bridge builds the refusal itself without
+  calling `recordRefusal`, so neither `kernel_ledger_op_total` nor
+  `kernel_refusal_total` moves. Detection is log-based (VictoriaLogs) today.
+  BKL-244 deleted the `KernelLedgerUnavailable` alert that pretended otherwise —
+  see the note in `infra/alerts/kernel.yaml`.
+
+Redis is also required at boot: `claustrum-bootstrap.ts` resolves the Redis
+client before `buildAdjudicator`, so a Redis outage during startup fails the
+boot outright rather than producing a ledger-less adjudicator.
 
 **Postgres outage (audit-postgres offline):** `adjudicate()` continues; audit
 emit is best-effort at the IbateXas boundary and the kernel never blocks on

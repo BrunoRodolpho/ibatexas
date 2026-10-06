@@ -12,11 +12,26 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildEnvelope } from "@adjudicate/core";
-import { createTokenBudgetGuard, createConfirmGuard } from "@adjudicate/primitives";
+import { createTokenBudgetGuard } from "@adjudicate/primitives";
+// R3-S1 — the REAL confirm-on-autoresolve guard + its kind set, instead of the
+// hand-copied replica this file used to rebuild (see that describe block).
+import {
+  AUTORESOLVE_CONFIRM_KINDS,
+  UNRESOLVED_REVIEW_PRODUCT_REFUSAL_CODE,
+  confirmOnAutoResolveGuard,
+  refuseUnresolvedReviewProductGuard,
+} from "../compose-policy-packs.js";
 
 // ── Mutable mock controls ───────────────────────────────────────────────────
 let redisGet: (key: string) => Promise<string | null> = async () => null;
-let orderGetById: (id: string) => Promise<unknown> = async () => null;
+// F-14 — `opts` is threaded through because production's `getById` OWNER-SCOPES
+// on it (order-query.service.ts: `opts.customerId !== undefined && order?.customerId
+// !== opts.customerId → null`). A double that dropped the argument could not tell a
+// scoped read from an unscoped one, so an owner-scoping test written against it
+// would measure the double instead of the code. Existing implementations ignore
+// the second parameter, so threading it changes nothing for them.
+let orderGetById: (id: string, opts?: { customerId?: string }) => Promise<unknown> =
+  async () => null;
 let paymentGetById: (id: string) => Promise<unknown> = async () => null;
 let paymentGetActiveByOrderId: (orderId: string) => Promise<unknown> = async () => null;
 let reservationGetById: (id: string, customerId: string) => Promise<unknown> = async () => {
@@ -67,7 +82,7 @@ vi.mock("@ibatexas/tools", () => ({
 }));
 vi.mock("@ibatexas/domain", () => ({
   createOrderQueryService: () => ({
-    getById: (id: string) => orderGetById(id),
+    getById: (id: string, opts?: { customerId?: string }) => orderGetById(id, opts),
     listByCustomer: (cid: string, input?: unknown) => orderListByCustomer(cid, input),
     findByDisplayId: (displayId: number) => orderFindByDisplayId(displayId),
   }),
@@ -100,6 +115,8 @@ const {
   parseRelativeOrderDate,
   resolveReservationSlot,
   isAllergenMentionUtterance,
+  hasStayHomeDeliveryMarker,
+  STAY_HOME_DELIVERY_MARKERS,
 } = await import("../resolve-and-assemble.js");
 
 const BUDGET = 100_000;
@@ -1661,21 +1678,244 @@ describe("resolve-and-assemble — NL→id confirm-first (auto-resolve money int
   );
 });
 
-describe("confirm-on-autoresolve guard (mirrors claustrum-bootstrap)", () => {
-  const guard = createConfirmGuard<string, unknown, unknown>({
-    matches: (env) =>
-      new Set([
-        "order.cancel",
-        "payment.pix.regenerate",
-        "reservation.cancel",
-        ...INFLIGHT_MODIFY_KINDS, // BKL-038 — mirrors AUTORESOLVE_CONFIRM_KINDS
-      ]).has(env.kind),
-    extract: (_env, state) =>
-      (state as { ctx?: { autoResolvedMoneyRef?: boolean } }).ctx?.autoResolvedMoneyRef ? 1 : 0,
-    threshold: 1,
-    comparator: ">=",
-    prompt: () => "confirma?",
+// ── BKL-216 — the amend kinds' in-message order-reference resolution ──────────
+//
+// The MUTATION-plane sibling of BKL-203/#350. The decision table below IS the
+// contract: named-owned binds the NAMED order (even when it is not the most
+// recent), unnamed keeps the blind most-recent auto-resolve, a foreign number can
+// never bind (IDOR), and ≥2 named owned orders CLARIFY instead of guessing.
+//
+// Every arm drives the REAL `resolveAndAssemble` entry with `utteranceText`, so the
+// utterance→resolver threading is under test too (a test calling the inner resolver
+// directly would pass even if the conductor never handed the text over).
+const AMEND_KINDS = [
+  "order.amend.request",
+  "order.amend.add_item",
+  "order.amend.update_qty",
+  "order.amend.remove_item",
+] as const;
+
+/** Two OWNED orders, most-recent FIRST (listByCustomer's ordering, which
+ *  `resolveIdless`/`resolveOrderId` already rely on). */
+const TWO_OWNED_ORDERS = [
+  { id: "ord_newest", displayId: 960763, customerId: "c1", fulfillmentStatus: "preparing" },
+  { id: "ord_older", displayId: 933869, customerId: "c1", fulfillmentStatus: "preparing" },
+];
+
+describe("resolve-and-assemble — BKL-216 amend in-message order reference", () => {
+  beforeEach(() => {
+    orderListByCustomer = async () => ({ orders: TWO_OWNED_ORDERS, count: 2 });
+    orderGetById = async () => ({
+      customerId: "c1",
+      paymentStatus: "paid",
+      totalInCentavos: 5000,
+      fulfillmentStatus: "preparing",
+    });
   });
+
+  it.each(AMEND_KINDS)(
+    "%s: an EXPLICITLY-NAMED owned order binds THAT order, not the most-recent one",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        utteranceText: "tira a coca do pedido 933869",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_older");
+      // A NAMED order was given, not guessed → the auto-resolve confirm (whose
+      // shared prompt asserts "o seu pedido mais RECENTE") must NOT fire.
+      expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+      expect(
+        (payload as { orderReferenceAmbiguousCount?: number }).orderReferenceAmbiguousCount,
+      ).toBeUndefined();
+    },
+  );
+
+  it("the '#N' reference form binds the same way (# prefix, ops matcher parity)", async () => {
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "muda o #933869 pra retirada",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("ord_older");
+  });
+
+  it.each(AMEND_KINDS)(
+    "%s: NO order named → the blind most-recent auto-resolve is preserved, confirm flag intact",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        utteranceText: "tira a coca do meu pedido",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+      expect(ctx.autoResolvedMoneyRef).toBe(true);
+    },
+  );
+
+  // IDOR pin — the SEVERE arm. `matchNamedOwnedOrders` can only ever return an id
+  // drawn from the owner-scoped `listByCustomer` rows, so a foreign display number
+  // is unrepresentable as a result: it falls back to the customer's own most-recent
+  // order (still behind the confirm gate), never the named foreign order.
+  it.each(AMEND_KINDS)(
+    "%s: a display number NOT owned by this customer does NOT bind (IDOR-safe) — falls back to their own most-recent",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        // 111222 belongs to somebody else; it is not in this customer's rows.
+        utteranceText: "tira a coca do pedido 111222",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+      expect(ctx.autoResolvedMoneyRef).toBe(true);
+    },
+  );
+
+  it("a foreign order the customer names is never bound even when the lookup WOULD find it (owner-scoped read is the only source)", async () => {
+    // The foreign order exists in the store but `listByCustomer` (owner-scoped)
+    // never returns it — the resolver has no other source of candidates.
+    orderListByCustomer = async (cid) =>
+      cid === "c1"
+        ? { orders: TWO_OWNED_ORDERS, count: 2 }
+        : { orders: [{ id: "ord_foreign", displayId: 777777, customerId: "c2" }], count: 1 };
+    const { payload } = await resolveAndAssemble({
+      kind: "order.amend.remove_item",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "tira a coca do pedido 777777",
+    });
+    expect((payload as { orderId?: string }).orderId).not.toBe("ord_foreign");
+    expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+  });
+
+  it.each(AMEND_KINDS)(
+    "%s: ≥2 OWNED orders named → binds NOTHING and stamps orderReferenceAmbiguous* (CLARIFY, never a guess)",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        utteranceText: "tira a coca do 933869 e do 960763",
+      });
+      const p = payload as {
+        orderId?: string;
+        orderReferenceAmbiguousCount?: number;
+        orderReferenceAmbiguousDisplayIds?: number[];
+      };
+      expect(p.orderId).toBeUndefined(); // never picks between two named orders
+      expect(p.orderReferenceAmbiguousCount).toBe(2);
+      // First-party display numbers (the customer's OWN rows), for the clarify copy.
+      expect(p.orderReferenceAmbiguousDisplayIds).toEqual([960763, 933869]);
+      // Not an autoresolve: no forced confirm on a turn that resolved nothing.
+      expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+    },
+  );
+
+  it("whole-token discipline: '42420' does not match owned displayId 4242 (no digit-substring bind)", async () => {
+    orderListByCustomer = async () => ({
+      orders: [
+        { id: "ord_a", displayId: 5000, customerId: "c1" },
+        { id: "ord_b", displayId: 4242, customerId: "c1" },
+      ],
+      count: 2,
+    });
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "o pedido 42420 precisa mudar",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("ord_a"); // most-recent
+    expect(ctx.autoResolvedMoneyRef).toBe(true);
+  });
+
+  it("an EXPLICIT payload orderId still wins and never enumerates the customer's orders", async () => {
+    let listCalled = false;
+    orderListByCustomer = async () => {
+      listCalled = true;
+      return { orders: TWO_OWNED_ORDERS, count: 2 };
+    };
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: { orderId: "ord_explicit" },
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "tira a coca do pedido 933869",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("ord_explicit");
+    expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+    expect(listCalled).toBe(false);
+  });
+
+  it("no utterance text at all → most-recent, byte-identical to the pre-BKL-216 path", async () => {
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+    });
+    expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+    expect(ctx.autoResolvedMoneyRef).toBe(true);
+  });
+
+  it("a read error yields no order and no ambiguity marker (fail-safe, same as resolveOrderId's catch)", async () => {
+    orderListByCustomer = async () => {
+      throw new Error("db down");
+    };
+    const { payload, ctx } = await resolveAndAssemble({
+      kind: "order.amend.request",
+      payload: {},
+      customerId: "c1",
+      channel: "whatsapp",
+      utteranceText: "tira a coca do pedido 933869",
+    });
+    const p = payload as { orderId?: string; orderReferenceAmbiguousCount?: number };
+    expect(p.orderId).toBeUndefined();
+    expect(p.orderReferenceAmbiguousCount).toBeUndefined();
+    expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+  });
+
+  // SCOPE PIN (BKL-198 stays open): the reference resolution is order.amend.* only.
+  it.each(["order.cancel", "order.note.add", "order.address.change", "order.type.switch"] as const)(
+    "%s: a named order does NOT change the resolution — still blind most-recent + confirm (scope pin)",
+    async (kind) => {
+      const { payload, ctx } = await resolveAndAssemble({
+        kind,
+        payload: {},
+        customerId: "c1",
+        channel: "whatsapp",
+        utteranceText: "cancela o pedido 933869",
+      });
+      expect((payload as { orderId?: string }).orderId).toBe("ord_newest");
+      expect(ctx.autoResolvedMoneyRef).toBe(true);
+    },
+  );
+});
+
+// R3-S1 — this block used to rebuild the guard locally from a HAND-COPIED kind
+// set that had ALREADY drifted from AUTORESOLVE_CONFIRM_KINDS: it omitted
+// order.review.submit (FE-D28) and reservation.modify (FE-T14), and its
+// "outside the set" case named order.review.submit — a kind production has
+// auto-resolved since FE-D28, so the replica asserted the opposite of live
+// behavior. It now drives the REAL composed adopter guard
+// (`confirmOnAutoResolveGuard`, compose-policy-packs.ts): no copy is left to
+// drift. Set MEMBERSHIP (including the positive cases for the two dropped
+// kinds) is pinned by autoresolve-confirm-lockstep.test.ts; what this block
+// proves is guard BEHAVIOR against the exact `ctx.autoResolvedMoneyRef` shape
+// the resolve-stage tests above stamp.
+describe("confirm-on-autoresolve guard (the REAL composed adopter guard)", () => {
+  const guard = confirmOnAutoResolveGuard;
   const cancelEnv = buildEnvelope({
     kind: "order.cancel",
     payload: { orderId: "o1" },
@@ -1694,16 +1934,21 @@ describe("confirm-on-autoresolve guard (mirrors claustrum-bootstrap)", () => {
     expect(guard(cancelEnv, { ctx: {} })).toBeNull();
   });
   it("does not fire for a kind outside the auto-resolve set", () => {
-    // order.review.submit is an order-by-id kind but is NOT auto-resolved, so the
-    // guard must never fire for it even if the flag were somehow present.
-    const reviewEnv = buildEnvelope({
-      kind: "order.review.submit",
+    // order.checkout.create is deliberately NOT auto-resolved: its cartId comes
+    // from the session's active-cart key — THE customer's one cart, not a guess
+    // among several (order-checkout-create.schema.ts states this explicitly).
+    // Asserting its absence from the real set first keeps the case directional:
+    // if checkout were ever added to AUTORESOLVE_CONFIRM_KINDS this fails loudly
+    // instead of silently becoming a no-op assertion.
+    expect(AUTORESOLVE_CONFIRM_KINDS.has("order.checkout.create")).toBe(false);
+    const checkoutEnv = buildEnvelope({
+      kind: "order.checkout.create",
       payload: {},
       actor: { principal: "llm", sessionId: "s" },
       taint: "UNTRUSTED",
       nonce: "n2",
     });
-    expect(guard(reviewEnv, { ctx: { autoResolvedMoneyRef: true } })).toBeNull();
+    expect(guard(checkoutEnv, { ctx: { autoResolvedMoneyRef: true } })).toBeNull();
   });
 
   // BKL-038 — the in-flight modify kinds confirm their auto-resolved target just
@@ -2605,5 +2850,393 @@ describe("resolve-and-assemble — BKL-227 reservation.modify party-size recover
       utteranceText: "mesa para 4 pessoas",
     });
     expect((payload as { newPartySize?: number }).newPartySize).toBeUndefined();
+  });
+});
+
+// ── BKL-280 — the stay-home / delivery-request marker net ───────────────────
+
+describe("hasStayHomeDeliveryMarker — BKL-280 pure detector", () => {
+  // TRUE POSITIVES. Written in the ACCENTED spelling customers actually type
+  // (the evidence corpus is 100% accent-correct: "não" x2252, "nao" x0), plus
+  // the bare-ASCII spelling WhatsApp produces — one folded net must catch both.
+  it.each([
+    // THE V7 DEFECT ROW, verbatim from the evidence corpus.
+    "não vou poder sair de casa hoje, fecha aí, pago em dinheiro na entrega",
+    // …and the same row unaccented, which the fold must catch identically.
+    "nao vou poder sair de casa hoje, fecha ai, pago em dinheiro na entrega",
+    // The SECOND failing corpus row — no stay-home phrase and no `entrega*`
+    // token at all, which is why either family alone must suffice.
+    "pode fechar, pago no pix e manda pra minha casa",
+    "dá pra fechar no cartão e entregar aqui em casa?",
+    "Por gentileza, finalize meu pedido. Pagarei via PIX e gostaria de receber em casa.",
+    "pode finalizar no débito, por favor, e entregar no meu endereço",
+    "finaliza aí, pago na entrega, em espécie",
+    "fecha no pix e entrega em casa, manda o recibo pro meu email",
+    "quero fechar o pedido, pode entregar em casa",
+    "fecha o pedido no cartão, entrega em casa",
+    "fecha o pedido no pix, manda pra minha casa",
+    "fecha o pedido, pago em dinheiro, entrega no meu endereço",
+    "não posso sair de casa, pode entregar?",
+    "estou em casa o dia todo, manda aqui",
+  ])("fires on a stay-home / delivery utterance: %s", (text) => {
+    expect(hasStayHomeDeliveryMarker(text)).toBe(true);
+  });
+
+  // TRUE NEGATIVES. Every genuine PICKUP utterance in the governance-tier
+  // checkout corpus, plus the two known false-positive traps.
+  it.each([
+    "quero fechar o pedido no pix, vou retirar no balcão",
+    "Solicito a finalização do pedido com pagamento no cartão. Farei a retirada no local.",
+    "fecha aí, dinheiro, retiro eu mesmo",
+    "finaliza a compra, pago pela chave pix, vou buscar pessoalmente",
+    "fecha o pedido, vou pagar no crédito e passo aí pra pegar",
+    // THE NEGATION TRAP that removed the bare English "delivery" marker: a
+    // pickup customer who says the word while declining it.
+    "não quero delivery não, fecha em dinheiro, vou retirar",
+    "meu cpf é 123.456.789-00, fecha o pedido no pix, retiro no local",
+    "Por favor, finalize meu pedido. Farei a retirada no balcão.",
+    "fecha o pedido no cartão, vou retirar no balcão",
+    "fecha o pedido no cartão, retiro no local",
+    "pode finalizar no pix, retiro pessoalmente",
+    // A cancel REASON that contains the word "entrega" but asks for nothing.
+    "Solicito o cancelamento do pedido. Motivo: endereço de entrega incorreto.",
+    // A coverage QUESTION, not a delivery request.
+    "vocês entregam em Ibaté?",
+    "qual a taxa de entrega?",
+    // Ordinary checkouts naming no fulfilment at all.
+    "quero fechar o pedido, vou pagar no pix",
+    "consegue fechar meu pedido no cartão?",
+    "quero fechar o pedido",
+    "",
+    undefined,
+  ])("stays silent on: %s", (text) => {
+    expect(hasStayHomeDeliveryMarker(text)).toBe(false);
+  });
+
+  it("is a CLOSED literal net — every marker is lowercase, unaccented ASCII", () => {
+    // The detector folds diacritics before matching, so a marker carrying an
+    // accent (or an uppercase letter) could never match anything. This pins the
+    // invariant at the point a future edit would break it.
+    for (const marker of STAY_HOME_DELIVERY_MARKERS) {
+      expect(marker).toBe(marker.toLowerCase());
+      expect(marker.normalize("NFD")).toBe(marker);
+      expect(/^[a-z ]+$/.test(marker)).toBe(true);
+    }
+  });
+
+  it("the net is non-empty and has no duplicates", () => {
+    expect(STAY_HOME_DELIVERY_MARKERS.length).toBeGreaterThan(0);
+    expect(new Set(STAY_HOME_DELIVERY_MARKERS).size).toBe(
+      STAY_HOME_DELIVERY_MARKERS.length,
+    );
+  });
+
+  it("the bare word 'entrega' is NOT a marker (it appears in cancels and FAQs)", () => {
+    // Regression pin for the sweep's headline false-positive finding: a bare
+    // token would fire on "endereço de entrega incorreto" and "vocês entregam".
+    expect(STAY_HOME_DELIVERY_MARKERS).not.toContain("entrega");
+    expect(STAY_HOME_DELIVERY_MARKERS).not.toContain("entregar");
+    expect(STAY_HOME_DELIVERY_MARKERS).not.toContain("casa");
+    // And the negated-mention trap that cost the English loanword its place.
+    expect(STAY_HOME_DELIVERY_MARKERS).not.toContain("delivery");
+  });
+});
+
+describe("resolveAndAssemble — BKL-280 stayHomeDeliveryMarker ctx stamp", () => {
+  it("stamps the flag for a contradicting checkout utterance", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "cash", delivery_type: "pickup" },
+      customerId: "cus-1",
+      channel: "whatsapp",
+      utteranceText:
+        "não vou poder sair de casa hoje, fecha aí, pago em dinheiro na entrega",
+    });
+    expect(ctx.stayHomeDeliveryMarker).toBe(true);
+    // And the wire rename still happened — the guard reads `deliveryType`.
+    expect(ctx.fulfillment).toBe("pickup");
+  });
+
+  it("does NOT stamp for an ordinary pickup checkout utterance", async () => {
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "pix", delivery_type: "pickup" },
+      customerId: "cus-1",
+      channel: "whatsapp",
+      utteranceText: "quero fechar o pedido no pix, vou retirar no balcão",
+    });
+    expect(ctx.stayHomeDeliveryMarker).toBeUndefined();
+  });
+
+  it("does NOT stamp for a kind outside order.checkout.create", async () => {
+    // The marker words are ordinary Portuguese and appear in cancel reasons.
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.cancel",
+      payload: { orderId: "o-1" },
+      customerId: "cus-1",
+      channel: "whatsapp",
+      utteranceText:
+        "Solicito o cancelamento do pedido. Motivo: quero receber em casa.",
+    });
+    expect(ctx.stayHomeDeliveryMarker).toBeUndefined();
+  });
+
+  it("does NOT stamp when there is no utterance — the RESUME path", async () => {
+    // `enrichResumeState` re-resolves a PARKED envelope with no utteranceText.
+    // The flag must be absent so the confirm-resume behaves exactly as before
+    // this guard existed (this is what keeps the change purely additive).
+    const { ctx } = await resolveAndAssemble({
+      kind: "order.checkout.create",
+      payload: { payment_method: "cash", delivery_type: "pickup" },
+      customerId: "cus-1",
+      channel: "whatsapp",
+    });
+    expect(ctx.stayHomeDeliveryMarker).toBeUndefined();
+  });
+});
+
+// ── F-14 (ledger cycle 21) — order.review.submit resolution, DRIVEN FOR REAL ──
+//
+// The gap this block closes: until now nothing in this file called
+// `resolveAndAssemble` for `order.review.submit`. Its profile row
+// (kind-resolution-profiles.ts) could be deleted and only the hand-written
+// census would notice — no BEHAVIOUR was pinned. Every case below drives the
+// real resolver, so deleting the row reds a named behavioural test (the F-14/
+// F-15 deletion-experiment standard).
+//
+// It is ALSO the measurement record for F-14's question — "can a foreign
+// orderId reach the review write?". `order.review.submit` is absent from
+// OWNERSHIP_GATED_KINDS (authority-wiring.ts), so the kernel IDOR gate never
+// sees this kind; these cases measure what stands in its place. The decision
+// record lives on OWNERSHIP_GATED_KINDS itself.
+//
+// The reviewed order's line items ride on the projection's `itemsJson`
+// (denormalized OrderEventItem rows — `resolveReviewedProduct`'s own read).
+function reviewOrder(
+  customerId: string,
+  items: Array<{ productId: string; title: string }>,
+) {
+  return {
+    customerId,
+    itemsJson: items,
+    paymentMethod: "pix",
+    paymentStatus: "paid",
+    totalInCentavos: 99_900,
+    fulfillmentStatus: "delivered",
+  };
+}
+
+/**
+ * An `orderGetById` double that ENFORCES the same owner scoping production's
+ * `getById` does (order-query.service.ts): a scoped read whose row belongs to
+ * someone else resolves to `null`. Written this way deliberately — a double that
+ * ignored `opts.customerId` would hand `resolveReviewedProduct` a foreign order's
+ * line items and make an "owner-scoped" assertion measure the double instead of
+ * the code (that is exactly how the first draft of this block passed a foreign
+ * `productId` straight through). `resolveReviewedProduct` has NO post-check of
+ * its own — unlike `loadOrderCtx`, whose defence-in-depth re-check would mask a
+ * dropped argument — so this is the only place the threading is observable.
+ */
+function ownerScopedOrders(rows: Record<string, { customerId: string; itemsJson: unknown }>) {
+  return async (id: string, opts?: { customerId?: string }) => {
+    const row = rows[id];
+    if (row === undefined) return null;
+    if (opts?.customerId !== undefined && row.customerId !== opts.customerId) return null;
+    return row;
+  };
+}
+
+const reviewSubmit = (payload: Record<string, unknown>, customerId = "c1") =>
+  resolveAndAssemble({
+    kind: "order.review.submit",
+    payload: { rating: 5, ...payload },
+    customerId,
+    channel: "whatsapp",
+  });
+
+describe("resolveAndAssemble — order.review.submit (FE-D28 display-reference resolution)", () => {
+  it("display-number HIT: an OWNED order number binds THAT order and resolves its product from that order's own lines", async () => {
+    orderFindByDisplayId = async () => [
+      { id: "ord_foreign", customerId: "victim" },
+      { id: "ord_1234", customerId: "c1" },
+    ];
+    orderGetById = ownerScopedOrders({
+      ord_1234: reviewOrder("c1", [{ productId: "prod_costela", title: "Costela" }]),
+      ord_foreign: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+
+    const { payload, ctx, owned } = await reviewSubmit({ orderReference: "1234" });
+
+    expect((payload as { orderId?: string }).orderId).toBe("ord_1234");
+    expect((payload as { productId?: string }).productId).toBe("prod_costela");
+    // A public review posts against the resolved order → the turn always confirms.
+    expect(ctx.autoResolvedMoneyRef).toBe(true);
+    expect(ctx.reviewProductUnresolved).toBeUndefined();
+    expect(owned).toEqual(["ord_1234"]);
+  });
+
+  it("FALLBACK: no orderReference resolves the caller's most-recent order and STILL forces the confirm", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [{ productId: "prod_brisket", title: "Brisket" }]),
+    });
+
+    const { payload, ctx } = await reviewSubmit({});
+
+    expect((payload as { orderId?: string }).orderId).toBe("ord_recent");
+    expect((payload as { productId?: string }).productId).toBe("prod_brisket");
+    expect(ctx.autoResolvedMoneyRef).toBe(true);
+  });
+
+  it("IDOR: a display number naming ANOTHER customer's order never binds it — the fallback resolves the CALLER's own order", async () => {
+    orderFindByDisplayId = async () => [{ id: "ord_victim", customerId: "victim" }];
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [{ productId: "prod_brisket", title: "Brisket" }]),
+      ord_victim: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+
+    const { payload, owned } = await reviewSubmit({ orderReference: "1234" });
+
+    expect((payload as { orderId?: string }).orderId).toBe("ord_recent");
+    expect((payload as { orderId?: string }).orderId).not.toBe("ord_victim");
+    expect((payload as { productId?: string }).productId).toBe("prod_brisket");
+    expect(owned).toEqual(["ord_recent"]);
+  });
+
+  it("UNMATCHED: a caller who owns NO order resolves nothing — no orderId, no forced confirm", async () => {
+    orderFindByDisplayId = async () => [];
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+
+    const { payload, ctx, owned } = await reviewSubmit({ orderReference: "1234" });
+
+    expect((payload as { orderId?: string }).orderId).toBeUndefined();
+    expect(ctx.autoResolvedMoneyRef).toBeUndefined();
+    expect(owned).toEqual([]);
+  });
+
+  it("MULTI-PRODUCT with no item reference: resolves NO product and stamps the honesty floor (never a guess)", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [
+        { productId: "prod_costela", title: "Costela" },
+        { productId: "prod_brisket", title: "Brisket" },
+      ]),
+    });
+
+    const { payload, ctx } = await reviewSubmit({});
+
+    expect((payload as { productId?: string }).productId).toBeUndefined();
+    expect(ctx.reviewProductUnresolved).toBe(true);
+  });
+
+  it("MULTI-PRODUCT with a matching item reference: resolves that line's product, floor NOT stamped", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [
+        { productId: "prod_costela", title: "Costela Bovina" },
+        { productId: "prod_brisket", title: "Brisket" },
+      ]),
+    });
+
+    const { payload, ctx } = await reviewSubmit({ item: "costela bovina" });
+
+    expect((payload as { productId?: string }).productId).toBe("prod_costela");
+    expect(ctx.reviewProductUnresolved).toBeUndefined();
+  });
+});
+
+// F-14 measurements 1 + 3 — the ONE branch where a pre-existing `payload.orderId`
+// survives `applyAutoResolve` untouched, and what stops it there.
+describe("resolveAndAssemble — order.review.submit: a foreign orderId already on the payload (F-14)", () => {
+  it("is OVERWRITTEN by the owner-scoped resolution whenever the caller owns any order", async () => {
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [{ productId: "prod_brisket", title: "Brisket" }]),
+      ord_victim: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+
+    const { payload, owned } = await reviewSubmit({ orderId: "ord_victim" });
+
+    // The display-reference strategy does not consult a pre-existing orderId at
+    // all: it resolves owner-scoped and REPLACES it.
+    expect((payload as { orderId?: string }).orderId).toBe("ord_recent");
+    expect((payload as { productId?: string }).productId).toBe("prod_brisket");
+    expect(owned).toEqual(["ord_recent"]);
+  });
+
+  it("survives ONLY when the caller owns nothing — and then no product resolves and the ctx leaks NO foreign order fact", async () => {
+    orderFindByDisplayId = async () => [];
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+    orderGetById = ownerScopedOrders({
+      ord_victim: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+
+    const { payload, ctx, owned } = await reviewSubmit({ orderId: "ord_victim" });
+
+    // Measured honestly: the id itself is NOT scrubbed here.
+    expect((payload as { orderId?: string }).orderId).toBe("ord_victim");
+    // But the write can never form — productId is resolved from the order's own
+    // lines through an owner-scoped read, which returns nothing for a foreign id.
+    expect((payload as { productId?: string }).productId).toBeUndefined();
+    expect(ctx.reviewProductUnresolved).toBe(true);
+    // …and the ctx `order-by-id` builds carries no fact ABOUT the foreign order.
+    expect(ctx.resourceOwnerConfirmed).toBe(false);
+    expect(ctx.totalInCentavos).toBeUndefined();
+    expect(ctx.fulfillmentStatus).toBeUndefined();
+    expect(ctx.paymentStatus).toBeNull();
+    expect(ctx.paymentMethod).toBeNull();
+    expect(owned).toEqual([]);
+  });
+
+  it("the reviewed-product read is OWNER-SCOPED at the call site — getById receives the CALLER's customerId, not the payload's order", async () => {
+    // The only thing standing between a foreign order's line items and a review
+    // write is that `resolveReviewedProduct` passes `{ customerId }` to `getById`;
+    // it keeps no post-check of its own. Pin the argument, not just the outcome.
+    const seen: Array<{ id: string; customerId?: string }> = [];
+    orderFindByDisplayId = async () => [];
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+    orderGetById = async (id, opts) => {
+      seen.push({ id, customerId: opts?.customerId });
+      return null;
+    };
+
+    await reviewSubmit({ orderId: "ord_victim" }, "c1");
+
+    expect(seen).toContainEqual({ id: "ord_victim", customerId: "c1" });
+    expect(seen.some((c) => c.customerId === undefined)).toBe(false);
+  });
+
+  it("KERNEL SEAM: the real composed honesty guard turns that ctx into a REFUSE — and passes the owner's turn (control)", async () => {
+    // TREATMENT — the foreign-id ctx from the case above.
+    orderFindByDisplayId = async () => [];
+    orderListByCustomer = async () => ({ orders: [], count: 0 });
+    orderGetById = ownerScopedOrders({
+      ord_victim: reviewOrder("victim", [{ productId: "prod_secret", title: "Segredo" }]),
+    });
+    const foreign = await reviewSubmit({ orderId: "ord_victim" });
+
+    // CONTROL — the true owner's turn, resolved the same way. It MUST pass the
+    // guard, or the treatment's REFUSE would prove nothing about this input.
+    orderListByCustomer = async () => ({ orders: [ord("ord_recent", 9, ACTIVE)], count: 1 });
+    orderGetById = ownerScopedOrders({
+      ord_recent: reviewOrder("c1", [{ productId: "prod_brisket", title: "Brisket" }]),
+    });
+    const owner = await reviewSubmit({});
+
+    const reviewEnv = buildEnvelope({
+      kind: "order.review.submit",
+      payload: { rating: 5 },
+      actor: { principal: "llm", sessionId: "s" },
+      taint: "UNTRUSTED",
+      nonce: "n-review",
+    });
+
+    const refused = refuseUnresolvedReviewProductGuard(reviewEnv, { ctx: foreign.ctx });
+    expect(refused?.kind).toBe("REFUSE");
+    if (refused?.kind === "REFUSE") {
+      expect(refused.refusal.code).toBe(UNRESOLVED_REVIEW_PRODUCT_REFUSAL_CODE);
+    }
+    expect(refuseUnresolvedReviewProductGuard(reviewEnv, { ctx: owner.ctx })).toBeNull();
   });
 });

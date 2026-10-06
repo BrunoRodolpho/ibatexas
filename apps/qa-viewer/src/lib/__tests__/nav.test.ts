@@ -38,6 +38,20 @@ describe("parseHash", () => {
     expect(parseHash("#")).toBeNull()
     expect(parseHash("#bogus/whatever")).toBeNull()
   })
+
+  it("still addresses SESSIONS after LE2-031 grouping — a group is never an address", () => {
+    // The rail now renders customers above sessions, but the shared address
+    // space did not move: every existing link, bookmark and cross-surface jump
+    // still names conv/<sessionId>[/turn/<turnId>]. A group key
+    // (customer:… / ops:… / unidentified) is a VIEW concern; it never appears
+    // in the hash, so grouping cannot break a link that already worked.
+    expect(parseHash("#rca/conv/sess-uuid/turn/turn-9")).toEqual({
+      section: "rca",
+      conv: "sess-uuid",
+      turn: "turn-9",
+    })
+    expect(buildHash({ section: "rca", conv: "sess-uuid" })).toBe("#rca/conv/sess-uuid")
+  })
 })
 
 describe("buildHash", () => {

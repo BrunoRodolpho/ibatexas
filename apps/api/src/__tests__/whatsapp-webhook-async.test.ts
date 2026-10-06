@@ -172,6 +172,15 @@ vi.mock("../ops/ops-whatsapp-ingress.js", () => ({
 const PHONE = "+5511999999999";
 const HASH = "phonehash-abc";
 
+/**
+ * LE2-030 — every conductor-turn send now carries a THIRD argument: the turn
+ * correlation `{ turnId, conversationId }` the delivery store joins the captured
+ * Twilio SID on. Matched loosely so these assertions stay about the MESSAGE, not
+ * about ids the individual fixtures happen to set. Sends with no conductor turn
+ * (shortcuts, the holding message, the apology) still pass two arguments.
+ */
+const CORR = expect.objectContaining({ conversationId: expect.any(String) });
+
 function createMockRedis(overrides: Record<string, unknown> = {}) {
   return {
     set: vi.fn().mockResolvedValue("OK"),
@@ -499,6 +508,7 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       mintRenderedReply("Olá! Como posso ajudar você hoje?"),
+      CORR,
     );
     expect(mockAppendMessages).toHaveBeenCalledWith(
       "sess-1",
@@ -558,6 +568,7 @@ describe("handleMessageAsync — conductor turn", () => {
       expect(mockSendText).toHaveBeenCalledWith(
         `whatsapp:${PHONE}`,
         mintRenderedReply("Resposta mesmo sem carrinho"),
+        CORR,
       );
     }, { timeout: 4000 });
     expect(mockHandleTurn).toHaveBeenCalledTimes(1);
@@ -568,11 +579,15 @@ describe("handleMessageAsync — conductor turn", () => {
       response: { text: "Pedido confirmado! Aqui está o pagamento." },
       acted: {
         kind: "executed",
+        // The real `createCheckout` PIX return shape: `orderId` is the CLIENT
+        // tracking id and holds the same `pi_…` value, because the Medusa order
+        // is created later by the Stripe webhook.
         result: {
           pixCopyPaste: "00020126PIX-COPIA-E-COLA-CODE",
           pixQrCode: "data:image/png;base64,QR",
           pixExpiresAt: "2026-06-28T23:59:00Z",
-          orderId: "ord-42",
+          paymentIntentId: "pi_3Rpix42",
+          orderId: "pi_3Rpix42",
         },
       },
       decision: { kind: "EXECUTE" },
@@ -583,8 +598,10 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(res.statusCode).toBe(200);
 
     await vi.waitFor(() => {
+      // BKL-241: scheduled under the PaymentIntent id — the id the Stripe
+      // webhook writes the `pix:paid:` marker under, so payment silences it.
       expect(mockSchedulePixExpiryMonitor).toHaveBeenCalledWith(
-        expect.objectContaining({ phone: PHONE, phoneHash: HASH, orderId: "ord-42" }),
+        expect.objectContaining({ phone: PHONE, phoneHash: HASH, paymentIntentId: "pi_3Rpix42" }),
       );
     }, { timeout: 4000 });
 
@@ -592,10 +609,12 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       mintRenderedReply("Pedido confirmado! Aqui está o pagamento."),
+      CORR,
     );
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       textContaining("Código PIX (copia e cola)"),
+      CORR,
     );
     const pixBlock = mockSendText.mock.calls.find((c) =>
       (c[1] as { text: string }).text.includes("Código PIX (copia e cola)"),
@@ -611,7 +630,65 @@ describe("handleMessageAsync — conductor turn", () => {
       // bare string. The brand symbol is shared across minters, so a reply
       // minted here deep-equals the webhook's `mintReceiptReply("QR Code PIX")`.
       mintRenderedReply("QR Code PIX"),
+      CORR,
     );
+  }, 15000);
+
+  it("BKL-241: a regenerated PIX is monitored under its NEW PaymentIntent id", async () => {
+    // `regeneratePix` surfaces only `paymentIntentId` (it has no client tracking
+    // id to return), so this is the shape that used to fall through to the
+    // customer-id fallback and produce an unsilenceable monitor.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Novo PIX gerado!" },
+      acted: {
+        kind: "executed",
+        result: {
+          pixCopyPaste: "00020126PIX-REGENERATED",
+          pixExpiresAt: "2026-06-28T23:59:00Z",
+          paymentIntentId: "pi_3Rregen99",
+        },
+      },
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_REGEN&From=whatsapp%3A%2B5511999999999&Body=novo+pix");
+    expect(res.statusCode).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(mockSchedulePixExpiryMonitor).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: "pi_3Rregen99" }),
+      );
+    }, { timeout: 4000 });
+  }, 15000);
+
+  it("BKL-241: schedules NOTHING when the PIX artifact carries no payment intent id", async () => {
+    // The session has customerId "cus-1". The old code fell back to it, keying
+    // the monitor on an id the `pix:paid:` marker can never carry — so the job
+    // was guaranteed to tell a paying customer "O PIX expirou". Silence beats a
+    // reminder that cannot be silenced.
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "Aqui está o PIX." },
+      acted: {
+        kind: "executed",
+        result: { pixCopyPaste: "00020126PIX-NO-ID" },
+      },
+      decision: { kind: "EXECUTE" },
+    });
+
+    const app = await buildTestServer();
+    const res = await post(app, "MessageSid=SM_NOID&From=whatsapp%3A%2B5511999999999&Body=pagar");
+    expect(res.statusCode).toBe(200);
+
+    // The copia-e-cola still reaches the customer — only the monitor is skipped.
+    await vi.waitFor(() => {
+      expect(mockSendText).toHaveBeenCalledWith(
+        `whatsapp:${PHONE}`,
+        textContaining("Código PIX (copia e cola)"),
+        CORR,
+      );
+    }, { timeout: 4000 });
+    expect(mockSchedulePixExpiryMonitor).not.toHaveBeenCalled();
   }, 15000);
 
   it("on turn failure: sends the pt-BR fallback and RELEASES the claim so Twilio retries", async () => {
@@ -708,6 +785,7 @@ describe("handleMessageAsync — conductor turn", () => {
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
       textContaining("Seu pedido está confirmado."),
+      CORR,
     );
     // …so NO governed incident and NO no-delivery signal (F2 already-served).
     expect(mockEmitNoDelivery).not.toHaveBeenCalled();
@@ -808,7 +886,11 @@ describe("handleMessageAsync — conductor turn", () => {
 
     // Lock acquired for the main turn AND re-acquired for the retry.
     expect(mockAcquireAgentLock.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Claro, vou adicionar."));
+    expect(mockSendText).toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      mintRenderedReply("Claro, vou adicionar."),
+      CORR,
+    );
   }, 15000);
 
   it("M3: a whitespace-only retry reply is NOT sent, does NOT auto-close, and flags retry_exhausted", async () => {
@@ -833,8 +915,16 @@ describe("handleMessageAsync — conductor turn", () => {
     }, { timeout: 4000 });
 
     // Main deliverable reply WAS sent; the whitespace-only retry reply was NOT.
-    expect(mockSendText).toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("Perfeito!"));
-    expect(mockSendText).not.toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("  \n "));
+    expect(mockSendText).toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      mintRenderedReply("Perfeito!"),
+      CORR,
+    );
+    expect(mockSendText).not.toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      mintRenderedReply("  \n "),
+      CORR,
+    );
     // The blank retry did NOT auto-resolve an OPEN incident…
     expect(mockCloseIncidentOnDeliveredReply).not.toHaveBeenCalled();
     // …and the now-reachable whitespace_only branch flagged it as retry_exhausted.
@@ -872,11 +962,16 @@ describe("handleMessageAsync — conductor turn", () => {
       expect(mockSendText).toHaveBeenCalledWith(
         `whatsapp:${PHONE}`,
         textContaining("Código PIX (copia e cola)"),
+        CORR,
       );
     }, { timeout: 4000 });
 
     // Whitespace text was NOT sent as a message…
-    expect(mockSendText).not.toHaveBeenCalledWith(`whatsapp:${PHONE}`, mintRenderedReply("  \n "));
+    expect(mockSendText).not.toHaveBeenCalledWith(
+      `whatsapp:${PHONE}`,
+      mintRenderedReply("  \n "),
+      CORR,
+    );
     // …no empty-completion holding message was pushed…
     expect(mockSendText).not.toHaveBeenCalledWith(
       `whatsapp:${PHONE}`,
@@ -1021,5 +1116,305 @@ describe("handleMessageAsync — ops-actor fork (BKL-086)", () => {
     const forkOrder = mockHandleOpsWhatsAppMessage.mock.invocationCallOrder[0]!;
     const resolveOrder = mockResolveWhatsAppSession.mock.invocationCallOrder[0]!;
     expect(forkOrder).toBeLessThan(resolveOrder);
+  }, 15000);
+});
+
+// ── Phase 6 — the customer-WhatsApp park-reply triage (the R4-S1 opt-out closes) ──
+//
+// The triage runs at the INGRESS, BEFORE handleTurn, so this route suite is the
+// only seam that can measure it: `runConductorTurn` is module-private and the
+// customer e2e harness drives `handleTurn` directly, i.e. it enters BELOW the
+// branch under test. These drive the real Fastify webhook exactly as the web
+// mirror (routes/__tests__/chat-route.test.ts, "BKL-212 parked-confirmation
+// niceties") drives the real chat route.
+//
+// `mockHandleTurn` is the load-bearing witness throughout: a triage branch SKIPS
+// the turn, so "the model was never called" is what distinguishes an answered
+// reply from one that fell through to the loop.
+describe("handleMessageAsync — park-reply triage (Phase 6, customer plane)", () => {
+  const PARK_PROMPT = "cancelar o pedido 4242";
+  const INTENT_HASH = "abc123def456";
+  const DECLINE_ACK =
+    "Ok, não vou fazer isso — nada foi alterado. Se precisar de outra coisa, é só me dizer.";
+  let mockUnpark: ReturnType<typeof vi.fn>;
+
+  /** Open the capsule with ONE parked confirmation in the CUSTOMER-plane shape:
+   *  no `expiresAt` (only a `system:`-prefixed ops session gets one). `parkedAt`
+   *  is a parameter so the no-TTL decision itself can be exercised. */
+  function withPark(parkedAt: string = new Date().toISOString()): void {
+    mockGetConductor.mockReturnValue({
+      openCapsule: vi.fn().mockResolvedValue({
+        id: "capsule-1",
+        turnId: "turn-park",
+        loadedSession: {
+          id: "whatsapp:cus-1",
+          pendingConfirmations: [
+            {
+              envelope: { kind: "order.cancel", intentHash: INTENT_HASH },
+              confirmationToken: "tok-1",
+              userPrompt: PARK_PROMPT,
+              parkedAt,
+            },
+          ],
+        },
+        session: { unpark: mockUnpark },
+      }),
+      closeCapsule: vi.fn().mockResolvedValue(undefined),
+    });
+  }
+
+  /** Open the capsule with NO parks (the pre-Phase-6 default shape). */
+  function withoutPark(): void {
+    mockGetConductor.mockReturnValue({
+      openCapsule: vi.fn().mockResolvedValue({
+        id: "capsule-1",
+        turnId: "turn-nopark",
+        loadedSession: { id: "whatsapp:cus-1", pendingConfirmations: [] },
+        session: { unpark: mockUnpark },
+      }),
+      closeCapsule: vi.fn().mockResolvedValue(undefined),
+    });
+  }
+
+  /** Drive ONE inbound WhatsApp message all the way through the async pipeline.
+   *
+   *  The turn input is the LAST USER message of the loaded session history (the
+   *  route re-reads the thread rather than trusting the raw webhook body), so the
+   *  history is seeded with `body` as that message. A trailing assistant message
+   *  keeps the post-lock retry a no-op — the suite-wide convention — so a single
+   *  inbound produces exactly ONE turn path to assert on. */
+  async function send(sid: string, body: string): Promise<void> {
+    mockLoadSession.mockResolvedValue([
+      { role: "user", content: body },
+      { role: "assistant", content: "resposta anterior" },
+    ]);
+    const app = await buildTestServer();
+    const res = await post(
+      app,
+      `MessageSid=${sid}&From=whatsapp%3A%2B5511999999999&Body=${encodeURIComponent(body)}`,
+    );
+    expect(res.statusCode).toBe(200);
+    // The lock release is the last thing the turn path does, triage or not.
+    await vi.waitFor(() => {
+      expect(mockReleaseAgentLock).toHaveBeenCalled();
+    }, { timeout: 8000 });
+  }
+
+  /** The text of the reply that reached Twilio, or undefined. */
+  function sentText(): string | undefined {
+    const call = mockSendText.mock.calls.find(([to]) => to === `whatsapp:${PHONE}`);
+    return (call?.[1] as { text?: string } | undefined)?.text;
+  }
+
+  beforeEach(() => {
+    mockTryDebounce.mockResolvedValue(true); // become the runner → reach the turn path
+    mockUnpark = vi.fn().mockResolvedValue(undefined);
+    mockHandleTurn.mockResolvedValue({
+      response: { text: "resposta do modelo" },
+      acted: null,
+      decision: { kind: "EXECUTE" },
+    });
+  });
+
+  // (a) SOFT AFFIRMATIVE → restate, park SURVIVES.
+  it("(a) a bare soft affirmative (\"pode\") RESTATES the park, keeps it, and never runs the turn", async () => {
+    withPark();
+    await send("SM_SOFT", "pode");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Money-safety: a soft affirmative must never execute AND never unpark — the
+    // park survives so a follow-up "sim" still runs the adjudicated resume.
+    expect(mockUnpark).not.toHaveBeenCalled();
+    const text = sentText();
+    expect(text).toContain("Só confirmando");
+    expect(text).toContain(PARK_PROMPT);
+    expect(text).toContain('"sim"');
+    // A deterministic notice IS a delivered reply: persisted to the thread.
+    expect(mockAppendMessages).toHaveBeenCalledWith(
+      "sess-1",
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          content: expect.stringContaining("Só confirmando"),
+        }),
+      ]),
+      true,
+      expect.objectContaining({ channel: "whatsapp" }),
+    );
+  }, 15000);
+
+  // (a′) THE MANDATE'S BEHAVIOUR CHANGE, pinned. `@claustrum/channel-whatsapp`'s
+  // matchToParked lists "ok" in its AFFIRMATIVE_RE, so BEFORE this wiring a bare
+  // "ok" reached the loop and EXECUTED the parked action. It must now restate.
+  it.each(["ok", "beleza", "OK!", "claro"])(
+    "(a′) soft variant %j also restates instead of executing (the WhatsApp driver would have confirmed it)",
+    async (word) => {
+      withPark();
+      await send(`SM_SOFT_${word.replace(/\W/g, "")}`, word);
+
+      expect(mockHandleTurn).not.toHaveBeenCalled();
+      expect(mockUnpark).not.toHaveBeenCalled();
+      expect(sentText()).toContain("Só confirmando");
+    },
+    15000,
+  );
+
+  // (b) PURE NEGATIVE → decline + unpark + acknowledgment.
+  it("(b) a pure negative (\"não\") DECLINES the park: unparked before the turn, deterministic ACK, turn skipped", async () => {
+    withPark();
+    await send("SM_NEG", "não");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Unparked BEFORE the turn, keyed on the parked envelope's intentHash.
+    expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
+    expect(sentText()).toBe(DECLINE_ACK);
+  }, 15000);
+
+  // (c) STALE — the config decision itself, pinned as a POSITIVE assertion.
+  //
+  // There is no stale branch on this plane and that is a DECISION, not a gap: a
+  // customer park carries no `expiresAt` (`opsConfirmParkExpiresAt` returns a value
+  // only for a `system:`-prefixed ops session), so the customer policy declares
+  // `freshness: none` and every pending confirmation is live however old it is.
+  // This drives a park aged FAR past the ops 15-minute confirm TTL and asserts it
+  // is still treated as LIVE — no expiry notice, and the branches still engage. A
+  // future TTL on the customer plane (which would change how long a park lives)
+  // reds this test.
+  it("(c) a park aged past the OPS confirm TTL is still LIVE on the customer plane — no expiry notice", async () => {
+    const dayOld = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    withPark(dayOld);
+    await send("SM_STALE", "não");
+
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    // Declined as a LIVE park (not reported expired, not left inert).
+    expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
+    const text = sentText();
+    expect(text).toBe(DECLINE_ACK);
+    expect(text).not.toContain("expirou");
+  }, 15000);
+
+  // (d) CONTROL — an explicit confirm must NOT be intercepted.
+  it("(d) CONTROL: an explicit \"sim\" is NOT intercepted — the normal confirm-resume turn runs, park untouched", async () => {
+    withPark();
+    await send("SM_SIM", "sim");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    // The conductor owns the resume unpark — the ingress must not pre-empt it.
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(sentText()).toBe("resposta do modelo");
+  }, 15000);
+
+  // (d′) CONTROL — every other shape the triage must let through.
+  it.each([
+    ["a soft yes carrying NEW content", "ok mas manda às 19h"],
+    ["a MIXED affirmative + negative (ambiguous, money-safe)", "não, pode deixar"],
+    ["an ordinary utterance", "quero uma costela"],
+  ])("(d′) CONTROL: %s runs the normal turn with the park untouched", async (_label, body) => {
+    withPark();
+    await send(`SM_CTL_${body.length}`, body);
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(sentText()).toBe("resposta do modelo");
+  }, 15000);
+
+  // (e) CONTROL — no parks at all: the loop runs untouched.
+  it.each(["não", "ok", "sim", "quero uma costela"])(
+    "(e) CONTROL: with NO park, %j takes the normal path",
+    async (body) => {
+      withoutPark();
+      await send(`SM_FREE_${body.length}`, body);
+
+      expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+      expect(mockUnpark).not.toHaveBeenCalled();
+      expect(sentText()).toBe("resposta do modelo");
+    },
+    15000,
+  );
+
+  // FAIL-HONEST — the acknowledgment asserts a cancellation, so it may only be
+  // sent once the unpark STUCK.
+  it("an unpark FAILURE falls through to the normal loop instead of claiming a cancellation", async () => {
+    withPark();
+    mockUnpark.mockRejectedValue(new Error("redis down"));
+    await send("SM_UNPARKFAIL", "não");
+
+    // The triage DID decide to decline and DID attempt the unpark — this is what
+    // separates the fail-honest fallthrough from an ingress with no triage at all
+    // (which never touches the store), so the assertion is not satisfied by the
+    // unwired baseline.
+    expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
+    // The park did NOT clear → we must not acknowledge; run the loop, where
+    // claustrum's own deny path still unparks.
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(sentText()).toBe("resposta do modelo");
+    expect(sentText()).not.toBe(DECLINE_ACK);
+  }, 15000);
+
+  // ── F-3 (CLOSED) — a NEGATIVE carrying a SAFETY MARKER falls through ────────
+  // This block previously PINNED the defect: `isPureNegativeReplyText("não, sou
+  // celíaco")` is true (a negative token, no affirmative/hash/defer token), so the
+  // triage answered the reply pre-turn with the decline ACK and the celiac marker
+  // never reached the planner's §O#9 closed-taxonomy safety routing. That pin was
+  // written as a change-detector an owner ruling would flip; the owner's standing
+  // F-3 ruling (PR #515 — a safety marker OUTRANKS a short-circuit, and the gate
+  // chooses NO terminal) has now been applied to this seam, so it is flipped here
+  // into a DIRECTIONAL guard of the new behaviour.
+  //
+  // WHAT IS ASSERTED, and why this file. The triage is a PRE-handleTurn branch, so
+  // `mockHandleTurn` is the only witness that can tell "the triage answered it"
+  // from "the turn ran": the customer e2e harness drives `handleTurn` directly and
+  // therefore enters BELOW the branch under test. `handleTurn` being CALLED is the
+  // whole claim — it is what puts the marker in front of the planner.
+  //
+  // WHAT HAPPENS TO THE PARK — measured, and named rather than assumed. The triage
+  // stands down, so it unparks NOTHING (money-safety: no cancellation is claimed
+  // without its acknowledgment). `handleTurn` is mocked here, so the conductor's
+  // own deny path does not run in THIS harness and the park simply survives the
+  // ingress; in production that deny path unparks and re-plans the text, which for
+  // a marker-bearing negative carries real content for the safety machinery to
+  // answer. The assertion below is scoped to what this seam actually decides.
+  it("F-3: a negative carrying a SAFETY MARKER reaches handleTurn — the triage stands down and unparks NOTHING", async () => {
+    withPark();
+    await send("SM_CELIAC", "não, sou celíaco");
+
+    // The turn RAN — the marker is now in front of the planner (§O#9 / BKL-184).
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    // The text handed to the conductor is the customer's own words, unmodified.
+    expect(mockHandleTurn.mock.calls[0]?.[1]).toMatchObject({ text: "não, sou celíaco" });
+    // The TRIAGE unparked nothing: it declined to intercept, so it claims no
+    // cancellation. The park's fate belongs to the conductor's deny path.
+    expect(mockUnpark).not.toHaveBeenCalled();
+    // No decline ACK was sent — the turn's own reply is delivered instead.
+    const text = sentText();
+    expect(text).not.toBe(DECLINE_ACK);
+    expect(text).toBe("resposta do modelo");
+  }, 15000);
+
+  // The CONTROL that makes the case above directional. Same park, same ingress,
+  // same code path — only the marker differs. Without it, "handleTurn was called"
+  // would also pass against a triage whose decline branch had been deleted outright.
+  it("F-3 CONTROL: a marker-FREE negative on the same park still declines byte-identically", async () => {
+    withPark();
+    await send("SM_NOMARKER", "não, sou vegetariano");
+
+    // `vegetariano` is deliberately OUT of the diet net (BKL-214 drew the
+    // preference/restriction line), so this is the SAME sentence shape with no
+    // marker — and it must still be intercepted exactly as before.
+    expect(mockHandleTurn).not.toHaveBeenCalled();
+    expect(mockUnpark).toHaveBeenCalledWith("whatsapp:cus-1", INTENT_HASH);
+    expect(sentText()).toBe(DECLINE_ACK);
+  }, 15000);
+
+  // The ACTIVE-DISTRESS member of the class — the §O#9 ESCALATE proper (BKL-209),
+  // not the BKL-270 diet net. Both halves of `carriesSafetyMarker` are exercised at
+  // the ingress, so a regression in either net is visible at this seam.
+  it("F-3: an ACTIVE-DISTRESS negative also reaches handleTurn (the BKL-209 net, not just the diet net)", async () => {
+    withPark();
+    await send("SM_DISTRESS", "não consigo respirar");
+
+    expect(mockHandleTurn).toHaveBeenCalledTimes(1);
+    expect(mockUnpark).not.toHaveBeenCalled();
+    expect(sentText()).not.toBe(DECLINE_ACK);
   }, 15000);
 });

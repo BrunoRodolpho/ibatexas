@@ -20,11 +20,12 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { PLANNER_PERSONA } from "../../prompts/personas.js";
+import { EXTRACTION_SCHEMAS_BY_CAPABILITY } from "../wire-schemas.js";
 import {
   computeOrderCancelExtractionPromptFragment,
   type ExtractionPromptFragment,
 } from "./extraction-prompt-fragment-support.js";
-import { PLANNER_PERSONA } from "../../prompts/personas.js";
 
 const GOLDEN_PATH = fileURLToPath(
   new URL("./__golden__/order-cancel.extraction-prompt-fragment.json", import.meta.url),
@@ -44,14 +45,18 @@ describe("extraction-prompt golden byte-identity gate (order.cancel)", () => {
     expect(canonicalize(fresh)).toBe(readGoldenRaw());
   });
 
-  it("exposes ONLY reason on the wire — never orderId — and reason is NOT required", async () => {
-    const fresh = await computeOrderCancelExtractionPromptFragment();
-    const schema = fresh.expressIntentTool.inputSchema as {
-      allOf: Array<{
-        then: { properties: { payload: { properties: Record<string, unknown>; required?: string[] } } };
-      }>;
+  // BKL-255a — this assertion used to read the payload schema back off the
+  // `express_intent` wire surface (the `allOf` clause). That clause is gone:
+  // the engine dropped it at decode (LE2-004), so the planner no longer sends
+  // it. The field inventory it checks is still live and still load-bearing —
+  // it is what `ALLOWED_PAYLOAD_FIELD_NAMES_BY_CAPABILITY` derives the
+  // parse-seam filter from — so the assertion now reads the AUTHORED registry
+  // directly rather than a wire surface that no longer carries it.
+  it("the authored schema exposes ONLY reason — never orderId — and reason is NOT required", () => {
+    const payloadSchema = EXTRACTION_SCHEMAS_BY_CAPABILITY.get("order.cancel") as {
+      properties: Record<string, unknown>;
+      required?: string[];
     };
-    const payloadSchema = schema.allOf[0]!.then.properties.payload;
     expect(Object.keys(payloadSchema.properties)).toEqual(["reason"]);
     expect(payloadSchema.required).toBeUndefined();
   });
@@ -61,19 +66,17 @@ describe("extraction-prompt golden byte-identity gate (order.cancel)", () => {
     expect(fresh.personaExcerpt).toBe(PLANNER_PERSONA);
   });
 
-  it("RED: a mutated wire schema (an extra leaked field) is NOT byte-identical to the golden fixture", async () => {
+  it("RED: a mutated wire schema (an extra capability in the enum) is NOT byte-identical to the golden fixture", async () => {
     const fresh = await computeOrderCancelExtractionPromptFragment();
     const mutated: ExtractionPromptFragment = JSON.parse(JSON.stringify(fresh)) as ExtractionPromptFragment;
     const schema = mutated.expressIntentTool.inputSchema as {
-      allOf: Array<{
-        then: { properties: { payload: { properties: Record<string, unknown> } } };
-      }>;
+      properties: { capability: { enum: string[] } };
     };
-    // Simulates a future edit accidentally exposing a forbidden field.
-    schema.allOf[0]!.then.properties.payload.properties.orderId = {
-      type: "string",
-      description: "x",
-    };
+    // BKL-255a — the payload sub-schema this used to mutate is no longer on the
+    // wire, so the drift it simulated can no longer reach the golden. The
+    // capability enum IS still on the wire and is still the surface a rollout
+    // slice drifts; mutating it keeps this gate genuinely sensitive.
+    schema.properties.capability.enum.push("order.status.transition");
     expect(canonicalize(mutated)).not.toBe(readGoldenRaw());
   });
 

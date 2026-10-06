@@ -30,7 +30,11 @@ import {
   verifyParkedEnvelopeHash,
   type ParkedEnvelope,
 } from "@adjudicate/runtime"
-import { parkDeferredIntentWithNxGuard } from "../park-deferred-intent-nx.js"
+import {
+  createParkRedisCapabilities,
+  parkDeferredIntentWithNxGuard,
+  type ParkRedisCapabilities,
+} from "../park-deferred-intent-nx.js"
 import {
   RUN_REAL_REDIS,
   setupRedisTestContainer,
@@ -41,31 +45,13 @@ function rk(key: string): string {
   return `w7-g3-park-hash:${key}`
 }
 
-// Map node-redis client → the ParkRedis interface the wrapper expects.
-function makeParkRedis(client: RedisTestHarness["client"]): {
-  incr: (key: string) => Promise<number>
-  decr: (key: string) => Promise<number>
-  expire: (key: string, seconds: number, mode?: "NX") => Promise<unknown>
-  set: (
-    key: string,
-    value: string,
-    options: { EX?: number; NX?: boolean },
-  ) => Promise<string | null>
-  del: (key: string) => Promise<unknown>
-  get: (key: string) => Promise<string | null>
-} {
-  return {
-    incr: (key) => client.incr(key),
-    decr: (key) => client.decr(key),
-    expire: (key, seconds) => client.expire(key, seconds),
-    set: (key, value, options) =>
-      client.set(key, value, {
-        ...(options.EX !== undefined ? { EX: options.EX } : {}),
-        ...(options.NX ? { NX: true } : {}),
-      }) as Promise<string | null>,
-    del: (key) => client.del(key),
-    get: (key) => client.get(key),
-  }
+// F-22: compose the node-redis client through the PRODUCTION composition root
+// rather than a hand-written shim. The old shim exposed no `eval`, so these
+// parks ran the wrapper's now-deleted plain-`del` fallback.
+function makeParkRedis(
+  client: RedisTestHarness["client"],
+): ParkRedisCapabilities {
+  return createParkRedisCapabilities(client)
 }
 
 function buildTestEnvelope(args: { sessionId: string; nonce: string }): IntentEnvelope {

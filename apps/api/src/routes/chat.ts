@@ -35,6 +35,7 @@ import { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { handleTurn, type ChannelMessage } from "@claustrum/core";
+import { runTurnWithContexts } from "../claustrum/turn-context.js";
 import { mintFallbackReply, wrapLegacyResponderText } from "@adjudicate/core";
 import { Channel, type StreamChunk } from "@ibatexas/types";
 import { getRedisClient, rk, createSessionToken, verifySessionToken, getOrCreateCart } from "@ibatexas/tools";
@@ -51,6 +52,11 @@ import {
 import { acquireWebAgentLock, releaseWebAgentLock } from "../streaming/execution-queue.js";
 import { getConductor } from "../claustrum-bootstrap.js";
 import {
+  triageParkReply,
+  unparkParks,
+  customerParkTriagePolicy,
+} from "../claustrum/park-reply-triage.js";
+import {
   classifyTurnDelivery,
   classifyCatchError,
   emitNoDelivery,
@@ -62,6 +68,9 @@ import {
   type TurnDisposition,
 } from "../conversation/no-delivery.js";
 import { closeIncidentOnDeliveredReply } from "../incidents/incident-auto-close.js";
+// F-9 — the ONE owner of "may this customer claim this session?". The durable
+// backstop behind `session:owner` lives there; this route owns only the IO.
+import { decideSessionClaim } from "../session/session-claim.js";
 
 const PostMessageBody = z.object({
   sessionId: z.uuid(),
@@ -168,13 +177,34 @@ function sendForbidden(reply: FastifyReply, message: string): void {
  * Session-ownership verification (zero-trust). Returns true if the request was
  * rejected (a 403 has been sent) and the caller must stop. On success the owner
  * key is (re)asserted with a 24h TTL.
+ *
+ * F-9 — the ownership DECISION now lives in `session/session-claim.ts`, which
+ * adds a durable backstop behind this key so an expired owner key can no longer
+ * hand a claimed session to a different customer. Read that module for why the
+ * cart's own wall had to be built here instead of at the cart. What stays in
+ * this function is the IO and the HTTP: the key read, the token check (a
+ * separate concern — token VALIDITY, not ownership), the 403, and the sliding
+ * re-assert below.
+ *
+ * THE `redis.set` AT THE END IS LOAD-BEARING FOR THE BACKSTOP, not just
+ * bookkeeping. It runs on EVERY successful authenticated POST with a fresh
+ * `EX 86400`, so the owner key SLIDES. That is what makes "owner key absent"
+ * mean "genuinely idle for 24h" rather than merely "claimed a day ago", and it
+ * is why the archiver's async lag can never reach the backstop — inside the lag
+ * window this key was just written, so the fast path answers the request.
  */
 async function rejectOnOwnershipFailure(
-  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  /**
+   * Narrowed to what this function ACTUALLY issues — the `get` of the owner
+   * key and the sliding `set` that re-asserts it. Both are load-bearing: see
+   * the note above on why the `set` is not bookkeeping.
+   */
+  redis: Pick<Awaited<ReturnType<typeof getRedisClient>>, "get" | "set">,
   sessionId: string,
   customerId: string,
   tokenHeader: string | undefined,
   reply: FastifyReply,
+  log: FastifyInstance["log"],
 ): Promise<boolean> {
   const ownerKey = rk(`session:owner:${sessionId}`);
   const existingOwner = await redis.get(ownerKey);
@@ -187,7 +217,33 @@ async function rejectOnOwnershipFailure(
     }
   }
 
-  if (existingOwner && existingOwner !== customerId) {
+  const decision = await decideSessionClaim(
+    { sessionId, customerId, existingOwner: existingOwner ?? null },
+    {
+      onDurableReadError: (err) =>
+        log.warn(
+          { component: "session-claim", event: "session.claim.durable_read_failed", sessionId, err },
+          "[chat] durable session-owner read failed — claim ALLOWED (fail-open: an unreadable record must not lock a customer out of their own session)",
+        ),
+    },
+  );
+
+  if (decision.outcome === "refuse") {
+    // FORENSICS — only the NEW branch logs. The fast-path refusal is unchanged
+    // and stays silent, exactly as before, so this line means one specific
+    // thing: a claimed session was protected AFTER its owner key had lapsed.
+    if (decision.basis === "durable-record") {
+      log.warn(
+        {
+          component: "session-claim",
+          event: "session.claim.refused_by_durable_record",
+          sessionId,
+          attemptedByCustomerId: customerId,
+          incumbentCustomerId: decision.incumbentCustomerId,
+        },
+        "[chat] cross-session claim REFUSED by the durable conversation record — the session:owner key had expired but the conversation durably belongs to another customer (F-9)",
+      );
+    }
     sendForbidden(reply, "Sessão pertence a outro usuário.");
     return true;
   }
@@ -202,7 +258,8 @@ async function rejectOnOwnershipFailure(
  * it verifies the provided secret, rejecting (403) on mismatch.
  */
 async function resolveGuestSecret(
-  redis: Awaited<ReturnType<typeof getRedisClient>>,
+  /** Narrowed to what this function issues: `get` (verify) + `set` (mint). */
+  redis: Pick<Awaited<ReturnType<typeof getRedisClient>>, "get" | "set">,
   sessionId: string,
   providedSecret: string | undefined,
   reply: FastifyReply,
@@ -301,6 +358,38 @@ async function openWebDrop(params: {
 }
 
 /**
+ * BKL-212 — deliver ONE deterministic, ingress-authored pt-BR reply (a
+ * confirm-resume nicety) on the SSE stream. Mirrors the normal path's frame order
+ * and branding exactly — `text_delta` (branded through the same transitional
+ * minter) → persist → terminal `done` — so the client cannot tell an
+ * ingress-answered turn from a conductor-answered one. Abort-aware like every
+ * other delivery here: a disconnected/superseded consumer gets nothing (and
+ * nothing is persisted for it). The history append is best-effort, matching the
+ * ops precedent — a store failure must never cost the customer the reply.
+ */
+async function deliverIngressReply(params: {
+  server: FastifyInstance;
+  sessionId: string;
+  text: string;
+  customerId: string | undefined;
+  isAuthenticated: boolean;
+  aborted: boolean;
+}): Promise<void> {
+  const { server, sessionId, text, customerId, isAuthenticated, aborted } = params;
+  if (aborted) return;
+  pushChunk(sessionId, { type: "text_delta", delta: wrapLegacyResponderText(text) });
+  try {
+    await appendMessages(sessionId, [{ role: "assistant", content: text }], isAuthenticated, {
+      customerId,
+      channel: "web",
+    });
+  } catch (err) {
+    server.log.warn(err, "[chat] ingress-reply history append failed (non-fatal)");
+  }
+  pushChunk(sessionId, { type: "done" });
+}
+
+/**
  * Delegate one turn to the claustrum Conductor (fire-and-forget). Mirrors dev's
  * hardening: bot-pause gate, single assembled text chunk + terminal done,
  * assistant-message persistence, abort-aware delivery, and finally cleanup.
@@ -393,7 +482,117 @@ async function runConductorTurn(params: {
     });
 
     try {
-      const turn = await handleTurn(capsule, inbound);
+      // ── PARK-REPLY TRIAGE (BKL-212, seam extracted in R4-S1) ───────────────
+      // While a confirmation is parked, two reply shapes are answered by the
+      // ingress itself instead of burning a model turn that re-plans them: a bare
+      // soft affirmative RESTATES the park (nothing unparked, nothing executed — a
+      // follow-up "sim" still resumes it through the normal adjudicated path), and
+      // a PURE negative DECLINES it (unpark + acknowledge, so the negative text
+      // never reaches the planner — claustrum's own deny path unparks and THEN
+      // re-plans the "no" as a fresh command, the BKL-191 re-prompt). EVERYTHING
+      // else — an explicit "sim", a mixed reply, a soft yes that also carries
+      // CONTENT ("ok mas muda para 19h"), any ordinary text, or no park at all —
+      // falls through to the unchanged path below.
+      //
+      // The DECISION is owned by ../claustrum/park-reply-triage.ts; this ingress
+      // declares the CUSTOMER plane policy (as the `chat` surface — the customer
+      // WhatsApp ingress declares the SAME policy) and keeps only its own
+      // delivery. That
+      // policy has no freshness partition (customer parks carry no TTL — see
+      // web-confirm-channel.ts), so the branches engage on exactly the parks the
+      // WebConfirmChannel matcher itself can still resume, and no stale-resume
+      // branch exists here by design. The soft-affirmative admission is also
+      // deliberately NARROWER than the ops plane's: the WhatsApp customer channel
+      // confirms on a bare "ok" by design, and restating at a customer who added a
+      // new request reads as not having listened.
+      const parked = capsule.loadedSession?.pendingConfirmations;
+      const triage = triageParkReply({
+        text: message,
+        pendingConfirmations: parked,
+        nowIso: inbound.receivedAt,
+        policy: customerParkTriagePolicy(),
+      });
+      if (triage.kind === "skip-with-reply") {
+        // The verdict's `unpark` is LOAD-BEARING: the decline acknowledgment
+        // asserts nothing was changed, so it may only be sent once the unpark
+        // STUCK. Fail-honest — an unpark failure falls through to the normal loop
+        // rather than acknowledging a cancellation that did not stick. Unparking
+        // BEFORE handleTurn is the ops precedent.
+        let deliverNotice = true;
+        if (triage.unpark.length > 0) {
+          deliverNotice = false;
+          try {
+            await unparkParks({
+              session: capsule.session,
+              sessionId: capsule.loadedSession.id,
+              parks: triage.unpark,
+            });
+            deliverNotice = true;
+          } catch (err) {
+            server.log.warn(
+              err,
+              "[chat] negative-decline unpark failed — falling through to the normal loop (BKL-212)",
+            );
+          }
+        }
+        if (deliverNotice) {
+          turnHandled = true;
+          switch (triage.branch) {
+            case "soft-affirmative-restate":
+              server.log.warn(
+                { event: triage.event, sessionId, pending: parked?.length ?? 0 },
+                "[chat] soft affirmative on a parked confirmation — restating, awaiting an explicit confirm, skipping the turn",
+              );
+              break;
+            case "negative-decline":
+              server.log.warn(
+                {
+                  event: triage.event,
+                  sessionId,
+                  kind: String(triage.unpark[0]!.envelope.kind),
+                },
+                "[chat] negative reply on a parked confirmation — declined + unparked, skipping the turn (BKL-212)",
+              );
+              break;
+            default:
+              // Unreachable under the web-customer policy (no TTL ⇒ no
+              // stale-resume branch). Still reported with the verdict's own event
+              // tag, so a future policy change can never skip a turn silently.
+              server.log.warn(
+                { event: triage.event, sessionId },
+                "[chat] park-reply triage skipped the turn",
+              );
+              break;
+          }
+          await deliverIngressReply({
+            server,
+            sessionId,
+            text: triage.notice,
+            customerId,
+            isAuthenticated,
+            aborted: turnAbort.signal.aborted,
+          });
+          return;
+        }
+      }
+
+      // ── THE TURN, inside this ingress's per-turn CONTEXT SUBSET (R4-S2) ────
+      // `customer-full` = wire truth + the workflow turn binding + the funnel's
+      // per-turn context, in that nesting, closed in that order — owned by
+      // ../claustrum/turn-context.ts, which documents the invariant once.
+      //
+      // `pendingConfirmations` is the SAME `parked` reading the triage above just
+      // used, and the derivation of `confirmWindowOpen` from it lives in the module
+      // (one spelling, shared with the WhatsApp ingress). It is passed HERE —
+      // after the two ingress niceties, both of which `return` before the turn —
+      // so what L0 reads is the same park set that just failed to match.
+      const turn = await runTurnWithContexts({
+        subset: "customer-full",
+        turnId: capsule.turnId,
+        channel: "web",
+        pendingConfirmations: parked,
+        thunk: () => handleTurn(capsule, inbound),
+      });
       // The conductor produced a result — the inner classify below now owns the
       // no-delivery decision, so a later (post-result) throw must not re-open in
       // the catch (F2 gate).
@@ -492,6 +691,9 @@ async function runConductorTurn(params: {
       // Terminal — only when the client is still listening.
       if (!aborted) pushChunk(sessionId, { type: "done" });
     } finally {
+      // The funnel state was dropped when the turn settled (turn-context.ts's one
+      // `finally`); the capsule outlives the turn because the delivery work above
+      // does, so closing it stays this ingress's job.
       await conductor.closeCapsule(capsule);
     }
   } catch (err) {
@@ -562,11 +764,18 @@ async function runConductorTurn(params: {
 
 // ── GET (SSE) helpers (S3776: keep the route handler's cognitive complexity low) ──
 
+/**
+ * Machine-readable reason for an access denial (BKL-286). Carried ALONGSIDE the
+ * pt-BR prose so the web client can pick its recovery copy structurally instead
+ * of string-matching a sentence that copy edits would silently break.
+ */
+const SSE_ERROR_CODE_SESSION_DENIED = "session_denied";
+
 /** Write a terminal SSE error frame (event-stream headers + end). */
-function writeSseError(reply: FastifyReply, message: string): void {
+function writeSseError(reply: FastifyReply, message: string, code?: string): void {
   reply.raw.setHeader("Content-Type", "text/event-stream");
   reply.raw.flushHeaders();
-  reply.raw.write(`data: ${JSON.stringify({ type: "error", message })}\n\n`);
+  reply.raw.write(`data: ${JSON.stringify({ type: "error", message, ...(code && { code }) })}\n\n`);
   reply.raw.end();
 }
 
@@ -582,14 +791,21 @@ async function denyStreamAccess(
   customerId: string | undefined,
   providedSecret: string | undefined,
   reply: FastifyReply,
+  /**
+   * The seam. REQUIRED rather than defaulted: this guard fails CLOSED by
+   * catching everything and answering 503, so a silent fallback to the
+   * singleton would be indistinguishable from a working injection at every
+   * assertion that only reads the response.
+   */
+  resolveRedis: () => Promise<ChatStreamAccessRedis>,
 ): Promise<boolean> {
   try {
-    const redis = await getRedisClient();
+    const redis: ChatStreamAccessRedis = await resolveRedis();
     if (customerId) {
       // Authenticated stream: must own the session.
       const owner = await redis.get(rk(`session:owner:${sessionId}`));
       if (owner && customerId !== owner) {
-        writeSseError(reply, "Acesso negado.");
+        writeSseError(reply, "Acesso negado.", SSE_ERROR_CODE_SESSION_DENIED);
         return true;
       }
     } else {
@@ -602,7 +818,7 @@ async function denyStreamAccess(
       // returns "Sessão não encontrada" (preserving dev's GET contract).
       const expectedSecret = await redis.get(rk(`session:secret:${sessionId}`));
       if (expectedSecret && providedSecret !== expectedSecret) {
-        writeSseError(reply, "Acesso negado.");
+        writeSseError(reply, "Acesso negado.", SSE_ERROR_CODE_SESSION_DENIED);
         return true;
       }
     }
@@ -734,8 +950,146 @@ async function serveFromRedis(
   });
 }
 
-export async function chatRoutes(server: FastifyInstance): Promise<void> {
+// ── R5 rollout, webhook/chat family — this route's Redis client seam ────────
+//
+// The two `getRedisClient()` calls this module made inline now resolve through
+// `ChatRouteDeps.redis`. This file had no composition root before; the one
+// below is `redis`-only by design — the conductor, the session store and the
+// streaming emitter are separate seam questions and are untouched here.
+//
+// ── THE FAIL-CLOSED PICK ANALYSIS (the #539 / #543 / #548 rule) ─────────────
+//
+// The honest Pick is {issued} ∪ {optionally consumed downstream}, and THIS
+// file is the one in the family where the two halves differ. The POST handler
+// issues exactly ONE command on the client it resolves (`set`, the
+// lastActivity write) and then HANDS THAT CLIENT to two module-local helpers:
+//
+//   `rejectOnOwnershipFailure(redis, …)`  →  `get` (owner key) + `set` (the
+//                                            sliding 24h re-assert)
+//   `resolveGuestSecret(redis, …)`        →  `get` (secret) + `set` (mint)
+//
+// So a Pick derived from the HANDLER'S OWN TEXT is `{set}` — and `get` would
+// be ABSENT. That is #539 exactly: on the throw-on-access adapter the first
+// helper dies on `redis.get`, and what it guards is session OWNERSHIP. The
+// honest Pick is `{get, set}`, and the seam suite drives both helpers rather
+// than only the line the handler itself writes.
+//
+// ── The HAND-IT-TO read, and its measured negatives ────────────────────────
+//
+// Two collaborators on the POST path DO reach Lua, and neither is downstream
+// of this Pick, because neither accepts a client:
+//
+//   • `getOrCreateCart(_input, ctx)` — takes an input and an AgentContext,
+//     resolves its own client at `get-or-create-cart.ts:158`, and reaches
+//     `redis.eval(RELEASE_LOCK_SCRIPT)` through `acquireCartCreationLock` →
+//     `acquireLockAtKey`. It is the "looks like a hand-off, isn't" shape.
+//   • `acquireWebAgentLock(sessionId)` — the same shape from a different
+//     module: one string argument, self-resolves at
+//     `streaming/execution-queue.ts:59`, and reaches
+//     `redis.eval(EXTEND_LOCK_SCRIPT)` on its heartbeat.
+//
+// This is the `order-actions.ts` boundary and it is deliberate: a Pick that
+// deliberately leaves a Lua-bearing callee SELF-RESOLVING is precisely what
+// keeps the host file migratable. Neither is in `ChatRouteRedisClient`.
+//
+// ── Two LATENT hand-offs (F-42's shape), left alone ON PURPOSE ─────────────
+//
+// `loadSession` and `appendMessages` (`../session/store.js`) each ACCEPT an
+// `options.client`, and every call site in this file passes ZERO — so today
+// they resolve their own singleton and are NOT downstream of this Pick. They
+// are a SCOPE decision, not an oversight, and the two are NOT equivalent:
+//
+//   • `loadSession`  — declared `SessionHistoryReadClient = Pick<…,"lRange">`.
+//     Threadable whenever someone wants it; `lRange` is modelled.
+//   • `appendMessages` — declared `SessionHistoryAppendClient =
+//     Pick<…,"multi">`. `multi` is a command the canonical adapter REFUSES on
+//     purpose (W4 RULE 3 — a JS Map cannot provide server-side atomicity), so
+//     threading this one is OWNER-GATED, not merely out of scope. Whoever
+//     picks it up needs the real-Redis testcontainer harness, not this seam.
+//
+// Both already declare honest Picks and both fall back with `?? await
+// getRedisClient()`, so neither is the silent-failure variant F-42 filed.
+//
+// ── Feature detection: MEASURED, none ─────────────────────────────────────
+//
+// `typeof client.X === "function"` was swept over `apps/api/src/routes`,
+// `apps/api/src/streaming`, `apps/api/src/session`, `apps/api/src/middleware`
+// and `packages/tools/src`: no live Redis probe on any path this file reaches.
+
+type RedisClient = Awaited<ReturnType<typeof getRedisClient>>;
+
+/**
+ * The POST /api/chat/messages client: the `set` this handler issues directly
+ * (the sliding `session:lastActivity` write) UNION the `get`+`set` its two
+ * ownership/secret helpers issue on the SAME client it hands them.
+ *
+ * The union is the point — see the fail-closed note above. Narrowing this to
+ * the handler's own `set` compiles, typechecks and passes every test that only
+ * drives the guest-less path, while making authenticated session-ownership and
+ * guest-secret verification throw on their first `get`.
+ */
+type ChatPostSessionRedis = Pick<RedisClient, "get" | "set">;
+
+/**
+ * The SSE stream-access guard: two `get`s (owner key, guest secret) and no
+ * write. It fails CLOSED — any throw here is caught and answered 503 — which
+ * is exactly why the command must be present rather than merely optional: an
+ * absent `get` degrades a working access check into a permanent 503.
+ */
+type ChatStreamAccessRedis = Pick<RedisClient, "get">;
+
+/**
+ * The EXHAUSTIVE union of Redis commands this route issues — the type
+ * `ChatRouteDeps.redis` resolves to.
+ *
+ * Hand-written on purpose rather than derived from the two per-consumer types
+ * above: a derived union can never disagree with its consumers, so it could
+ * not catch a consumer that grew a command nobody declared (F-14).
+ */
+export type ChatRouteRedisClient = Pick<RedisClient, "get" | "set">;
+
+/** The collaborators `chat.ts` resolves through the seam. */
+export interface ChatRouteDeps {
+  /**
+   * Resolves the Redis client behind session ownership, the guest secret, the
+   * activity heartbeat and the SSE access guard.
+   *
+   * A FACTORY returning a promise, not an instance, so the `await` stays
+   * exactly where it was — per REQUEST, inside the handler. An instance would
+   * hoist resolution to registration and change when a Redis outage first
+   * surfaces (today: on the first chat message — never at boot).
+   */
+  readonly redis: () => Promise<ChatRouteRedisClient>;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/index.ts is unchanged.
+ */
+export interface ChatRoutesOptions {
+  readonly deps?: Partial<ChatRouteDeps>;
+}
+
+/** The production set — byte-for-byte the resolution this file did inline. */
+function defaultChatRouteDeps(): ChatRouteDeps {
+  return { redis: () => getRedisClient() };
+}
+
+function resolveChatRouteDeps(options?: ChatRoutesOptions): ChatRouteDeps {
+  return { ...defaultChatRouteDeps(), ...(options?.deps ?? {}) };
+}
+
+export async function chatRoutes(
+  server: FastifyInstance,
+  options?: ChatRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The member is a factory, so NOTHING is
+  // resolved here — the client is still awaited per request, inside the
+  // handler.
+  const deps = resolveChatRouteDeps(options);
 
   // ── POST /api/chat/messages ────────────────────────────────────────────────
 
@@ -753,7 +1107,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { sessionId, message } = request.body;
 
-      const redis = await getRedisClient();
+      const redis: ChatPostSessionRedis = await deps.redis();
 
       // ── Session ownership verification (zero-trust) ──────────────────────
       if (request.customerId) {
@@ -764,6 +1118,7 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
           request.customerId,
           tokenHeader,
           reply,
+          server.log,
         );
         if (rejected) return reply;
       }
@@ -875,7 +1230,16 @@ export async function chatRoutes(server: FastifyInstance): Promise<void> {
 
       // Verify session ownership / guest-secret before allowing the connection.
       const providedSecret = request.headers["x-session-secret"] as string | undefined;
-      if (await denyStreamAccess(server, sessionId, request.customerId, providedSecret, reply)) {
+      if (
+        await denyStreamAccess(
+          server,
+          sessionId,
+          request.customerId,
+          providedSecret,
+          reply,
+          deps.redis,
+        )
+      ) {
         return;
       }
 

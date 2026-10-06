@@ -2,6 +2,8 @@
 // Mocks all external dependencies: Redis, NATS, domain, WhatsApp client, Medusa.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
+import { rk } from "@ibatexas/tools";
 import {
   checkDormantCustomers,
   startProactiveEngagement,
@@ -11,7 +13,6 @@ import {
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
-const mockRk = vi.hoisted(() => vi.fn((k: string) => `test:${k}`));
 const mockPublishNatsEvent = vi.hoisted(() => vi.fn());
 const mockFindDormantCustomers = vi.hoisted(() => vi.fn());
 const mockSendText = vi.hoisted(() => vi.fn());
@@ -21,11 +22,16 @@ const mockFetchWeatherCondition = vi.hoisted(() => vi.fn());
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: mockGetRedisClient,
-  rk: mockRk,
-  medusaAdmin: mockMedusaAdmin,
-}));
+// R5-S6 — only the CLIENT is substituted. `rk()` is the real one (it is pure),
+// so every key below is the key production writes.
+vi.mock("@ibatexas/tools", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ibatexas/tools")>();
+  return {
+    ...actual,
+    getRedisClient: mockGetRedisClient,
+    medusaAdmin: mockMedusaAdmin,
+  };
+});
 
 vi.mock("@ibatexas/nats-client", () => ({
   publishNatsEvent: mockPublishNatsEvent,
@@ -64,24 +70,37 @@ vi.mock("../jobs/weather-helper.js", () => ({
 }));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+//
+// R5-S6 — this suite used to hand-roll a `createMockRedis()` of six `vi.fn()`s
+// that each answered a CONSTANT. The two guarantees the job exists to provide
+// are stateful, and a constant cannot express either: the per-customer COOLDOWN
+// (the key the job WRITES is the key it later READS — the stub never connected
+// them, so "we do not message the same customer twice" was never tested) and
+// the WEEKLY CAP (an INCR counter, stubbed to return whatever a case wanted, so
+// the cap could not be exercised at all). Both now run against the canonical
+// in-memory keyspace from `@ibatexas/tools/testing`, with real TTLs.
+//
+// R5 rollout, family 2 — the adapter was already here; the SEAM was not. The
+// client arrived by `vi.mock`-ing `getRedisClient`, so nothing distinguished
+// "the job read the injected keyspace" from "the job resolved a singleton that
+// happens to BE the injected keyspace". `getRedisClient` is now a rejecting
+// TRIPWIRE and every case drives `checkDormantCustomers(null, { redis })`
+// through `CheckDormantCustomersDeps`. The one case that deliberately exercises
+// the DEFAULT path overrides the tripwire and asserts the fallback.
 
-function createMockRedis(overrides: Record<string, unknown> = {}) {
-  return {
-    exists: vi.fn().mockResolvedValue(0),
-    hGetAll: vi.fn().mockResolvedValue({}),
-    set: vi.fn().mockResolvedValue("OK"),
-    incr: vi.fn().mockResolvedValue(1),
-    expire: vi.fn().mockResolvedValue(1),
-    hSet: vi.fn().mockResolvedValue(1),
-    ...overrides,
-  };
-}
+/** Keys the job reads and writes, through the REAL rk(). */
+const cooldownKey = (customerId: string): string => rk(`outreach:last:${customerId}`);
+const profileKey = (customerId: string): string => rk(`customer:profile:${customerId}`);
+const WEEKLY_KEY = (): string => rk("outreach:weekly:count");
 
 const CUSTOMER_A = { id: "cust_a", phone: "+5511999990001", name: "Ana" };
 const CUSTOMER_B = { id: "cust_b", phone: "+5511999990002", name: "Bruno" };
 
 describe("proactive-engagement", () => {
-  let mockRedis: ReturnType<typeof createMockRedis>;
+  let redis: InMemoryRedis;
+
+  /** Every case drives the job through its client seam. */
+  const run = () => checkDormantCustomers(null, { redis: redis.client });
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -89,8 +108,14 @@ describe("proactive-engagement", () => {
     // Default to lunch window (11:00 Sao Paulo = 14:00 UTC, UTC-3)
     vi.setSystemTime(new Date("2024-01-15T14:00:00Z"));
 
-    mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    // The adapter reads the FAKE clock, so a TTL written under fake timers
+    // expires when the test advances time — not on wall-clock.
+    redis = createInMemoryRedis({ now: () => Date.now() });
+    // TRIPWIRE: every case injects, so a singleton resolution means the seam
+    // stopped working. Overridden by the default-path case at the end.
+    mockGetRedisClient.mockRejectedValue(
+      new Error("getRedisClient() resolved — the proactive-engagement seam is unwired"),
+    );
     mockSendText.mockResolvedValue(undefined);
     mockPublishNatsEvent.mockResolvedValue(undefined);
     mockMedusaAdmin.mockResolvedValue({ product: { title: "Costela Defumada" } });
@@ -124,7 +149,7 @@ describe("proactive-engagement", () => {
   it("does nothing when there are no dormant customers", async () => {
     mockFindDormantCustomers.mockResolvedValue([]);
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).not.toHaveBeenCalled();
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
@@ -134,9 +159,10 @@ describe("proactive-engagement", () => {
 
   it("skips customer when cooldown key exists in Redis", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(1); // cooldown active
+    // The REAL cooldown key, seeded exactly as a previous run would have left it.
+    await redis.client.set(cooldownKey(CUSTOMER_A.id), "1", { EX: 3 * 86400 });
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).not.toHaveBeenCalled();
     expect(mockPublishNatsEvent).not.toHaveBeenCalled();
@@ -146,30 +172,27 @@ describe("proactive-engagement", () => {
 
   it("skips customer with noShowCount > 2", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({ noShowCount: "3", disputeCount: "0" });
+    await redis.client.hSet(profileKey(CUSTOMER_A.id), { noShowCount: "3", disputeCount: "0" });
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).not.toHaveBeenCalled();
   });
 
   it("skips customer with disputeCount > 0", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({ noShowCount: "0", disputeCount: "1" });
+    await redis.client.hSet(profileKey(CUSTOMER_A.id), { noShowCount: "0", disputeCount: "1" });
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).not.toHaveBeenCalled();
   });
 
   it("allows customer with noShowCount <= 2 and disputeCount === 0", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({ noShowCount: "2", disputeCount: "0" });
+    await redis.client.hSet(profileKey(CUSTOMER_A.id), { noShowCount: "2", disputeCount: "0" });
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${CUSTOMER_A.phone}`,
@@ -181,68 +204,91 @@ describe("proactive-engagement", () => {
 
   it("sends message and sets cooldown key on success", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).toHaveBeenCalledWith(
       `whatsapp:${CUSTOMER_A.phone}`,
       expect.objectContaining({ text: expect.any(String) }),
     );
-    expect(mockRedis.set).toHaveBeenCalledWith(
-      `test:outreach:last:${CUSTOMER_A.id}`,
-      "1",
-      expect.objectContaining({ EX: expect.any(Number) }),
-    );
+    // The cooldown key really exists now, with a real TTL.
+    expect(redis.peek(cooldownKey(CUSTOMER_A.id))).toBe("1");
+    expect(redis.ttlMs(cooldownKey(CUSTOMER_A.id))).toBeGreaterThan(0);
+  });
+
+  it("does not message the same customer twice inside the cooldown window", async () => {
+    // The guarantee the hand-rolled stub could not express: the key the job
+    // WRITES on run 1 is the key it READS on run 2. With six constant-returning
+    // `vi.fn()`s those were two unrelated facts, so this suite shipped without
+    // ever testing the anti-spam property the job exists to provide.
+    mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
+
+    await run();
+    expect(mockSendText).toHaveBeenCalledTimes(1);
+
+    await run();
+    expect(mockSendText).toHaveBeenCalledTimes(1);
+    // The weekly counter did not move either — the second run sent nothing.
+    expect(redis.peek(WEEKLY_KEY())).toBe("1");
+  });
+
+  it("messages again once the cooldown has EXPIRED", async () => {
+    mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
+
+    await run();
+    expect(mockSendText).toHaveBeenCalledTimes(1);
+
+    // Past the cooldown TTL: the key is gone and outreach resumes. A stubbed
+    // `exists` could never model this, because it had no notion of time.
+    vi.setSystemTime(new Date("2024-02-15T14:00:00Z"));
+    expect(redis.peek(cooldownKey(CUSTOMER_A.id))).toBeUndefined();
+
+    await run();
+    expect(mockSendText).toHaveBeenCalledTimes(2);
+    // A month on, the weekly counter's own 7-day TTL has lapsed too, so the
+    // window rolled over and the count restarts at 1 rather than accumulating
+    // forever. Both TTLs are real here; neither is asserted from a stub.
+    expect(redis.peek(WEEKLY_KEY())).toBe("1");
   });
 
   it("increments weekly counter on each send", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
 
-    await checkDormantCustomers();
+    await run();
 
-    expect(mockRedis.incr).toHaveBeenCalledWith("test:outreach:weekly:count");
+    expect(redis.peek(WEEKLY_KEY())).toBe("1");
   });
 
   it("sets 7-day TTL on weekly counter when it is newly created (incr returns 1)", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
-    mockRedis.incr.mockResolvedValue(1); // first increment
+    // The counter does not exist, so the REAL INCR returns 1 and the job stamps
+    // the TTL. Nothing about the return value is stubbed.
+    await run();
 
-    await checkDormantCustomers();
-
-    expect(mockRedis.expire).toHaveBeenCalledWith(
-      "test:outreach:weekly:count",
-      7 * 86400,
-    );
+    expect(redis.peek(WEEKLY_KEY())).toBe("1");
+    expect(redis.ttlMs(WEEKLY_KEY())).toBe(7 * 86400 * 1000);
   });
 
   it("does NOT set TTL on weekly counter when counter already exists (incr > 1)", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
-    mockRedis.incr.mockResolvedValue(5); // already has entries
+    // A counter mid-week: no TTL of its own (the stamp happened on the first
+    // INCR of the window, which this seed stands in for).
+    await redis.client.set(WEEKLY_KEY(), "4");
+    expect(redis.ttlMs(WEEKLY_KEY())).toBeNull();
 
-    await checkDormantCustomers();
+    await run();
 
-    // expire should not have been called for weekly counter
-    const expireCalls = mockRedis.expire.mock.calls as [string, number][];
-    const weeklyExpireCall = expireCalls.find(([key]) => key === "test:outreach:weekly:count");
-    expect(weeklyExpireCall).toBeUndefined();
+    expect(redis.peek(WEEKLY_KEY())).toBe("5");
+    // Still no TTL — the job must not re-stamp and slide the window forward.
+    expect(redis.ttlMs(WEEKLY_KEY())).toBeNull();
   });
 
   // ── NATS event ───────────────────────────────────────────────────────────
 
   it("publishes outreach.sent NATS event with correct payload", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockPublishNatsEvent).toHaveBeenCalledWith(
       "outreach.sent",
@@ -264,10 +310,8 @@ describe("proactive-engagement", () => {
       name: `Customer ${i}`,
     }));
     mockFindDormantCustomers.mockResolvedValue(manyCustomers);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).toHaveBeenCalledTimes(50);
   });
@@ -276,15 +320,13 @@ describe("proactive-engagement", () => {
 
   it("continues with next customer when one throws", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A, CUSTOMER_B]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
 
     // First sendText throws, second succeeds
     mockSendText
       .mockRejectedValueOnce(new Error("Twilio timeout"))
       .mockResolvedValueOnce(undefined);
 
-    await checkDormantCustomers();
+    await run();
 
     // Second customer still sent
     expect(mockSendText).toHaveBeenCalledTimes(2);
@@ -292,11 +334,9 @@ describe("proactive-engagement", () => {
 
   it("reports error to Sentry when sendText throws", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
     mockSendText.mockRejectedValueOnce(new Error("Twilio error"));
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSentryCapture).toHaveBeenCalled();
   });
@@ -305,15 +345,14 @@ describe("proactive-engagement", () => {
 
   it("picks the product with the highest score value", async () => {
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({
+    await redis.client.hSet(profileKey(CUSTOMER_A.id), {
       "score:prod_low": "1.5",
       "score:prod_high": "9.8",
       "score:prod_mid": "4.2",
     });
     mockMedusaAdmin.mockResolvedValue({ product: { title: "Costela Alta" } });
 
-    await checkDormantCustomers();
+    await run();
 
     // medusaAdmin should be called with the highest-score product
     expect(mockMedusaAdmin).toHaveBeenCalledWith("/admin/products/prod_high");
@@ -326,7 +365,7 @@ describe("proactive-engagement", () => {
     vi.setSystemTime(new Date("2024-01-15T05:00:00Z"));
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).not.toHaveBeenCalled();
     expect(mockFindDormantCustomers).not.toHaveBeenCalled();
@@ -337,7 +376,7 @@ describe("proactive-engagement", () => {
     vi.setSystemTime(new Date("2024-01-15T18:00:00Z"));
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).not.toHaveBeenCalled();
     expect(mockFindDormantCustomers).not.toHaveBeenCalled();
@@ -347,10 +386,8 @@ describe("proactive-engagement", () => {
     // 14:00 UTC = 11:00 America/Sao_Paulo
     vi.setSystemTime(new Date("2024-01-15T14:00:00Z"));
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).toHaveBeenCalled();
   });
@@ -359,10 +396,8 @@ describe("proactive-engagement", () => {
     // 13:00 UTC = 10:00 America/Sao_Paulo
     vi.setSystemTime(new Date("2024-01-15T13:00:00Z"));
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).toHaveBeenCalled();
   });
@@ -371,10 +406,8 @@ describe("proactive-engagement", () => {
     // 21:00 UTC = 18:00 America/Sao_Paulo
     vi.setSystemTime(new Date("2024-01-15T21:00:00Z"));
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
 
-    await checkDormantCustomers();
+    await run();
 
     expect(mockSendText).toHaveBeenCalled();
   });
@@ -383,11 +416,26 @@ describe("proactive-engagement", () => {
     // 20:00 UTC = 17:00 America/Sao_Paulo
     vi.setSystemTime(new Date("2024-01-15T20:00:00Z"));
     mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
-    mockRedis.exists.mockResolvedValue(0);
-    mockRedis.hGetAll.mockResolvedValue({});
+
+    await run();
+
+    expect(mockSendText).toHaveBeenCalled();
+  });
+
+  // ── The seam's fallback control ───────────────────────────────────────────
+
+  it("uses the singleton when NO client is threaded (the default is preserved)", async () => {
+    // Without this arm, every case above is compatible with a module that
+    // resolves nothing at all — the tripwire would simply never fire.
+    const singleton = createInMemoryRedis({ now: () => Date.now() });
+    mockGetRedisClient.mockResolvedValue(singleton.client);
+    mockFindDormantCustomers.mockResolvedValue([CUSTOMER_A]);
 
     await checkDormantCustomers();
 
-    expect(mockSendText).toHaveBeenCalled();
+    expect(mockSendText).toHaveBeenCalledTimes(1);
+    expect(singleton.peek(cooldownKey(CUSTOMER_A.id))).toBe("1");
+    // ...and this describe's injected keyspace was never touched.
+    expect(redis.calls).toHaveLength(0);
   });
 });

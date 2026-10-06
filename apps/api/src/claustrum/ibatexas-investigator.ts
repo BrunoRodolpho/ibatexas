@@ -47,7 +47,31 @@ import {
   composeMenuContentsText,
 } from "./menu-item-resolver.js";
 import { resolveStoreInfoText } from "./store-info-resolver.js";
-import { classifyRequestSpans } from "./required-claim-decomposer.js";
+import {
+  DELIVERY_COVERAGE_KEY,
+  DELIVERY_NEEDS_CEP_MARKER_KEY,
+  DELIVERY_NO_COVERAGE_KEY,
+  resolveDeliveryCoverage,
+} from "./delivery-coverage-resolver.js";
+import {
+  MENU_PAIRINGS_KEY,
+  MENU_SUBSTITUTIONS_KEY,
+  resolvePairings,
+} from "./pairing-resolver.js";
+import {
+  COUPON_INVALID_KEY,
+  COUPON_NEEDS_CODE_MARKER_KEY,
+  COUPON_VALID_KEY,
+  resolveCouponValidity,
+} from "./coupon-validity-resolver.js";
+import {
+  classifyRequestSpans,
+  isDietQualifiedAsk,
+} from "./required-claim-decomposer.js";
+import {
+  buildDietarySuppressionIndex,
+  isDietarySuppressedKey,
+} from "./dietary-posture.js";
 
 /**
  * Map the read-layer 2-value {@link LedgerTaint} onto the 3-value
@@ -456,7 +480,13 @@ export function createFirstPartyTurnReads(
           });
         }
         if (wantsMenuContents) {
-          const contentsText = composeMenuContentsText(resolved);
+          // BKL-273 — the SAME request text the claim planner passes (its
+          // `state.perception.text`), so the allergen guard decides identically on
+          // both sides and the recorded/derived C6 values stay byte-equal.
+          const contentsText = composeMenuContentsText(
+            resolved,
+            input.cognition.perception.text,
+          );
           // No first-party description → record NO evidence → honest UNKNOWN (never a
           // fabricated blurb). Only push when the catalog actually has contents text.
           if (contentsText !== undefined) {
@@ -481,11 +511,15 @@ export function createFirstPartyTurnReads(
     // → NO evidence → honest UNKNOWN (never a fabricated menu). The `menu:item_unpublished`
     // W6 falsifier is DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
     if (menuSpans.includes("MENU_OVERVIEW_Q")) {
-      const overviewText = await resolveMenuOverviewText(input.cognition.turnId, {
-        channel: input.cognition.perception.channel,
-        sessionId: input.cognition.conversationId,
-        customerId,
-      });
+      const overviewText = await resolveMenuOverviewText(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+        {
+          channel: input.cognition.perception.channel,
+          sessionId: input.cognition.conversationId,
+          customerId,
+        },
+      );
       if (overviewText !== undefined) {
         reads.push({
           key: MENU_OVERVIEW_KEY,
@@ -508,11 +542,16 @@ export function createFirstPartyTurnReads(
     if (menuSpans.includes("MENU_DIETARY_Q")) {
       const tags = detectDietaryPreferenceTags(input.cognition.perception.text);
       for (const tag of tags) {
-        const dietaryText = await resolveDietaryOptionsText(input.cognition.turnId, tag, {
-          channel: input.cognition.perception.channel,
-          sessionId: input.cognition.conversationId,
-          customerId,
-        });
+        const dietaryText = await resolveDietaryOptionsText(
+          input.cognition.turnId,
+          tag,
+          input.cognition.perception.text,
+          {
+            channel: input.cognition.perception.channel,
+            sessionId: input.cognition.conversationId,
+            customerId,
+          },
+        );
         if (dietaryText !== undefined) {
           reads.push({
             key: MENU_DIETARY_KEY(tag),
@@ -546,6 +585,203 @@ export function createFirstPartyTurnReads(
           read: async () => ({ infoText }),
         });
       }
+    }
+
+    // LE2-002 / NEW-007 DELIVERY_COVERAGE / DELIVERY_NO_COVERAGE — the delivery
+    // coverage read ("vocês entregam em Ibaté?"), GATED on a DELIVERY_COVERAGE_Q
+    // span. FIXED subject (single keys, like STORE_INFO / MENU_OVERVIEW), PUBLIC
+    // store policy → placed BEFORE the authenticated-customer gate (a coverage
+    // question is the most common GUEST question there is — a first-time customer
+    // asks it before they have any account at all).
+    //
+    // The shared per-turn-memoized resolver goes through the delivery-zones
+    // projection (zone-NAME arm) or the EXISTING estimation tool (CEP arm) — no new
+    // DB path — and returns exactly one of four states. This block is the honesty
+    // wiring for all four, and the ONLY place the complementary pair is recorded:
+    //
+    //   · covered      → `delivery:coverage` PRESENT with the composed scalar.
+    //   · not_covered  → `delivery:no_coverage` PRESENT (a POSITIVE out-of-zone
+    //                    determination is a FACT — a VALIDATED negative render).
+    //   · needs_cep    → NEITHER claim key; the needs-CEP MARKER instead, which
+    //                    forces the CLARIFY-for-CEP ask downstream. Never a
+    //                    nearest-neighbour guess.
+    //   · unknown      → NOTHING recorded at all → both claims resolve ABSENT →
+    //                    honest UNKNOWN. Inv 7: "could not check" is a DISTINCT
+    //                    state from "we don't deliver", and it must never render as
+    //                    the negative.
+    //
+    // Exactly one of the two claim keys can ever be PRESENT, so the pair can never
+    // render a contradiction. The `delivery:zones_changed` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    if (menuSpans.includes("DELIVERY_COVERAGE_Q")) {
+      const coverage = await resolveDeliveryCoverage(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+      );
+      if (coverage.kind === "covered") {
+        const coverageText = coverage.coverageText;
+        reads.push({
+          key: DELIVERY_COVERAGE_KEY,
+          source: "delivery.coverage",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ coverageText }),
+        });
+      } else if (coverage.kind === "not_covered") {
+        const noCoverageText = coverage.noCoverageText;
+        reads.push({
+          key: DELIVERY_NO_COVERAGE_KEY,
+          source: "delivery.coverage",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ noCoverageText }),
+        });
+      } else if (coverage.kind === "needs_cep") {
+        reads.push({
+          key: DELIVERY_NEEDS_CEP_MARKER_KEY,
+          source: "delivery.coverage.marker",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ needsCep: true }),
+        });
+      }
+      // `unknown` — deliberately records NOTHING (see the block header).
+    }
+
+    // LE2-019 / spec Decision 18 COUPON_VALID / COUPON_INVALID — the coupon
+    // validity read ("o cupom X1234 vale?"), GATED on a COUPON_VALIDITY_Q span.
+    // FIXED subject (single keys, like DELIVERY_COVERAGE / STORE_INFO), PUBLIC
+    // store policy → placed BEFORE the authenticated-customer gate: a coupon is
+    // valid or not regardless of who is asking, and a first-time customer holding
+    // a flyer code has no account yet.
+    //
+    // The shared per-turn-memoized resolver goes through the EXISTING `medusaAdmin`
+    // transport at the EXISTING `/admin/promotions?code=` path and the SHARED
+    // usability predicate — no new store path — and returns exactly one of four
+    // states. This block is the honesty wiring for all four, and the ONLY place the
+    // complementary pair is recorded:
+    //
+    //   · valid      → `coupon:valid` PRESENT with the composed terms scalar.
+    //   · invalid    → `coupon:invalid` PRESENT (a POSITIVE not-usable determination
+    //                  off a SUCCESSFUL lookup is a FACT — a VALIDATED negative).
+    //   · needs_code → NEITHER claim key; the needs-CODE MARKER instead, which
+    //                  forces the CLARIFY-for-code ask downstream. Never a guess at
+    //                  which coupon was meant.
+    //   · unknown    → NOTHING recorded at all → both claims resolve ABSENT →
+    //                  honest UNKNOWN. Inv 7: "could not check" is a DISTINCT state
+    //                  from "your coupon is invalid", and it must never render as
+    //                  the negative. (This is exactly where this read DIVERGES from
+    //                  the display route POST /api/coupons/validate, which may
+    //                  collapse a failed lookup to `valid: false`.)
+    //
+    // Exactly one of the two claim keys can ever be PRESENT, so the pair can never
+    // render a contradiction. The `coupon:promotions_changed` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) — never pushed here.
+    //
+    // DECISION 14: a READ only. Nothing here applies a coupon, touches a cart, or
+    // builds an intent envelope.
+    if (menuSpans.includes("COUPON_VALIDITY_Q")) {
+      const coupon = await resolveCouponValidity(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+      );
+      if (coupon.kind === "valid") {
+        const validityText = coupon.validityText;
+        reads.push({
+          key: COUPON_VALID_KEY,
+          source: "promotions.validity",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ validityText }),
+        });
+      } else if (coupon.kind === "invalid") {
+        const invalidityText = coupon.invalidityText;
+        reads.push({
+          key: COUPON_INVALID_KEY,
+          source: "promotions.validity",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ invalidityText }),
+        });
+      } else if (coupon.kind === "needs_code") {
+        reads.push({
+          key: COUPON_NEEDS_CODE_MARKER_KEY,
+          source: "promotions.validity.marker",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ needsCode: true }),
+        });
+      }
+      // `unknown` — deliberately records NOTHING (see the block header).
+    }
+
+    // LE2-029 MENU_PAIRINGS / MENU_SUBSTITUTIONS — the pairing read ("o que
+    // combina com brisket?"), GATED on a PAIRING_Q span. FIXED subject (single
+    // keys, like COUPON_VALID), PUBLIC store knowledge -> placed BEFORE the
+    // authenticated-customer gate: what the house serves together is the same
+    // answer regardless of who is asking, and a first-time visitor deciding what
+    // to order has no account yet.
+    //
+    // The shared per-turn-memoized resolver reads the AUTHORED catalog graph and
+    // resolves every handle it is about to speak through the EXISTING
+    // `resolveMenuItem` catalog read -- so the suggestion names live product
+    // titles, never handles, and an edge pointing at something the store no longer
+    // sells is dropped rather than voiced. Three states, and this block is the
+    // honesty wiring for all three:
+    //
+    //   - pairings      -> `menu:pairings` PRESENT with the composed scalar.
+    //   - substitutions -> `menu:substitutions` PRESENT.
+    //   - unknown       -> NOTHING recorded -> both claims resolve ABSENT ->
+    //                     honest UNKNOWN. This covers the ticket's "unknown item
+    //                     OR empty pairing data", and deliberately has NO
+    //                     validated-negative twin: the graph is a PARTIAL authored
+    //                     seed, so "no edge" is "not written down yet", never
+    //                     "nothing goes with this".
+    //
+    // Exactly one of the two claim keys can ever be PRESENT, so the pair can never
+    // render a contradiction. The `menu:pairings_changed` W6 falsifier is
+    // DELIBERATELY UNREAD (claim-registry.ts) -- never pushed here.
+    //
+    // A READ only: nothing here adds an item, touches a cart, or builds an intent
+    // envelope.
+    if (menuSpans.includes("PAIRING_Q")) {
+      const pairing = await resolvePairings(
+        input.cognition.turnId,
+        input.cognition.perception.text,
+        {
+          channel: input.cognition.perception.channel,
+          sessionId: input.cognition.conversationId,
+          customerId,
+        },
+      );
+      if (pairing.kind === "pairings") {
+        const suggestionsText = pairing.suggestionsText;
+        reads.push({
+          key: MENU_PAIRINGS_KEY,
+          source: "catalog.pairings",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ suggestionsText }),
+        });
+      } else if (pairing.kind === "substitutions") {
+        const substitutionsText = pairing.substitutionsText;
+        reads.push({
+          key: MENU_SUBSTITUTIONS_KEY,
+          source: "catalog.pairings",
+          origin: "TRUSTED",
+          originProvenance: "FIRST_PARTY",
+          sourceMode: "live",
+          read: async () => ({ substitutionsText }),
+        });
+      }
+      // `unknown` -- deliberately records NOTHING (see the block header).
     }
 
     if (!isAuthenticatedCustomer(customerId)) return reads;
@@ -921,11 +1157,51 @@ export function createIbatexasInvestigator(
 ): InvestigatorPort {
   const gatherReads = deps.gatherReads ?? createFirstPartyTurnReads();
   const now = deps.now ?? (() => Date.now());
+  // BKL-270 — derived from the registry ONCE per investigator, not per turn: the
+  // registry is a module constant, so the set cannot change between turns, and a
+  // per-turn rebuild would put a loop over every spec on the hot path of every read.
+  // Scoped to the CUSTOMER registry deliberately: the three ops reads all declare
+  // `answer-anyway`, so they contribute no suppressed keys, and scoping to the wider
+  // plane here would be a no-op that implied otherwise.
+  const dietarySuppressedKeys = buildDietarySuppressionIndex();
 
   return {
     async investigate(input: InvestigateInput): Promise<void> {
       const { ledger } = input;
-      const reads = await gatherReads(input);
+      const gathered = await gatherReads(input);
+
+      // ── BKL-270: the registry-declared DIETARY-POSTURE guard, on the READ ────
+      //
+      // When the turn NAMES a dietary restriction, drop every read whose evidence
+      // key is required only by claim types declaring `dietaryPosture: "abstain"`.
+      // Nothing is recorded ⇒ the kernel resolves the key ABSENT ⇒ the claim yields
+      // UNKNOWN ⇒ the renderer emits the ratified BKL-184 self-report + staff
+      // handoff. Exactly the LE2-029 / BKL-273 shape, but driven by the registry
+      // instead of hand-applied per family — which is the whole point of the ticket:
+      // before this, every NEW read family was one omission away from a leak.
+      //
+      // THREE placement decisions, each deliberate:
+      //
+      //   · HERE and not in `createFirstPartyTurnReads` — the ops plane's gatherer
+      //     UNIONS its own reads onto the customer gatherer's output
+      //     (`ops-claim-reads.ts`), so a guard inside the customer gatherer would
+      //     silently miss every `ops:*` read. This is the one seam both planes pass
+      //     through.
+      //   · BEFORE the settle below, not in the write loop — a suppressed read must
+      //     never EXECUTE. Running it and discarding the value would still hit the
+      //     catalog egress and still populate the per-turn memos, which is precisely
+      //     what BKL-273 was careful to avoid.
+      //   · On the READ, never on the SPAN — the span still fires, so the question
+      //     stays inside §O#15 completeness. LE2-029 measured the alternative: guard
+      //     the span and the turn falls off the deterministic path, whereupon the
+      //     responder authors the dietary prose itself. That negative result is
+      //     carried, not rediscovered.
+      //
+      // `answer-with-abstention` keys are NOT here (see `buildDietarySuppressionIndex`):
+      // CART_CONTENTS renders, and appends its abstention at the copy layer.
+      const reads = isDietQualifiedAsk(input.cognition.perception.text)
+        ? gathered.filter((r) => !isDietarySuppressedKey(r.key, dietarySuppressedKeys))
+        : gathered;
 
       // The reads are INDEPENDENT — each hits its own owner-scoped resource and
       // none reads the ledger or another read's result (the shared order/schedule

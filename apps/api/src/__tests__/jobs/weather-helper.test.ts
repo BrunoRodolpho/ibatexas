@@ -1,21 +1,45 @@
 // Tests for fetchWeatherCondition — weather API fetch + Redis caching.
-// Mocks fetch, Redis, and Sentry.
+// Mocks fetch and Sentry. Redis is the canonical in-memory adapter, INJECTED
+// through the module's own seam.
+//
+// ── R5 rollout, family 2 — what the migration killed here ───────────────────
+//
+// The retired double was two constant `vi.fn()`s (`get → null`, `set → "OK"`)
+// plus a FAKED `rk` returning `test:${k}`. Three fictions rode on that:
+//
+//   1. The wrong prefix. The real `rk()` under apps/api's vitest resolves to
+//      `development:` (no APP_ENV is pinned in `apps/api/vitest.config.ts` or
+//      `src/__tests__/setup.ts`), so the TTL case asserted a write to
+//      `test:weather:current` — a key production has never written.
+//   2. The synthetic cache hit. "uses cached result on second call" fed the
+//      cache-hit value in through `get.mockResolvedValueOnce(...)`, so it never
+//      established that the module's own WRITE is what a later READ finds. The
+//      writer and the reader were never connected; a module that wrote the wrong
+//      key, or nothing at all, passed.
+//   3. Expiry was unobservable. "calls API again when cache is expired" pinned
+//      `get` to `null` forever, so nothing about a TTL was exercised — the case
+//      would pass with the cache TTL removed entirely. It now advances an
+//      injected clock across the real 1h boundary.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
+import { rk } from "@ibatexas/tools";
 import { fetchWeatherCondition } from "../../jobs/weather-helper.js";
 
 // ── Hoisted mock functions ──────────────────────────────────────────────────
 
 const mockGetRedisClient = vi.hoisted(() => vi.fn());
-const mockRk = vi.hoisted(() => vi.fn((k: string) => `test:${k}`));
 const mockSentryCapture = vi.hoisted(() => vi.fn());
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
-vi.mock("@ibatexas/tools", () => ({
-  getRedisClient: mockGetRedisClient,
-  rk: mockRk,
-}));
+// Only the CLIENT resolver is replaced, and it is a TRIPWIRE: every case here
+// injects, so a resolution means the seam stopped working. `rk` runs REAL
+// (Hard Rule #7) — it is pure, and letting it run is the point.
+vi.mock("@ibatexas/tools", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ibatexas/tools")>();
+  return { ...actual, getRedisClient: mockGetRedisClient };
+});
 
 vi.mock("@sentry/node", () => ({
   withScope: vi.fn((cb: (scope: unknown) => void) => {
@@ -26,13 +50,8 @@ vi.mock("@sentry/node", () => ({
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function createMockRedis(overrides: Record<string, unknown> = {}) {
-  return {
-    get: vi.fn().mockResolvedValue(null),
-    set: vi.fn().mockResolvedValue("OK"),
-    ...overrides,
-  };
-}
+const CACHE_KEY = (): string => rk("weather:current");
+const CACHE_TTL_MS = 3_600_000; // the module's WEATHER_CACHE_TTL, in ms
 
 function mockFetchResponse(body: unknown, ok = true) {
   return vi.fn().mockResolvedValue({
@@ -41,15 +60,28 @@ function mockFetchResponse(body: unknown, ok = true) {
   });
 }
 
+function inSaoPaulo(): void {
+  vi.stubEnv("RESTAURANT_LAT", "-23.550520");
+  vi.stubEnv("RESTAURANT_LNG", "-46.633308");
+}
+
 describe("fetchWeatherCondition", () => {
-  let mockRedis: ReturnType<typeof createMockRedis>;
+  let redis: InMemoryRedis;
+  let clock: number;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
-    mockRedis = createMockRedis();
-    mockGetRedisClient.mockResolvedValue(mockRedis);
+    clock = 1_700_000_000_000;
+    redis = createInMemoryRedis({ now: () => clock });
+    // The tripwire: nothing in this file may resolve the singleton.
+    mockGetRedisClient.mockRejectedValue(
+      new Error("getRedisClient() resolved — the weather-helper seam is unwired"),
+    );
   });
+
+  /** Every call goes through the seam. */
+  const run = () => fetchWeatherCondition({ redis: redis.client });
 
   // ── Missing env vars ─────────────────────────────────────────────────────
 
@@ -57,152 +89,137 @@ describe("fetchWeatherCondition", () => {
     vi.stubEnv("RESTAURANT_LAT", "");
     vi.stubEnv("RESTAURANT_LNG", "-46.633308");
 
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("normal");
+    expect(await run()).toBe("normal");
+    // The env guard short-circuits BEFORE any client is touched.
+    expect(redis.calls).toHaveLength(0);
   });
 
   it("returns 'normal' when RESTAURANT_LNG is not set", async () => {
     vi.stubEnv("RESTAURANT_LAT", "-23.550520");
     vi.stubEnv("RESTAURANT_LNG", "");
 
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("normal");
+    expect(await run()).toBe("normal");
+    expect(redis.calls).toHaveLength(0);
   });
 
   // ── API response parsing ─────────────────────────────────────────────────
 
   it("returns 'rain' when API reports rain > 0", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
-    vi.stubGlobal("fetch", mockFetchResponse({
-      current: { rain: 2.5, temperature_2m: 22 },
-    }));
+    inSaoPaulo();
+    vi.stubGlobal("fetch", mockFetchResponse({ current: { rain: 2.5, temperature_2m: 22 } }));
 
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("rain");
+    expect(await run()).toBe("rain");
   });
 
   it("returns 'hot' when API reports temperature > 32", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
-    vi.stubGlobal("fetch", mockFetchResponse({
-      current: { rain: 0, temperature_2m: 33 },
-    }));
+    inSaoPaulo();
+    vi.stubGlobal("fetch", mockFetchResponse({ current: { rain: 0, temperature_2m: 33 } }));
 
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("hot");
+    expect(await run()).toBe("hot");
   });
 
   it("returns 'normal' when rain=0 and temperature <= 32", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
-    vi.stubGlobal("fetch", mockFetchResponse({
-      current: { rain: 0, temperature_2m: 25 },
-    }));
+    inSaoPaulo();
+    vi.stubGlobal("fetch", mockFetchResponse({ current: { rain: 0, temperature_2m: 25 } }));
 
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("normal");
+    expect(await run()).toBe("normal");
   });
 
   it("rain takes priority over hot temperature", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
-    vi.stubGlobal("fetch", mockFetchResponse({
-      current: { rain: 1, temperature_2m: 35 },
-    }));
+    inSaoPaulo();
+    vi.stubGlobal("fetch", mockFetchResponse({ current: { rain: 1, temperature_2m: 35 } }));
 
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("rain");
+    expect(await run()).toBe("rain");
   });
 
   // ── Graceful degradation ─────────────────────────────────────────────────
 
   it("returns 'normal' on fetch timeout/error", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("The operation was aborted", "AbortError")));
+    inSaoPaulo();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new DOMException("The operation was aborted", "AbortError")),
+    );
 
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("normal");
+    expect(await run()).toBe("normal");
+    // The degrade writes NOTHING — a later call must retry the API rather than
+    // serve a cached "normal" it never actually observed.
+    expect(redis.keys()).toEqual([]);
   });
 
   it("reports error to Sentry on fetch failure", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
+    inSaoPaulo();
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network error")));
 
-    await fetchWeatherCondition();
+    await run();
 
     expect(mockSentryCapture).toHaveBeenCalled();
   });
 
   it("returns 'normal' when API responds with non-ok status", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
+    inSaoPaulo();
     vi.stubGlobal("fetch", mockFetchResponse({}, false));
 
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("normal");
+    expect(await run()).toBe("normal");
+    expect(redis.keys()).toEqual([]);
   });
 
   // ── Redis caching ─────────────────────────────────────────────────────────
 
   it("uses cached result on second call — no second API call", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
-    const mockFetch = mockFetchResponse({ current: { rain: 0, temperature_2m: 20 } });
-    vi.stubGlobal("fetch", mockFetch);
+    inSaoPaulo();
+    const fetchSpy = mockFetchResponse({ current: { rain: 2, temperature_2m: 20 } });
+    vi.stubGlobal("fetch", fetchSpy);
 
-    // First call — cache miss, calls API
-    mockRedis.get.mockResolvedValueOnce(null);
-    await fetchWeatherCondition();
+    // First call MISSES an empty keyspace and writes what it fetched.
+    expect(await run()).toBe("rain");
+    // Second call reads THAT write — not a value this test planted.
+    expect(await run()).toBe("rain");
 
-    // Second call — cache hit
-    mockRedis.get.mockResolvedValueOnce(
-      JSON.stringify({ condition: "normal", fetchedAt: new Date().toISOString() }),
-    );
-    const result = await fetchWeatherCondition();
-
-    expect(result).toBe("normal");
-    // fetch only called once (for cache miss)
-    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("caches result with 1-hour TTL after successful API call", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
+  it("caches result under the REAL rk() key, with a 1-hour TTL", async () => {
+    inSaoPaulo();
     vi.stubGlobal("fetch", mockFetchResponse({ current: { rain: 0, temperature_2m: 20 } }));
 
-    await fetchWeatherCondition();
+    await run();
 
-    expect(mockRedis.set).toHaveBeenCalledWith(
-      "test:weather:current",
-      expect.stringContaining('"condition":"normal"'),
-      { EX: 3600 },
-    );
+    // `development:weather:current` — the key production writes. The retired
+    // double asserted `test:weather:current`, which nothing ever writes.
+    expect(redis.keys()).toEqual([CACHE_KEY()]);
+    expect(JSON.parse(redis.peek(CACHE_KEY())!)).toMatchObject({ condition: "normal" });
+    // An exact remaining lifetime against the injected clock, not an echo of
+    // the EX argument the module passed in.
+    expect(redis.ttlMs(CACHE_KEY())).toBe(CACHE_TTL_MS);
   });
 
-  it("calls API again when cache is expired (cache miss)", async () => {
-    vi.stubEnv("RESTAURANT_LAT", "-23.550520");
-    vi.stubEnv("RESTAURANT_LNG", "-46.633308");
-    const mockFetch = mockFetchResponse({ current: { rain: 2, temperature_2m: 20 } });
-    vi.stubGlobal("fetch", mockFetch);
+  it("calls the API again once the cached entry's TTL has really lapsed", async () => {
+    inSaoPaulo();
+    const fetchSpy = mockFetchResponse({ current: { rain: 2, temperature_2m: 20 } });
+    vi.stubGlobal("fetch", fetchSpy);
 
-    // Simulate cache miss (expired)
-    mockRedis.get.mockResolvedValue(null);
+    await run();
+    // One millisecond short of the hour: still cached.
+    clock += CACHE_TTL_MS - 1;
+    await run();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    await fetchWeatherCondition();
-    await fetchWeatherCondition();
+    // Across the boundary: the entry is gone and the API is consulted again.
+    clock += 1;
+    await run();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
 
-    // fetch called twice since cache always misses
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+  it("re-fetches when the cached JSON is corrupt, and overwrites it", async () => {
+    inSaoPaulo();
+    await redis.client.set(CACHE_KEY(), "{not json");
+    vi.stubGlobal("fetch", mockFetchResponse({ current: { rain: 0, temperature_2m: 35 } }));
+
+    // The module's documented "cache corrupted — fall through to API call"
+    // branch: previously unobservable, because the double's `get` could not be
+    // made to answer a value AND have the module's repair land anywhere.
+    expect(await run()).toBe("hot");
+    expect(JSON.parse(redis.peek(CACHE_KEY())!)).toMatchObject({ condition: "hot" });
   });
 });

@@ -25,6 +25,9 @@ import {
   createCustomerService,
   createOrderQueryService,
   createLoyaltyService,
+  type CustomerService,
+  type OrderQueryService,
+  type LoyaltyService,
 } from "@ibatexas/domain";
 import { buildAuditRecord, BASIS_CODES } from "@adjudicate/core";
 import { getAuditSink } from "@ibatexas/audit-sink";
@@ -41,18 +44,69 @@ const ListQuery = z.object({
 
 const IdParam = z.object({ id: z.string().min(1).max(256) });
 
-export async function adminCustomerRoutes(server: FastifyInstance): Promise<void> {
+// ── R5-S5 — this route's composition root ──────────────────────────────────
+//
+// This file already had the shape the rollout wants: three lazy `??=` memo
+// accessors whose construction is deferred to first request. R5-S5 converges
+// ON that idiom rather than replacing it — the accessors are untouched in
+// arity, laziness and memoization; only the expression they memoize moves
+// behind a `deps` member. So the default path constructs exactly what it did,
+// exactly when it did (first request, once), and an override swaps the
+// factory the SAME accessor memoizes.
+
+/** The domain services `admin/customers.ts` resolves through the seam. */
+export interface AdminCustomerRouteDeps {
+  /** Builds the CustomerService behind the search / detail / CPF-reveal reads. */
+  readonly customerService: () => CustomerService;
+  /** Builds the OrderQueryService for the detail view's recent-orders section. */
+  readonly orderQueryService: () => OrderQueryService;
+  /** Builds the LoyaltyService for the detail view's balance section. */
+  readonly loyaltyService: () => LoyaltyService;
+}
+
+/**
+ * Fastify plugin options. Overrides nest under `deps` so no member collides
+ * with a Fastify-reserved register option (`prefix`, `logLevel`,
+ * `logSerializers`); omitted or partial → the production default fills the
+ * remainder, so the registration in routes/admin/index.ts is unchanged.
+ */
+export interface AdminCustomerRoutesOptions {
+  readonly deps?: Partial<AdminCustomerRouteDeps>;
+}
+
+/** The production set — byte-for-byte the construction this file did inline. */
+function defaultAdminCustomerRouteDeps(): AdminCustomerRouteDeps {
+  return {
+    customerService: () => createCustomerService(),
+    orderQueryService: () => createOrderQueryService(),
+    loyaltyService: () => createLoyaltyService(),
+  };
+}
+
+function resolveAdminCustomerRouteDeps(
+  options?: AdminCustomerRoutesOptions,
+): AdminCustomerRouteDeps {
+  return { ...defaultAdminCustomerRouteDeps(), ...(options?.deps ?? {}) };
+}
+
+export async function adminCustomerRoutes(
+  server: FastifyInstance,
+  options?: AdminCustomerRoutesOptions,
+): Promise<void> {
   const app = server.withTypeProvider<ZodTypeProvider>();
+  // Resolved ONCE per registration. The members are factories, so nothing is
+  // constructed here — see the AdminCustomerRouteDeps block above.
+  const deps = resolveAdminCustomerRouteDeps(options);
 
   // Lazily construct on first request (NOT at registration) so a test mounting
   // this route with a partial `@ibatexas/domain` mock doesn't trip over a
   // missing factory at register time (mirrors ops-snapshot.ts / kitchen.ts).
-  let customerSvc: ReturnType<typeof createCustomerService> | undefined;
-  let orderSvc: ReturnType<typeof createOrderQueryService> | undefined;
-  let loyaltySvc: ReturnType<typeof createLoyaltyService> | undefined;
-  const customers = () => (customerSvc ??= createCustomerService());
-  const orders = () => (orderSvc ??= createOrderQueryService());
-  const loyalty = () => (loyaltySvc ??= createLoyaltyService());
+  let customerSvc: CustomerService | undefined;
+  let orderSvc: OrderQueryService | undefined;
+  let loyaltySvc: LoyaltyService | undefined;
+  const customers = () => (customerSvc ??= deps.customerService());
+  const orders = () => (orderSvc ??= deps.orderQueryService());
+  const loyalty = () => (loyaltySvc ??= deps.loyaltyService());
 
   // ── GET /api/admin/customers — paginated search (compact list projection) ──
   app.get(

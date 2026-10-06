@@ -11,7 +11,7 @@ The agent interacts with the Restaurant and Intelligence contexts through typed 
 
 **Tool access model:** the LLM has zero state-mutation authority. It reads facts via read-only tools and proposes mutations only through the single `express_intent` tool (`apps/api/src/claustrum/ibatexas-planner.ts`), which the kernel `adjudicate()`s. Per-tool classification (READ_ONLY vs MUTATING) and per-state visibility are owned by each Pack's `ToolClassification` + `*CapabilityPlanner` (`@adjudicate/core/llm`, e.g. `packages/pack-orders/src/capabilities.ts`); kernel `PolicyBundle` guards (`canCancelOrder`, `canAmendOrder`, `hasOrderId` in `packages/pack-orders/src/policies.ts`) gate invalid operations. The full rationale and contract is **ADR #9 — Intent-Gated Execution** in [docs/architecture/decisions.md](../decisions.md).
 
-The roster below is the **20 LLM-callable mutating tools** plus the read-only tools, assembled by `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`). FE-T09 (D-a) replaced the grouped `amend_order` tool with three granular post-checkout amend tools (add item / update quantity / remove item on a placed order) — the model targets these directly now; the legacy grouped kind (`order.amend.request`) still exists at the kernel level but is reachable only via the deterministic legacy HTTP amend route, never through this tool roster.
+The roster below is the **19 LLM-callable mutating tools** plus the read-only tools, assembled by `apps/api/src/tools/register-ibatexas-tool-packs.ts` (`listIbatexasToolPacks()`). FE-T09 (D-a) replaced the grouped `amend_order` tool with three granular post-checkout amend tools (add item / update quantity / remove item on a placed order) — the model targets these directly now; the legacy grouped kind (`order.amend.request`) still exists at the kernel level but is reachable only via the deterministic legacy HTTP amend route, never through this tool roster.
 
 **Model-facing payloads are narrowed.** For each mutating tool below the **Input** cell is what the LLM may actually produce through `express_intent`: a per-capability extraction schema (`apps/api/src/claustrum/language-engine/*.schema.ts`) strips every Identity-class identifier (`cartId`, `orderId`, `itemId`, …) and every safety-critical / PII field (`allergens`, `cpf`, `email`, …) from the model's reach — the runtime resolver fills those. A row whose Input reads *"(none model-facing)"* carries an empty schema: the utterance selects the capability and the runtime supplies the entire wire payload.
 
@@ -151,14 +151,18 @@ Get current status and estimated time for an order.
 | **Output** | `{ orderId, status, statusLabel: string, estimatedDeliveryAt?: string, deliveryPersonName?: string }` |
 | **Notes** | Only returns order if `customerId` matches — no cross-customer access |
 
-### `cancel_order`
-Cancel an order. Only possible while status is `received` or `confirmed`.
+### `cancel_order` — RETIRED as a model target (LE2-024)
 
-| | |
-|---|---|
-| **Auth** | customer |
-| **Input** | `orderId: string`, `reason?: string` |
-| **Output** | `{ success: boolean, refundStatus?: string, message: string }` |
+Cancelling is no longer proposable by the model. `order.cancel` moved to the
+identity tier and its tool registration was removed in the same commit, so a
+cancel utterance now reaches the `workflow.orders.paid-cancel` workflow and
+nothing else. The kind itself is fully live — it is that workflow's own cancel
+activity, the kind the HTTP cancel routes adjudicate, and the kind an approved
+escalation resumes. What was retired is the parse that proposed it.
+
+The route it replaced never told a customer that cancelling a **paid** order
+implied a refund, and then never issued one; both are measured in
+`apps/api/src/__tests__/paid-cancel-parity.e2e.test.ts`.
 
 ### `amend_order_add_item`
 Add an item to an already-placed order (post-checkout). Mutating tool — proposed as the `order.amend.add_item` intent. One of the three granular successors to the retired grouped `amend_order` tool.

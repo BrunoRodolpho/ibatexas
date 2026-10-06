@@ -6,10 +6,16 @@
 // `express_intent` tool JSON the model receives on the wire when that
 // capability is in play (driven through the REAL `createIbatexasPlanner` —
 // never a reimplementation of `buildToolSurface`, so the gate is sensitive to
-// any drift in the real composition path: `wire-schemas.ts`'s registry, the
-// capability's own extraction schema, or `buildToolSurface` itself) PLUS the
-// `OPS_PLANNER_PERSONA` excerpt describing that capability (extracted by a
-// stable paragraph-boundary marker).
+// any drift in the real composition path: `wire-schemas.ts`'s registry
+// MEMBERSHIP or `buildToolSurface` itself) PLUS the `OPS_PLANNER_PERSONA`
+// excerpt describing that capability (extracted by a stable
+// paragraph-boundary marker).
+//
+// BKL-255a — the capability's own extraction SCHEMA is no longer part of this
+// fragment. It used to ride the `express_intent` surface as an `allOf`/
+// `if-then` clause, but the engine dropped that at decode (LE2-004) and
+// `buildToolSurface` no longer emits it, so a fragment computed here reflects
+// the real wire: enum + description + persona, no payload narrowing.
 //
 // FIVE capabilities are covered: `order.status.transition` (FE-T05/T06, the
 // first tracer), `payment.refund.issue` (FE-T10, the money-tier slice — per

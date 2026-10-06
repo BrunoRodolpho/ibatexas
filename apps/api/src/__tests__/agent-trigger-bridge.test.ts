@@ -16,6 +16,7 @@
 //     claims so a retry reprocesses); createModelCallCap bounds model calls.
 
 import { describe, expect, it } from "vitest";
+import { createInMemoryRedis, type InMemoryRedis } from "@ibatexas/tools/testing";
 import {
   AGENT_REGISTRY,
   agentSessionId,
@@ -39,19 +40,35 @@ const PIX_AGENT = AGENT_REGISTRY.find(
 
 // ── In-memory Redis honoring SET NX / SET (overwrite) / DEL ──────────────────
 
-function fakeRedis(): TriggerDedupRedis & { store: Map<string, string> } {
-  const store = new Map<string, string>();
-  return {
-    store,
-    async set(key, value, opts) {
-      if (opts.NX === true && store.has(key)) return null;
-      store.set(key, value);
-      return "OK";
-    },
-    async del(key) {
-      return store.delete(key) ? 1 : 0;
+// R5-S7 — the canonical in-memory adapter. The hand-rolled TriggerDedupRedis it
+// replaces re-implemented SET NX by hand and ignored EX entirely, so the dedup
+// window's expiry was never modelled.
+//
+// F-21 — plus `compareAndDelete`, the ownership-conditional release the catch
+// path now issues. `createInMemoryRedis` REFUSES `eval` on purpose (W4 RULE 3:
+// a Map-stub of Lua decides the comparison in OUR process and hands back green
+// on a path with no real coverage), so the CAD is written out here over the
+// adapter's own get/del rather than smuggled in as a fake `eval`.
+//
+// That is honest for THIS layer and only this layer. These cases prove the
+// SHAPE — a release compares against the token it claimed with, and a
+// non-matching token deletes nothing — which is enough for the outcome-level
+// assertions in this file. The ATOMICITY of that compare, which is the entire
+// reason the production code uses Lua, is proven against a real Redis server in
+// `agent-trigger-dedup-ownership.test.ts`.
+function fakeRedis(): Omit<InMemoryRedis, "client"> & {
+  readonly client: TriggerDedupRedis;
+} {
+  const mem = createInMemoryRedis();
+  const client: TriggerDedupRedis = {
+    set: (key, value, opts) => mem.client.set(key, value, opts),
+    async compareAndDelete(key, expectedValue) {
+      const current = await mem.client.get(key);
+      if (current !== expectedValue) return 0;
+      return mem.client.del(key);
     },
   };
+  return { ...mem, client };
 }
 
 function failedPixEvent(eventId: string, orderId = "ord_456"): TriggerEvent {
@@ -85,18 +102,18 @@ describe("processTriggerJob — redelivery dedup", () => {
 
     const first = await processTriggerJob(
       { agent: PIX_AGENT, event },
-      { redis, runner },
+      { redis: redis.client, runner },
     );
     const second = await processTriggerJob(
       { agent: PIX_AGENT, event: { ...event } },
-      { redis, runner },
+      { redis: redis.client, runner },
     );
 
     expect(first).toEqual({ status: "ran", decisionKind: "EXECUTE", modelCalls: 1 });
     expect(second).toEqual({ status: "suppressed", reason: "redelivery" });
     expect(runner.calls).toBe(1);
     // The seen-key was promoted to the full window (overwrote the in-flight claim).
-    expect(redis.store.has(triggerSeenKey(event))).toBe(true);
+    expect(redis.keys()).toContain(triggerSeenKey(event));
   });
 });
 
@@ -107,12 +124,12 @@ describe("processTriggerJob — per-entity cooldown", () => {
 
     const first = await processTriggerJob(
       { agent: PIX_AGENT, event: failedPixEvent("evt-A") },
-      { redis, runner },
+      { redis: redis.client, runner },
     );
     // Different eventId (distinct externalId → passes redelivery), same order.
     const second = await processTriggerJob(
       { agent: PIX_AGENT, event: failedPixEvent("evt-B") },
-      { redis, runner },
+      { redis: redis.client, runner },
     );
 
     expect(first.status).toBe("ran");
@@ -126,11 +143,11 @@ describe("processTriggerJob — per-entity cooldown", () => {
 
     await processTriggerJob(
       { agent: PIX_AGENT, event: failedPixEvent("evt-A", "ord_1") },
-      { redis, runner },
+      { redis: redis.client, runner },
     );
     const other = await processTriggerJob(
       { agent: PIX_AGENT, event: failedPixEvent("evt-B", "ord_2") },
-      { redis, runner },
+      { redis: redis.client, runner },
     );
 
     expect(other.status).toBe("ran");
@@ -152,13 +169,13 @@ describe("processTriggerJob — loop suppression", () => {
         // The agent's OWN remediation re-published payment.status_changed.
         causalActorSessionId: agentSessionId(PIX_AGENT, "ord_456"),
       },
-      { redis, runner, journal: (e) => journal.push(e) },
+      { redis: redis.client, runner, journal: (e) => journal.push(e) },
     );
 
     expect(outcome).toEqual({ status: "suppressed", reason: "agent_loop" });
     expect(runner.calls).toBe(0);
     // Nothing claimed in Redis — the synchronous loop check short-circuits first.
-    expect(redis.store.size).toBe(0);
+    expect(redis.keys()).toEqual([]);
     expect(journal).toHaveLength(1);
     expect(journal[0]).toMatchObject({
       event: "agent_trigger.bridge",
@@ -177,7 +194,7 @@ describe("processTriggerJob — loop suppression", () => {
         event: failedPixEvent("evt-cust"),
         causalActorSessionId: "payment.status_changed:evt-cust", // system-actor shape
       },
-      { redis, runner },
+      { redis: redis.client, runner },
     );
     expect(outcome.status).toBe("ran");
   });
@@ -204,18 +221,18 @@ describe("processTriggerJob — host hard caps", () => {
 
     const outcome = await processTriggerJob(
       { agent: shortWallClock, event },
-      { redis, runner: slowRunner },
+      { redis: redis.client, runner: slowRunner },
     );
 
     expect(outcome.status).toBe("failed");
     expect((outcome as { error: string }).error).toMatch(/wall-clock cap exceeded/);
     expect(aborted).toBe(true);
     // Both claims released → a redelivery (BullMQ retry) can reprocess.
-    expect(redis.store.size).toBe(0);
+    expect(redis.keys()).toEqual([]);
 
     const retry = await processTriggerJob(
       { agent: shortWallClock, event: { ...event } },
-      { redis, runner: recordingRunner() },
+      { redis: redis.client, runner: recordingRunner() },
     );
     expect(retry.status).toBe("ran");
   });
