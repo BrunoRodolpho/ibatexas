@@ -555,16 +555,18 @@ ibx infra status                       # deployment health dashboard
 ibx infra status --json                # machine-readable output for CI
 ibx infra checklist                    # numbered 12-step deployment checklist
 ibx infra explain                      # diagnose why a deploy is failing (root cause chain)
-ibx infra doctor                       # deep diagnostics (ECR, CloudWatch, Cloud Map, SGs)
+ibx infra doctor                       # deep diagnostics (ECR images + standard checks)
 
 # Operations
-ibx infra logs api                     # tail CloudWatch logs for a service
+ibx infra logs api                     # tail `docker logs` for a service via SSM Run Command
 ibx infra logs nats --lines 100        # tail with custom line count
 ibx infra deploy                       # push current branch to dev
 ibx infra deploy --target main         # push to main (production)
 ibx infra deploy --watch               # push + poll status + health check
 ibx infra deploy --watch --timeout 20m # custom timeout for first deploy
-ibx infra destroy                      # ⚠  destroy all infrastructure (requires typing env name)
+ibx infra destroy                      # ⚠  destroy all Terraform-tracked infra (requires typing env name)
+                                        #    does NOT touch the Route53 zone (prevent_destroy — see dns.tf)
+                                        #    or any SSM parameter not declared in Terraform
 
 # Cost — pause/resume the dev EC2 host
 ibx infra idle                         # stop the dev host (pauses compute billing; EBS + EIP still charged)

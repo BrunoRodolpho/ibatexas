@@ -287,6 +287,38 @@ for the full checklist. TL;DR: review task sizes, ECR repo names (prefixed
 
 ---
 
+## Tearing down dev
+
+`ibx infra destroy` runs `terraform destroy` against `infra/terraform/environments/dev/`.
+It only removes what Terraform currently tracks in state — it does **not**
+give you a bare AWS account back. Two things survive every run, by design:
+
+1. **The Route53 zone and its 4 A records.** `dns.tf` sets
+   `lifecycle { prevent_destroy = true }` on `aws_route53_zone.this`. This is
+   intentional, not a bug: an earlier destroy/recreate cycle assigned the zone
+   a fresh nameserver set, the domain registrar (Registro.br) still pointed at
+   the old ones, and `ibatexas.com.br` was unreachable globally for up to a
+   day (lame delegation) until the registrar's NS records were updated by
+   hand. If you genuinely need to rotate the zone, see the escape hatch
+   documented at the top of `dns.tf`: flip `prevent_destroy` to `false`,
+   `apply`, `destroy`, then immediately re-enter the new NS records at the
+   registrar. Don't automate this step.
+2. **SSM parameters under `/ibatexas/dev/*` that were never declared in
+   Terraform.** `secrets.tf`'s `local.secret_names` and `bootstrap.tf` are the
+   full list of Terraform-managed names; anything pushed via
+   `ibx infra secrets:push` for a key that was never added there is invisible
+   to `terraform destroy`. Run `ibx infra destroy` to see the current list —
+   it prints every such orphan before asking for confirmation, along with the
+   exact `aws ssm delete-parameter` command to remove each one by hand.
+
+Everything else Terraform does manage for dev — the EC2 host (if one exists),
+EIP, security group, IAM roles (including the GitHub Actions OIDC deploy
+role — expect CI deploys to dev to fail until the next `terraform apply`),
+ECR repositories (`force_delete = true`, so this deletes any pushed images
+too), and the Terraform-declared SSM parameters — is destroyed.
+
+---
+
 ## Troubleshooting
 
 ### DNS not resolving after apply

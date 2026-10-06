@@ -56,7 +56,15 @@ resource "aws_instance" "host" {
   subnet_id                   = data.aws_subnets.default.ids[0]
   associate_public_ip_address = true
 
-  user_data                   = local.user_data
+  # Rendered user_data is ~18KB, over AWS's 16384-byte EC2 limit (confirmed by
+  # `terraform console` — length(local.user_data) == 18083). gzip it: AL2023's
+  # cloud-init auto-detects the gzip magic bytes and decompresses at boot, and
+  # the compressed payload (~9KB) fits comfortably under the limit. Do NOT
+  # switch back to plain `user_data` — it will fail provider-side validation
+  # and that failure blocks every terraform operation in this directory,
+  # including `terraform destroy` for unrelated resources (it's a config-wide
+  # validation, not scoped to resources actually being changed).
+  user_data_base64            = base64gzip(local.user_data)
   user_data_replace_on_change = false
 
   root_block_device {
